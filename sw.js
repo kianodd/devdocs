@@ -1,7 +1,7 @@
 // DevDocs service worker v2 — shell cache is versioned; offline downloads and
 // translations live in their own caches that survive app updates.
-const VERSION = 'devdocs-shell-v4';
-const RUNTIME = 'devdocs-runtime-v4';
+const VERSION = 'devdocs-shell-v5';
+const RUNTIME = 'devdocs-runtime-v5';
 const KEEP = [VERSION, RUNTIME, 'devdocs-offline-v1', 'devdocs-i18n-v1'];
 const SHELL = [
   './',

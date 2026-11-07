@@ -3,7 +3,7 @@
    Courses are built at build time (data/catalog.json). Progress, downloads,
    settings live locally in the browser. */
 
-const APP_VERSION = '2.0.0';
+const APP_VERSION = '2.0.1';
 const $ = (s, el) => (el || document).querySelector(s);
 const $$ = (s, el) => [...(el || document).querySelectorAll(s)];
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -604,7 +604,7 @@ function promptUpdate(notes) {
   if (updatePromptShown) return;
   updatePromptShown = true;
   const list = (notes && (notes[settings.lang] || notes.en)) || [];
-  openSheet(`<div style="text-align:center;font-size:34px;color:var(--accent)"><span style="display:inline-flex;width:34px;height:34px">${I.refresh}</span></div>
+  openSheet(`<div class="upd-ic" style="text-align:center;color:var(--accent)"><span style="display:inline-flex;width:34px;height:34px">${I.refresh}</span></div>
     <h3 style="text-align:center">${esc(T('updateTitle'))}</h3>
     ${list.length ? `<p class="sheet-sub" style="margin-bottom:4px">${esc(T('updateNotesT'))}</p><ul class="notes">${list.map((n) => `<li>${esc(n)}</li>`).join('')}</ul>` : ''}
     <div class="sheet-btns">
