@@ -1,5 +1,5 @@
 // DevDocs service worker — offline-first for the app shell and chapters.
-const VERSION = 'devdocs-v2';
+const VERSION = 'devdocs-v3';
 const SHELL = [
   './',
   'index.html',
