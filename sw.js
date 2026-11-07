@@ -1,7 +1,7 @@
 // DevDocs service worker v2 — shell cache is versioned; offline downloads and
 // translations live in their own caches that survive app updates.
-const VERSION = 'devdocs-shell-v5';
-const RUNTIME = 'devdocs-runtime-v5';
+const VERSION = 'devdocs-shell-v6';
+const RUNTIME = 'devdocs-runtime-v6';
 const KEEP = [VERSION, RUNTIME, 'devdocs-offline-v1', 'devdocs-i18n-v1'];
 const SHELL = [
   './',
@@ -36,7 +36,25 @@ self.addEventListener('activate', (e) => {
 });
 
 self.addEventListener('message', (e) => {
-  if (e.data && e.data.type === 'SKIP_WAITING') self.skipWaiting();
+  if (!e.data) return;
+  if (e.data.type === 'SKIP_WAITING') self.skipWaiting();
+  if (e.data.type === 'UPDATE_SHELL') {
+    // Refetch the shell straight from the network so an update applies even
+    // while this worker's own script is still HTTP-cached somewhere.
+    e.waitUntil((async () => {
+      try {
+        const c = await caches.open(VERSION);
+        await Promise.all(SHELL.map(async (u) => {
+          try { const r = await fetch(u, { cache: 'no-store' }); if (r.ok) await c.put(u, r); } catch {}
+        }));
+        const rc = await caches.open(RUNTIME);
+        await rc.delete('data/catalog.json').catch(() => {});
+        try { const r = await fetch('data/catalog.json', { cache: 'no-store' }); if (r.ok) await rc.put('data/catalog.json', r); } catch {}
+      } catch {}
+      const clients = await self.clients.matchAll({ includeUncontrolled: true });
+      clients.forEach((cl) => cl.postMessage({ type: 'SHELL_UPDATED' }));
+    })());
+  }
 });
 
 self.addEventListener('fetch', (e) => {

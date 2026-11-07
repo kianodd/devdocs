@@ -3,7 +3,7 @@
    Courses are built at build time (data/catalog.json). Progress, downloads,
    settings live locally in the browser. */
 
-const APP_VERSION = '2.0.1';
+const APP_VERSION = '2.0.2';
 const $ = (s, el) => (el || document).querySelector(s);
 const $$ = (s, el) => [...(el || document).querySelectorAll(s)];
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -614,9 +614,18 @@ function promptUpdate(notes) {
   $('#upd-later').onclick = () => { closeSheet(); updatePromptShown = false; };
   $('#upd-now').onclick = async () => {
     closeSheet();
-    if (swReg && swReg.waiting) { swReg.waiting.postMessage({ type: 'SKIP_WAITING' }); setTimeout(() => location.reload(), 1600); }
-    else if (swReg) { try { await swReg.update(); } catch {} if (swReg.waiting) swReg.waiting.postMessage({ type: 'SKIP_WAITING' }); setTimeout(() => location.reload(), 900); }
-    else location.reload();
+    if (swReg) { try { await swReg.update(); } catch {} }
+    if (swReg && swReg.waiting) { swReg.waiting.postMessage({ type: 'SKIP_WAITING' }); setTimeout(() => location.reload(), 2500); return; }
+    // No waiting worker yet (the worker script itself is still HTTP-cached):
+    // ask the active worker to refetch the shell from the network, then reload.
+    const ctrl = navigator.serviceWorker && navigator.serviceWorker.controller;
+    if (ctrl) {
+      let done = false;
+      const onMsg = (e) => { if (e.data && e.data.type === 'SHELL_UPDATED' && !done) { done = true; navigator.serviceWorker.removeEventListener('message', onMsg); location.reload(); } };
+      navigator.serviceWorker.addEventListener('message', onMsg);
+      ctrl.postMessage({ type: 'UPDATE_SHELL' });
+      setTimeout(() => { if (!done) { done = true; location.reload(); } }, 6000);
+    } else location.reload();
   };
 }
 async function registerSW() {
