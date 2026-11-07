@@ -1,0 +1,184 @@
+<p><code>@nestjs/mcp</code> turns a Nest application into a Model Context Protocol (MCP) server, whose tools, resources and prompts are methods of your providers.</p>
+<p>The online store for cat food and supplies answers a lot of email: &quot;where is my order?&quot;, &quot;can I change the delivery address?&quot;, &quot;is the salmon kibble back in stock?&quot;. The support team works in an AI assistant (Claude, ChatGPT, an agent in their help desk), and the assistant can only answer when it can see what the order API sees.</p>
+<p>The <a target="_blank" rel="noopener" href="https://modelcontextprotocol.io">Model Context Protocol</a> (MCP) is how an assistant reaches an application. The application runs an <strong>MCP server</strong>, and exposes three kinds of things to the assistant, the <strong>MCP client</strong>:</p>
+<ul>
+<li><strong>Tools</strong>, actions the model calls with arguments: look up an order, change its address.</li>
+<li><strong>Resources</strong>, data the client reads by URI: the catalog, one order.</li>
+<li><strong>Prompts</strong>, templates the user picks: &quot;draft a reply about this order&quot;.</li>
+</ul>
+<p><code>@nestjs/mcp</code> turns methods of your providers into tools, resources and prompts with a decorator each. They run through the guards, interceptors, pipes and exception filters your routes use, and the server is served from the Nest application you already have: over Streamable HTTP for remote assistants, and over stdio for one that launches it as a local process.</p>
+<p>In this tutorial, you&#39;ll give the store&#39;s order API an MCP server:</p>
+<ul>
+<li><a href="#/doc/mcp/primitives">Tools</a> to find an order and to change its delivery address, with schemas the model sees and the server validates.</li>
+<li>The catalog as a <a href="#/doc/mcp/primitives@resources">resource</a>, and each order as a resource template.</li>
+<li>A <a href="#/doc/mcp/primitives@prompts">prompt</a> for drafting a reply.</li>
+<li>A <a href="#/doc/mcp/primitives@guards-interceptors-pipes-and-filters">guard</a> that lets only the support team change orders, and an interceptor that logs each call.</li>
+<li><a href="#/doc/mcp/primitives@authorization">OAuth 2.1</a> on the HTTP endpoint, with the store&#39;s identity provider, and a scope for changing orders.</li>
+<li>The same server over <a href="#/doc/mcp/transports@over-stdio">stdio</a>, and <a href="#/doc/mcp/testing">tests</a> that call it in memory.</li>
+</ul>
+<h4 id="installation">Installation</h4>
+<p>Install the package, the MCP TypeScript SDK it builds on, and Zod, for the schemas:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Terminal</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-bash">$ npm i --save @nestjs/mcp @modelcontextprotocol/server zod</code></pre></div></figure>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Hint</p><p>The schemas can come from any <a target="_blank" rel="noopener" href="https://standardschema.dev">Standard Schema</a> library that produces JSON Schema: Zod 4.2 or later and ArkType as they are, Valibot through <code>toStandardJsonSchema()</code> from <code>@valibot/to-json-schema</code>, and a JSON Schema document you already have through <code>fromJsonSchema()</code> from <code>@modelcontextprotocol/server</code>. Zod 3 schemas are refused at startup: the SDK cannot turn them into JSON Schema.</p>
+</div></aside>
+<h4 id="register-the-module">Register the module</h4>
+<p>Import <code>McpModule</code> in the root module. <code>name</code> and <code>version</code> identify the server to clients; <code>instructions</code> tells the model how to use it:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app.module.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { <span class="hljs-title class_">Module</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/common&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">McpModule</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/mcp&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">OrdersModule</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./orders/orders.module&#x27;</span>;
+
+<span class="hljs-meta">@Module</span>({
+  <span class="hljs-attr">imports</span>: [
+    <span class="hljs-title class_">McpModule</span>.<span class="hljs-title function_">forRoot</span>({
+      <span class="hljs-attr">name</span>: <span class="hljs-string">&#x27;cat-store&#x27;</span>,
+      <span class="hljs-attr">version</span>: <span class="hljs-string">&#x27;1.0.0&#x27;</span>,
+      <span class="hljs-attr">instructions</span>: <span class="hljs-string">&#x27;Look orders up with find-order before changing them.&#x27;</span>,
+    }),
+    <span class="hljs-title class_">OrdersModule</span>,
+  ],
+})
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">AppModule</span> {}</code></pre></div></figure>
+<p>The module looks for tools, resources and prompts on every provider of the application, at startup. <code>include: [OrdersModule]</code> limits the search to the modules you list.</p>
+<p>Start the application as usual:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>main.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { <span class="hljs-title class_">NestFactory</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/core&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">AppModule</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./app.module&#x27;</span>;
+
+<span class="hljs-keyword">async</span> <span class="hljs-keyword">function</span> <span class="hljs-title function_">bootstrap</span>(<span class="hljs-params"></span>) {
+  <span class="hljs-keyword">const</span> app = <span class="hljs-keyword">await</span> <span class="hljs-title class_">NestFactory</span>.<span class="hljs-title function_">create</span>(<span class="hljs-title class_">AppModule</span>);
+  <span class="hljs-keyword">await</span> app.<span class="hljs-title function_">listen</span>(<span class="hljs-number">3000</span>);
+}
+<span class="hljs-title function_">bootstrap</span>();</code></pre></div></figure>
+<p>The MCP endpoint is served at <code>http://localhost:3000/mcp</code>, next to the application&#39;s own routes. The same module can also be served over stdio, to an assistant that launches the application as a local process: see <a href="#/doc/mcp/transports">Transports</a>.</p>
+<h4 id="how-a-call-is-served">How a call is served</h4>
+<p>When the application starts, the module looks through its providers for methods decorated with <code>@Tool()</code>, <code>@Resource()</code>, <code>@ResourceTemplate()</code> and <code>@Prompt()</code>. It turns each schema into JSON Schema once, and fails at startup on what would otherwise only break later: two tools with one name, a tool name outside the MCP naming rules, a request-scoped provider, <code>scopes</code> without <code>auth</code>.</p>
+<p>Each HTTP request to the endpoint is then served on its own. The module builds an MCP server for it from what it found at startup, the <a target="_blank" rel="noopener" href="https://github.com/modelcontextprotocol/typescript-sdk">MCP TypeScript SDK</a> speaks the protocol, and a call goes through these steps:</p>
+<ol>
+<li>With <code>auth</code>, the access token is verified, and the call&#39;s scopes are checked.</li>
+<li>The SDK validates the arguments against the schema. Arguments it refuses never reach your method: the model is told what&#39;s wrong, and can try again.</li>
+<li>Your guards run, then your interceptors and pipes, as around a route handler.</li>
+<li>The method runs, with the arguments and the call&#39;s context.</li>
+<li>What it returns becomes the MCP result. What it throws goes through your exception filters, and becomes an error the client understands.</li>
+</ol>
+<p>Nothing is kept between requests, so the server runs on as many instances as you like, behind any load balancer. Over stdio, one server serves the connection for as long as the process lives.</p>
+<h4 id="async-configuration">Async configuration</h4>
+<p><code>forRootAsync()</code> takes the options from a factory, a <code>useClass</code> or a <code>useExisting</code> provider. <code>path</code>, <code>endpointVersion</code>, <code>decorators</code> and <code>imports</code> stay at the top level, because the module&#39;s routes are known when it is defined; a verifier from the factory is an instance:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-title class_">McpModule</span>.<span class="hljs-title function_">forRootAsync</span>({
+  <span class="hljs-attr">imports</span>: [<span class="hljs-title class_">ConfigModule</span>, <span class="hljs-title class_">AuthModule</span>],
+  <span class="hljs-attr">inject</span>: [<span class="hljs-title class_">ConfigService</span>, <span class="hljs-title class_">IdentityProviderTokenVerifier</span>],
+  <span class="hljs-attr">useFactory</span>: <span class="hljs-function">(<span class="hljs-params"><span class="hljs-attr">config</span>: <span class="hljs-title class_">ConfigService</span>, <span class="hljs-attr">verifier</span>: <span class="hljs-title class_">IdentityProviderTokenVerifier</span></span>) =&gt;</span> ({
+    <span class="hljs-attr">name</span>: <span class="hljs-string">&#x27;cat-store&#x27;</span>,
+    <span class="hljs-attr">version</span>: config.<span class="hljs-title function_">get</span>(<span class="hljs-string">&#x27;VERSION&#x27;</span>),
+    <span class="hljs-attr">auth</span>: {
+      verifier,
+      <span class="hljs-attr">resource</span>: config.<span class="hljs-title function_">get</span>(<span class="hljs-string">&#x27;MCP_RESOURCE&#x27;</span>),
+      <span class="hljs-attr">authorizationServers</span>: [config.<span class="hljs-title function_">get</span>(<span class="hljs-string">&#x27;IDENTITY_PROVIDER_URL&#x27;</span>)],
+    },
+  }),
+}),</code></pre></div></figure>
+<h4 id="module-options">Module options</h4>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Option</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>name</code>, <code>version</code></td>
+<td></td>
+<td>Required. The server&#39;s identity, sent to clients</td>
+</tr>
+<tr>
+<td><code>title</code>, <code>description</code>, <code>websiteUrl</code>, <code>icons</code></td>
+<td></td>
+<td>More of it, for clients to show</td>
+</tr>
+<tr>
+<td><code>instructions</code></td>
+<td></td>
+<td>How the model should use the server</td>
+</tr>
+<tr>
+<td><code>include</code></td>
+<td>every module</td>
+<td>The modules whose providers are searched for tools, resources and prompts</td>
+</tr>
+<tr>
+<td><code>path</code></td>
+<td><code>&#39;mcp&#39;</code></td>
+<td>The HTTP endpoint&#39;s route. <code>false</code> for none. Top level of <code>forRootAsync()</code></td>
+</tr>
+<tr>
+<td><code>endpointVersion</code></td>
+<td></td>
+<td>The endpoint&#39;s version, with versioning enabled. Top level of <code>forRootAsync()</code></td>
+</tr>
+<tr>
+<td><code>decorators</code></td>
+<td><code>[]</code></td>
+<td>Class decorators applied to the endpoint&#39;s controller. Top level of <code>forRootAsync()</code></td>
+</tr>
+<tr>
+<td><code>imports</code></td>
+<td><code>[]</code></td>
+<td>Modules whose exports a <code>verifier</code> class injects. Top level of <code>forRootAsync()</code></td>
+</tr>
+<tr>
+<td><code>http.legacy</code></td>
+<td><code>&#39;stateless&#39;</code></td>
+<td><code>&#39;reject&#39;</code> serves the 2026-07-28 revision only</td>
+</tr>
+<tr>
+<td><code>http.responseMode</code></td>
+<td><code>&#39;auto&#39;</code></td>
+<td><code>&#39;json&#39;</code> or <code>&#39;sse&#39;</code> pin the response shape of 2026-07-28 requests</td>
+</tr>
+<tr>
+<td><code>http.allowedOrigins</code></td>
+<td><code>localhost</code>, <code>127.0.0.1</code>, <code>[::1]</code></td>
+<td>The hostnames a request&#39;s <code>Origin</code> header may name; requests without one pass. A list replaces the default, <code>false</code> turns the check off</td>
+</tr>
+<tr>
+<td><code>http.allowedHosts</code></td>
+<td>not checked</td>
+<td>The hostnames the <code>Host</code> header must name</td>
+</tr>
+<tr>
+<td><code>http.maxRequestBodySize</code></td>
+<td>4 MiB</td>
+<td>For bodies the platform did not parse</td>
+</tr>
+<tr>
+<td><code>auth.verifier</code></td>
+<td></td>
+<td>A class or an instance with <code>verifyAccessToken(token)</code></td>
+</tr>
+<tr>
+<td><code>auth.resource</code></td>
+<td></td>
+<td>The server&#39;s canonical URL, and the audience of its tokens</td>
+</tr>
+<tr>
+<td><code>auth.authorizationServers</code></td>
+<td></td>
+<td>The issuers whose tokens are accepted</td>
+</tr>
+<tr>
+<td><code>auth.scopesSupported</code>, <code>auth.requiredScopes</code></td>
+<td></td>
+<td>Scopes advertised, and scopes every request needs</td>
+</tr>
+<tr>
+<td><code>auth.resourceName</code>, <code>auth.resourceDocumentation</code></td>
+<td></td>
+<td>More protected resource metadata</td>
+</tr>
+<tr>
+<td><code>stdio.legacy</code></td>
+<td><code>&#39;serve&#39;</code></td>
+<td><code>&#39;reject&#39;</code> refuses connections that open with the 2025 handshake</td>
+</tr>
+</tbody></table></div>
+<h4 id="example">Example</h4>
+<p>A working example is available <a target="_blank" rel="noopener" href="https://github.com/nestjs/mcp/tree/master/sample">here</a>.</p>

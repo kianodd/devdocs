@@ -1,0 +1,762 @@
+<p>Supabase gives an application a Postgres database, sign-in, file storage and an API that the browser can call directly, which covers a lot without a backend. What it leaves out is the work that needs a secret, a retry or a clock: Stripe webhooks, scheduled jobs, queues, an admin API. Nest takes on that work next to Supabase, on the same database and for the same users.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Stays in Supabase</th>
+<th>Goes in Nest</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Sign-up, sign-in and password resets</td>
+<td>Checking who is calling, and what they may do</td>
+</tr>
+<tr>
+<td>Postgres, its migrations and row level security</td>
+<td>Business rules, and queries that span many tables</td>
+</tr>
+<tr>
+<td>Browser reads and writes that row level security covers</td>
+<td>Anything that needs a secret: payments, email, other APIs</td>
+</tr>
+<tr>
+<td>Storage and Realtime</td>
+<td>Stripe webhooks, scheduled jobs, queues and an admin API</td>
+</tr>
+</tbody></table></div>
+<p>The browser keeps calling Supabase directly for what row level security covers, and calls Nest with the same access token for the rest.</p>
+<p>If a short function or two is all you need, <a target="_blank" rel="noopener" href="https://supabase.com/docs/guides/functions">Edge Functions</a> may be enough, with no server to run. They have <a target="_blank" rel="noopener" href="https://supabase.com/docs/guides/functions/limits">limits on CPU time and duration</a> and nowhere to run a queue&#39;s worker, so Nest fits better once you have jobs, queues or many routes that share code.</p>
+<p>This recipe builds such an application on the local Supabase stack, so that you can run each step as you read. <a href="#/doc/recipes/supabase@the-finished-module">The finished module</a> shows how the pieces are wired together.</p>
+<h4 id="create-the-projects">Create the projects</h4>
+<p>The local stack needs Docker.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Terminal</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-bash">$ npx @nestjs/cli new my-api
+$ <span class="hljs-built_in">cd</span> my-api
+$ npx supabase init
+$ npx supabase start</code></pre></div></figure>
+<p><code>npx supabase status -o env</code> prints the stack&#39;s URLs and keys. Put <code>API_URL</code>, <code>PUBLISHABLE_KEY</code>, <code>SECRET_KEY</code> and <code>DB_URL</code> in <code>.env</code>, under the names this recipe reads:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Terminal</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-bash">SUPABASE_URL=http://127.0.0.1:54321
+SUPABASE_PUBLISHABLE_KEY=sb_publishable_...
+SUPABASE_SECRET_KEY=sb_secret_...
+DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:54322/postgres</code></pre></div></figure>
+<aside class="callout callout-warning"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 4 2.8 20h18.4L12 4z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M12 10v4.4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="17" r="1.3" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Warning</p><p>The secret key bypasses row level security. It belongs on the server only, and never in anything you ship to a browser or a mobile app.</p>
+</div></aside>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Hint</p><p>A hosted project has the same keys in its dashboard. Supabase is <a target="_blank" rel="noopener" href="https://supabase.com/docs/guides/api/api-keys">deprecating</a> the older <code>anon</code> and <code>service_role</code> keys by the end of 2026, so use these two.</p>
+</div></aside>
+<p>Load <code>.env</code> with <a href="#/doc/application/configuration"><code>@nestjs/config</code></a>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Terminal</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-bash">$ npm i --save @nestjs/config</code></pre></div></figure>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-meta">@Module</span>({
+  <span class="hljs-attr">imports</span>: [<span class="hljs-title class_">ConfigModule</span>.<span class="hljs-title function_">forRoot</span>()],
+})
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">AppModule</span> {}</code></pre></div></figure>
+<p>Keep it first in <code>imports</code>, as the modules you&#39;ll add after it read <code>process.env</code> as they&#39;re declared. A module declared in another file reads it earlier, when the file is imported, so use <code>forRootAsync()</code> for what you register there.</p>
+<h4 id="define-a-table">Define a table</h4>
+<p>The schema stays in Supabase&#39;s migrations:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Terminal</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-bash">$ npx supabase migration new notes</code></pre></div></figure>
+<p>Write the table in the file this creates under <code>supabase/migrations</code>, with a policy that lets users reach only their own rows. <code>auth.uid()</code> is the user the request&#39;s access token belongs to:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>SQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-sql"><span class="hljs-keyword">create table</span> public.notes (
+  id uuid <span class="hljs-keyword">primary key</span> <span class="hljs-keyword">default</span> gen_random_uuid(),
+  user_id uuid <span class="hljs-keyword">not null</span> <span class="hljs-keyword">references</span> auth.users (id) <span class="hljs-keyword">on</span> <span class="hljs-keyword">delete</span> cascade,
+  body text <span class="hljs-keyword">not null</span>
+);
+
+<span class="hljs-keyword">alter table</span> public.notes enable <span class="hljs-type">row</span> level security;
+
+<span class="hljs-keyword">create</span> policy &quot;Users manage their own notes&quot; <span class="hljs-keyword">on</span> public.notes
+  <span class="hljs-keyword">for</span> <span class="hljs-keyword">all</span> <span class="hljs-keyword">to</span> authenticated
+  <span class="hljs-keyword">using</span> ((<span class="hljs-keyword">select</span> auth.uid()) <span class="hljs-operator">=</span> user_id)
+  <span class="hljs-keyword">with</span> <span class="hljs-keyword">check</span> ((<span class="hljs-keyword">select</span> auth.uid()) <span class="hljs-operator">=</span> user_id);</code></pre></div></figure>
+<p>Apply it to the local database:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Terminal</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-bash">$ npx supabase db reset</code></pre></div></figure>
+<aside class="callout callout-warning"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 4 2.8 20h18.4L12 4z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M12 10v4.4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="17" r="1.3" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Warning</p><p>Supabase&#39;s API serves the tables in the <code>public</code> schema to anyone with the publishable key, and that key is in your browser code. Enable row level security on every table you create there, including those only Nest uses. With it enabled and no policy, the key reads nothing.</p>
+</div></aside>
+<h4 id="verify-supabase-tokens">Verify Supabase tokens</h4>
+<p>Supabase Auth signs an access token for each signed-in user, and publishes the public keys that verify it. <a href="#/doc/security/authentication"><code>@nestjs/authentication</code></a> can verify tokens from another issuer, so Nest needs no secret from Supabase to know who is calling:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Terminal</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-bash">$ npm i --save @nestjs/authentication</code></pre></div></figure>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>supabase/supabase-auth.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { <span class="hljs-title class_">Injectable</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/common&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">AuthenticationRegistry</span>, <span class="hljs-title class_">JwtBearerProvider</span>, <span class="hljs-keyword">type</span> <span class="hljs-title class_">JwtClaims</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/authentication&#x27;</span>;
+
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">interface</span> <span class="hljs-title class_">SupabaseUser</span> {
+  <span class="hljs-attr">id</span>: <span class="hljs-built_in">string</span>;
+  <span class="hljs-attr">email</span>?: <span class="hljs-built_in">string</span>;
+  <span class="hljs-attr">role</span>?: <span class="hljs-built_in">string</span>;
+}
+
+<span class="hljs-meta">@Injectable</span>()
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">SupabaseAuth</span> <span class="hljs-keyword">extends</span> <span class="hljs-title class_ inherited__">JwtBearerProvider</span>&lt;<span class="hljs-title class_">SupabaseUser</span>&gt; {
+  <span class="hljs-title function_">constructor</span>(<span class="hljs-params"><span class="hljs-attr">registry</span>: <span class="hljs-title class_">AuthenticationRegistry</span></span>) {
+    <span class="hljs-variable language_">super</span>({
+      <span class="hljs-attr">jwks</span>: <span class="hljs-string">`<span class="hljs-subst">${process.env.SUPABASE_URL}</span>/auth/v1/.well-known/jwks.json`</span>,
+      <span class="hljs-attr">issuer</span>: <span class="hljs-string">`<span class="hljs-subst">${process.env.SUPABASE_URL}</span>/auth/v1`</span>,
+      <span class="hljs-attr">audience</span>: <span class="hljs-string">&#x27;authenticated&#x27;</span>,
+    });
+    registry.<span class="hljs-title function_">registerProvider</span>(<span class="hljs-variable language_">this</span>);
+  }
+
+  <span class="hljs-title function_">validate</span>(<span class="hljs-params"><span class="hljs-attr">claims</span>: <span class="hljs-title class_">JwtClaims</span></span>) {
+    <span class="hljs-keyword">if</span> (!claims.<span class="hljs-property">sub</span>) {
+      <span class="hljs-keyword">return</span> <span class="hljs-literal">null</span>;
+    }
+    <span class="hljs-keyword">const</span> { email, app_metadata } = claims <span class="hljs-keyword">as</span> <span class="hljs-title class_">JwtClaims</span> &amp; {
+      <span class="hljs-attr">email</span>?: <span class="hljs-built_in">string</span>;
+      <span class="hljs-attr">app_metadata</span>?: { <span class="hljs-attr">role</span>?: <span class="hljs-built_in">string</span> };
+    };
+    <span class="hljs-keyword">return</span> { <span class="hljs-attr">id</span>: claims.<span class="hljs-property">sub</span>, email, <span class="hljs-attr">role</span>: app_metadata?.<span class="hljs-property">role</span> };
+  }
+}</code></pre></div></figure>
+<p>The role comes from <code>app_metadata</code>, which only your server can change. A signed-in user can change their own <code>user_metadata</code> with <code>supabase.auth.updateUser()</code>, so never base a decision on it.</p>
+<p>Register the module and the provider:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-meta">@Module</span>({
+  <span class="hljs-attr">imports</span>: [<span class="hljs-title class_">AuthenticationModule</span>.<span class="hljs-title function_">forRoot</span>({})],
+  <span class="hljs-attr">providers</span>: [<span class="hljs-title class_">SupabaseAuth</span>],
+})
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">AppModule</span> {}</code></pre></div></figure>
+<p>The module registers a global guard, so every route now answers <code>401 Unauthorized</code> without a valid token, including one with a bad signature, another issuer or audience, or an expired one. Mark a route that stays open with <code>@Public()</code>, and read the user with <code>@CurrentUser()</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>me/me.controller.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { <span class="hljs-title class_">Controller</span>, <span class="hljs-title class_">Get</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/common&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">CurrentUser</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/authentication&#x27;</span>;
+<span class="hljs-keyword">import</span> <span class="hljs-keyword">type</span> { <span class="hljs-title class_">SupabaseUser</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;../supabase/supabase-auth.js&#x27;</span>;
+
+<span class="hljs-meta">@Controller</span>(<span class="hljs-string">&#x27;me&#x27;</span>)
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">MeController</span> {
+  <span class="hljs-meta">@Get</span>()
+  <span class="hljs-title function_">me</span>(<span class="hljs-params"><span class="hljs-meta">@CurrentUser</span>() <span class="hljs-attr">user</span>: <span class="hljs-title class_">SupabaseUser</span></span>) {
+    <span class="hljs-keyword">return</span> user;
+  }
+}</code></pre></div></figure>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Hint</p><p>A project still on the legacy JWT secret signs tokens with it and publishes no keys. Pass <code>key: process.env.SUPABASE_JWT_SECRET</code> instead of <code>jwks</code>, until you <a target="_blank" rel="noopener" href="https://supabase.com/docs/guides/auth/signing-keys">migrate to signing keys</a>.</p>
+</div></aside>
+<h4 id="call-nest-from-the-browser">Call Nest from the browser</h4>
+<p>The browser sends the access token that Supabase gave it. <code>getSession()</code> refreshes the token when it has expired:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">const</span> { <span class="hljs-attr">data</span>: { session } } = <span class="hljs-keyword">await</span> supabase.<span class="hljs-property">auth</span>.<span class="hljs-title function_">getSession</span>();
+
+<span class="hljs-keyword">const</span> response = <span class="hljs-keyword">await</span> <span class="hljs-title function_">fetch</span>(<span class="hljs-string">`<span class="hljs-subst">${API_URL}</span>/me`</span>, {
+  <span class="hljs-attr">headers</span>: { <span class="hljs-title class_">Authorization</span>: <span class="hljs-string">`Bearer <span class="hljs-subst">${session.access_token}</span>`</span> },
+});</code></pre></div></figure>
+<p>If the browser calls Nest on another origin, <a href="#/doc/security/cors">allow that origin</a> when the application starts:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>main.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">app.<span class="hljs-title function_">enableCors</span>({ <span class="hljs-attr">origin</span>: process.<span class="hljs-property">env</span>.<span class="hljs-property">WEB_ORIGIN</span> });</code></pre></div></figure>
+<h4 id="query-as-the-user-or-as-the-server">Query as the user, or as the server</h4>
+<p><code>@supabase/supabase-js</code> is a client for your database&#39;s REST API. Generate types from your schema, so that a query on a table or a column that doesn&#39;t exist fails to compile, and run this again after each migration:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Terminal</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-bash">$ npm i --save @supabase/supabase-js
+$ npx supabase gen types typescript --<span class="hljs-built_in">local</span> &gt; src/supabase/database.types.ts</code></pre></div></figure>
+<p>Create one client for the server, and one per request for the user. A client holds no database connection, so that&#39;s cheap:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>supabase/supabase.service.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { <span class="hljs-title class_">Injectable</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/common&#x27;</span>;
+<span class="hljs-keyword">import</span> { createClient } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@supabase/supabase-js&#x27;</span>;
+<span class="hljs-keyword">import</span> <span class="hljs-keyword">type</span> { <span class="hljs-title class_">Database</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./database.types.js&#x27;</span>;
+
+<span class="hljs-keyword">const</span> options = { <span class="hljs-attr">auth</span>: { <span class="hljs-attr">persistSession</span>: <span class="hljs-literal">false</span>, <span class="hljs-attr">autoRefreshToken</span>: <span class="hljs-literal">false</span> } };
+
+<span class="hljs-meta">@Injectable</span>()
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">SupabaseService</span> {
+  <span class="hljs-comment">/** Bypasses row level security. Only for what the server does on its own. */</span>
+  <span class="hljs-keyword">readonly</span> admin = createClient&lt;<span class="hljs-title class_">Database</span>&gt;(
+    process.<span class="hljs-property">env</span>.<span class="hljs-property">SUPABASE_URL</span>!,
+    process.<span class="hljs-property">env</span>.<span class="hljs-property">SUPABASE_SECRET_KEY</span>!,
+    options,
+  );
+
+  <span class="hljs-comment">/** Queries as the user who sent the token, so row level security applies. */</span>
+  <span class="hljs-title function_">forUser</span>(<span class="hljs-params"><span class="hljs-attr">token</span>: <span class="hljs-built_in">string</span></span>) {
+    <span class="hljs-keyword">return</span> createClient&lt;<span class="hljs-title class_">Database</span>&gt;(process.<span class="hljs-property">env</span>.<span class="hljs-property">SUPABASE_URL</span>!, process.<span class="hljs-property">env</span>.<span class="hljs-property">SUPABASE_PUBLISHABLE_KEY</span>!, {
+      ...options,
+      <span class="hljs-attr">accessToken</span>: <span class="hljs-title function_">async</span> () =&gt; token,
+    });
+  }
+}</code></pre></div></figure>
+<p>A small decorator reads the token that the guard has already verified:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>supabase/access-token.decorator.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { createParamDecorator, <span class="hljs-keyword">type</span> <span class="hljs-title class_">ExecutionContext</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/common&#x27;</span>;
+
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">const</span> <span class="hljs-title class_">AccessToken</span> = <span class="hljs-title function_">createParamDecorator</span>(<span class="hljs-function">(<span class="hljs-params"><span class="hljs-attr">_</span>: <span class="hljs-built_in">unknown</span>, <span class="hljs-attr">context</span>: <span class="hljs-title class_">ExecutionContext</span></span>) =&gt;</span> {
+  <span class="hljs-keyword">const</span> { authorization } = context.<span class="hljs-title function_">switchToHttp</span>().<span class="hljs-title function_">getRequest</span>().<span class="hljs-property">headers</span>;
+  <span class="hljs-keyword">return</span> authorization?.<span class="hljs-title function_">replace</span>(<span class="hljs-regexp">/^Bearer /i</span>, <span class="hljs-string">&#x27;&#x27;</span>);
+});</code></pre></div></figure>
+<p>Prefer <code>forUser()</code> in a route that acts for a user. Your policies keep applying, so a query that forgets a filter still returns only that user&#39;s rows, and an insert for someone else is refused:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>notes/notes.controller.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { <span class="hljs-title class_">Body</span>, <span class="hljs-title class_">Controller</span>, <span class="hljs-title class_">Get</span>, <span class="hljs-title class_">Post</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/common&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">CurrentUser</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/authentication&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">AccessToken</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;../supabase/access-token.decorator.js&#x27;</span>;
+<span class="hljs-keyword">import</span> <span class="hljs-keyword">type</span> { <span class="hljs-title class_">SupabaseUser</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;../supabase/supabase-auth.js&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">SupabaseService</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;../supabase/supabase.service.js&#x27;</span>;
+
+<span class="hljs-meta">@Controller</span>(<span class="hljs-string">&#x27;notes&#x27;</span>)
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">NotesController</span> {
+  <span class="hljs-title function_">constructor</span>(<span class="hljs-params"><span class="hljs-keyword">private</span> <span class="hljs-keyword">readonly</span> <span class="hljs-attr">supabase</span>: <span class="hljs-title class_">SupabaseService</span></span>) {}
+
+  <span class="hljs-meta">@Get</span>()
+  <span class="hljs-keyword">async</span> <span class="hljs-title function_">findAll</span>(<span class="hljs-params"><span class="hljs-meta">@AccessToken</span>() <span class="hljs-attr">token</span>: <span class="hljs-built_in">string</span></span>) {
+    <span class="hljs-keyword">const</span> { data, error } = <span class="hljs-keyword">await</span> <span class="hljs-variable language_">this</span>.<span class="hljs-property">supabase</span>.<span class="hljs-title function_">forUser</span>(token).<span class="hljs-title function_">from</span>(<span class="hljs-string">&#x27;notes&#x27;</span>).<span class="hljs-title function_">select</span>(<span class="hljs-string">&#x27;body&#x27;</span>);
+    <span class="hljs-keyword">if</span> (error) {
+      <span class="hljs-keyword">throw</span> error;
+    }
+    <span class="hljs-keyword">return</span> data;
+  }
+
+  <span class="hljs-meta">@Post</span>()
+  <span class="hljs-keyword">async</span> <span class="hljs-title function_">create</span>(<span class="hljs-params">
+    <span class="hljs-meta">@AccessToken</span>() <span class="hljs-attr">token</span>: <span class="hljs-built_in">string</span>,
+    <span class="hljs-meta">@CurrentUser</span>() <span class="hljs-attr">user</span>: <span class="hljs-title class_">SupabaseUser</span>,
+    <span class="hljs-meta">@Body</span>(<span class="hljs-string">&#x27;body&#x27;</span>) <span class="hljs-attr">body</span>: <span class="hljs-built_in">string</span>,
+  </span>) {
+    <span class="hljs-keyword">const</span> { error } = <span class="hljs-keyword">await</span> <span class="hljs-variable language_">this</span>.<span class="hljs-property">supabase</span>.<span class="hljs-title function_">forUser</span>(token).<span class="hljs-title function_">from</span>(<span class="hljs-string">&#x27;notes&#x27;</span>).<span class="hljs-title function_">insert</span>({ <span class="hljs-attr">user_id</span>: user.<span class="hljs-property">id</span>, body });
+    <span class="hljs-keyword">if</span> (error) {
+      <span class="hljs-keyword">throw</span> error;
+    }
+  }
+}</code></pre></div></figure>
+<p>Use <code>admin</code> for what the server does on its own behalf, where no user is involved, as in a job or a webhook.</p>
+<h4 id="query-postgres-directly">Query Postgres directly</h4>
+<p>For transactions and for queries that the REST API can&#39;t express, connect to the database with <a href="#/doc/data/drizzle"><code>@nestjs/drizzle</code></a> or another <a href="#/doc/data/overview">database integration</a>. The webhooks and jobs below use this connection too:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Terminal</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-bash">$ npm i --save @nestjs/drizzle drizzle-orm pg</code></pre></div></figure>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-title class_">DrizzleModule</span>.<span class="hljs-title function_">forRoot</span>({ drizzle, <span class="hljs-attr">connection</span>: process.<span class="hljs-property">env</span>.<span class="hljs-property">DATABASE_URL</span>! }),</code></pre></div></figure>
+<p>Locally, <code>DATABASE_URL</code> is the stack&#39;s <code>DB_URL</code>. On a hosted project, Nest is a persistent backend, so use the <a target="_blank" rel="noopener" href="https://supabase.com/docs/guides/database/connecting-to-postgres">direct connection string</a>, or the shared pooler in session mode if your host only has IPv4. The pooler&#39;s transaction mode doesn&#39;t support prepared statements, nor the <code>LISTEN</code> that BullMQ&#39;s PostgreSQL backend uses.</p>
+<p>Supabase&#39;s migrations stay the source of truth, so the Drizzle schema only describes the tables to query:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>database/schema.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { pgTable, text, uuid } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;drizzle-orm/pg-core&#x27;</span>;
+
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">const</span> notes = <span class="hljs-title function_">pgTable</span>(<span class="hljs-string">&#x27;notes&#x27;</span>, {
+  <span class="hljs-attr">id</span>: <span class="hljs-title function_">uuid</span>(<span class="hljs-string">&#x27;id&#x27;</span>).<span class="hljs-title function_">primaryKey</span>().<span class="hljs-title function_">defaultRandom</span>(),
+  <span class="hljs-attr">userId</span>: <span class="hljs-title function_">uuid</span>(<span class="hljs-string">&#x27;user_id&#x27;</span>).<span class="hljs-title function_">notNull</span>(),
+  <span class="hljs-attr">body</span>: <span class="hljs-title function_">text</span>(<span class="hljs-string">&#x27;body&#x27;</span>).<span class="hljs-title function_">notNull</span>(),
+});</code></pre></div></figure>
+<aside class="callout callout-warning"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 4 2.8 20h18.4L12 4z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M12 10v4.4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="17" r="1.3" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Warning</p><p>Row level security doesn&#39;t protect these queries. The <code>postgres</code> role bypasses it, so a query with no filter returns every user&#39;s rows, and each query has to check the owner itself.</p>
+</div></aside>
+<p>To keep your policies on a direct query instead, run it in a transaction as the <code>authenticated</code> role, with the claims that <code>auth.uid()</code> reads:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>database/row-level-security.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { <span class="hljs-title class_">Injectable</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/common&#x27;</span>;
+<span class="hljs-keyword">import</span> <span class="hljs-keyword">type</span> { <span class="hljs-title class_">JwtClaims</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/authentication&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">InjectDrizzle</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/drizzle&#x27;</span>;
+<span class="hljs-keyword">import</span> { sql } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;drizzle-orm&#x27;</span>;
+<span class="hljs-keyword">import</span> <span class="hljs-keyword">type</span> { <span class="hljs-title class_">NodePgDatabase</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;drizzle-orm/node-postgres&#x27;</span>;
+
+<span class="hljs-keyword">type</span> <span class="hljs-title class_">Transaction</span> = <span class="hljs-title class_">Parameters</span>&lt;<span class="hljs-title class_">Parameters</span>&lt;<span class="hljs-title class_">NodePgDatabase</span>[<span class="hljs-string">&#x27;transaction&#x27;</span>]&gt;[<span class="hljs-number">0</span>]&gt;[<span class="hljs-number">0</span>];
+
+<span class="hljs-meta">@Injectable</span>()
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">RowLevelSecurity</span> {
+  <span class="hljs-title function_">constructor</span>(<span class="hljs-params"><span class="hljs-meta">@InjectDrizzle</span>() <span class="hljs-keyword">private</span> <span class="hljs-keyword">readonly</span> <span class="hljs-attr">db</span>: <span class="hljs-title class_">NodePgDatabase</span></span>) {}
+
+  asUser&lt;T&gt;(<span class="hljs-attr">claims</span>: <span class="hljs-title class_">JwtClaims</span>, <span class="hljs-attr">work</span>: <span class="hljs-function">(<span class="hljs-params"><span class="hljs-attr">tx</span>: <span class="hljs-title class_">Transaction</span></span>) =&gt;</span> <span class="hljs-title class_">Promise</span>&lt;T&gt;): <span class="hljs-title class_">Promise</span>&lt;T&gt; {
+    <span class="hljs-keyword">return</span> <span class="hljs-variable language_">this</span>.<span class="hljs-property">db</span>.<span class="hljs-title function_">transaction</span>(<span class="hljs-title function_">async</span> (tx) =&gt; {
+      <span class="hljs-keyword">await</span> tx.<span class="hljs-title function_">execute</span>(sql<span class="hljs-string">`
+        select set_config(&#x27;request.jwt.claims&#x27;, <span class="hljs-subst">${<span class="hljs-built_in">JSON</span>.stringify(claims)}</span>, true),
+               set_config(&#x27;role&#x27;, &#x27;authenticated&#x27;, true)
+      `</span>);
+      <span class="hljs-keyword">return</span> <span class="hljs-title function_">work</span>(tx);
+    });
+  }
+}</code></pre></div></figure>
+<p>Both settings end with the transaction, so they never reach the next query on that connection. Here&#39;s each way side by side, with <code>@CurrentSession()</code> giving a route the verified claims:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>notes/notes.repository.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { <span class="hljs-title class_">Injectable</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/common&#x27;</span>;
+<span class="hljs-keyword">import</span> <span class="hljs-keyword">type</span> { <span class="hljs-title class_">JwtClaims</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/authentication&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">InjectDrizzle</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/drizzle&#x27;</span>;
+<span class="hljs-keyword">import</span> { eq } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;drizzle-orm&#x27;</span>;
+<span class="hljs-keyword">import</span> <span class="hljs-keyword">type</span> { <span class="hljs-title class_">NodePgDatabase</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;drizzle-orm/node-postgres&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">RowLevelSecurity</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;../database/row-level-security.js&#x27;</span>;
+<span class="hljs-keyword">import</span> { notes } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;../database/schema.js&#x27;</span>;
+<span class="hljs-keyword">import</span> <span class="hljs-keyword">type</span> { <span class="hljs-title class_">SupabaseUser</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;../supabase/supabase-auth.js&#x27;</span>;
+
+<span class="hljs-meta">@Injectable</span>()
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">NotesRepository</span> {
+  <span class="hljs-title function_">constructor</span>(<span class="hljs-params">
+    <span class="hljs-meta">@InjectDrizzle</span>() <span class="hljs-keyword">private</span> <span class="hljs-keyword">readonly</span> <span class="hljs-attr">db</span>: <span class="hljs-title class_">NodePgDatabase</span>,
+    <span class="hljs-keyword">private</span> <span class="hljs-keyword">readonly</span> <span class="hljs-attr">rls</span>: <span class="hljs-title class_">RowLevelSecurity</span>,
+  </span>) {}
+
+  <span class="hljs-comment">/** Checks the owner itself. */</span>
+  <span class="hljs-title function_">findAll</span>(<span class="hljs-params"><span class="hljs-attr">user</span>: <span class="hljs-title class_">SupabaseUser</span></span>) {
+    <span class="hljs-keyword">return</span> <span class="hljs-variable language_">this</span>.<span class="hljs-property">db</span>.<span class="hljs-title function_">select</span>({ <span class="hljs-attr">body</span>: notes.<span class="hljs-property">body</span> }).<span class="hljs-title function_">from</span>(notes).<span class="hljs-title function_">where</span>(<span class="hljs-title function_">eq</span>(notes.<span class="hljs-property">userId</span>, user.<span class="hljs-property">id</span>));
+  }
+
+  <span class="hljs-comment">/** Leaves the owner to the table&#x27;s policy. */</span>
+  <span class="hljs-title function_">findAllAsUser</span>(<span class="hljs-params"><span class="hljs-attr">claims</span>: <span class="hljs-title class_">JwtClaims</span></span>) {
+    <span class="hljs-keyword">return</span> <span class="hljs-variable language_">this</span>.<span class="hljs-property">rls</span>.<span class="hljs-title function_">asUser</span>(claims, <span class="hljs-function">(<span class="hljs-params">tx</span>) =&gt;</span> tx.<span class="hljs-title function_">select</span>({ <span class="hljs-attr">body</span>: notes.<span class="hljs-property">body</span> }).<span class="hljs-title function_">from</span>(notes));
+  }
+}</code></pre></div></figure>
+<h4 id="protect-an-admin-api">Protect an admin API</h4>
+<p>An admin API is what the browser can&#39;t do itself, as it needs the secret key. Keep a user&#39;s role in <code>app_metadata</code>, which <code>SupabaseAuth</code> already reads, and set it from the server:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">await</span> supabase.<span class="hljs-property">admin</span>.<span class="hljs-property">auth</span>.<span class="hljs-property">admin</span>.<span class="hljs-title function_">updateUserById</span>(userId, {
+  <span class="hljs-attr">app_metadata</span>: { <span class="hljs-attr">role</span>: <span class="hljs-string">&#x27;admin&#x27;</span> },
+});</code></pre></div></figure>
+<p>The role is in the user&#39;s next token, so someone already signed in gets it when their token refreshes, within an hour by default.</p>
+<p>Check it with <a href="#/doc/security/authorization"><code>@nestjs/authorization</code></a>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Terminal</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-bash">$ npm i --save @nestjs/authorization</code></pre></div></figure>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>admin/admin.policy.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { <span class="hljs-title class_">Policy</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/authorization&#x27;</span>;
+<span class="hljs-keyword">import</span> <span class="hljs-keyword">type</span> { <span class="hljs-title class_">SupabaseUser</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;../supabase/supabase-auth.js&#x27;</span>;
+
+<span class="hljs-meta">@Policy</span>()
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">AdminPolicy</span> {
+  <span class="hljs-title function_">manage</span>(<span class="hljs-params"><span class="hljs-attr">user</span>: <span class="hljs-title class_">SupabaseUser</span> | <span class="hljs-literal">null</span></span>) {
+    <span class="hljs-keyword">return</span> user?.<span class="hljs-property">role</span> === <span class="hljs-string">&#x27;admin&#x27;</span>;
+  }
+}</code></pre></div></figure>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>admin/admin-users.controller.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { <span class="hljs-title class_">Controller</span>, <span class="hljs-title class_">Get</span>, <span class="hljs-title class_">UseGuards</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/common&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">AuthorizationGuard</span>, <span class="hljs-title class_">Can</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/authorization&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">SupabaseService</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;../supabase/supabase.service.js&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">AdminPolicy</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./admin.policy.js&#x27;</span>;
+
+<span class="hljs-meta">@UseGuards</span>(<span class="hljs-title class_">AuthorizationGuard</span>)
+<span class="hljs-meta">@Can</span>(<span class="hljs-title class_">AdminPolicy</span>, <span class="hljs-string">&#x27;manage&#x27;</span>)
+<span class="hljs-meta">@Controller</span>(<span class="hljs-string">&#x27;admin/users&#x27;</span>)
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">AdminUsersController</span> {
+  <span class="hljs-title function_">constructor</span>(<span class="hljs-params"><span class="hljs-keyword">private</span> <span class="hljs-keyword">readonly</span> <span class="hljs-attr">supabase</span>: <span class="hljs-title class_">SupabaseService</span></span>) {}
+
+  <span class="hljs-meta">@Get</span>()
+  <span class="hljs-keyword">async</span> <span class="hljs-title function_">findAll</span>(<span class="hljs-params"></span>) {
+    <span class="hljs-keyword">const</span> { data, error } = <span class="hljs-keyword">await</span> <span class="hljs-variable language_">this</span>.<span class="hljs-property">supabase</span>.<span class="hljs-property">admin</span>.<span class="hljs-property">auth</span>.<span class="hljs-property">admin</span>.<span class="hljs-title function_">listUsers</span>();
+    <span class="hljs-keyword">if</span> (error) {
+      <span class="hljs-keyword">throw</span> error;
+    }
+    <span class="hljs-keyword">return</span> data.<span class="hljs-property">users</span>.<span class="hljs-title function_">map</span>(<span class="hljs-function">(<span class="hljs-params">{ id, email }</span>) =&gt;</span> ({ id, email }));
+  }
+}</code></pre></div></figure>
+<p>Register the module with <code>AuthorizationModule.forRoot({ globalGuard: false })</code>, and <code>AdminPolicy</code> in <code>providers</code>. Its global guard is on by default and denies every route that has no <code>@Can()</code>, which would also close the routes above. A guest gets <code>401</code>, a user without the role <code>403</code>.</p>
+<h4 id="receive-stripe-webhooks">Receive Stripe webhooks</h4>
+<p><a href="#/doc/http/webhooks"><code>@nestjs/webhooks</code></a> verifies a webhook&#39;s signature and remembers which events it has processed. It keeps its state in your database, through <code>@nestjs/outbox</code>, in schemas of their own. Supabase&#39;s API doesn&#39;t serve those schemas, so they stay private:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Terminal</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-bash">$ npm i --save @nestjs/webhooks @nestjs/outbox</code></pre></div></figure>
+<p>The signature covers the exact bytes that Stripe sent, so create the application with <code>rawBody</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>main.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">const</span> app = <span class="hljs-keyword">await</span> <span class="hljs-title class_">NestFactory</span>.<span class="hljs-title function_">create</span>(<span class="hljs-title class_">AppModule</span>, { <span class="hljs-attr">rawBody</span>: <span class="hljs-literal">true</span> });</code></pre></div></figure>
+<p>Name the sender in the module&#39;s <code>receivers</code>, with the signing secret from the Stripe dashboard or from <code>stripe listen</code>. This application only receives webhooks, so it needs neither of the background workers:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-title class_">OutboxModule</span>.<span class="hljs-title function_">forRoot</span>({ <span class="hljs-attr">relay</span>: { <span class="hljs-attr">enabled</span>: <span class="hljs-literal">false</span> } }),
+<span class="hljs-title class_">WebhooksModule</span>.<span class="hljs-title function_">forRoot</span>({
+  <span class="hljs-attr">worker</span>: { <span class="hljs-attr">enabled</span>: <span class="hljs-literal">false</span> },
+  <span class="hljs-attr">receivers</span>: {
+    <span class="hljs-attr">stripe</span>: { <span class="hljs-attr">scheme</span>: <span class="hljs-string">&#x27;stripe&#x27;</span>, <span class="hljs-attr">secret</span>: process.<span class="hljs-property">env</span>.<span class="hljs-property">STRIPE_WEBHOOK_SECRET</span>! },
+  },
+}),</code></pre></div></figure>
+<p>Register the two stores in <code>providers</code>. <code>migrate: true</code> creates their schemas at startup, which suits development (see <a href="#/doc/recipes/supabase@deployment">Deployment</a> for production):</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">{
+  <span class="hljs-attr">provide</span>: <span class="hljs-title class_">PostgresOutboxStore</span>,
+  <span class="hljs-attr">inject</span>: [<span class="hljs-title function_">getDrizzleToken</span>(), <span class="hljs-title class_">OutboxStorage</span>],
+  <span class="hljs-attr">useFactory</span>: <span class="hljs-function">(<span class="hljs-params"><span class="hljs-attr">db</span>: <span class="hljs-title class_">NodePgDatabase</span>, <span class="hljs-attr">storage</span>: <span class="hljs-title class_">OutboxStorage</span></span>) =&gt;</span>
+    <span class="hljs-keyword">new</span> <span class="hljs-title class_">PostgresOutboxStore</span>({ <span class="hljs-attr">executor</span>: <span class="hljs-title function_">fromDrizzle</span>(db), <span class="hljs-attr">migrate</span>: <span class="hljs-literal">true</span> }, storage),
+},
+{
+  <span class="hljs-attr">provide</span>: <span class="hljs-title class_">PostgresWebhookStore</span>,
+  <span class="hljs-attr">inject</span>: [<span class="hljs-title function_">getDrizzleToken</span>(), <span class="hljs-title class_">WebhooksStorage</span>],
+  <span class="hljs-attr">useFactory</span>: <span class="hljs-function">(<span class="hljs-params"><span class="hljs-attr">db</span>: <span class="hljs-title class_">NodePgDatabase</span>, <span class="hljs-attr">storage</span>: <span class="hljs-title class_">WebhooksStorage</span></span>) =&gt;</span>
+    <span class="hljs-keyword">new</span> <span class="hljs-title class_">PostgresWebhookStore</span>({ <span class="hljs-attr">executor</span>: <span class="hljs-title function_">fromDrizzle</span>(db), <span class="hljs-attr">migrate</span>: <span class="hljs-literal">true</span> }, storage),
+},</code></pre></div></figure>
+<p>Add a table for what the webhook changes. Only Nest reads it, and the policy-less row level security keeps it from the browser. Add it to a new migration:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>SQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-sql"><span class="hljs-keyword">create table</span> public.subscriptions (
+  stripe_customer text <span class="hljs-keyword">primary key</span>,
+  active <span class="hljs-type">boolean</span> <span class="hljs-keyword">not null</span>,
+  expires_at timestamptz
+);
+
+<span class="hljs-keyword">alter table</span> public.subscriptions enable <span class="hljs-type">row</span> level security;</code></pre></div></figure>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>database/schema.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { <span class="hljs-built_in">boolean</span>, pgTable, text, timestamp } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;drizzle-orm/pg-core&#x27;</span>;
+
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">const</span> subscriptions = <span class="hljs-title function_">pgTable</span>(<span class="hljs-string">&#x27;subscriptions&#x27;</span>, {
+  <span class="hljs-attr">stripeCustomer</span>: <span class="hljs-title function_">text</span>(<span class="hljs-string">&#x27;stripe_customer&#x27;</span>).<span class="hljs-title function_">primaryKey</span>(),
+  <span class="hljs-attr">active</span>: <span class="hljs-title function_">boolean</span>(<span class="hljs-string">&#x27;active&#x27;</span>).<span class="hljs-title function_">notNull</span>(),
+  <span class="hljs-attr">expiresAt</span>: <span class="hljs-title function_">timestamp</span>(<span class="hljs-string">&#x27;expires_at&#x27;</span>, { <span class="hljs-attr">withTimezone</span>: <span class="hljs-literal">true</span> }),
+});</code></pre></div></figure>
+<p>The route is <code>@Public()</code>, as the signature is what authenticates it, and an invalid one gets <code>401</code>. <code>processInTransaction()</code> records the event&#39;s id in the same transaction as your change, so a redelivery changes nothing:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>billing/stripe-webhooks.controller.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { <span class="hljs-title class_">Controller</span>, <span class="hljs-title class_">HttpCode</span>, <span class="hljs-title class_">Post</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/common&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">Public</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/authentication&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">InjectDrizzle</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/drizzle&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">IncomingWebhook</span>, <span class="hljs-title class_">VerifyWebhook</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/webhooks&#x27;</span>;
+<span class="hljs-keyword">import</span> <span class="hljs-keyword">type</span> { <span class="hljs-title class_">NodePgDatabase</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;drizzle-orm/node-postgres&#x27;</span>;
+<span class="hljs-keyword">import</span> { subscriptions } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;../database/schema.js&#x27;</span>;
+
+<span class="hljs-keyword">interface</span> <span class="hljs-title class_">StripeEvent</span> {
+  <span class="hljs-attr">id</span>: <span class="hljs-built_in">string</span>;
+  <span class="hljs-attr">type</span>: <span class="hljs-built_in">string</span>;
+  <span class="hljs-attr">data</span>: { <span class="hljs-attr">object</span>: { <span class="hljs-attr">customer</span>: <span class="hljs-built_in">string</span>; <span class="hljs-attr">status</span>: <span class="hljs-built_in">string</span>; <span class="hljs-attr">cancel_at</span>: <span class="hljs-built_in">number</span> | <span class="hljs-literal">null</span> } };
+}
+
+<span class="hljs-meta">@Public</span>()
+<span class="hljs-meta">@Controller</span>(<span class="hljs-string">&#x27;webhooks/stripe&#x27;</span>)
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">StripeWebhooksController</span> {
+  <span class="hljs-title function_">constructor</span>(<span class="hljs-params"><span class="hljs-meta">@InjectDrizzle</span>() <span class="hljs-keyword">private</span> <span class="hljs-keyword">readonly</span> <span class="hljs-attr">db</span>: <span class="hljs-title class_">NodePgDatabase</span></span>) {}
+
+  <span class="hljs-meta">@Post</span>()
+  <span class="hljs-meta">@HttpCode</span>(<span class="hljs-number">200</span>)
+  <span class="hljs-meta">@VerifyWebhook</span>(<span class="hljs-string">&#x27;stripe&#x27;</span>)
+  <span class="hljs-keyword">async</span> <span class="hljs-title function_">receive</span>(<span class="hljs-params"><span class="hljs-meta">@IncomingWebhook</span>() <span class="hljs-attr">webhook</span>: <span class="hljs-title class_">IncomingWebhook</span>&lt;<span class="hljs-title class_">StripeEvent</span>&gt;</span>) {
+    <span class="hljs-keyword">const</span> { <span class="hljs-keyword">type</span>, data } = webhook.<span class="hljs-property">payload</span>;
+    <span class="hljs-keyword">if</span> (<span class="hljs-keyword">type</span> !== <span class="hljs-string">&#x27;customer.subscription.updated&#x27;</span>) {
+      <span class="hljs-keyword">return</span>;
+    }
+    <span class="hljs-keyword">const</span> { customer, status, cancel_at } = data.<span class="hljs-property">object</span>;
+    <span class="hljs-keyword">const</span> values = {
+      <span class="hljs-attr">active</span>: status === <span class="hljs-string">&#x27;active&#x27;</span>,
+      <span class="hljs-attr">expiresAt</span>: cancel_at ? <span class="hljs-keyword">new</span> <span class="hljs-title class_">Date</span>(cancel_at * <span class="hljs-number">1000</span>) : <span class="hljs-literal">null</span>,
+    };
+    <span class="hljs-keyword">await</span> <span class="hljs-variable language_">this</span>.<span class="hljs-property">db</span>.<span class="hljs-title function_">transaction</span>(<span class="hljs-title function_">async</span> (tx) =&gt;
+      webhook.<span class="hljs-title function_">processInTransaction</span>(tx, <span class="hljs-title function_">async</span> () =&gt; {
+        <span class="hljs-keyword">await</span> tx
+          .<span class="hljs-title function_">insert</span>(subscriptions)
+          .<span class="hljs-title function_">values</span>({ <span class="hljs-attr">stripeCustomer</span>: customer, ...values })
+          .<span class="hljs-title function_">onConflictDoUpdate</span>({ <span class="hljs-attr">target</span>: subscriptions.<span class="hljs-property">stripeCustomer</span>, <span class="hljs-attr">set</span>: values });
+      }),
+    );
+  }
+}</code></pre></div></figure>
+<p>To try it, forward events to your application with the <a target="_blank" rel="noopener" href="https://docs.stripe.com/stripe-cli">Stripe CLI</a>, which prints the signing secret to put in <code>STRIPE_WEBHOOK_SECRET</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Terminal</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-bash">$ stripe listen --forward-to localhost:3000/webhooks/stripe
+$ stripe trigger customer.subscription.updated</code></pre></div></figure>
+<h4 id="run-scheduled-jobs">Run scheduled jobs</h4>
+<p>There are two ways to run a job in Nest. Both work on any number of instances, and each run happens on one of them:</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th></th>
+<th><code>@nestjs/schedule</code> with <code>@nestjs/locks</code></th>
+<th>BullMQ</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Where it runs</strong></td>
+<td>In the instance that holds the lease</td>
+<td>In a worker that picks it up</td>
+</tr>
+<tr>
+<td><strong>If a run fails</strong></td>
+<td>It waits for the next tick</td>
+<td>It retries, with a backoff</td>
+</tr>
+<tr>
+<td><strong>If every instance is down</strong></td>
+<td>The tick is missed</td>
+<td>The job waits in the queue</td>
+</tr>
+<tr>
+<td><strong>What it adds to Postgres</strong></td>
+<td>One table</td>
+<td>A schema of its own</td>
+</tr>
+<tr>
+<td><strong>What else it does</strong></td>
+<td>Nothing else</td>
+<td>Jobs enqueued from your code, priorities and flows</td>
+</tr>
+<tr>
+<td><strong>Choose it for</strong></td>
+<td>A job that&#39;s safe to skip, as the next tick catches up</td>
+<td>A job that mustn&#39;t be lost, or runs for long</td>
+</tr>
+</tbody></table></div>
+<p>Both can call the same code:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>billing/subscriptions.service.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { <span class="hljs-title class_">Injectable</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/common&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">InjectDrizzle</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/drizzle&#x27;</span>;
+<span class="hljs-keyword">import</span> { and, eq, lt } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;drizzle-orm&#x27;</span>;
+<span class="hljs-keyword">import</span> <span class="hljs-keyword">type</span> { <span class="hljs-title class_">NodePgDatabase</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;drizzle-orm/node-postgres&#x27;</span>;
+<span class="hljs-keyword">import</span> { subscriptions } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;../database/schema.js&#x27;</span>;
+
+<span class="hljs-meta">@Injectable</span>()
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">SubscriptionsService</span> {
+  <span class="hljs-title function_">constructor</span>(<span class="hljs-params"><span class="hljs-meta">@InjectDrizzle</span>() <span class="hljs-keyword">private</span> <span class="hljs-keyword">readonly</span> <span class="hljs-attr">db</span>: <span class="hljs-title class_">NodePgDatabase</span></span>) {}
+
+  <span class="hljs-comment">/** Catches a subscription whose cancellation event never arrived. */</span>
+  <span class="hljs-keyword">async</span> <span class="hljs-title function_">expireOverdue</span>(<span class="hljs-params"></span>) {
+    <span class="hljs-keyword">await</span> <span class="hljs-variable language_">this</span>.<span class="hljs-property">db</span>
+      .<span class="hljs-title function_">update</span>(subscriptions)
+      .<span class="hljs-title function_">set</span>({ <span class="hljs-attr">active</span>: <span class="hljs-literal">false</span> })
+      .<span class="hljs-title function_">where</span>(<span class="hljs-title function_">and</span>(<span class="hljs-title function_">eq</span>(subscriptions.<span class="hljs-property">active</span>, <span class="hljs-literal">true</span>), <span class="hljs-title function_">lt</span>(subscriptions.<span class="hljs-property">expiresAt</span>, <span class="hljs-keyword">new</span> <span class="hljs-title class_">Date</span>())));
+  }
+}</code></pre></div></figure>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Hint</p><p><a target="_blank" rel="noopener" href="https://supabase.com/docs/guides/cron">Supabase Cron</a> schedules SQL inside Postgres, with no application involved. It&#39;s a good fit for a job that&#39;s only SQL, such as deleting old rows.</p>
+</div></aside>
+<h5>With <code>@nestjs/schedule</code> and <code>@nestjs/locks</code></h5>
+<p><a href="#/doc/application/task-scheduling"><code>@nestjs/schedule</code></a> runs a job inside the application, next to the code it calls. On its own, it runs the job on every instance. <a href="#/doc/reliability/locks"><code>@nestjs/locks</code></a> adds <code>@OnOneInstance()</code>: the first instance to fire takes a lease and runs every tick while it&#39;s up, and the others skip them. When it stops, another takes over, about a second after a clean shutdown and within 30 seconds after a crash:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Terminal</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-bash">$ npm i --save @nestjs/schedule @nestjs/locks</code></pre></div></figure>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>billing/expire-subscriptions.job.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { <span class="hljs-title class_">Injectable</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/common&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">OnOneInstance</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/locks&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">Cron</span>, <span class="hljs-title class_">CronExpression</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/schedule&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">SubscriptionsService</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./subscriptions.service.js&#x27;</span>;
+
+<span class="hljs-meta">@Injectable</span>()
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">ExpireSubscriptionsJob</span> {
+  <span class="hljs-title function_">constructor</span>(<span class="hljs-params"><span class="hljs-keyword">private</span> <span class="hljs-keyword">readonly</span> <span class="hljs-attr">subscriptions</span>: <span class="hljs-title class_">SubscriptionsService</span></span>) {}
+
+  <span class="hljs-meta">@Cron</span>(<span class="hljs-title class_">CronExpression</span>.<span class="hljs-property">EVERY_HOUR</span>)
+  <span class="hljs-meta">@OnOneInstance</span>({ <span class="hljs-attr">key</span>: <span class="hljs-string">&#x27;subscriptions:expire&#x27;</span> })
+  <span class="hljs-keyword">async</span> <span class="hljs-title function_">run</span>(<span class="hljs-params"></span>) {
+    <span class="hljs-keyword">await</span> <span class="hljs-variable language_">this</span>.<span class="hljs-property">subscriptions</span>.<span class="hljs-title function_">expireOverdue</span>();
+  }
+}</code></pre></div></figure>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-title class_">ScheduleModule</span>.<span class="hljs-title function_">forRoot</span>(),
+<span class="hljs-title class_">LocksModule</span>.<span class="hljs-title function_">forRoot</span>(),</code></pre></div></figure>
+<p>The lease has to live somewhere that all instances share, and in production the application refuses to start with only the default in-memory store. Keep it in your database, with a table in a new migration:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>SQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-sql"><span class="hljs-keyword">create table</span> public.locks (
+  key text <span class="hljs-keyword">primary key</span>,
+  owner text,
+  fencing_token <span class="hljs-type">bigint</span> <span class="hljs-keyword">not null</span>,
+  expires_at timestamptz <span class="hljs-keyword">not null</span>
+);
+
+<span class="hljs-keyword">alter table</span> public.locks enable <span class="hljs-type">row</span> level security;
+
+<span class="hljs-keyword">create</span> sequence public.locks_fencing_token_seq;</code></pre></div></figure>
+<p>Then copy the Drizzle table and <code>DrizzleLockStore</code> from <a href="#/doc/reliability/locks@keep-locks-in-your-database">Keep locks in your database</a>, and add the store to <code>providers</code>.</p>
+<h5>With BullMQ</h5>
+<p><a href="#/doc/application/queues">BullMQ</a> keeps jobs in a queue, with retries and a backoff. It usually runs on Redis, and it also has a PostgreSQL backend, so on Supabase it can use the database you already have:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Terminal</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-bash">$ npm i --save @nestjs/bullmq bullmq</code></pre></div></figure>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-title class_">BullModule</span>.<span class="hljs-title function_">forRoot</span>({
+  <span class="hljs-attr">backendFactory</span>: createPostgresBackend,
+  <span class="hljs-attr">connection</span>: { <span class="hljs-attr">connectionString</span>: process.<span class="hljs-property">env</span>.<span class="hljs-property">DATABASE_URL</span>!, <span class="hljs-attr">migrate</span>: <span class="hljs-literal">true</span> },
+}),
+<span class="hljs-title class_">BullModule</span>.<span class="hljs-title function_">registerQueue</span>({ <span class="hljs-attr">name</span>: <span class="hljs-string">&#x27;billing&#x27;</span> }),</code></pre></div></figure>
+<p><code>migrate: true</code> creates the <code>bullmq</code> schema at startup, which Supabase&#39;s API doesn&#39;t serve. The migration takes an advisory lock, so several instances starting together apply it once.</p>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Hint</p><p>To use Redis, install <code>ioredis</code> and replace those options with <code>connection: { host, port }</code>. Nothing else changes.</p>
+</div></aside>
+<p>A job scheduler creates the job on each tick. The id makes it one schedule, however many instances declare it:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>billing/billing.scheduler.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { <span class="hljs-title class_">InjectQueue</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/bullmq&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">Injectable</span>, <span class="hljs-keyword">type</span> <span class="hljs-title class_">OnApplicationBootstrap</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/common&#x27;</span>;
+<span class="hljs-keyword">import</span> <span class="hljs-keyword">type</span> { <span class="hljs-title class_">Queue</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;bullmq&#x27;</span>;
+
+<span class="hljs-meta">@Injectable</span>()
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">BillingScheduler</span> <span class="hljs-keyword">implements</span> <span class="hljs-title class_">OnApplicationBootstrap</span> {
+  <span class="hljs-title function_">constructor</span>(<span class="hljs-params"><span class="hljs-meta">@InjectQueue</span>(<span class="hljs-string">&#x27;billing&#x27;</span>) <span class="hljs-keyword">private</span> <span class="hljs-keyword">readonly</span> <span class="hljs-attr">billing</span>: <span class="hljs-title class_">Queue</span></span>) {}
+
+  <span class="hljs-keyword">async</span> <span class="hljs-title function_">onApplicationBootstrap</span>(<span class="hljs-params"></span>) {
+    <span class="hljs-keyword">await</span> <span class="hljs-variable language_">this</span>.<span class="hljs-property">billing</span>.<span class="hljs-title function_">upsertJobScheduler</span>(
+      <span class="hljs-string">&#x27;expire-subscriptions&#x27;</span>,
+      { <span class="hljs-attr">pattern</span>: <span class="hljs-string">&#x27;0 * * * *&#x27;</span> },
+      {
+        <span class="hljs-attr">name</span>: <span class="hljs-string">&#x27;expire-subscriptions&#x27;</span>,
+        <span class="hljs-attr">opts</span>: { <span class="hljs-attr">attempts</span>: <span class="hljs-number">3</span>, <span class="hljs-attr">backoff</span>: { <span class="hljs-attr">type</span>: <span class="hljs-string">&#x27;exponential&#x27;</span>, <span class="hljs-attr">delay</span>: <span class="hljs-number">1000</span> } },
+      },
+    );
+  }
+}</code></pre></div></figure>
+<p>The processor runs it, on whichever instance is free:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>billing/billing.processor.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { <span class="hljs-title class_">Processor</span>, <span class="hljs-title class_">WorkerHost</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/bullmq&#x27;</span>;
+<span class="hljs-keyword">import</span> <span class="hljs-keyword">type</span> { <span class="hljs-title class_">Job</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;bullmq&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">SubscriptionsService</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./subscriptions.service.js&#x27;</span>;
+
+<span class="hljs-meta">@Processor</span>(<span class="hljs-string">&#x27;billing&#x27;</span>)
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">BillingProcessor</span> <span class="hljs-keyword">extends</span> <span class="hljs-title class_ inherited__">WorkerHost</span> {
+  <span class="hljs-title function_">constructor</span>(<span class="hljs-params"><span class="hljs-keyword">private</span> <span class="hljs-keyword">readonly</span> <span class="hljs-attr">subscriptions</span>: <span class="hljs-title class_">SubscriptionsService</span></span>) {
+    <span class="hljs-variable language_">super</span>();
+  }
+
+  <span class="hljs-keyword">async</span> <span class="hljs-title function_">process</span>(<span class="hljs-params"><span class="hljs-attr">job</span>: <span class="hljs-title class_">Job</span></span>) {
+    <span class="hljs-keyword">if</span> (job.<span class="hljs-property">name</span> === <span class="hljs-string">&#x27;expire-subscriptions&#x27;</span>) {
+      <span class="hljs-keyword">await</span> <span class="hljs-variable language_">this</span>.<span class="hljs-property">subscriptions</span>.<span class="hljs-title function_">expireOverdue</span>();
+    }
+  }
+}</code></pre></div></figure>
+<p>The same queue takes jobs from your own code, such as a route that shouldn&#39;t wait for an email. Inject it with <code>@InjectQueue(&#39;billing&#39;)</code>, and add a case for the job to the processor:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">await</span> <span class="hljs-variable language_">this</span>.<span class="hljs-property">billing</span>.<span class="hljs-title function_">add</span>(<span class="hljs-string">&#x27;send-invoice&#x27;</span>, { customer }, {
+  <span class="hljs-attr">attempts</span>: <span class="hljs-number">3</span>,
+  <span class="hljs-attr">backoff</span>: { <span class="hljs-attr">type</span>: <span class="hljs-string">&#x27;exponential&#x27;</span>, <span class="hljs-attr">delay</span>: <span class="hljs-number">1000</span> },
+});</code></pre></div></figure>
+<h4 id="hand-out-file-uploads">Hand out file uploads</h4>
+<p>A browser can upload to Supabase Storage directly, under policies on the <code>storage.objects</code> table. When the decision belongs on the server, such as a quota or a paid plan, keep the bucket private and let Nest sign each upload. Create the bucket in a migration:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>SQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-sql"><span class="hljs-keyword">insert into</span> storage.buckets (id, name, public) <span class="hljs-keyword">values</span> (<span class="hljs-string">&#x27;uploads&#x27;</span>, <span class="hljs-string">&#x27;uploads&#x27;</span>, <span class="hljs-literal">false</span>);</code></pre></div></figure>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>uploads/uploads.controller.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { randomUUID } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;node:crypto&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">Controller</span>, <span class="hljs-title class_">Post</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/common&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">CurrentUser</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/authentication&#x27;</span>;
+<span class="hljs-keyword">import</span> <span class="hljs-keyword">type</span> { <span class="hljs-title class_">SupabaseUser</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;../supabase/supabase-auth.js&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">SupabaseService</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;../supabase/supabase.service.js&#x27;</span>;
+
+<span class="hljs-meta">@Controller</span>(<span class="hljs-string">&#x27;uploads&#x27;</span>)
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">UploadsController</span> {
+  <span class="hljs-title function_">constructor</span>(<span class="hljs-params"><span class="hljs-keyword">private</span> <span class="hljs-keyword">readonly</span> <span class="hljs-attr">supabase</span>: <span class="hljs-title class_">SupabaseService</span></span>) {}
+
+  <span class="hljs-meta">@Post</span>()
+  <span class="hljs-keyword">async</span> <span class="hljs-title function_">create</span>(<span class="hljs-params"><span class="hljs-meta">@CurrentUser</span>() <span class="hljs-attr">user</span>: <span class="hljs-title class_">SupabaseUser</span></span>) {
+    <span class="hljs-keyword">const</span> path = <span class="hljs-string">`<span class="hljs-subst">${user.id}</span>/<span class="hljs-subst">${randomUUID()}</span>`</span>;
+    <span class="hljs-keyword">const</span> { data, error } = <span class="hljs-keyword">await</span> <span class="hljs-variable language_">this</span>.<span class="hljs-property">supabase</span>.<span class="hljs-property">admin</span>.<span class="hljs-property">storage</span>.<span class="hljs-title function_">from</span>(<span class="hljs-string">&#x27;uploads&#x27;</span>).<span class="hljs-title function_">createSignedUploadUrl</span>(path);
+    <span class="hljs-keyword">if</span> (error) {
+      <span class="hljs-keyword">throw</span> error;
+    }
+    <span class="hljs-keyword">return</span> { <span class="hljs-attr">path</span>: data.<span class="hljs-property">path</span>, <span class="hljs-attr">token</span>: data.<span class="hljs-property">token</span> };
+  }
+}</code></pre></div></figure>
+<p>The browser then uploads straight to Supabase, so the file never passes through your application:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">await</span> supabase.<span class="hljs-property">storage</span>.<span class="hljs-title function_">from</span>(<span class="hljs-string">&#x27;uploads&#x27;</span>).<span class="hljs-title function_">uploadToSignedUrl</span>(path, token, file);</code></pre></div></figure>
+<p>To hand a file back, <code>createSignedUrl(path, 60)</code> on the admin client makes a link that works for 60 seconds.</p>
+<h4 id="test-against-the-local-stack">Test against the local stack</h4>
+<p>An end-to-end test can use real tokens and your real policies, as the stack gives you both. Put it in <code>test/</code>, and run <code>npx supabase start</code> and <code>npx supabase db reset</code> before it:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>notes.e2e-spec.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> <span class="hljs-keyword">type</span> { <span class="hljs-title class_">INestApplication</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/common&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">Test</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/testing&#x27;</span>;
+<span class="hljs-keyword">import</span> { createClient } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@supabase/supabase-js&#x27;</span>;
+<span class="hljs-keyword">import</span> { randomUUID } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;node:crypto&#x27;</span>;
+<span class="hljs-keyword">import</span> request <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;supertest&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">AppModule</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;../src/app.module.js&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">SupabaseService</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;../src/supabase/supabase.service.js&#x27;</span>;
+
+<span class="hljs-title function_">describe</span>(<span class="hljs-string">&#x27;Notes&#x27;</span>, <span class="hljs-function">() =&gt;</span> {
+  <span class="hljs-keyword">let</span> <span class="hljs-attr">app</span>: <span class="hljs-title class_">INestApplication</span>;
+
+  <span class="hljs-keyword">const</span> <span class="hljs-title function_">signUp</span> = <span class="hljs-keyword">async</span> (<span class="hljs-params"></span>) =&gt; {
+    <span class="hljs-keyword">const</span> client = <span class="hljs-title function_">createClient</span>(process.<span class="hljs-property">env</span>.<span class="hljs-property">SUPABASE_URL</span>!, process.<span class="hljs-property">env</span>.<span class="hljs-property">SUPABASE_PUBLISHABLE_KEY</span>!, {
+      <span class="hljs-attr">auth</span>: { <span class="hljs-attr">persistSession</span>: <span class="hljs-literal">false</span>, <span class="hljs-attr">autoRefreshToken</span>: <span class="hljs-literal">false</span> },
+    });
+    <span class="hljs-keyword">const</span> { data, error } = <span class="hljs-keyword">await</span> client.<span class="hljs-property">auth</span>.<span class="hljs-title function_">signUp</span>({
+      <span class="hljs-attr">email</span>: <span class="hljs-string">`<span class="hljs-subst">${randomUUID()}</span>@example.test`</span>,
+      <span class="hljs-attr">password</span>: <span class="hljs-title function_">randomUUID</span>(),
+    });
+    <span class="hljs-keyword">if</span> (error) {
+      <span class="hljs-keyword">throw</span> error;
+    }
+    <span class="hljs-keyword">return</span> { <span class="hljs-attr">id</span>: data.<span class="hljs-property">user</span>!.<span class="hljs-property">id</span>, <span class="hljs-attr">token</span>: data.<span class="hljs-property">session</span>!.<span class="hljs-property">access_token</span> };
+  };
+
+  <span class="hljs-title function_">beforeAll</span>(<span class="hljs-title function_">async</span> () =&gt; {
+    <span class="hljs-keyword">const</span> moduleRef = <span class="hljs-keyword">await</span> <span class="hljs-title class_">Test</span>.<span class="hljs-title function_">createTestingModule</span>({ <span class="hljs-attr">imports</span>: [<span class="hljs-title class_">AppModule</span>] }).<span class="hljs-title function_">compile</span>();
+    app = moduleRef.<span class="hljs-title function_">createNestApplication</span>();
+    <span class="hljs-keyword">await</span> app.<span class="hljs-title function_">init</span>();
+  });
+
+  <span class="hljs-title function_">afterAll</span>(<span class="hljs-function">() =&gt;</span> app.<span class="hljs-title function_">close</span>());
+
+  <span class="hljs-title function_">it</span>(<span class="hljs-string">&#x27;shows a user only their own notes&#x27;</span>, <span class="hljs-title function_">async</span> () =&gt; {
+    <span class="hljs-keyword">const</span> [alice, bob] = [<span class="hljs-keyword">await</span> <span class="hljs-title function_">signUp</span>(), <span class="hljs-keyword">await</span> <span class="hljs-title function_">signUp</span>()];
+    <span class="hljs-keyword">await</span> app.<span class="hljs-title function_">get</span>(<span class="hljs-title class_">SupabaseService</span>).<span class="hljs-property">admin</span>.<span class="hljs-title function_">from</span>(<span class="hljs-string">&#x27;notes&#x27;</span>).<span class="hljs-title function_">insert</span>([
+      { <span class="hljs-attr">user_id</span>: alice.<span class="hljs-property">id</span>, <span class="hljs-attr">body</span>: <span class="hljs-string">&#x27;from alice&#x27;</span> },
+      { <span class="hljs-attr">user_id</span>: bob.<span class="hljs-property">id</span>, <span class="hljs-attr">body</span>: <span class="hljs-string">&#x27;from bob&#x27;</span> },
+    ]);
+
+    <span class="hljs-keyword">const</span> { body } = <span class="hljs-keyword">await</span> <span class="hljs-title function_">request</span>(app.<span class="hljs-title function_">getHttpServer</span>())
+      .<span class="hljs-title function_">get</span>(<span class="hljs-string">&#x27;/notes&#x27;</span>)
+      .<span class="hljs-title function_">set</span>(<span class="hljs-string">&#x27;Authorization&#x27;</span>, <span class="hljs-string">`Bearer <span class="hljs-subst">${alice.token}</span>`</span>)
+      .<span class="hljs-title function_">expect</span>(<span class="hljs-number">200</span>);
+
+    <span class="hljs-title function_">expect</span>(body).<span class="hljs-title function_">toEqual</span>([{ <span class="hljs-attr">body</span>: <span class="hljs-string">&#x27;from alice&#x27;</span> }]);
+  });
+});</code></pre></div></figure>
+<h4 id="move-an-edge-function-to-nest">Move an Edge Function to Nest</h4>
+<p>Most of a function has a direct counterpart, and you can move them one at a time, as both use the same tokens and database:</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>In an Edge Function</th>
+<th>In Nest</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Reading the <code>Authorization</code> header and calling <code>supabase.auth.getUser()</code></td>
+<td><code>SupabaseAuth</code> and <code>@CurrentUser()</code></td>
+</tr>
+<tr>
+<td>A client created with the caller&#39;s header</td>
+<td><code>SupabaseService.forUser()</code></td>
+</tr>
+<tr>
+<td>A client created with the secret key</td>
+<td><code>SupabaseService.admin</code></td>
+</tr>
+<tr>
+<td>Verifying Stripe&#39;s signature by hand</td>
+<td><code>@VerifyWebhook(&#39;stripe&#39;)</code></td>
+</tr>
+<tr>
+<td><code>pg_cron</code> calling the function over HTTP</td>
+<td><code>@Cron()</code>, or a BullMQ job scheduler</td>
+</tr>
+<tr>
+<td><code>supabase secrets set</code></td>
+<td>Your host&#39;s environment variables</td>
+</tr>
+<tr>
+<td><code>supabase.functions.invoke(&#39;name&#39;)</code> in the browser</td>
+<td><code>fetch()</code> with the access token</td>
+</tr>
+</tbody></table></div>
+<h4 id="the-finished-module">The finished module</h4>
+<p>Here&#39;s everything above wired together, with both ways of running a job, of which you&#39;ll keep one:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app.module.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { <span class="hljs-title class_">Module</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/common&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">AuthenticationModule</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/authentication&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">AuthorizationModule</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/authorization&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">BullModule</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/bullmq&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">ConfigModule</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/config&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">DrizzleModule</span>, getDrizzleToken } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/drizzle&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">LocksModule</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/locks&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">OutboxModule</span>, <span class="hljs-title class_">OutboxStorage</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/outbox&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">PostgresOutboxStore</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/outbox/postgres&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">ScheduleModule</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/schedule&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">WebhooksModule</span>, <span class="hljs-title class_">WebhooksStorage</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/webhooks&#x27;</span>;
+<span class="hljs-keyword">import</span> { fromDrizzle, <span class="hljs-title class_">PostgresWebhookStore</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/webhooks/postgres&#x27;</span>;
+<span class="hljs-keyword">import</span> { createPostgresBackend } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;bullmq&#x27;</span>;
+<span class="hljs-keyword">import</span> { drizzle, <span class="hljs-keyword">type</span> <span class="hljs-title class_">NodePgDatabase</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;drizzle-orm/node-postgres&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">AdminUsersController</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./admin/admin-users.controller.js&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">AdminPolicy</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./admin/admin.policy.js&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">BillingProcessor</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./billing/billing.processor.js&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">BillingScheduler</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./billing/billing.scheduler.js&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">ExpireSubscriptionsJob</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./billing/expire-subscriptions.job.js&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">StripeWebhooksController</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./billing/stripe-webhooks.controller.js&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">SubscriptionsService</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./billing/subscriptions.service.js&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">DrizzleLockStore</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./database/drizzle-lock.store.js&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">RowLevelSecurity</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./database/row-level-security.js&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">MeController</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./me/me.controller.js&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">NotesController</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./notes/notes.controller.js&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">NotesRepository</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./notes/notes.repository.js&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">SupabaseAuth</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./supabase/supabase-auth.js&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">SupabaseService</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./supabase/supabase.service.js&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">UploadsController</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./uploads/uploads.controller.js&#x27;</span>;
+
+<span class="hljs-meta">@Module</span>({
+  <span class="hljs-attr">imports</span>: [
+    <span class="hljs-title class_">ConfigModule</span>.<span class="hljs-title function_">forRoot</span>(), <span class="hljs-comment">// first, as the lines below read process.env</span>
+    <span class="hljs-title class_">AuthenticationModule</span>.<span class="hljs-title function_">forRoot</span>({}),
+    <span class="hljs-title class_">AuthorizationModule</span>.<span class="hljs-title function_">forRoot</span>({ <span class="hljs-attr">globalGuard</span>: <span class="hljs-literal">false</span> }),
+    <span class="hljs-title class_">DrizzleModule</span>.<span class="hljs-title function_">forRoot</span>({ drizzle, <span class="hljs-attr">connection</span>: process.<span class="hljs-property">env</span>.<span class="hljs-property">DATABASE_URL</span>! }),
+    <span class="hljs-title class_">OutboxModule</span>.<span class="hljs-title function_">forRoot</span>({ <span class="hljs-attr">relay</span>: { <span class="hljs-attr">enabled</span>: <span class="hljs-literal">false</span> } }),
+    <span class="hljs-title class_">WebhooksModule</span>.<span class="hljs-title function_">forRoot</span>({
+      <span class="hljs-attr">worker</span>: { <span class="hljs-attr">enabled</span>: <span class="hljs-literal">false</span> },
+      <span class="hljs-attr">receivers</span>: {
+        <span class="hljs-attr">stripe</span>: { <span class="hljs-attr">scheme</span>: <span class="hljs-string">&#x27;stripe&#x27;</span>, <span class="hljs-attr">secret</span>: process.<span class="hljs-property">env</span>.<span class="hljs-property">STRIPE_WEBHOOK_SECRET</span>! },
+      },
+    }),
+    <span class="hljs-comment">// Jobs with @nestjs/schedule and @nestjs/locks</span>
+    <span class="hljs-title class_">ScheduleModule</span>.<span class="hljs-title function_">forRoot</span>(),
+    <span class="hljs-title class_">LocksModule</span>.<span class="hljs-title function_">forRoot</span>(),
+    <span class="hljs-comment">// Jobs with BullMQ</span>
+    <span class="hljs-title class_">BullModule</span>.<span class="hljs-title function_">forRoot</span>({
+      <span class="hljs-attr">backendFactory</span>: createPostgresBackend,
+      <span class="hljs-attr">connection</span>: { <span class="hljs-attr">connectionString</span>: process.<span class="hljs-property">env</span>.<span class="hljs-property">DATABASE_URL</span>!, <span class="hljs-attr">migrate</span>: <span class="hljs-literal">true</span> },
+    }),
+    <span class="hljs-title class_">BullModule</span>.<span class="hljs-title function_">registerQueue</span>({ <span class="hljs-attr">name</span>: <span class="hljs-string">&#x27;billing&#x27;</span> }),
+  ],
+  <span class="hljs-attr">controllers</span>: [
+    <span class="hljs-title class_">MeController</span>,
+    <span class="hljs-title class_">NotesController</span>,
+    <span class="hljs-title class_">AdminUsersController</span>,
+    <span class="hljs-title class_">StripeWebhooksController</span>,
+    <span class="hljs-title class_">UploadsController</span>,
+  ],
+  <span class="hljs-attr">providers</span>: [
+    <span class="hljs-title class_">SupabaseAuth</span>,
+    <span class="hljs-title class_">SupabaseService</span>,
+    <span class="hljs-title class_">RowLevelSecurity</span>,
+    <span class="hljs-title class_">NotesRepository</span>,
+    <span class="hljs-title class_">AdminPolicy</span>,
+    <span class="hljs-title class_">SubscriptionsService</span>,
+    {
+      <span class="hljs-attr">provide</span>: <span class="hljs-title class_">PostgresOutboxStore</span>,
+      <span class="hljs-attr">inject</span>: [<span class="hljs-title function_">getDrizzleToken</span>(), <span class="hljs-title class_">OutboxStorage</span>],
+      <span class="hljs-attr">useFactory</span>: <span class="hljs-function">(<span class="hljs-params"><span class="hljs-attr">db</span>: <span class="hljs-title class_">NodePgDatabase</span>, <span class="hljs-attr">storage</span>: <span class="hljs-title class_">OutboxStorage</span></span>) =&gt;</span>
+        <span class="hljs-keyword">new</span> <span class="hljs-title class_">PostgresOutboxStore</span>({ <span class="hljs-attr">executor</span>: <span class="hljs-title function_">fromDrizzle</span>(db), <span class="hljs-attr">migrate</span>: <span class="hljs-literal">true</span> }, storage),
+    },
+    {
+      <span class="hljs-attr">provide</span>: <span class="hljs-title class_">PostgresWebhookStore</span>,
+      <span class="hljs-attr">inject</span>: [<span class="hljs-title function_">getDrizzleToken</span>(), <span class="hljs-title class_">WebhooksStorage</span>],
+      <span class="hljs-attr">useFactory</span>: <span class="hljs-function">(<span class="hljs-params"><span class="hljs-attr">db</span>: <span class="hljs-title class_">NodePgDatabase</span>, <span class="hljs-attr">storage</span>: <span class="hljs-title class_">WebhooksStorage</span></span>) =&gt;</span>
+        <span class="hljs-keyword">new</span> <span class="hljs-title class_">PostgresWebhookStore</span>({ <span class="hljs-attr">executor</span>: <span class="hljs-title function_">fromDrizzle</span>(db), <span class="hljs-attr">migrate</span>: <span class="hljs-literal">true</span> }, storage),
+    },
+    <span class="hljs-comment">// Jobs with @nestjs/schedule and @nestjs/locks</span>
+    <span class="hljs-title class_">ExpireSubscriptionsJob</span>,
+    <span class="hljs-title class_">DrizzleLockStore</span>,
+    <span class="hljs-comment">// Jobs with BullMQ</span>
+    <span class="hljs-title class_">BillingScheduler</span>,
+    <span class="hljs-title class_">BillingProcessor</span>,
+  ],
+})
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">AppModule</span> {}</code></pre></div></figure>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>main.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { <span class="hljs-title class_">NestFactory</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/core&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">AppModule</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./app.module.js&#x27;</span>;
+
+<span class="hljs-keyword">async</span> <span class="hljs-keyword">function</span> <span class="hljs-title function_">bootstrap</span>(<span class="hljs-params"></span>) {
+  <span class="hljs-keyword">const</span> app = <span class="hljs-keyword">await</span> <span class="hljs-title class_">NestFactory</span>.<span class="hljs-title function_">create</span>(<span class="hljs-title class_">AppModule</span>, { <span class="hljs-attr">rawBody</span>: <span class="hljs-literal">true</span> });
+  app.<span class="hljs-title function_">enableCors</span>({ <span class="hljs-attr">origin</span>: process.<span class="hljs-property">env</span>.<span class="hljs-property">WEB_ORIGIN</span> });
+  app.<span class="hljs-title function_">enableShutdownHooks</span>();
+  <span class="hljs-keyword">await</span> app.<span class="hljs-title function_">listen</span>(process.<span class="hljs-property">env</span>.<span class="hljs-property">PORT</span> ?? <span class="hljs-number">3000</span>);
+}
+<span class="hljs-keyword">await</span> <span class="hljs-title function_">bootstrap</span>();</code></pre></div></figure>
+<p><code>enableShutdownHooks()</code> lets a running job finish and passes its lease on when a deploy stops an instance.</p>
+<h4 id="deployment">Deployment</h4>
+<p>Nest deploys separately from Supabase, on anything that runs Node.js (see <a href="#/doc/deployment">Deployment</a>). Host it close to your database&#39;s region, as every query crosses that distance.</p>
+<p>Apply your migrations to the hosted project:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Terminal</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-bash">$ npx supabase <span class="hljs-built_in">link</span> --project-ref your-project-ref
+$ npx supabase db push</code></pre></div></figure>
+<p>Set the same environment variables on your host, with the hosted project&#39;s values and the connection string from <a href="#/doc/recipes/supabase@query-postgres-directly">Query Postgres directly</a>. Each instance opens its own connections, for Drizzle and for BullMQ, so count them against your project&#39;s <a target="_blank" rel="noopener" href="https://supabase.com/docs/guides/database/connection-management">connection limit</a>.</p>
+<p>The webhook stores shouldn&#39;t change a schema while a new version boots, in the middle of a rolling deploy. Remove <code>migrate: true</code> from those two, and apply their migrations as a step before the new version starts, with <code>DATABASE_URL</code> set. BullMQ&#39;s can stay, as it runs in one transaction under an advisory lock:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Terminal</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-bash">$ npx @nestjs/webhooks migrate
+$ npx @nestjs/outbox migrate</code></pre></div></figure>

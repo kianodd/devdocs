@@ -1,0 +1,301 @@
+<p><code>AsyncLocalStorage</code> is a <a target="_blank" rel="noopener" href="https://nodejs.org/api/async_context.html#class-asynclocalstorage">Node.js API</a> (based on the <code>async_hooks</code> API) that provides an alternative way of propagating local state through the application without explicitly passing it as a function parameter. It&#39;s similar to thread-local storage in other languages.</p>
+<p>The main idea of Async Local Storage is that you can <em>wrap</em> a function call with the <code>AsyncLocalStorage#run</code> call. All code invoked within the wrapped call gets access to the same <code>store</code>, which is unique to each call chain.</p>
+<p>In the context of NestJS, this means that if you find a place within the request&#39;s lifecycle to wrap the rest of the request&#39;s code, you can access and modify state visible only to that request. This can serve as an alternative to REQUEST-scoped providers, avoiding some of their limitations.</p>
+<p>Alternatively, you can use ALS to propagate context for only a part of the system (e.g., the <em>transaction</em> object) without passing it around explicitly across services, which can increase isolation and encapsulation.</p>
+<p>If your application is instrumented with <a href="#/doc/observability/overview">NestJS Observe</a>, you already have a request-scoped store and don&#39;t need to build one. See the <a href="#/doc/recipes/async-local-storage@nestjs-observe">NestJS Observe</a> section below.</p>
+<h4 id="custom-implementation">Custom implementation</h4>
+<p>The NestJS core framework doesn&#39;t provide a built-in abstraction for <code>AsyncLocalStorage</code>, so let&#39;s walk through how to implement it yourself for the simplest HTTP case, to get a better understanding of the whole concept:</p>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Hint</p><p>For ready-made solutions, see the <a href="#/doc/recipes/async-local-storage@nestjs-observe"><code>@nestjs/observe</code></a> and <a href="#/doc/recipes/async-local-storage@nestjs-cls"><code>nestjs-cls</code></a> sections below.</p>
+</div></aside>
+<ol>
+<li>First, create a new instance of <code>AsyncLocalStorage</code> in a shared source file. Since we&#39;re using NestJS, let&#39;s also turn it into a module with a custom provider.</li>
+</ol>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>als.module.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-meta">@Module</span>({
+  <span class="hljs-attr">providers</span>: [
+    {
+      <span class="hljs-attr">provide</span>: <span class="hljs-title class_">AsyncLocalStorage</span>,
+      <span class="hljs-attr">useValue</span>: <span class="hljs-keyword">new</span> <span class="hljs-title class_">AsyncLocalStorage</span>(),
+    },
+  ],
+  <span class="hljs-attr">exports</span>: [<span class="hljs-title class_">AsyncLocalStorage</span>],
+})
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">AlsModule</span> {}</code></pre></div></figure>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Hint</p><p><code>AsyncLocalStorage</code> is imported from <code>node:async_hooks</code>.</p>
+</div></aside>
+<ol start="2">
+<li>We&#39;re only concerned with HTTP, so let&#39;s use a middleware to wrap the <code>next</code> function with <code>AsyncLocalStorage#run</code>. Since middleware is the first thing a request hits, this makes the <code>store</code> available in all enhancers and the rest of the system.</li>
+</ol>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app.module.ts</span></span><span class="code-head-r"><span class="code-tabs" role="tablist"><button type="button" role="tab" data-lang-tab="0" class="on">TypeScript</button><button type="button" role="tab" data-lang-tab="1" class="">JavaScript</button></span><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-meta">@Module</span>({
+  <span class="hljs-attr">imports</span>: [<span class="hljs-title class_">AlsModule</span>],
+  <span class="hljs-attr">providers</span>: [<span class="hljs-title class_">CatsService</span>],
+  <span class="hljs-attr">controllers</span>: [<span class="hljs-title class_">CatsController</span>],
+})
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">AppModule</span> <span class="hljs-keyword">implements</span> <span class="hljs-title class_">NestModule</span> {
+  <span class="hljs-title function_">constructor</span>(<span class="hljs-params">
+    <span class="hljs-comment">// inject the AsyncLocalStorage in the module constructor,</span>
+    <span class="hljs-keyword">private</span> <span class="hljs-keyword">readonly</span> <span class="hljs-attr">als</span>: <span class="hljs-title class_">AsyncLocalStorage</span>
+  </span>) {}
+
+  <span class="hljs-title function_">configure</span>(<span class="hljs-params"><span class="hljs-attr">consumer</span>: <span class="hljs-title class_">MiddlewareConsumer</span></span>) {
+    <span class="hljs-comment">// bind the middleware,</span>
+    consumer
+      .<span class="hljs-title function_">apply</span>(<span class="hljs-function">(<span class="hljs-params">req, res, next</span>) =&gt;</span> {
+        <span class="hljs-comment">// populate the store with some default values</span>
+        <span class="hljs-comment">// based on the request,</span>
+        <span class="hljs-keyword">const</span> store = {
+          <span class="hljs-attr">userId</span>: req.<span class="hljs-property">headers</span>[<span class="hljs-string">&#x27;x-user-id&#x27;</span>],
+        };
+        <span class="hljs-comment">// and pass the &quot;next&quot; function as callback</span>
+        <span class="hljs-comment">// to the &quot;als.run&quot; method together with the store.</span>
+        <span class="hljs-variable language_">this</span>.<span class="hljs-property">als</span>.<span class="hljs-title function_">run</span>(store, <span class="hljs-function">() =&gt;</span> <span class="hljs-title function_">next</span>());
+      })
+      .<span class="hljs-title function_">forRoutes</span>(<span class="hljs-string">&#x27;*path&#x27;</span>);
+  }
+}</code></pre></div><div class="code-pane" data-pane="1" hidden><pre><code class="hljs language-typescript">
+<span class="hljs-meta">@Module</span>({
+  <span class="hljs-attr">imports</span>: [<span class="hljs-title class_">AlsModule</span>],
+  <span class="hljs-attr">providers</span>: [<span class="hljs-title class_">CatsService</span>],
+  <span class="hljs-attr">controllers</span>: [<span class="hljs-title class_">CatsController</span>],
+})
+<span class="hljs-meta">@Dependencies</span>(<span class="hljs-title class_">AsyncLocalStorage</span>)
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">AppModule</span> {
+  <span class="hljs-title function_">constructor</span>(<span class="hljs-params">als</span>) {
+    <span class="hljs-comment">// inject the AsyncLocalStorage in the module constructor,</span>
+    <span class="hljs-variable language_">this</span>.<span class="hljs-property">als</span> = als;
+  }
+
+  <span class="hljs-title function_">configure</span>(<span class="hljs-params">consumer</span>) {
+    <span class="hljs-comment">// bind the middleware,</span>
+    consumer
+      .<span class="hljs-title function_">apply</span>(<span class="hljs-function">(<span class="hljs-params">req, res, next</span>) =&gt;</span> {
+        <span class="hljs-comment">// populate the store with some default values</span>
+        <span class="hljs-comment">// based on the request,</span>
+        <span class="hljs-keyword">const</span> store = {
+          <span class="hljs-attr">userId</span>: req.<span class="hljs-property">headers</span>[<span class="hljs-string">&#x27;x-user-id&#x27;</span>],
+        };
+        <span class="hljs-comment">// and pass the &quot;next&quot; function as callback</span>
+        <span class="hljs-comment">// to the &quot;als.run&quot; method together with the store.</span>
+        <span class="hljs-variable language_">this</span>.<span class="hljs-property">als</span>.<span class="hljs-title function_">run</span>(store, <span class="hljs-function">() =&gt;</span> <span class="hljs-title function_">next</span>());
+      })
+      .<span class="hljs-title function_">forRoutes</span>(<span class="hljs-string">&#x27;*path&#x27;</span>);
+  }
+}</code></pre></div></figure>
+<ol start="3">
+<li>Now you can access the local store instance anywhere within the lifecycle of a request.</li>
+</ol>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>cats.service.ts</span></span><span class="code-head-r"><span class="code-tabs" role="tablist"><button type="button" role="tab" data-lang-tab="0" class="on">TypeScript</button><button type="button" role="tab" data-lang-tab="1" class="">JavaScript</button></span><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-meta">@Injectable</span>()
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">CatsService</span> {
+  <span class="hljs-title function_">constructor</span>(<span class="hljs-params">
+    <span class="hljs-comment">// We can inject the provided ALS instance.</span>
+    <span class="hljs-keyword">private</span> <span class="hljs-keyword">readonly</span> <span class="hljs-attr">als</span>: <span class="hljs-title class_">AsyncLocalStorage</span>,
+    <span class="hljs-keyword">private</span> <span class="hljs-keyword">readonly</span> <span class="hljs-attr">catsRepository</span>: <span class="hljs-title class_">CatsRepository</span>,
+  </span>) {}
+
+  <span class="hljs-title function_">getCatForUser</span>(<span class="hljs-params"></span>) {
+    <span class="hljs-comment">// The &quot;getStore&quot; method will always return the</span>
+    <span class="hljs-comment">// store instance associated with the given request.</span>
+    <span class="hljs-keyword">const</span> userId = <span class="hljs-variable language_">this</span>.<span class="hljs-property">als</span>.<span class="hljs-title function_">getStore</span>()[<span class="hljs-string">&quot;userId&quot;</span>] <span class="hljs-keyword">as</span> <span class="hljs-built_in">number</span>;
+    <span class="hljs-keyword">return</span> <span class="hljs-variable language_">this</span>.<span class="hljs-property">catsRepository</span>.<span class="hljs-title function_">getForUser</span>(userId);
+  }
+}</code></pre></div><div class="code-pane" data-pane="1" hidden><pre><code class="hljs language-typescript">
+<span class="hljs-meta">@Injectable</span>()
+<span class="hljs-meta">@Dependencies</span>(<span class="hljs-title class_">AsyncLocalStorage</span>, <span class="hljs-title class_">CatsRepository</span>)
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">CatsService</span> {
+  <span class="hljs-title function_">constructor</span>(<span class="hljs-params">als, catsRepository</span>) {
+    <span class="hljs-comment">// We can inject the provided ALS instance.</span>
+    <span class="hljs-variable language_">this</span>.<span class="hljs-property">als</span> = als;
+    <span class="hljs-variable language_">this</span>.<span class="hljs-property">catsRepository</span> = catsRepository;
+  }
+
+  <span class="hljs-title function_">getCatForUser</span>(<span class="hljs-params"></span>) {
+    <span class="hljs-comment">// The &quot;getStore&quot; method will always return the</span>
+    <span class="hljs-comment">// store instance associated with the given request.</span>
+    <span class="hljs-keyword">const</span> userId = <span class="hljs-variable language_">this</span>.<span class="hljs-property">als</span>.<span class="hljs-title function_">getStore</span>()[<span class="hljs-string">&quot;userId&quot;</span>];
+    <span class="hljs-keyword">return</span> <span class="hljs-variable language_">this</span>.<span class="hljs-property">catsRepository</span>.<span class="hljs-title function_">getForUser</span>(userId);
+  }
+}</code></pre></div></figure>
+<ol start="4">
+<li>You now have a way to share request-related state without injecting the whole <code>REQUEST</code> object.</li>
+</ol>
+<aside class="callout callout-warning"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 4 2.8 20h18.4L12 4z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M12 10v4.4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="17" r="1.3" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Warning</p><p>While this technique is useful for many use cases, it inherently obscures the code flow (by creating implicit context), so use it responsibly, and especially avoid creating contextual &quot;<a target="_blank" rel="noopener" href="https://en.wikipedia.org/wiki/God_object">God objects</a>&quot;.</p>
+</div></aside>
+<h3 id="nestjs-observe">NestJS Observe</h3>
+<p>If you run <a href="#/doc/observability/overview">NestJS Observe</a>, the <code>@nestjs/observe</code> SDK already maintains an <code>AsyncLocalStorage</code> store for every request, job, and message it instruments. This store carries the trace context through your call stack. <code>TracerService</code> exposes it, so request-scoped state is something you read and write rather than something you set up: there&#39;s no module to write, no middleware to mount, and nothing to re-wire per transport.</p>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Hint</p><p>This is the same <code>TracerService</code> documented in <a href="#/doc/observability/manual-instrumentation">Manual instrumentation</a>. This section covers only its async local storage side; spans, handled errors, and custom metrics are described there.</p>
+</div></aside>
+<h4 id="setup">Setup</h4>
+<p>No setup is needed beyond the standard SDK integration described in <a href="#/doc/observability/sdk">Observability → SDK</a>: install the package, import <code>ObserveModule.forRoot()</code>, and pass <code>ObserveInstrument</code> to <code>NestFactory.create()</code>.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Terminal</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-bash">$ npm i @nestjs/observe</code></pre></div></figure>
+<p><code>ObserveModule</code> exports <code>TracerService</code>, so you can inject it anywhere in your application:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>cats.service.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { <span class="hljs-title class_">Injectable</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/common&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">TracerService</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/observe&#x27;</span>;
+
+<span class="hljs-meta">@Injectable</span>()
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">CatsService</span> {
+  <span class="hljs-title function_">constructor</span>(<span class="hljs-params"><span class="hljs-keyword">private</span> <span class="hljs-keyword">readonly</span> <span class="hljs-attr">tracerService</span>: <span class="hljs-title class_">TracerService</span></span>) {}
+}</code></pre></div></figure>
+<h4 id="reading-and-writing-the-store">Reading and writing the store</h4>
+<p><code>setAttribute(key, value)</code> writes to the current context store, and <code>getAttribute(key)</code> reads the value back from anywhere downstream on the same request (a different service, a guard, or an interceptor) without threading it through every function signature:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>cats.controller.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-meta">@Get</span>()
+<span class="hljs-title function_">findAll</span>(<span class="hljs-params"><span class="hljs-meta">@Req</span>() <span class="hljs-attr">req</span>: <span class="hljs-title class_">Request</span></span>) {
+  <span class="hljs-variable language_">this</span>.<span class="hljs-property">tracerService</span>.<span class="hljs-title function_">setAttribute</span>(<span class="hljs-string">&#x27;userId&#x27;</span>, req.<span class="hljs-property">headers</span>[<span class="hljs-string">&#x27;x-user-id&#x27;</span>]);
+  <span class="hljs-keyword">return</span> <span class="hljs-variable language_">this</span>.<span class="hljs-property">catsService</span>.<span class="hljs-title function_">getCatForUser</span>();
+}</code></pre></div></figure>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>cats.service.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-meta">@Injectable</span>()
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">CatsService</span> {
+  <span class="hljs-title function_">constructor</span>(<span class="hljs-params">
+    <span class="hljs-keyword">private</span> <span class="hljs-keyword">readonly</span> <span class="hljs-attr">tracerService</span>: <span class="hljs-title class_">TracerService</span>,
+    <span class="hljs-keyword">private</span> <span class="hljs-keyword">readonly</span> <span class="hljs-attr">catsRepository</span>: <span class="hljs-title class_">CatsRepository</span>,
+  </span>) {}
+
+  <span class="hljs-title function_">getCatForUser</span>(<span class="hljs-params"></span>) {
+    <span class="hljs-keyword">const</span> userId = <span class="hljs-variable language_">this</span>.<span class="hljs-property">tracerService</span>.<span class="hljs-title function_">getAttribute</span>(<span class="hljs-string">&#x27;userId&#x27;</span>);
+    <span class="hljs-keyword">return</span> <span class="hljs-variable language_">this</span>.<span class="hljs-property">catsRepository</span>.<span class="hljs-title function_">getForUser</span>(userId);
+  }
+}</code></pre></div></figure>
+<p><code>getAttribute()</code> returns <code>undefined</code> for a key that was never set. Both methods throw when called outside a traced context, since there&#39;s no store to read from or write to. If a value may legitimately be read before any request exists, guard the call accordingly.</p>
+<h4 id="typing-the-store">Typing the store</h4>
+<p>Pass the shape of your store as the first type argument of <code>TracerService</code> to have keys and values type-checked, including nested paths:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">interface</span> <span class="hljs-title class_">RequestStore</span> {
+  <span class="hljs-attr">userId</span>: <span class="hljs-built_in">number</span>;
+  <span class="hljs-attr">flags</span>: { <span class="hljs-attr">betaCheckout</span>: <span class="hljs-built_in">boolean</span> };
+}
+
+<span class="hljs-meta">@Injectable</span>()
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">CatsService</span> {
+  <span class="hljs-title function_">constructor</span>(<span class="hljs-params"><span class="hljs-keyword">private</span> <span class="hljs-keyword">readonly</span> <span class="hljs-attr">tracerService</span>: <span class="hljs-title class_">TracerService</span>&lt;<span class="hljs-title class_">RequestStore</span>&gt;</span>) {}
+
+  <span class="hljs-title function_">enableBeta</span>(<span class="hljs-params"></span>) {
+    <span class="hljs-variable language_">this</span>.<span class="hljs-property">tracerService</span>.<span class="hljs-title function_">setAttribute</span>(<span class="hljs-string">&#x27;flags.betaCheckout&#x27;</span>, <span class="hljs-literal">true</span>);
+  }
+}</code></pre></div></figure>
+<h4 id="beyond-http">Beyond HTTP</h4>
+<p>Because the store is created by the instrumentation rather than by a middleware, it exists wherever the SDK traces an operation: HTTP and GraphQL requests, gRPC and <code>@nestjs/microservices</code> messages, and background work such as BullMQ consumers and cron runs. The pattern above is identical in all of them. This is the practical difference from a hand-rolled, middleware-based implementation, which only covers HTTP.</p>
+<p>The store also holds the current trace ID, so it doubles as the correlation key for logs and downstream services. <code>currentTraceId()</code> returns it. Unlike <code>getAttribute()</code>, it returns <code>null</code> outside a traced context instead of throwing:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">const</span> traceId = <span class="hljs-variable language_">this</span>.<span class="hljs-property">tracerService</span>.<span class="hljs-title function_">currentTraceId</span>();</code></pre></div></figure>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Hint</p><p><code>ObserveModule</code> also exports the underlying <code>AsyncLocalStorage</code> instance. <code>setAttribute()</code> and <code>getAttribute()</code> are the supported way to access the store; inject the instance directly only if you need something they don&#39;t expose.</p>
+</div></aside>
+<h3 id="nestjs-cls">NestJS CLS</h3>
+<p>The <a target="_blank" rel="noopener" href="https://github.com/Papooch/nestjs-cls">nestjs-cls</a> package provides several developer experience improvements over plain <code>AsyncLocalStorage</code> (<code>CLS</code> is an abbreviation of <em>continuation-local storage</em>). It abstracts the implementation into a <code>ClsModule</code> that offers various ways of initializing the <code>store</code> for different transports (not only HTTP), as well as strong typing support.</p>
+<p>You can then access the store with an injectable <code>ClsService</code>, or abstract it away from the business logic entirely by using <a target="_blank" rel="noopener" href="https://www.npmjs.com/package/nestjs-cls#proxy-providers">Proxy Providers</a>.</p>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p><code>nestjs-cls</code> is a third-party package and is not managed by the NestJS core team. Please report any issues with the library in the <a target="_blank" rel="noopener" href="https://github.com/Papooch/nestjs-cls/issues">nestjs-cls repository</a>.</p>
+</div></aside>
+<h4 id="installation">Installation</h4>
+<p>Apart from peer dependencies on the <code>@nestjs</code> packages, it uses only built-in Node.js APIs. Install it like any other package:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Terminal</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-bash">$ npm i nestjs-cls</code></pre></div></figure>
+<h4 id="usage">Usage</h4>
+<p>You can implement functionality similar to the <a href="#/doc/recipes/async-local-storage@custom-implementation">custom implementation</a> above using <code>nestjs-cls</code>, as follows:</p>
+<ol>
+<li>Import the <code>ClsModule</code> in the root module.</li>
+</ol>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app.module.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-meta">@Module</span>({
+  <span class="hljs-attr">imports</span>: [
+    <span class="hljs-comment">// Register the ClsModule,</span>
+    <span class="hljs-title class_">ClsModule</span>.<span class="hljs-title function_">forRoot</span>({
+      <span class="hljs-attr">middleware</span>: {
+        <span class="hljs-comment">// automatically mount the</span>
+        <span class="hljs-comment">// ClsMiddleware for all routes</span>
+        <span class="hljs-attr">mount</span>: <span class="hljs-literal">true</span>,
+        <span class="hljs-comment">// and use the setup method to</span>
+        <span class="hljs-comment">// provide default store values.</span>
+        <span class="hljs-attr">setup</span>: <span class="hljs-function">(<span class="hljs-params">cls, req</span>) =&gt;</span> {
+          cls.<span class="hljs-title function_">set</span>(<span class="hljs-string">&#x27;userId&#x27;</span>, req.<span class="hljs-property">headers</span>[<span class="hljs-string">&#x27;x-user-id&#x27;</span>]);
+        },
+      },
+    }),
+  ],
+  <span class="hljs-attr">providers</span>: [<span class="hljs-title class_">CatsService</span>],
+  <span class="hljs-attr">controllers</span>: [<span class="hljs-title class_">CatsController</span>],
+})
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">AppModule</span> {}</code></pre></div></figure>
+<ol start="2">
+<li>Then use the <code>ClsService</code> to access the store values.</li>
+</ol>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>cats.service.ts</span></span><span class="code-head-r"><span class="code-tabs" role="tablist"><button type="button" role="tab" data-lang-tab="0" class="on">TypeScript</button><button type="button" role="tab" data-lang-tab="1" class="">JavaScript</button></span><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-meta">@Injectable</span>()
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">CatsService</span> {
+  <span class="hljs-title function_">constructor</span>(<span class="hljs-params">
+    <span class="hljs-comment">// We can inject the provided ClsService instance,</span>
+    <span class="hljs-keyword">private</span> <span class="hljs-keyword">readonly</span> <span class="hljs-attr">cls</span>: <span class="hljs-title class_">ClsService</span>,
+    <span class="hljs-keyword">private</span> <span class="hljs-keyword">readonly</span> <span class="hljs-attr">catsRepository</span>: <span class="hljs-title class_">CatsRepository</span>,
+  </span>) {}
+
+  <span class="hljs-title function_">getCatForUser</span>(<span class="hljs-params"></span>) {
+    <span class="hljs-comment">// and use the &quot;get&quot; method to retrieve any stored value.</span>
+    <span class="hljs-keyword">const</span> userId = <span class="hljs-variable language_">this</span>.<span class="hljs-property">cls</span>.<span class="hljs-title function_">get</span>(<span class="hljs-string">&#x27;userId&#x27;</span>);
+    <span class="hljs-keyword">return</span> <span class="hljs-variable language_">this</span>.<span class="hljs-property">catsRepository</span>.<span class="hljs-title function_">getForUser</span>(userId);
+  }
+}</code></pre></div><div class="code-pane" data-pane="1" hidden><pre><code class="hljs language-typescript">
+<span class="hljs-meta">@Injectable</span>()
+<span class="hljs-meta">@Dependencies</span>(<span class="hljs-title class_">ClsService</span>, <span class="hljs-title class_">CatsRepository</span>)
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">CatsService</span> {
+  <span class="hljs-title function_">constructor</span>(<span class="hljs-params">cls, catsRepository</span>) {
+    <span class="hljs-comment">// We can inject the provided ClsService instance,</span>
+    <span class="hljs-variable language_">this</span>.<span class="hljs-property">cls</span> = cls;
+    <span class="hljs-variable language_">this</span>.<span class="hljs-property">catsRepository</span> = catsRepository;
+  }
+
+  <span class="hljs-title function_">getCatForUser</span>(<span class="hljs-params"></span>) {
+    <span class="hljs-comment">// and use the &quot;get&quot; method to retrieve any stored value.</span>
+    <span class="hljs-keyword">const</span> userId = <span class="hljs-variable language_">this</span>.<span class="hljs-property">cls</span>.<span class="hljs-title function_">get</span>(<span class="hljs-string">&#x27;userId&#x27;</span>);
+    <span class="hljs-keyword">return</span> <span class="hljs-variable language_">this</span>.<span class="hljs-property">catsRepository</span>.<span class="hljs-title function_">getForUser</span>(userId);
+  }
+}</code></pre></div></figure>
+<ol start="3">
+<li>To get strong typing of the store values managed by the <code>ClsService</code> (and auto-suggestions for the string keys), use the optional type parameter <code>ClsService&lt;MyClsStore&gt;</code> when injecting it.</li>
+</ol>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">export</span> <span class="hljs-keyword">interface</span> <span class="hljs-title class_">MyClsStore</span> <span class="hljs-keyword">extends</span> <span class="hljs-title class_">ClsStore</span> {
+  <span class="hljs-attr">userId</span>: <span class="hljs-built_in">number</span>;
+}</code></pre></div></figure>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Hint</p><p>You can also let the package automatically generate a request ID and access it later with <code>cls.getId()</code>, or get the whole request object using <code>cls.get(CLS_REQ)</code>.</p>
+</div></aside>
+<h4 id="testing">Testing</h4>
+<p>Since the <code>ClsService</code> is just another injectable provider, you can mock it out entirely in unit tests.</p>
+<p>However, in certain integration tests, you might still want to use the real <code>ClsService</code> implementation. In that case, wrap the context-aware piece of code with a call to <code>ClsService#run</code> or <code>ClsService#runWith</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-title function_">describe</span>(<span class="hljs-string">&#x27;CatsService&#x27;</span>, <span class="hljs-function">() =&gt;</span> {
+  <span class="hljs-keyword">let</span> <span class="hljs-attr">service</span>: <span class="hljs-title class_">CatsService</span>
+  <span class="hljs-keyword">let</span> <span class="hljs-attr">cls</span>: <span class="hljs-title class_">ClsService</span>
+  <span class="hljs-keyword">const</span> mockCatsRepository = createMock&lt;<span class="hljs-title class_">CatsRepository</span>&gt;()
+
+  <span class="hljs-title function_">beforeEach</span>(<span class="hljs-title function_">async</span> () =&gt; {
+    <span class="hljs-keyword">const</span> <span class="hljs-variable language_">module</span> = <span class="hljs-keyword">await</span> <span class="hljs-title class_">Test</span>.<span class="hljs-title function_">createTestingModule</span>({
+      <span class="hljs-comment">// Set up most of the testing module as we normally would.</span>
+      <span class="hljs-attr">providers</span>: [
+        <span class="hljs-title class_">CatsService</span>,
+        {
+          <span class="hljs-attr">provide</span>: <span class="hljs-title class_">CatsRepository</span>,
+          <span class="hljs-attr">useValue</span>: mockCatsRepository,
+        }
+      ],
+      <span class="hljs-attr">imports</span>: [
+        <span class="hljs-comment">// Import the static version of ClsModule which only provides</span>
+        <span class="hljs-comment">// the ClsService, but does not set up the store in any way.</span>
+        <span class="hljs-title class_">ClsModule</span>
+      ],
+    }).<span class="hljs-title function_">compile</span>()
+
+    service = <span class="hljs-variable language_">module</span>.<span class="hljs-title function_">get</span>(<span class="hljs-title class_">CatsService</span>)
+
+    <span class="hljs-comment">// Also retrieve the ClsService for later use.</span>
+    cls = <span class="hljs-variable language_">module</span>.<span class="hljs-title function_">get</span>(<span class="hljs-title class_">ClsService</span>)
+  })
+
+  <span class="hljs-title function_">describe</span>(<span class="hljs-string">&#x27;getCatForUser&#x27;</span>, <span class="hljs-function">() =&gt;</span> {
+    <span class="hljs-title function_">it</span>(<span class="hljs-string">&#x27;retrieves cat based on user id&#x27;</span>, <span class="hljs-title function_">async</span> () =&gt; {
+      <span class="hljs-keyword">const</span> expectedUserId = <span class="hljs-number">42</span>
+      mockCatsRepository.<span class="hljs-property">getForUser</span>.<span class="hljs-title function_">mockImplementationOnce</span>(
+        <span class="hljs-function">(<span class="hljs-params">id</span>) =&gt;</span> ({ <span class="hljs-attr">userId</span>: id })
+      )
+
+      <span class="hljs-comment">// Wrap the test call in the `runWith` method</span>
+      <span class="hljs-comment">// in which we can pass hand-crafted store values.</span>
+      <span class="hljs-keyword">const</span> cat = <span class="hljs-keyword">await</span> cls.<span class="hljs-title function_">runWith</span>(
+        { <span class="hljs-attr">userId</span>: expectedUserId },
+        <span class="hljs-function">() =&gt;</span> service.<span class="hljs-title function_">getCatForUser</span>()
+      )
+
+      <span class="hljs-title function_">expect</span>(cat.<span class="hljs-property">userId</span>).<span class="hljs-title function_">toEqual</span>(expectedUserId)
+    })
+  })
+})</code></pre></div></figure>
+<h4 id="more-information">More information</h4>
+<p>Visit the <a target="_blank" rel="noopener" href="https://github.com/Papooch/nestjs-cls">nestjs-cls GitHub page</a> for the full API documentation and more code examples.</p>

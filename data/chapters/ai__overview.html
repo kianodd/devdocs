@@ -1,0 +1,362 @@
+<p><code>@nestjs/ai</code> brings language models into a Nest application: models registered by name and injected, calls with timeouts, retries and fallback models, answers validated by a schema, and the methods of your providers as agent functions, which the model calls as tools.</p>
+<p>The online store for cat food and supplies gets a hundred support emails a day, and its customers would rather ask the website about their orders than write one. Both are jobs for a language model, inside the order API: sort an email and draft a reply, or answer a customer in a chat with what the API knows about their orders.</p>
+<p>The package builds on the <a target="_blank" rel="noopener" href="https://ai-sdk.dev">AI SDK</a> (<code>ai</code>) and its provider packages, so any model they support works: Claude, GPT, Gemini, Mistral, or a model behind a gateway. Model calls run on the policies of <a href="#/doc/reliability/resilience"><code>@nestjs/resilience</code></a>. You write an agent function, a method with <code>@AgentFunction()</code>, and the model is offered it as a tool: every call of one goes through the guards, interceptors, pipes and exception filters your routes use, as the user the model acts for.</p>
+<p>In this chapter, you&#39;ll give the store&#39;s order API:</p>
+<ul>
+<li>A <a href="#/doc/ai/overview@structured-output">triage</a> of support emails into a typed object, and a drafted reply, with a fast and cheap model.</li>
+<li><a href="#/doc/ai/models@retries-timeouts-and-fallback">Retries, timeouts and a fallback model</a> around every call, a <a href="#/doc/ai/models@usage-cost-and-budgets">budget</a> per call, and a record of what each one cost.</li>
+<li><a href="#/doc/ai/tools">Agent functions</a> the model calls as the signed-in customer, among them <code>find-order</code>, which the store&#39;s MCP server serves too: one method, two consumers.</li>
+<li>A <a href="#/doc/ai/agents@streaming-to-the-browser">chat assistant</a> whose answer streams to the browser as it&#39;s written.</li>
+<li>A <a href="#/doc/ai/agents@durable-agent-runs">refund agent</a> that waits for the support team&#39;s approval, as a durable workflow.</li>
+<li><a href="#/doc/ai/embeddings">Embeddings</a> of its product descriptions, for a search that finds products by what they mean.</li>
+<li><a href="#/doc/ai/testing">Tests</a> that run without a model provider.</li>
+</ul>
+<h4 id="installation">Installation</h4>
+<p>Install the package, <code>@nestjs/resilience</code>, whose policies model calls run on, the AI SDK, a provider package, and Zod, for the schemas:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Terminal</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-bash">$ npm i --save @nestjs/ai @nestjs/resilience ai @ai-sdk/anthropic zod</code></pre></div></figure>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Hint</p><p>Every <code>@ai-sdk/*</code> provider package works the same way: <code>@ai-sdk/openai</code>, <code>@ai-sdk/google</code>, <code>@ai-sdk/mistral</code>, <code>@ai-sdk/amazon-bedrock</code> and the others. Schemas can come from any <a target="_blank" rel="noopener" href="https://standardschema.dev">Standard Schema</a> library that produces JSON Schema, as for <code>@nestjs/mcp</code>: Zod 4.2 or later and ArkType as they are, Valibot through <code>toStandardJsonSchema()</code>. Each major version of <code>@nestjs/ai</code> supports one major version of the AI SDK, <code>ai</code> 7 for this one, and it needs Node.js 22 or later, as the AI SDK does.</p>
+</div></aside>
+<h4 id="register-the-models">Register the models</h4>
+<p>Import <code>AiModule</code> in the root module, with the models the application uses, by name. Calls that name no model use <code>default</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app.module.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { anthropic } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@ai-sdk/anthropic&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">Module</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/common&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">AiModule</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/ai&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">SupportModule</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./support/support.module&#x27;</span>;
+
+<span class="hljs-meta">@Module</span>({
+  <span class="hljs-attr">imports</span>: [
+    <span class="hljs-title class_">AiModule</span>.<span class="hljs-title function_">forRoot</span>({
+      <span class="hljs-attr">isGlobal</span>: <span class="hljs-literal">true</span>,
+      <span class="hljs-attr">models</span>: {
+        <span class="hljs-attr">default</span>: <span class="hljs-title function_">anthropic</span>(<span class="hljs-string">&#x27;claude-opus-5-5&#x27;</span>),
+        <span class="hljs-attr">fast</span>: {
+          <span class="hljs-attr">model</span>: <span class="hljs-title function_">anthropic</span>(<span class="hljs-string">&#x27;claude-haiku-5-5&#x27;</span>),
+          <span class="hljs-attr">fallback</span>: <span class="hljs-string">&#x27;default&#x27;</span>,
+        },
+      },
+      <span class="hljs-attr">defaults</span>: { <span class="hljs-attr">timeout</span>: <span class="hljs-string">&#x27;30s&#x27;</span>, <span class="hljs-attr">retry</span>: { <span class="hljs-attr">attempts</span>: <span class="hljs-number">3</span> } },
+    }),
+    <span class="hljs-title class_">SupportModule</span>,
+  ],
+})
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">AppModule</span> {}</code></pre></div></figure>
+<p>A model is what a provider package returns, such as <code>anthropic(&#39;claude-opus-5-5&#39;)</code>, or a definition with it as <code>model</code> and settings of its own: <code>fallback</code>, the models tried when it fails, <code>pricing</code>, <code>timeout</code>, <code>retry</code>, and generation settings such as <code>maxOutputTokens</code>. <code>defaults</code> apply to every call: here, an attempt may take 30 seconds, and each model gets three attempts. <a href="#/doc/ai/models">Models</a> describes every setting.</p>
+<p>The provider package reads its API key from the environment, <code>ANTHROPIC_API_KEY</code> for <code>@ai-sdk/anthropic</code>. To pass it from <code>ConfigService</code> instead, create the provider in a factory: see <a href="#/doc/ai/overview@async-configuration">Async configuration</a>.</p>
+<p><code>isGlobal: true</code> lets every module of the application inject <code>AiService</code>. Without it, the module isn&#39;t global: <code>AiService</code> is injected only in the module that imports <code>AiModule.forRoot()</code>. To share one configuration with some modules only, import it in a module of your own that exports it, and import that module where models are called:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>llm/llm.module.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { anthropic } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@ai-sdk/anthropic&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">Module</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/common&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">AiModule</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/ai&#x27;</span>;
+
+<span class="hljs-meta">@Module</span>({
+  <span class="hljs-attr">imports</span>: [
+    <span class="hljs-title class_">AiModule</span>.<span class="hljs-title function_">forRoot</span>({ <span class="hljs-attr">models</span>: { <span class="hljs-attr">default</span>: <span class="hljs-title function_">anthropic</span>(<span class="hljs-string">&#x27;claude-opus-5-5&#x27;</span>) } }),
+  ],
+  <span class="hljs-attr">exports</span>: [<span class="hljs-title class_">AiModule</span>],
+})
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">LlmModule</span> {}</code></pre></div></figure>
+<h4 id="calling-a-model">Calling a model</h4>
+<p><code>AiService</code> makes the calls. <code>generateText()</code> sends a prompt, with <code>instructions</code> (the system prompt), and resolves with the answer:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>support/replies.service.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { <span class="hljs-title class_">Injectable</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/common&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">AiService</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/ai&#x27;</span>;
+
+<span class="hljs-meta">@Injectable</span>()
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">RepliesService</span> {
+  <span class="hljs-title function_">constructor</span>(<span class="hljs-params"><span class="hljs-keyword">private</span> <span class="hljs-keyword">readonly</span> <span class="hljs-attr">ai</span>: <span class="hljs-title class_">AiService</span></span>) {}
+
+  <span class="hljs-keyword">async</span> <span class="hljs-title function_">draft</span>(<span class="hljs-attr">email</span>: <span class="hljs-built_in">string</span>): <span class="hljs-title class_">Promise</span>&lt;<span class="hljs-built_in">string</span>&gt; {
+    <span class="hljs-keyword">const</span> { text } = <span class="hljs-keyword">await</span> <span class="hljs-variable language_">this</span>.<span class="hljs-property">ai</span>.<span class="hljs-title function_">generateText</span>({
+      <span class="hljs-attr">model</span>: <span class="hljs-string">&#x27;fast&#x27;</span>,
+      <span class="hljs-attr">label</span>: <span class="hljs-string">&#x27;draft-reply&#x27;</span>,
+      <span class="hljs-attr">instructions</span>:
+        <span class="hljs-string">&#x27;Draft a short, friendly reply to the customer. &#x27;</span> +
+        <span class="hljs-string">&#x27;Sign it &quot;The Cat Store&quot;.&#x27;</span>,
+      <span class="hljs-attr">prompt</span>: email,
+      <span class="hljs-attr">maxOutputTokens</span>: <span class="hljs-number">400</span>,
+    });
+    <span class="hljs-keyword">return</span> text;
+  }
+}</code></pre></div></figure>
+<p><code>model</code> names one of the module&#39;s models, <code>default</code> when it&#39;s left out, and <code>label</code> names the call in <a href="#/doc/ai/models@usage-cost-and-budgets">usage events</a> and in the events of its policies. <code>prompt</code> is the user&#39;s message; <code>messages</code> takes a whole conversation instead, as the AI SDK&#39;s <code>ModelMessage</code> objects (see <a href="#/doc/ai/agents@conversations">Conversations</a>). The result has more than the text:</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Property</th>
+<th>What it is</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>text</code></td>
+<td>The answer: the text of the last model call</td>
+</tr>
+<tr>
+<td><code>finishReason</code></td>
+<td>Why the model stopped: <code>&#39;stop&#39;</code>, <code>&#39;length&#39;</code> when it reached <code>maxOutputTokens</code>, or <code>&#39;tool-calls&#39;</code> when it still asked for tools after <code>maxSteps</code> model calls</td>
+</tr>
+<tr>
+<td><code>usage</code></td>
+<td>The tokens of every model call, summed: <code>inputTokens</code>, <code>outputTokens</code>, <code>totalTokens</code>, <code>cachedInputTokens</code> and <code>reasoningTokens</code></td>
+</tr>
+<tr>
+<td><code>cost</code></td>
+<td>What the call cost, for models with <code>pricing</code></td>
+</tr>
+<tr>
+<td><code>steps</code></td>
+<td>One per model call, with its text, tool calls, usage, and the attempts it took</td>
+</tr>
+<tr>
+<td><code>toolCalls</code>, <code>toolResults</code></td>
+<td>The tools the model called, with their input, and what each returned or why it failed</td>
+</tr>
+<tr>
+<td><code>responseMessages</code></td>
+<td>The assistant and tool messages of the call, to append to a conversation</td>
+</tr>
+<tr>
+<td><code>model</code></td>
+<td>The model that answered: its <code>name</code>, <code>provider</code> and <code>modelId</code></td>
+</tr>
+</tbody></table></div>
+<p>A call that names a model the module doesn&#39;t configure, an agent function that doesn&#39;t exist, or both <code>prompt</code> and <code>messages</code>, is refused with an <code>AiConfigurationError</code> before anything is sent.</p>
+<h4 id="structured-output">Structured output</h4>
+<p>Sorting an email is a job for <code>generateObject()</code>. The model is sent the schema&#39;s JSON Schema, and its answer is parsed and validated by the schema, so <code>object</code> is typed by it:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>support/triage.service.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { <span class="hljs-title class_">Injectable</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/common&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">AiService</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/ai&#x27;</span>;
+<span class="hljs-keyword">import</span> * <span class="hljs-keyword">as</span> z <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;zod&#x27;</span>;
+
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">const</span> <span class="hljs-title class_">Triage</span> = z.<span class="hljs-title function_">object</span>({
+  <span class="hljs-attr">category</span>: z
+    .<span class="hljs-title function_">enum</span>([<span class="hljs-string">&#x27;shipping&#x27;</span>, <span class="hljs-string">&#x27;billing&#x27;</span>, <span class="hljs-string">&#x27;product&#x27;</span>, <span class="hljs-string">&#x27;other&#x27;</span>])
+    .<span class="hljs-title function_">describe</span>(<span class="hljs-string">&#x27;What the email is about&#x27;</span>),
+  <span class="hljs-attr">orderId</span>: z
+    .<span class="hljs-title function_">string</span>()
+    .<span class="hljs-title function_">nullable</span>()
+    .<span class="hljs-title function_">describe</span>(<span class="hljs-string">&#x27;The order id it mentions, such as ord_123, or null&#x27;</span>),
+  <span class="hljs-attr">urgent</span>: z.<span class="hljs-title function_">boolean</span>().<span class="hljs-title function_">describe</span>(<span class="hljs-string">&#x27;Whether the customer needs an answer today&#x27;</span>),
+});
+
+<span class="hljs-meta">@Injectable</span>()
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">TriageService</span> {
+  <span class="hljs-title function_">constructor</span>(<span class="hljs-params"><span class="hljs-keyword">private</span> <span class="hljs-keyword">readonly</span> <span class="hljs-attr">ai</span>: <span class="hljs-title class_">AiService</span></span>) {}
+
+  <span class="hljs-keyword">async</span> <span class="hljs-title function_">triage</span>(<span class="hljs-params"><span class="hljs-attr">email</span>: <span class="hljs-built_in">string</span></span>) {
+    <span class="hljs-keyword">const</span> { <span class="hljs-built_in">object</span> } = <span class="hljs-keyword">await</span> <span class="hljs-variable language_">this</span>.<span class="hljs-property">ai</span>.<span class="hljs-title function_">generateObject</span>({
+      <span class="hljs-attr">model</span>: <span class="hljs-string">&#x27;fast&#x27;</span>,
+      <span class="hljs-attr">label</span>: <span class="hljs-string">&#x27;triage&#x27;</span>,
+      <span class="hljs-attr">schema</span>: <span class="hljs-title class_">Triage</span>,
+      <span class="hljs-attr">instructions</span>:
+        <span class="hljs-string">&#x27;You sort the support email of a store for cat food and supplies.&#x27;</span>,
+      <span class="hljs-attr">prompt</span>: email,
+    });
+    <span class="hljs-keyword">return</span> <span class="hljs-built_in">object</span>; <span class="hljs-comment">// { category, orderId, urgent }</span>
+  }
+}</code></pre></div></figure>
+<p>The model reads the <code>.describe()</code> texts, as it reads an agent function&#39;s: say what each field means, with an example value. <code>schemaName</code> and <code>schemaDescription</code> name and describe the object, for providers that pass them on to the model. Besides <code>object</code>, the result has everything <code>generateText()</code>&#39;s has: <code>usage</code>, <code>cost</code>, <code>steps</code> and the rest.</p>
+<p>An answer that isn&#39;t JSON, or doesn&#39;t match the schema, rejects with <code>AiOutputError</code>, which carries the model&#39;s <code>text</code>. It isn&#39;t retried, and no fallback model is tried: the model did answer.</p>
+<p>The schema&#39;s transforms run on the answer, while the model is sent the JSON Schema of its input side. The store also extracts the lines of its suppliers&#39; invoices, and wants the due date as a <code>Date</code>; the model is asked for an ISO date string:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>suppliers/invoices.service.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { <span class="hljs-title class_">Injectable</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/common&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">AiService</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/ai&#x27;</span>;
+<span class="hljs-keyword">import</span> * <span class="hljs-keyword">as</span> z <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;zod&#x27;</span>;
+
+<span class="hljs-keyword">const</span> <span class="hljs-title class_">Invoice</span> = z.<span class="hljs-title function_">object</span>({
+  <span class="hljs-attr">number</span>: z.<span class="hljs-title function_">string</span>().<span class="hljs-title function_">describe</span>(<span class="hljs-string">&#x27;The invoice number, such as INV-2041&#x27;</span>),
+  <span class="hljs-attr">total</span>: z.<span class="hljs-title function_">number</span>().<span class="hljs-title function_">describe</span>(<span class="hljs-string">&#x27;The total, in cents&#x27;</span>),
+  <span class="hljs-attr">dueDate</span>: z.<span class="hljs-property">iso</span>.<span class="hljs-title function_">date</span>().<span class="hljs-title function_">transform</span>(<span class="hljs-function">(<span class="hljs-params">value</span>) =&gt;</span> <span class="hljs-keyword">new</span> <span class="hljs-title class_">Date</span>(<span class="hljs-string">`<span class="hljs-subst">${value}</span>T00:00:00Z`</span>)),
+  <span class="hljs-attr">lines</span>: z.<span class="hljs-title function_">array</span>(
+    z.<span class="hljs-title function_">object</span>({
+      <span class="hljs-attr">description</span>: z.<span class="hljs-title function_">string</span>(),
+      <span class="hljs-attr">amount</span>: z.<span class="hljs-title function_">number</span>().<span class="hljs-title function_">describe</span>(<span class="hljs-string">&#x27;In cents&#x27;</span>),
+    }),
+  ),
+});
+
+<span class="hljs-meta">@Injectable</span>()
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">InvoicesService</span> {
+  <span class="hljs-title function_">constructor</span>(<span class="hljs-params"><span class="hljs-keyword">private</span> <span class="hljs-keyword">readonly</span> <span class="hljs-attr">ai</span>: <span class="hljs-title class_">AiService</span></span>) {}
+
+  <span class="hljs-keyword">async</span> <span class="hljs-title function_">extract</span>(<span class="hljs-params"><span class="hljs-attr">email</span>: <span class="hljs-built_in">string</span></span>) {
+    <span class="hljs-keyword">const</span> { <span class="hljs-built_in">object</span> } = <span class="hljs-keyword">await</span> <span class="hljs-variable language_">this</span>.<span class="hljs-property">ai</span>.<span class="hljs-title function_">generateObject</span>({
+      <span class="hljs-attr">label</span>: <span class="hljs-string">&#x27;invoice&#x27;</span>,
+      <span class="hljs-attr">schema</span>: <span class="hljs-title class_">Invoice</span>,
+      <span class="hljs-attr">schemaName</span>: <span class="hljs-string">&#x27;invoice&#x27;</span>,
+      <span class="hljs-attr">instructions</span>: <span class="hljs-string">&#x27;Extract the invoice from the email of a supplier.&#x27;</span>,
+      <span class="hljs-attr">prompt</span>: email,
+    });
+    <span class="hljs-keyword">return</span> <span class="hljs-built_in">object</span>; <span class="hljs-comment">// object.dueDate is a Date</span>
+  }
+}</code></pre></div></figure>
+<p>The same call works in a queue job, where the store reads its suppliers&#39; mailbox: the code that calls the model doesn&#39;t change with where it runs.</p>
+<p>With <a href="#/doc/ai/tools">tools</a>, the model can look things up before it answers, and the object is the answer of its last model call. A model that is still calling tools after <code>maxSteps</code> model calls has given no object, so the call rejects with <code>AiOutputError</code> too.</p>
+<h4 id="async-configuration">Async configuration</h4>
+<p><code>forRootAsync()</code> takes the options from a factory, a <code>useClass</code> or a <code>useExisting</code> provider. Here, the factory creates the provider with the API key from <code>ConfigService</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app.module.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { createAnthropic } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@ai-sdk/anthropic&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">Module</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/common&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">ConfigModule</span>, <span class="hljs-title class_">ConfigService</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/config&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">AiModule</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/ai&#x27;</span>;
+
+<span class="hljs-meta">@Module</span>({
+  <span class="hljs-attr">imports</span>: [
+    <span class="hljs-title class_">ConfigModule</span>.<span class="hljs-title function_">forRoot</span>(),
+    <span class="hljs-title class_">AiModule</span>.<span class="hljs-title function_">forRootAsync</span>({
+      <span class="hljs-attr">isGlobal</span>: <span class="hljs-literal">true</span>,
+      <span class="hljs-attr">imports</span>: [<span class="hljs-title class_">ConfigModule</span>],
+      <span class="hljs-attr">inject</span>: [<span class="hljs-title class_">ConfigService</span>],
+      <span class="hljs-attr">useFactory</span>: <span class="hljs-function">(<span class="hljs-params"><span class="hljs-attr">config</span>: <span class="hljs-title class_">ConfigService</span></span>) =&gt;</span> {
+        <span class="hljs-keyword">const</span> anthropic = <span class="hljs-title function_">createAnthropic</span>({
+          <span class="hljs-attr">apiKey</span>: config.<span class="hljs-property">getOrThrow</span>&lt;<span class="hljs-built_in">string</span>&gt;(<span class="hljs-string">&#x27;ANTHROPIC_API_KEY&#x27;</span>),
+        });
+        <span class="hljs-keyword">return</span> {
+          <span class="hljs-attr">models</span>: {
+            <span class="hljs-attr">default</span>: <span class="hljs-title function_">anthropic</span>(<span class="hljs-string">&#x27;claude-opus-5-5&#x27;</span>),
+            <span class="hljs-attr">fast</span>: { <span class="hljs-attr">model</span>: <span class="hljs-title function_">anthropic</span>(<span class="hljs-string">&#x27;claude-haiku-5-5&#x27;</span>), <span class="hljs-attr">fallback</span>: <span class="hljs-string">&#x27;default&#x27;</span> },
+          },
+          <span class="hljs-attr">defaults</span>: { <span class="hljs-attr">timeout</span>: <span class="hljs-string">&#x27;30s&#x27;</span> },
+        };
+      },
+    }),
+  ],
+})
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">AppModule</span> {}</code></pre></div></figure>
+<p>A <code>useClass</code> provider implements <code>AiOptionsFactory</code>, whose <code>createAiOptions()</code> returns the options. <code>isGlobal</code> stays at the top level, and so do <code>modelNames</code> and <code>embeddingModelNames</code>.</p>
+<p><code>@InjectModel()</code> (see <a href="#/doc/ai/models@calling-the-ai-sdk-yourself">Models</a>) needs a provider for each model name it injects, and <code>forRootAsync()</code> creates them before its factory has run: for the names <code>@InjectModel()</code> was seen asking for when the module was defined, in the classes the application had imported by then. A class loaded later, such as one of a <a href="#/doc/fundamentals/lazy-loading-modules">lazily loaded module</a>, lists its names in <code>modelNames: [&#39;fast&#39;]</code>. A name nothing configures fails at startup, with the name of the class that asked for it.</p>
+<h4 id="one-package-for-many-providers">One package for many providers</h4>
+<p>Each <code>@ai-sdk/*</code> provider package is one more dependency to install and keep in step with <code>ai</code>. Most providers and gateways (OpenAI, Groq, Together, Fireworks, DeepSeek, OpenRouter, LiteLLM, Ollama, vLLM and others) also serve the OpenAI API, so a single package, <code>@ai-sdk/openai-compatible</code>, can reach all of them:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Terminal</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-bash">$ npm i --save @ai-sdk/openai-compatible</code></pre></div></figure>
+<p>The providers then become data rather than dependencies: keep their base URLs, API keys and model IDs in a database table or your configuration, and build the models in the <code>forRootAsync()</code> factory:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app.module.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { createOpenAICompatible } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@ai-sdk/openai-compatible&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">Module</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/common&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">AiModule</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/ai&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">ProvidersModule</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./providers/providers.module&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">ProvidersService</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./providers/providers.service&#x27;</span>;
+
+<span class="hljs-meta">@Module</span>({
+  <span class="hljs-attr">imports</span>: [
+    <span class="hljs-title class_">AiModule</span>.<span class="hljs-title function_">forRootAsync</span>({
+      <span class="hljs-attr">isGlobal</span>: <span class="hljs-literal">true</span>,
+      <span class="hljs-attr">imports</span>: [<span class="hljs-title class_">ProvidersModule</span>],
+      <span class="hljs-attr">inject</span>: [<span class="hljs-title class_">ProvidersService</span>],
+      <span class="hljs-attr">useFactory</span>: <span class="hljs-title function_">async</span> (<span class="hljs-attr">providers</span>: <span class="hljs-title class_">ProvidersService</span>) =&gt; {
+        <span class="hljs-comment">// e.g. rows of { name, baseURL, apiKey, modelId }</span>
+        <span class="hljs-keyword">const</span> rows = <span class="hljs-keyword">await</span> providers.<span class="hljs-title function_">findAll</span>();
+        <span class="hljs-keyword">const</span> models = <span class="hljs-title class_">Object</span>.<span class="hljs-title function_">fromEntries</span>(
+          rows.<span class="hljs-title function_">map</span>(<span class="hljs-function">(<span class="hljs-params">row</span>) =&gt;</span> [
+            row.<span class="hljs-property">name</span>,
+            <span class="hljs-title function_">createOpenAICompatible</span>({
+              <span class="hljs-attr">name</span>: row.<span class="hljs-property">name</span>,
+              <span class="hljs-attr">baseURL</span>: row.<span class="hljs-property">baseURL</span>,
+              <span class="hljs-attr">apiKey</span>: row.<span class="hljs-property">apiKey</span>,
+            })(row.<span class="hljs-property">modelId</span>),
+          ]),
+        );
+        <span class="hljs-keyword">return</span> { models };
+      },
+    }),
+  ],
+})
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">AppModule</span> {}</code></pre></div></figure>
+<p>The factory runs once, at startup, so a new row takes effect when the application restarts. One row has to be named <code>default</code>, for the calls that name no model, and an empty table fails the startup. To use a row without a restart, build the model when you call it and pass it as the call&#39;s <code>model</code>, which has <a href="#/doc/ai/models@model-settings">no settings of its own</a>.</p>
+<p><code>createOpenAICompatible()</code> assumes the least of a server. Set <code>supportsStructuredOutputs: true</code> for a model that accepts a JSON schema, or <a href="#/doc/ai/overview@structured-output">structured output</a> won&#39;t send it the schema, and <code>includeUsage: true</code> to ask for usage on streamed calls, which <a href="#/doc/ai/models@usage-cost-and-budgets">budgets</a> rely on.</p>
+<p>Use a dedicated <code>@ai-sdk/*</code> package when you need a feature the OpenAI API does not expose, such as Anthropic&#39;s prompt caching or Google&#39;s grounding settings.</p>
+<h4 id="module-options">Module options</h4>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Option</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>models</code></td>
+<td></td>
+<td>The models, by name: a <code>LanguageModel</code>, or <code>{ model, ... }</code> with the settings below. Required unless <code>embeddingModels</code> names a model</td>
+</tr>
+<tr>
+<td><code>models.*.fallback</code></td>
+<td></td>
+<td>The names of the models tried, in order, when this one fails</td>
+</tr>
+<tr>
+<td><code>models.*.pricing</code></td>
+<td></td>
+<td><code>input</code>, <code>output</code> and <code>cachedInput</code>: prices per million tokens</td>
+</tr>
+<tr>
+<td><code>models.*.timeout</code>, <code>retry</code>, <code>resilience</code></td>
+<td></td>
+<td>The model&#39;s own policies, which win over <code>defaults</code>, as its generation settings do</td>
+</tr>
+<tr>
+<td><code>defaults.timeout</code></td>
+<td><code>&#39;60s&#39;</code></td>
+<td>How long an attempt may take; <code>false</code> for no limit</td>
+</tr>
+<tr>
+<td><code>defaults.retry</code></td>
+<td>3 attempts, from <code>&#39;1s&#39;</code></td>
+<td>The options of <code>RetryPolicy</code>: <code>attempts</code>, <code>backoff</code> (<code>delay</code>, <code>factor</code>, <code>maxDelay</code>, <code>jitter</code>, or a function), <code>retryIf</code>; <code>false</code> for none</td>
+</tr>
+<tr>
+<td><code>defaults.resilience</code></td>
+<td></td>
+<td>A policy, or the name of a <code>ResilienceService</code> preset, in place of <code>retry</code> and <code>timeout</code></td>
+</tr>
+<tr>
+<td><code>defaults.maxSteps</code></td>
+<td><code>10</code></td>
+<td>The model calls one call makes while the model asks for tools, and one durable run (whose own default is <code>25</code>)</td>
+</tr>
+<tr>
+<td><code>defaults.budget</code></td>
+<td></td>
+<td><code>maxTokens</code> and <code>maxCost</code>, per call and per durable run</td>
+</tr>
+<tr>
+<td><code>defaults.maxOutputTokens</code>, <code>temperature</code>, <code>providerOptions</code>, <code>headers</code></td>
+<td></td>
+<td>Passed to the model</td>
+</tr>
+<tr>
+<td><code>onUsage</code></td>
+<td></td>
+<td>Called after every model call that answered</td>
+</tr>
+<tr>
+<td><code>embeddingModels</code></td>
+<td></td>
+<td>The <a href="#/doc/ai/embeddings">embedding models</a>, by name: an <code>EmbeddingModel</code>, or <code>{ model, ... }</code> with settings of its own</td>
+</tr>
+<tr>
+<td><code>embeddingDefaults</code></td>
+<td></td>
+<td>The <a href="#/doc/ai/embeddings@embedding-settings">settings of embedding calls</a>, which <code>defaults</code> don&#39;t reach</td>
+</tr>
+<tr>
+<td><code>onEmbeddingUsage</code></td>
+<td></td>
+<td>Called after every embedding call that succeeded</td>
+</tr>
+<tr>
+<td><code>include</code></td>
+<td>every module</td>
+<td>The modules whose providers are searched for agent functions</td>
+</tr>
+<tr>
+<td><code>isGlobal</code></td>
+<td><code>false</code></td>
+<td>Whether the module is global. Top level of <code>forRootAsync()</code></td>
+</tr>
+<tr>
+<td><code>modelNames</code></td>
+<td></td>
+<td>More model names <code>@InjectModel()</code> may inject, for classes loaded after the module is defined. Top level of <code>forRootAsync()</code></td>
+</tr>
+<tr>
+<td><code>embeddingModelNames</code></td>
+<td></td>
+<td>The same for <code>@InjectEmbeddingModel()</code>. Top level of <code>forRootAsync()</code></td>
+</tr>
+</tbody></table></div>
+<p>Every option of <code>defaults</code> is also an option of each call, which wins. <code>timeout</code>, <code>retry</code>, <code>resilience</code> and the generation settings are also settings of a model&#39;s definition, which win over <code>defaults</code>.</p>
+<h4 id="example">Example</h4>
+<p>A working example is available <a target="_blank" rel="noopener" href="https://github.com/nestjs/ai/tree/master/sample">here</a>.</p>

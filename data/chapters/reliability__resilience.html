@@ -1,0 +1,779 @@
+<p><code>@nestjs/resilience</code> adds retries, timeouts, circuit breakers, bulkheads and fallbacks to controllers, resolvers, message handlers and gateways, as decorators.</p>
+<p>Sooner or later, every application that calls another system meets one that is slow or down. Without a plan, a slow dependency ties up your request handlers, your clients wait until their own timeouts fire, and retries from every layer pile even more load onto the service that is already struggling.</p>
+<p><code>@nestjs/resilience</code> gives you the usual tools as decorators: <strong>retry</strong>, <strong>timeout</strong>, <strong>circuit breaker</strong>, <strong>bulkhead</strong> and <strong>fallback</strong>. They apply to your application&#39;s <strong>entrypoints</strong>, which are controllers, GraphQL resolvers, microservice message handlers and WebSocket gateways. For code inside services, the same settings are available as policy objects. A single global interceptor applies the decorators, so they behave the same on every transport, and each failure becomes that transport&#39;s native error. Over HTTP, for example, a timeout answers <code>504 Gateway Timeout</code> and an open breaker answers <code>503 Service Unavailable</code> with a <code>Retry-After</code> header.</p>
+<p>In this tutorial you&#39;ll harden the order API of an online store for cat food and supplies. Checkout asks the shipping carrier for quotes, and the carrier&#39;s quotes API is slow at the best of times and occasionally down. By the end, a slow carrier costs checkout about three seconds at most. Once the carrier is known to be down, checkout stops waiting for it altogether: customers see flat-rate shipping instead of an error, and a background job stops calling the carrier until it recovers.</p>
+<h4 id="prerequisites">Prerequisites</h4>
+<p>This tutorial assumes an <code>OrdersModule</code> that exports an <code>OrdersService</code>. The service needs these methods: <code>findOne(id)</code> (which throws <code>NotFoundException</code> for an unknown id), <code>findAll()</code>, <code>update(id, changes)</code> and <code>exportCsv()</code>. Orders look like this:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>orders/order.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">export</span> <span class="hljs-keyword">interface</span> <span class="hljs-title class_">OrderItem</span> {
+  <span class="hljs-attr">productId</span>: <span class="hljs-built_in">string</span>;
+  <span class="hljs-attr">quantity</span>: <span class="hljs-built_in">number</span>;
+  <span class="hljs-attr">price</span>: <span class="hljs-built_in">number</span>;
+}
+
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">interface</span> <span class="hljs-title class_">Order</span> {
+  <span class="hljs-attr">id</span>: <span class="hljs-built_in">string</span>;
+  <span class="hljs-attr">userId</span>: <span class="hljs-built_in">string</span>;
+  <span class="hljs-attr">items</span>: <span class="hljs-title class_">OrderItem</span>[];
+  <span class="hljs-attr">total</span>: <span class="hljs-built_in">number</span>;
+  <span class="hljs-attr">status</span>: <span class="hljs-string">&#x27;pending&#x27;</span> | <span class="hljs-string">&#x27;paid&#x27;</span> | <span class="hljs-string">&#x27;shipped&#x27;</span>;
+}
+
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">function</span> <span class="hljs-title function_">subtotal</span>(<span class="hljs-params"><span class="hljs-attr">order</span>: <span class="hljs-title class_">Order</span></span>): <span class="hljs-built_in">number</span> {
+  <span class="hljs-keyword">return</span> order.<span class="hljs-property">items</span>.<span class="hljs-title function_">reduce</span>(<span class="hljs-function">(<span class="hljs-params">sum, item</span>) =&gt;</span> sum + item.<span class="hljs-property">price</span> * item.<span class="hljs-property">quantity</span>, <span class="hljs-number">0</span>);
+}</code></pre></div></figure>
+<p>Install the package:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Terminal</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-bash">$ npm i --save @nestjs/resilience</code></pre></div></figure>
+<p><a href="#/doc/reliability/resilience@retry-a-post-safely">Retry a POST safely</a> also uses <code>@nestjs/idempotency</code> (see <a href="#/doc/reliability/idempotency">Idempotency keys</a>).</p>
+<h4 id="register-the-module">Register the module</h4>
+<p>Import <code>ResilienceModule</code> into the root module. Configure field defaults and one named preset, <code>carrier</code>, that describes how the application should treat the carrier:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app.module.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { <span class="hljs-title class_">Module</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/common&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">ResilienceModule</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/resilience&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">OrdersModule</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./orders/orders.module.js&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">ShippingModule</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./shipping/shipping.module.js&#x27;</span>;
+
+<span class="hljs-meta">@Module</span>({
+  <span class="hljs-attr">imports</span>: [
+    <span class="hljs-title class_">ResilienceModule</span>.<span class="hljs-title function_">forRoot</span>({
+      <span class="hljs-attr">defaults</span>: {
+        <span class="hljs-attr">timeout</span>: <span class="hljs-string">&#x27;5s&#x27;</span>,
+        <span class="hljs-attr">retry</span>: { <span class="hljs-attr">attempts</span>: <span class="hljs-number">3</span>, <span class="hljs-attr">backoff</span>: { <span class="hljs-attr">delay</span>: <span class="hljs-string">&#x27;200ms&#x27;</span>, <span class="hljs-attr">maxDelay</span>: <span class="hljs-string">&#x27;2s&#x27;</span> } },
+      },
+      <span class="hljs-attr">presets</span>: {
+        <span class="hljs-attr">carrier</span>: {
+          <span class="hljs-attr">timeout</span>: <span class="hljs-string">&#x27;2s&#x27;</span>,
+          <span class="hljs-attr">retry</span>: { <span class="hljs-attr">attempts</span>: <span class="hljs-number">2</span> },
+          <span class="hljs-attr">circuitBreaker</span>: { <span class="hljs-attr">failureRateThreshold</span>: <span class="hljs-number">50</span>, <span class="hljs-attr">minimumCalls</span>: <span class="hljs-number">10</span>, <span class="hljs-attr">openDuration</span>: <span class="hljs-string">&#x27;30s&#x27;</span> },
+        },
+      },
+    }),
+    <span class="hljs-title class_">OrdersModule</span>,
+    <span class="hljs-title class_">ShippingModule</span>,
+  ],
+})
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">AppModule</span> {}</code></pre></div></figure>
+<p>The two options do different jobs:</p>
+<ul>
+<li><code>defaults</code> fills in the fields of any stage that a decorator or preset turns on. Defaults never turn a stage on themselves. Here, a retry first waits a random time between 0 and 200 ms (the <code>delay</code>), then up to 400 ms, doubling each time up to 2 s (the <code>maxDelay</code>). A bare <code>@Timeout()</code> means 5 seconds.</li>
+<li><code>presets</code> holds named sets of stages, usually one per dependency. The <code>carrier</code> preset gives each attempt 2 seconds, makes at most 2 attempts, and adds a circuit breaker. That breaker is <strong>shared under the name <code>carrier</code></strong> by every route, handler and service that uses the preset. The carrier is one dependency, so it gets one breaker.</li>
+</ul>
+<p>Every time-valued option takes milliseconds or a string such as <code>&#39;200ms&#39;</code>, <code>&#39;2s&#39;</code> or <code>&#39;30s&#39;</code>.</p>
+<p>The module is global, so import it once, in the root module. It registers one app-wide interceptor, which does nothing for handlers without resilience decorators apart from error mapping. It checks its configuration at bootstrap: an unknown preset name, an invalid duration or number (such as the <code>NaN</code> of an unset environment variable), a missing fallback method or one breaker name configured in two different ways fails the boot instead of the first request. Use <code>ResilienceModule.forRootAsync()</code> to build the options from configuration.</p>
+<h4 id="put-a-time-budget-on-the-quotes-route">Put a time budget on the quotes route</h4>
+<p>Start with a client for the carrier. Every method takes an <code>AbortSignal</code> and hands it to <code>fetch()</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>shipping/carrier.client.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { <span class="hljs-title class_">Injectable</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/common&#x27;</span>;
+<span class="hljs-keyword">import</span> <span class="hljs-keyword">type</span> { <span class="hljs-title class_">Order</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;../orders/order.js&#x27;</span>;
+
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">interface</span> <span class="hljs-title class_">ShippingQuote</span> {
+  <span class="hljs-attr">service</span>: <span class="hljs-built_in">string</span>;
+  <span class="hljs-attr">price</span>: <span class="hljs-built_in">number</span>;
+  <span class="hljs-attr">estimatedDays</span>: <span class="hljs-built_in">number</span>;
+}
+
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">interface</span> <span class="hljs-title class_">Shipment</span> {
+  <span class="hljs-attr">id</span>: <span class="hljs-built_in">string</span>;
+  <span class="hljs-attr">reference</span>: <span class="hljs-built_in">string</span>;
+  <span class="hljs-attr">trackingNumber</span>: <span class="hljs-built_in">string</span>;
+}
+
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">CarrierError</span> <span class="hljs-keyword">extends</span> <span class="hljs-title class_ inherited__">Error</span> {
+  <span class="hljs-title function_">constructor</span>(<span class="hljs-params"><span class="hljs-keyword">readonly</span> <span class="hljs-attr">status</span>: <span class="hljs-built_in">number</span></span>) {
+    <span class="hljs-variable language_">super</span>(<span class="hljs-string">`The carrier answered with status <span class="hljs-subst">${status}</span>`</span>);
+  }
+}
+
+<span class="hljs-meta">@Injectable</span>()
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">CarrierClient</span> {
+  <span class="hljs-keyword">private</span> <span class="hljs-keyword">readonly</span> baseUrl = process.<span class="hljs-property">env</span>.<span class="hljs-property">CARRIER_URL</span> ?? <span class="hljs-string">&#x27;https://api.carrier.example.com&#x27;</span>;
+
+  <span class="hljs-title function_">getQuotes</span>(<span class="hljs-attr">order</span>: <span class="hljs-title class_">Order</span>, <span class="hljs-attr">signal</span>: <span class="hljs-title class_">AbortSignal</span>): <span class="hljs-title class_">Promise</span>&lt;<span class="hljs-title class_">ShippingQuote</span>[]&gt; {
+    <span class="hljs-keyword">return</span> <span class="hljs-variable language_">this</span>.<span class="hljs-title function_">post</span>(<span class="hljs-string">&#x27;/v2/quotes&#x27;</span>, { <span class="hljs-attr">reference</span>: order.<span class="hljs-property">id</span>, <span class="hljs-attr">items</span>: order.<span class="hljs-property">items</span> }, signal);
+  }
+
+  <span class="hljs-comment">/** The carrier returns the existing shipment when it has seen the reference before. */</span>
+  <span class="hljs-title function_">createShipment</span>(<span class="hljs-attr">order</span>: <span class="hljs-title class_">Order</span>, <span class="hljs-attr">signal</span>: <span class="hljs-title class_">AbortSignal</span>): <span class="hljs-title class_">Promise</span>&lt;<span class="hljs-title class_">Shipment</span>&gt; {
+    <span class="hljs-keyword">return</span> <span class="hljs-variable language_">this</span>.<span class="hljs-title function_">post</span>(<span class="hljs-string">&#x27;/v2/shipments&#x27;</span>, { <span class="hljs-attr">reference</span>: order.<span class="hljs-property">id</span>, <span class="hljs-attr">items</span>: order.<span class="hljs-property">items</span> }, signal);
+  }
+
+  <span class="hljs-keyword">private</span> <span class="hljs-keyword">async</span> post&lt;T&gt;(<span class="hljs-attr">path</span>: <span class="hljs-built_in">string</span>, <span class="hljs-attr">body</span>: <span class="hljs-built_in">unknown</span>, <span class="hljs-attr">signal</span>: <span class="hljs-title class_">AbortSignal</span>): <span class="hljs-title class_">Promise</span>&lt;T&gt; {
+    <span class="hljs-keyword">const</span> response = <span class="hljs-keyword">await</span> <span class="hljs-title function_">fetch</span>(<span class="hljs-string">`<span class="hljs-subst">${<span class="hljs-variable language_">this</span>.baseUrl}</span><span class="hljs-subst">${path}</span>`</span>, {
+      <span class="hljs-attr">method</span>: <span class="hljs-string">&#x27;POST&#x27;</span>,
+      <span class="hljs-attr">headers</span>: { <span class="hljs-string">&#x27;content-type&#x27;</span>: <span class="hljs-string">&#x27;application/json&#x27;</span> },
+      <span class="hljs-attr">body</span>: <span class="hljs-title class_">JSON</span>.<span class="hljs-title function_">stringify</span>(body),
+      signal,
+    });
+    <span class="hljs-keyword">if</span> (!response.<span class="hljs-property">ok</span>) {
+      <span class="hljs-keyword">throw</span> <span class="hljs-keyword">new</span> <span class="hljs-title class_">CarrierError</span>(response.<span class="hljs-property">status</span>);
+    }
+    <span class="hljs-keyword">return</span> (<span class="hljs-keyword">await</span> response.<span class="hljs-title function_">json</span>()) <span class="hljs-keyword">as</span> T;
+  }
+}</code></pre></div></figure>
+<p>The service passes the signal through. It also has a flat-rate price list and a booking method, which the circuit breaker and the retried POST use below:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>shipping/shipping.service.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { <span class="hljs-title class_">Injectable</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/common&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">OrdersService</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;../orders/orders.service.js&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">CarrierClient</span>, <span class="hljs-keyword">type</span> <span class="hljs-title class_">Shipment</span>, <span class="hljs-keyword">type</span> <span class="hljs-title class_">ShippingQuote</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./carrier.client.js&#x27;</span>;
+
+<span class="hljs-meta">@Injectable</span>()
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">ShippingService</span> {
+  <span class="hljs-title function_">constructor</span>(<span class="hljs-params">
+    <span class="hljs-keyword">private</span> <span class="hljs-keyword">readonly</span> <span class="hljs-attr">ordersService</span>: <span class="hljs-title class_">OrdersService</span>,
+    <span class="hljs-keyword">private</span> <span class="hljs-keyword">readonly</span> <span class="hljs-attr">carrierClient</span>: <span class="hljs-title class_">CarrierClient</span>,
+  </span>) {}
+
+  <span class="hljs-keyword">async</span> <span class="hljs-title function_">getQuotes</span>(<span class="hljs-attr">orderId</span>: <span class="hljs-built_in">string</span>, <span class="hljs-attr">signal</span>: <span class="hljs-title class_">AbortSignal</span>): <span class="hljs-title class_">Promise</span>&lt;<span class="hljs-title class_">ShippingQuote</span>[]&gt; {
+    <span class="hljs-keyword">const</span> order = <span class="hljs-keyword">await</span> <span class="hljs-variable language_">this</span>.<span class="hljs-property">ordersService</span>.<span class="hljs-title function_">findOne</span>(orderId);
+    <span class="hljs-keyword">return</span> <span class="hljs-variable language_">this</span>.<span class="hljs-property">carrierClient</span>.<span class="hljs-title function_">getQuotes</span>(order, signal);
+  }
+
+  <span class="hljs-title function_">flatRateQuotes</span>(): <span class="hljs-title class_">ShippingQuote</span>[] {
+    <span class="hljs-keyword">return</span> [{ <span class="hljs-attr">service</span>: <span class="hljs-string">&#x27;flat-rate&#x27;</span>, <span class="hljs-attr">price</span>: <span class="hljs-number">4.99</span>, <span class="hljs-attr">estimatedDays</span>: <span class="hljs-number">5</span> }];
+  }
+
+  <span class="hljs-keyword">async</span> <span class="hljs-title function_">createShipment</span>(<span class="hljs-attr">orderId</span>: <span class="hljs-built_in">string</span>, <span class="hljs-attr">signal</span>: <span class="hljs-title class_">AbortSignal</span>): <span class="hljs-title class_">Promise</span>&lt;<span class="hljs-title class_">Shipment</span>&gt; {
+    <span class="hljs-keyword">const</span> order = <span class="hljs-keyword">await</span> <span class="hljs-variable language_">this</span>.<span class="hljs-property">ordersService</span>.<span class="hljs-title function_">findOne</span>(orderId);
+    <span class="hljs-keyword">return</span> <span class="hljs-variable language_">this</span>.<span class="hljs-property">carrierClient</span>.<span class="hljs-title function_">createShipment</span>(order, signal);
+  }
+}</code></pre></div></figure>
+<p>Now the route. <code>@Resilience(&#39;carrier&#39;)</code> applies the preset, and <code>@Signal()</code> injects the current attempt&#39;s <code>AbortSignal</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>shipping/shipping.controller.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { <span class="hljs-title class_">Controller</span>, <span class="hljs-title class_">Get</span>, <span class="hljs-title class_">Query</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/common&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">Resilience</span>, <span class="hljs-title class_">Signal</span>, <span class="hljs-title class_">Timeout</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/resilience&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">ShippingService</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./shipping.service.js&#x27;</span>;
+
+<span class="hljs-meta">@Controller</span>(<span class="hljs-string">&#x27;shipping&#x27;</span>)
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">ShippingController</span> {
+  <span class="hljs-title function_">constructor</span>(<span class="hljs-params"><span class="hljs-keyword">private</span> <span class="hljs-keyword">readonly</span> <span class="hljs-attr">shippingService</span>: <span class="hljs-title class_">ShippingService</span></span>) {}
+
+  <span class="hljs-meta">@Get</span>(<span class="hljs-string">&#x27;quotes&#x27;</span>)
+  <span class="hljs-meta">@Resilience</span>(<span class="hljs-string">&#x27;carrier&#x27;</span>)
+  <span class="hljs-meta">@Timeout</span>(<span class="hljs-string">&#x27;1.5s&#x27;</span>)
+  <span class="hljs-title function_">getQuotes</span>(<span class="hljs-params"><span class="hljs-meta">@Query</span>(<span class="hljs-string">&#x27;orderId&#x27;</span>) <span class="hljs-attr">orderId</span>: <span class="hljs-built_in">string</span>, <span class="hljs-meta">@Signal</span>() <span class="hljs-attr">signal</span>: <span class="hljs-title class_">AbortSignal</span></span>) {
+    <span class="hljs-keyword">return</span> <span class="hljs-variable language_">this</span>.<span class="hljs-property">shippingService</span>.<span class="hljs-title function_">getQuotes</span>(orderId, signal);
+  }
+}</code></pre></div></figure>
+<p>Register <code>CarrierClient</code> and <code>ShippingService</code> as providers, and <code>ShippingController</code> as a controller, of a <code>ShippingModule</code> that imports <code>OrdersModule</code>.</p>
+<p>Checkout can&#39;t wait long, so <code>@Timeout(&#39;1.5s&#39;)</code> gives this route a tighter budget than the preset&#39;s. Settings resolve <strong>stage by stage</strong>: a decorator on the handler wins over the preset for its own stage, and the preset still supplies the retry and the breaker. A bare <code>@Timeout()</code> would take the preset&#39;s 2 seconds, and fall back to <code>defaults.timeout</code> only where no preset or class-level <code>@Timeout()</code> sets a duration.</p>
+<p>When an attempt runs out of time, three things happen:</p>
+<ol>
+<li>The attempt is rejected with a <code>ResilienceTimeoutError</code>.</li>
+<li>The signal is aborted with that same error. <code>fetch()</code> rejects and closes the connection, so nothing keeps waiting for an answer nobody will read. Cancellation is cooperative: code that ignores the signal keeps running in the background, and its result is dropped.</li>
+<li>Because <code>GET</code> is a safe method, the preset&#39;s retry makes a second attempt. Only the pipes, inner interceptors and handler run again. Guards and middleware run once per request.</li>
+</ol>
+<p>If the second attempt times out as well, the client gets a <code>504</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JSON</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-json"><span class="hljs-punctuation">{</span>
+  <span class="hljs-attr">&quot;statusCode&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-number">504</span><span class="hljs-punctuation">,</span>
+  <span class="hljs-attr">&quot;error&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;Gateway Timeout&quot;</span><span class="hljs-punctuation">,</span>
+  <span class="hljs-attr">&quot;message&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;The operation timed out&quot;</span><span class="hljs-punctuation">,</span>
+  <span class="hljs-attr">&quot;code&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;TIMEOUT&quot;</span>
+<span class="hljs-punctuation">}</span></code></pre></div></figure>
+<p>The timeout applies <strong>per attempt</strong>, so a carrier that hangs costs this route about 3.2 seconds: two attempts of 1.5 s plus up to 200 ms of backoff. The status is 504 rather than 408 on purpose. A 408 claims that the <em>client</em> was too slow to send its request, and some clients and proxies repeat 408s automatically, even for <code>POST</code> requests.</p>
+<p>Client errors are not failures. A request for an unknown order throws <code>NotFoundException</code> before the carrier is called. It answers 404, and it is neither retried nor counted by the breaker.</p>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Hint</p><p>Code that can&#39;t take the signal as a parameter can inject <code>ResilienceContext</code> and read its <code>signal</code> and <code>attempt</code>. It reads the current attempt from <code>AsyncLocalStorage</code>, so it works in any service the handler calls, on every transport. A policy object used inside the attempt inherits its signal too, so the route&#39;s timeout also stops that policy&#39;s retries.</p>
+</div></aside>
+<h4 id="fail-fast-with-a-circuit-breaker">Fail fast with a circuit breaker</h4>
+<p>The preset&#39;s breaker records the outcome of every attempt. The <code>carrier</code> breaker opens once it has seen at least <code>minimumCalls</code> (10) calls, and at least <code>failureRateThreshold</code> (50%) of them failed. By default it looks at the last 20 calls. Every error counts as a failure, timeouts included, except client errors and rejections from other policies. A client error is a 4xx <code>HttpException</code>, or any other error with a 4xx <code>status</code> or <code>statusCode</code> property. That covers <code>CarrierError</code>: when the carrier answers <code>422</code> to a malformed request, it isn&#39;t down, so the breaker ignores the error and the retry doesn&#39;t repeat it. A <code>408</code> or <code>429</code> from the carrier is the exception, because it means the carrier is pushing back, so it counts like a <code>5xx</code>. An <code>HttpException</code> with one of those statuses is still a client error: the handler threw it to answer its own caller, and that says nothing about the carrier. To change what counts, pass a <code>recordIf</code> function in the breaker options.</p>
+<p>While the breaker is <strong>open</strong>, calls fail immediately and the carrier is not called at all. The client gets a <code>503</code> with a <code>Retry-After</code> header: the number of seconds until the breaker lets a probe call through. The retry wraps the breaker, so a rejection is never retried.</p>
+<p>After <code>openDuration</code> (30 s), the breaker is <strong>half-open</strong>. It lets one probe call through (see <code>halfOpenMaxCalls</code>). If the probe succeeds, the breaker closes and starts over with an empty window. If it fails, the breaker opens for another 30 seconds. The breaker doesn&#39;t use a timer for this. It checks the state on the next call.</p>
+<p>A 503 is correct, but checkout can do better. Add a fallback that serves flat-rate quotes while the carrier is known to be down (import <code>Fallback</code> and <code>CircuitOpenError</code> from <code>@nestjs/resilience</code>):</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>shipping/shipping.controller.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-meta">@Get</span>(<span class="hljs-string">&#x27;quotes&#x27;</span>)
+<span class="hljs-meta">@Resilience</span>(<span class="hljs-string">&#x27;carrier&#x27;</span>)
+<span class="hljs-meta">@Timeout</span>(<span class="hljs-string">&#x27;1.5s&#x27;</span>)
+<span class="hljs-meta">@Fallback</span>(<span class="hljs-string">&#x27;flatRateQuotes&#x27;</span>, {
+  <span class="hljs-attr">handleIf</span>: <span class="hljs-function">(<span class="hljs-params">error</span>) =&gt;</span> error <span class="hljs-keyword">instanceof</span> <span class="hljs-title class_">CircuitOpenError</span>,
+})
+<span class="hljs-title function_">getQuotes</span>(<span class="hljs-params"><span class="hljs-meta">@Query</span>(<span class="hljs-string">&#x27;orderId&#x27;</span>) <span class="hljs-attr">orderId</span>: <span class="hljs-built_in">string</span>, <span class="hljs-meta">@Signal</span>() <span class="hljs-attr">signal</span>: <span class="hljs-title class_">AbortSignal</span></span>) {
+  <span class="hljs-keyword">return</span> <span class="hljs-variable language_">this</span>.<span class="hljs-property">shippingService</span>.<span class="hljs-title function_">getQuotes</span>(orderId, signal);
+}
+
+<span class="hljs-title function_">flatRateQuotes</span>(<span class="hljs-params"></span>) {
+  <span class="hljs-keyword">return</span> <span class="hljs-variable language_">this</span>.<span class="hljs-property">shippingService</span>.<span class="hljs-title function_">flatRateQuotes</span>();
+}</code></pre></div></figure>
+<p><code>@Fallback()</code> takes the name of a method on the same class, or a function. TypeScript checks that the class has a method with that name. The fallback is called with the error and the <code>ExecutionContext</code>, and whatever it returns becomes the response. It can be a value, a <code>Promise</code> or an <code>Observable</code>. Fallback is the outermost stage, so it also sees the breaker&#39;s rejections.</p>
+<p>By default, a fallback replaces every error except client errors. The <code>handleIf</code> option narrows that down. Flat rates cost the store money on heavy parcels, such as bags of litter, so here they&#39;re a last resort: they&#39;re served only when the breaker says the carrier is down, and a single slow answer still gets a 504.</p>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Hint</p><p>To look at a breaker from your own code, inject <code>ResilienceService</code> and call <code>circuitBreaker(&#39;carrier&#39;)</code>. The breaker exposes <code>state</code> and <code>stats</code>, and you can force it open or closed with <code>trip()</code> and <code>reset()</code>.</p>
+</div></aside>
+<h4 id="cap-concurrent-csv-exports-with-a-bulkhead">Cap concurrent CSV exports with a bulkhead</h4>
+<p>The back office downloads all orders as a CSV file. Building the file reads every order and is heavy on both the database and the CPU. Two exports at a time are fine, but twenty would slow checkout down for everyone. A bulkhead caps how many run at the same time:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>orders/orders.controller.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { <span class="hljs-title class_">Controller</span>, <span class="hljs-title class_">Get</span>, <span class="hljs-title class_">Header</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/common&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">Bulkhead</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/resilience&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">OrdersService</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./orders.service.js&#x27;</span>;
+
+<span class="hljs-meta">@Controller</span>(<span class="hljs-string">&#x27;orders&#x27;</span>)
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">OrdersController</span> {
+  <span class="hljs-title function_">constructor</span>(<span class="hljs-params"><span class="hljs-keyword">private</span> <span class="hljs-keyword">readonly</span> <span class="hljs-attr">ordersService</span>: <span class="hljs-title class_">OrdersService</span></span>) {}
+
+  <span class="hljs-meta">@Get</span>(<span class="hljs-string">&#x27;export&#x27;</span>)
+  <span class="hljs-meta">@Header</span>(<span class="hljs-string">&#x27;Content-Type&#x27;</span>, <span class="hljs-string">&#x27;text/csv&#x27;</span>)
+  <span class="hljs-meta">@Bulkhead</span>({ <span class="hljs-attr">maxConcurrent</span>: <span class="hljs-number">2</span>, <span class="hljs-attr">maxQueue</span>: <span class="hljs-number">3</span>, <span class="hljs-attr">queueTimeout</span>: <span class="hljs-string">&#x27;10s&#x27;</span> })
+  <span class="hljs-title function_">export</span>(<span class="hljs-params"></span>) {
+    <span class="hljs-keyword">return</span> <span class="hljs-variable language_">this</span>.<span class="hljs-property">ordersService</span>.<span class="hljs-title function_">exportCsv</span>();
+  }
+}</code></pre></div></figure>
+<p>Two exports run at a time. Up to three more wait for a slot, for at most 10 seconds each. A sixth request gets a <code>503</code> right away, and so does a waiting request once its 10 seconds are up:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JSON</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-json"><span class="hljs-punctuation">{</span>
+  <span class="hljs-attr">&quot;statusCode&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-number">503</span><span class="hljs-punctuation">,</span>
+  <span class="hljs-attr">&quot;error&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;Service Unavailable&quot;</span><span class="hljs-punctuation">,</span>
+  <span class="hljs-attr">&quot;message&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;Server is at capacity&quot;</span><span class="hljs-punctuation">,</span>
+  <span class="hljs-attr">&quot;code&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;BULKHEAD_FULL&quot;</span>
+<span class="hljs-punctuation">}</span></code></pre></div></figure>
+<p>This 503 has no <code>Retry-After</code> header, because nobody knows when a slot will free up. The status is 503 rather than 429 because a 429 blames the client&#39;s request rate, while a full bulkhead means the server is at capacity for everyone.</p>
+<p>A slot stays taken until the handler finishes, or until a timeout on the route gives up on the attempt. A handler that ignores its signal then keeps running in the background, outside the bulkhead&#39;s count, which is one more reason to pass the signal to every call that takes one. A bulkhead without a name belongs to its handler, and is registered under the handler&#39;s name. To read its load, inject <code>ResilienceService</code> and look at <code>bulkhead(&#39;OrdersController.export&#39;)</code>, which has <code>active</code> and <code>queued</code> counts. Give the bulkhead a <code>name</code> to share one pool of slots between several handlers.</p>
+<h4 id="retry-a-post-safely">Retry a POST safely</h4>
+<p>So far, retries have only happened on <code>GET</code>. That&#39;s deliberate. On HTTP, a retry applies only to the safe methods <code>GET</code>, <code>HEAD</code> and <code>OPTIONS</code>, and on GraphQL only to queries. Running a <code>POST</code> twice might create two shipments, and the package can&#39;t know whether that&#39;s harmless. So a preset&#39;s retry is simply skipped on a <code>POST</code>. A <code>@Retry()</code> decorator placed directly on a <code>POST</code> handler is skipped too, and bootstrap warns about it:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Terminal</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-bash">WARN [ResilienceModule] @Retry() on ShippingController.createShipment() is inactive: it only re-runs safe operations (GET, HEAD, OPTIONS, GraphQL queries). If the handler is safe to repeat, use @Retry({ idempotent: <span class="hljs-literal">true</span> }).</code></pre></div></figure>
+<p>Booking a shipment <em>is</em> safe to repeat, because the carrier deduplicates shipments by <code>reference</code>, which is the order id. That matters for another reason too: a booking that timed out may still have gone through on the carrier&#39;s side, so the retry has to be safe anyway. Setting <code>idempotent: true</code> on <code>@Retry()</code> is how you state that running the handler twice within one request is fine:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>shipping/shipping.controller.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { <span class="hljs-title class_">Body</span>, <span class="hljs-title class_">Controller</span>, <span class="hljs-title class_">Get</span>, <span class="hljs-title class_">Post</span>, <span class="hljs-title class_">Query</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/common&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">Idempotent</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/idempotency&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">CircuitOpenError</span>, <span class="hljs-title class_">Fallback</span>, <span class="hljs-title class_">Resilience</span>, <span class="hljs-title class_">Retry</span>, <span class="hljs-title class_">Signal</span>, <span class="hljs-title class_">Timeout</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/resilience&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">ShippingService</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./shipping.service.js&#x27;</span>;
+
+<span class="hljs-meta">@Controller</span>(<span class="hljs-string">&#x27;shipping&#x27;</span>)
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">ShippingController</span> {
+  <span class="hljs-title function_">constructor</span>(<span class="hljs-params"><span class="hljs-keyword">private</span> <span class="hljs-keyword">readonly</span> <span class="hljs-attr">shippingService</span>: <span class="hljs-title class_">ShippingService</span></span>) {}
+
+  <span class="hljs-meta">@Get</span>(<span class="hljs-string">&#x27;quotes&#x27;</span>)
+  <span class="hljs-meta">@Resilience</span>(<span class="hljs-string">&#x27;carrier&#x27;</span>)
+  <span class="hljs-meta">@Timeout</span>(<span class="hljs-string">&#x27;1.5s&#x27;</span>)
+  <span class="hljs-meta">@Fallback</span>(<span class="hljs-string">&#x27;flatRateQuotes&#x27;</span>, {
+    <span class="hljs-attr">handleIf</span>: <span class="hljs-function">(<span class="hljs-params">error</span>) =&gt;</span> error <span class="hljs-keyword">instanceof</span> <span class="hljs-title class_">CircuitOpenError</span>,
+  })
+  <span class="hljs-title function_">getQuotes</span>(<span class="hljs-params"><span class="hljs-meta">@Query</span>(<span class="hljs-string">&#x27;orderId&#x27;</span>) <span class="hljs-attr">orderId</span>: <span class="hljs-built_in">string</span>, <span class="hljs-meta">@Signal</span>() <span class="hljs-attr">signal</span>: <span class="hljs-title class_">AbortSignal</span></span>) {
+    <span class="hljs-keyword">return</span> <span class="hljs-variable language_">this</span>.<span class="hljs-property">shippingService</span>.<span class="hljs-title function_">getQuotes</span>(orderId, signal);
+  }
+
+  <span class="hljs-title function_">flatRateQuotes</span>(<span class="hljs-params"></span>) {
+    <span class="hljs-keyword">return</span> <span class="hljs-variable language_">this</span>.<span class="hljs-property">shippingService</span>.<span class="hljs-title function_">flatRateQuotes</span>();
+  }
+
+  <span class="hljs-meta">@Post</span>(<span class="hljs-string">&#x27;shipments&#x27;</span>)
+  <span class="hljs-meta">@Idempotent</span>()
+  <span class="hljs-meta">@Resilience</span>(<span class="hljs-string">&#x27;carrier&#x27;</span>)
+  <span class="hljs-meta">@Retry</span>({ <span class="hljs-attr">idempotent</span>: <span class="hljs-literal">true</span> })
+  <span class="hljs-title function_">createShipment</span>(<span class="hljs-params"><span class="hljs-meta">@Body</span>(<span class="hljs-string">&#x27;orderId&#x27;</span>) <span class="hljs-attr">orderId</span>: <span class="hljs-built_in">string</span>, <span class="hljs-meta">@Signal</span>() <span class="hljs-attr">signal</span>: <span class="hljs-title class_">AbortSignal</span></span>) {
+    <span class="hljs-keyword">return</span> <span class="hljs-variable language_">this</span>.<span class="hljs-property">shippingService</span>.<span class="hljs-title function_">createShipment</span>(orderId, signal);
+  }
+}</code></pre></div></figure>
+<p>A handler-level <code>@Retry()</code> merges into the preset&#39;s retry, field by field. The fields you set win, and the rest come from the preset, then from <code>defaults.retry</code>. So this route keeps the preset&#39;s 2 attempts and adds only <code>idempotent: true</code>. The preset&#39;s 2-second timeout and its breaker still apply. Only a decorator can say <code>idempotent: true</code>: a preset can&#39;t declare every handler that uses it safe to repeat.</p>
+<p><code>idempotent: true</code> and <code>@Idempotent()</code> solve two different problems:</p>
+<ul>
+<li><code>idempotent: true</code> lets the <strong>server</strong> re-run the handler within one request.</li>
+<li><code>@Idempotent()</code> deduplicates the <strong>client&#39;s</strong> retries of the whole request. When a client repeats a request with the same <code>Idempotency-Key</code> header, it gets the stored response back and the handler doesn&#39;t run again.</li>
+</ul>
+<p>Register <code>IdempotencyModule</code> <strong>before</strong> <code>ResilienceModule</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app.module.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { <span class="hljs-title class_">Module</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/common&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">IdempotencyModule</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/idempotency&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">ResilienceModule</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/resilience&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">OrdersModule</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./orders/orders.module.js&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">ShippingModule</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./shipping/shipping.module.js&#x27;</span>;
+
+<span class="hljs-meta">@Module</span>({
+  <span class="hljs-attr">imports</span>: [
+    <span class="hljs-comment">// Import order matters: the first global interceptor runs outermost.</span>
+    <span class="hljs-title class_">IdempotencyModule</span>.<span class="hljs-title function_">forRoot</span>({}),
+    <span class="hljs-title class_">ResilienceModule</span>.<span class="hljs-title function_">forRoot</span>({
+      <span class="hljs-attr">defaults</span>: {
+        <span class="hljs-attr">timeout</span>: <span class="hljs-string">&#x27;5s&#x27;</span>,
+        <span class="hljs-attr">retry</span>: { <span class="hljs-attr">attempts</span>: <span class="hljs-number">3</span>, <span class="hljs-attr">backoff</span>: { <span class="hljs-attr">delay</span>: <span class="hljs-string">&#x27;200ms&#x27;</span>, <span class="hljs-attr">maxDelay</span>: <span class="hljs-string">&#x27;2s&#x27;</span> } },
+      },
+      <span class="hljs-attr">presets</span>: {
+        <span class="hljs-attr">carrier</span>: {
+          <span class="hljs-attr">timeout</span>: <span class="hljs-string">&#x27;2s&#x27;</span>,
+          <span class="hljs-attr">retry</span>: { <span class="hljs-attr">attempts</span>: <span class="hljs-number">2</span> },
+          <span class="hljs-attr">circuitBreaker</span>: { <span class="hljs-attr">failureRateThreshold</span>: <span class="hljs-number">50</span>, <span class="hljs-attr">minimumCalls</span>: <span class="hljs-number">10</span>, <span class="hljs-attr">openDuration</span>: <span class="hljs-string">&#x27;30s&#x27;</span> },
+        },
+      },
+    }),
+    <span class="hljs-title class_">OrdersModule</span>,
+    <span class="hljs-title class_">ShippingModule</span>,
+  ],
+})
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">AppModule</span> {}</code></pre></div></figure>
+<p>Both modules register a global interceptor, and the one imported first runs outermost. With this order:</p>
+<ul>
+<li>A replay, or a <code>409</code> for a key that is still in flight, is answered before any retry, breaker or timeout runs. A booking that already succeeded replays even while the breaker is open.</li>
+<li>All the retries of one request happen under a single claimed key.</li>
+<li>The stored response is the final outcome, after retries and any fallback.</li>
+<li>A <code>503</code> or <code>504</code> is a 5xx response, so the key is released and the client can try again later with the same key.</li>
+</ul>
+<p>Releasing the key on a <code>504</code> has a catch. The key is released as soon as the timeout answers, but the timed-out run may still be in progress, or may already have reached the carrier, so a retry with the same key can overlap it. That&#39;s why the side effect has to be safe to repeat downstream, as the carrier makes it with <code>reference</code>. Passing the signal on, as <code>createShipment()</code> does, stops the local work sooner.</p>
+<h4 id="use-the-same-policies-inside-services">Use the same policies inside services</h4>
+<p>Pending orders include a shipping estimate in their <code>total</code>. Every 15 minutes, a background job re-quotes them. The job isn&#39;t an entrypoint, so it uses a <strong>policy object</strong>, which you get from <code>ResilienceService</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>shipping/repricing.service.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { <span class="hljs-title class_">Injectable</span>, <span class="hljs-title class_">Logger</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/common&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">CircuitOpenError</span>, <span class="hljs-title class_">ResilienceService</span>, <span class="hljs-keyword">type</span> <span class="hljs-title class_">ResiliencePolicy</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/resilience&#x27;</span>;
+<span class="hljs-keyword">import</span> { subtotal } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;../orders/order.js&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">OrdersService</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;../orders/orders.service.js&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">CarrierClient</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./carrier.client.js&#x27;</span>;
+
+<span class="hljs-meta">@Injectable</span>()
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">RepricingService</span> {
+  <span class="hljs-keyword">private</span> <span class="hljs-keyword">readonly</span> logger = <span class="hljs-keyword">new</span> <span class="hljs-title class_">Logger</span>(<span class="hljs-title class_">RepricingService</span>.<span class="hljs-property">name</span>);
+  <span class="hljs-keyword">private</span> <span class="hljs-keyword">readonly</span> <span class="hljs-attr">resiliencePolicy</span>: <span class="hljs-title class_">ResiliencePolicy</span>;
+
+  <span class="hljs-title function_">constructor</span>(<span class="hljs-params">
+    <span class="hljs-attr">resilience</span>: <span class="hljs-title class_">ResilienceService</span>,
+    <span class="hljs-keyword">private</span> <span class="hljs-keyword">readonly</span> <span class="hljs-attr">ordersService</span>: <span class="hljs-title class_">OrdersService</span>,
+    <span class="hljs-keyword">private</span> <span class="hljs-keyword">readonly</span> <span class="hljs-attr">carrierClient</span>: <span class="hljs-title class_">CarrierClient</span>,
+  </span>) {
+    <span class="hljs-variable language_">this</span>.<span class="hljs-property">resiliencePolicy</span> = resilience.<span class="hljs-title function_">preset</span>(<span class="hljs-string">&#x27;carrier&#x27;</span>);
+  }
+
+  <span class="hljs-comment">/** Refreshes the shipping part of every pending order&#x27;s total. */</span>
+  <span class="hljs-keyword">async</span> <span class="hljs-title function_">repricePendingOrders</span>(): <span class="hljs-title class_">Promise</span>&lt;<span class="hljs-built_in">number</span>&gt; {
+    <span class="hljs-keyword">const</span> pending = (<span class="hljs-keyword">await</span> <span class="hljs-variable language_">this</span>.<span class="hljs-property">ordersService</span>.<span class="hljs-title function_">findAll</span>()).<span class="hljs-title function_">filter</span>(<span class="hljs-function">(<span class="hljs-params">order</span>) =&gt;</span> order.<span class="hljs-property">status</span> === <span class="hljs-string">&#x27;pending&#x27;</span>);
+    <span class="hljs-keyword">let</span> repriced = <span class="hljs-number">0</span>;
+    <span class="hljs-keyword">for</span> (<span class="hljs-keyword">const</span> order <span class="hljs-keyword">of</span> pending) {
+      <span class="hljs-keyword">try</span> {
+        <span class="hljs-keyword">const</span> quotes = <span class="hljs-keyword">await</span> <span class="hljs-variable language_">this</span>.<span class="hljs-property">resiliencePolicy</span>.<span class="hljs-title function_">execute</span>(
+          <span class="hljs-function">(<span class="hljs-params">{ signal }</span>) =&gt;</span> <span class="hljs-variable language_">this</span>.<span class="hljs-property">carrierClient</span>.<span class="hljs-title function_">getQuotes</span>(order, signal),
+          { <span class="hljs-attr">source</span>: <span class="hljs-string">&#x27;RepricingService.repricePendingOrders&#x27;</span> },
+        );
+        <span class="hljs-keyword">const</span> shipping = <span class="hljs-title class_">Math</span>.<span class="hljs-title function_">min</span>(...quotes.<span class="hljs-title function_">map</span>(<span class="hljs-function">(<span class="hljs-params">quote</span>) =&gt;</span> quote.<span class="hljs-property">price</span>));
+        <span class="hljs-keyword">await</span> <span class="hljs-variable language_">this</span>.<span class="hljs-property">ordersService</span>.<span class="hljs-title function_">update</span>(order.<span class="hljs-property">id</span>, { <span class="hljs-attr">total</span>: <span class="hljs-title function_">subtotal</span>(order) + shipping });
+        repriced++;
+      } <span class="hljs-keyword">catch</span> (error) {
+        <span class="hljs-keyword">if</span> (error <span class="hljs-keyword">instanceof</span> <span class="hljs-title class_">CircuitOpenError</span>) {
+          <span class="hljs-variable language_">this</span>.<span class="hljs-property">logger</span>.<span class="hljs-title function_">warn</span>(<span class="hljs-string">`The carrier is unavailable, stopping after <span class="hljs-subst">${repriced}</span> of <span class="hljs-subst">${pending.length}</span> orders`</span>);
+          <span class="hljs-keyword">break</span>;
+        }
+        <span class="hljs-variable language_">this</span>.<span class="hljs-property">logger</span>.<span class="hljs-title function_">error</span>(<span class="hljs-string">`Could not reprice order <span class="hljs-subst">${order.id}</span>`</span>, (error <span class="hljs-keyword">as</span> <span class="hljs-title class_">Error</span>).<span class="hljs-property">stack</span>);
+      }
+    }
+    <span class="hljs-keyword">return</span> repriced;
+  }
+}</code></pre></div></figure>
+<p>Add <code>RepricingService</code> to the providers of <code>ShippingModule</code>, and call <code>repricePendingOrders()</code> from a scheduled job (see <a href="#/doc/application/task-scheduling@declarative-cron-jobs">Task scheduling</a>).</p>
+<p><code>resilience.preset(&#39;carrier&#39;)</code> returns the preset as one policy. Its breaker is the <strong>same instance</strong> that the routes use, so the job and checkout share what they learn about the carrier in both directions:</p>
+<ul>
+<li>While the breaker is open, the job gets a <code>CircuitOpenError</code> immediately and stops, instead of spending a timeout on every order.</li>
+<li>If the job is the first to find the carrier failing, its failures open the breaker, and checkout serves flat rates without waiting on timeouts first.</li>
+</ul>
+<p>A few details differ from entrypoints:</p>
+<ul>
+<li><code>execute()</code> passes your function the attempt&#39;s <code>signal</code> and <code>attempt</code> number. The <code>source</code> option labels the events this call emits.</li>
+<li>A policy object has no <code>GET</code> or <code>POST</code> to look at, so the preset&#39;s retry <strong>always</strong> applies. Only wrap calls that are safe to repeat (a quote is).</li>
+<li>The route&#39;s <code>@Timeout(&#39;1.5s&#39;)</code> belongs to the route. The job gets the preset&#39;s 2 seconds.</li>
+<li>Create the policy once, for example in the constructor, not on every call. For options that aren&#39;t a preset, use <code>resilience.create(options, name)</code>.</li>
+</ul>
+<p>Why not put <code>@Retry()</code> on <code>repricePendingOrders()</code>? Resilience decorators are metadata that the global interceptor reads, and interceptors only run around entrypoints. On a provider method, a decorator would do nothing, so bootstrap warns instead:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Terminal</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-bash">WARN [ResilienceModule] Resilience decorators on RepricingService.repricePendingOrders() have no effect: RepricingService is not a controller, resolver or gateway. They apply to entrypoints only. Inside services, use a policy object (ResilienceService.preset() or create(), or new RetryPolicy() etc.).</code></pre></div></figure>
+<p>This is a deliberate choice, for three reasons:</p>
+<ul>
+<li>Wrapping arbitrary provider methods would miss request-scoped and transient instances, which Nest creates after bootstrap.</li>
+<li>Retries hidden deep inside services multiply. A route that makes 3 attempts, calling a service that makes 3 attempts, calling an SDK that makes 3 attempts, sends up to 27 requests to a dependency that is already struggling.</li>
+<li>A policy object is visible at the call site, where you can see what it does.</li>
+</ul>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Hint</p><p>An entrypoint without decorators still maps resilience errors. If a service throws a <code>CircuitOpenError</code> inside a plain route, the client gets a <code>503</code> with <code>Retry-After</code>. Set <code>mapErrors: false</code> in the module options to turn this off.</p>
+</div></aside>
+<h4 id="other-transports">Other transports</h4>
+<p>The same decorators work on microservice handlers. The warehouse service asks for quotes over TCP when it re-packs an order:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>shipping/shipping.handlers.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { <span class="hljs-title class_">Controller</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/common&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">MessagePattern</span>, <span class="hljs-title class_">Payload</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/microservices&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">Resilience</span>, <span class="hljs-title class_">Retry</span>, <span class="hljs-title class_">Signal</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/resilience&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">ShippingService</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./shipping.service.js&#x27;</span>;
+
+<span class="hljs-meta">@Controller</span>()
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">ShippingHandlers</span> {
+  <span class="hljs-title function_">constructor</span>(<span class="hljs-params"><span class="hljs-keyword">private</span> <span class="hljs-keyword">readonly</span> <span class="hljs-attr">shippingService</span>: <span class="hljs-title class_">ShippingService</span></span>) {}
+
+  <span class="hljs-meta">@MessagePattern</span>(<span class="hljs-string">&#x27;shipping.quotes&#x27;</span>)
+  <span class="hljs-meta">@Resilience</span>(<span class="hljs-string">&#x27;carrier&#x27;</span>)
+  <span class="hljs-meta">@Retry</span>({ <span class="hljs-attr">attempts</span>: <span class="hljs-number">3</span> })
+  <span class="hljs-title function_">getQuotes</span>(<span class="hljs-params"><span class="hljs-meta">@Payload</span>() <span class="hljs-attr">data</span>: { orderId: <span class="hljs-built_in">string</span> }, <span class="hljs-meta">@Signal</span>() <span class="hljs-attr">signal</span>: <span class="hljs-title class_">AbortSignal</span></span>) {
+    <span class="hljs-keyword">return</span> <span class="hljs-variable language_">this</span>.<span class="hljs-property">shippingService</span>.<span class="hljs-title function_">getQuotes</span>(data.<span class="hljs-property">orderId</span>, signal);
+  }
+}</code></pre></div></figure>
+<p>Add <code>ShippingHandlers</code> to the <code>controllers</code> of <code>ShippingModule</code>.</p>
+<p>A message has no <code>GET</code> or <code>POST</code> to tell whether it&#39;s safe to repeat, so on message, event and WebSocket handlers, only a <code>@Retry()</code> on the handler itself turns retries on. A preset&#39;s retry, or a class-level <code>@Retry()</code> without <code>idempotent: true</code>, doesn&#39;t apply there on its own, so reusing the <code>carrier</code> preset can&#39;t silently re-run a handler with side effects. Here the handler&#39;s <code>@Retry()</code> opts in, and its <code>attempts: 3</code> raises the preset&#39;s 2 attempts to 3. Only use it on handlers that are safe to run twice. Errors reach the caller as an <code>RpcException</code> with a structured payload:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JSON</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-json"><span class="hljs-punctuation">{</span> <span class="hljs-attr">&quot;status&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;error&quot;</span><span class="hljs-punctuation">,</span> <span class="hljs-attr">&quot;code&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;CIRCUIT_OPEN&quot;</span><span class="hljs-punctuation">,</span> <span class="hljs-attr">&quot;statusCode&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-number">503</span><span class="hljs-punctuation">,</span> <span class="hljs-attr">&quot;message&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;Service temporarily unavailable&quot;</span><span class="hljs-punctuation">,</span> <span class="hljs-attr">&quot;retryAfter&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-number">30</span> <span class="hljs-punctuation">}</span></code></pre></div></figure>
+<p>A timeout has <code>&quot;code&quot;: &quot;TIMEOUT&quot;</code> and <code>&quot;statusCode&quot;: 504</code>, and no <code>retryAfter</code>. In a hybrid application, connect the microservice with <code>inheritAppConfig: true</code>, or the global interceptor won&#39;t reach its handlers (see <a href="#/doc/faq/hybrid-application@sharing-configuration">Hybrid application</a>):</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>main.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { <span class="hljs-title class_">NestFactory</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/core&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">Transport</span>, <span class="hljs-keyword">type</span> <span class="hljs-title class_">MicroserviceOptions</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/microservices&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">AppModule</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./app.module.js&#x27;</span>;
+
+<span class="hljs-keyword">async</span> <span class="hljs-keyword">function</span> <span class="hljs-title function_">bootstrap</span>(<span class="hljs-params"></span>) {
+  <span class="hljs-keyword">const</span> app = <span class="hljs-keyword">await</span> <span class="hljs-title class_">NestFactory</span>.<span class="hljs-title function_">create</span>(<span class="hljs-title class_">AppModule</span>);
+  app.<span class="hljs-property">connectMicroservice</span>&lt;<span class="hljs-title class_">MicroserviceOptions</span>&gt;(
+    { <span class="hljs-attr">transport</span>: <span class="hljs-title class_">Transport</span>.<span class="hljs-property">TCP</span>, <span class="hljs-attr">options</span>: { <span class="hljs-attr">port</span>: <span class="hljs-number">3001</span> } },
+    { <span class="hljs-attr">inheritAppConfig</span>: <span class="hljs-literal">true</span> },
+  );
+  <span class="hljs-keyword">await</span> app.<span class="hljs-title function_">startAllMicroservices</span>();
+  <span class="hljs-keyword">await</span> app.<span class="hljs-title function_">listen</span>(process.<span class="hljs-property">env</span>.<span class="hljs-property">PORT</span> ?? <span class="hljs-number">3000</span>);
+}
+<span class="hljs-keyword">await</span> <span class="hljs-title function_">bootstrap</span>();</code></pre></div></figure>
+<p>GraphQL resolvers work the same way. If your application serves GraphQL, add a resolver to <code>ShippingModule</code>&#39;s providers:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>shipping/shipping.resolver.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { <span class="hljs-title class_">Args</span>, <span class="hljs-title class_">Field</span>, <span class="hljs-title class_">Float</span>, <span class="hljs-title class_">Int</span>, <span class="hljs-title class_">ObjectType</span>, <span class="hljs-title class_">Query</span>, <span class="hljs-title class_">Resolver</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/graphql&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">Resilience</span>, <span class="hljs-title class_">Signal</span>, <span class="hljs-title class_">Timeout</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/resilience&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">ShippingService</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./shipping.service.js&#x27;</span>;
+
+<span class="hljs-meta">@ObjectType</span>(<span class="hljs-string">&#x27;ShippingQuote&#x27;</span>)
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">ShippingQuoteModel</span> {
+  <span class="hljs-meta">@Field</span>() <span class="hljs-attr">service</span>: <span class="hljs-built_in">string</span>;
+  <span class="hljs-meta">@Field</span>(<span class="hljs-function">() =&gt;</span> <span class="hljs-title class_">Float</span>) <span class="hljs-attr">price</span>: <span class="hljs-built_in">number</span>;
+  <span class="hljs-meta">@Field</span>(<span class="hljs-function">() =&gt;</span> <span class="hljs-title class_">Int</span>) <span class="hljs-attr">estimatedDays</span>: <span class="hljs-built_in">number</span>;
+}
+
+<span class="hljs-meta">@Resolver</span>(<span class="hljs-function">() =&gt;</span> <span class="hljs-title class_">ShippingQuoteModel</span>)
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">ShippingResolver</span> {
+  <span class="hljs-title function_">constructor</span>(<span class="hljs-params"><span class="hljs-keyword">private</span> <span class="hljs-keyword">readonly</span> <span class="hljs-attr">shippingService</span>: <span class="hljs-title class_">ShippingService</span></span>) {}
+
+  <span class="hljs-meta">@Query</span>(<span class="hljs-function">() =&gt;</span> [<span class="hljs-title class_">ShippingQuoteModel</span>], { <span class="hljs-attr">nullable</span>: <span class="hljs-literal">true</span> })
+  <span class="hljs-meta">@Resilience</span>(<span class="hljs-string">&#x27;carrier&#x27;</span>)
+  <span class="hljs-meta">@Timeout</span>(<span class="hljs-string">&#x27;1.5s&#x27;</span>)
+  <span class="hljs-title function_">shippingQuotes</span>(<span class="hljs-params"><span class="hljs-meta">@Args</span>(<span class="hljs-string">&#x27;orderId&#x27;</span>) <span class="hljs-attr">orderId</span>: <span class="hljs-built_in">string</span>, <span class="hljs-meta">@Signal</span>() <span class="hljs-attr">signal</span>: <span class="hljs-title class_">AbortSignal</span></span>) {
+    <span class="hljs-keyword">return</span> <span class="hljs-variable language_">this</span>.<span class="hljs-property">shippingService</span>.<span class="hljs-title function_">getQuotes</span>(orderId, signal);
+  }
+}</code></pre></div></figure>
+<p>Queries are retried, while mutations need <code>idempotent: true</code>, just like <code>POST</code> requests. A failure fails only its own field. The response still has status 200, and the error carries the code in <code>extensions</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>GraphQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-graphql"><span class="hljs-punctuation">{</span> shippingQuotes<span class="hljs-punctuation">(</span><span class="hljs-symbol">orderId</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;1001&quot;</span><span class="hljs-punctuation">)</span> <span class="hljs-punctuation">{</span> service price <span class="hljs-punctuation">}</span> <span class="hljs-punctuation">}</span></code></pre></div></figure>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JSON</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-json"><span class="hljs-punctuation">{</span>
+  <span class="hljs-attr">&quot;errors&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-punctuation">[</span>
+    <span class="hljs-punctuation">{</span>
+      <span class="hljs-attr">&quot;message&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;The operation timed out&quot;</span><span class="hljs-punctuation">,</span>
+      <span class="hljs-attr">&quot;locations&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-punctuation">[</span><span class="hljs-punctuation">{</span> <span class="hljs-attr">&quot;line&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-number">1</span><span class="hljs-punctuation">,</span> <span class="hljs-attr">&quot;column&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-number">3</span> <span class="hljs-punctuation">}</span><span class="hljs-punctuation">]</span><span class="hljs-punctuation">,</span>
+      <span class="hljs-attr">&quot;path&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-punctuation">[</span><span class="hljs-string">&quot;shippingQuotes&quot;</span><span class="hljs-punctuation">]</span><span class="hljs-punctuation">,</span>
+      <span class="hljs-attr">&quot;extensions&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-punctuation">{</span> <span class="hljs-attr">&quot;code&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;TIMEOUT&quot;</span><span class="hljs-punctuation">,</span> <span class="hljs-attr">&quot;httpStatus&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-number">504</span> <span class="hljs-punctuation">}</span>
+    <span class="hljs-punctuation">}</span>
+  <span class="hljs-punctuation">]</span><span class="hljs-punctuation">,</span>
+  <span class="hljs-attr">&quot;data&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-punctuation">{</span> <span class="hljs-attr">&quot;shippingQuotes&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-literal"><span class="hljs-keyword">null</span></span> <span class="hljs-punctuation">}</span>
+<span class="hljs-punctuation">}</span></code></pre></div></figure>
+<p>An open breaker reports <code>&quot;code&quot;: &quot;CIRCUIT_OPEN&quot;</code>, <code>&quot;httpStatus&quot;: 503</code> and <code>&quot;retryAfter&quot;</code> in seconds. The package sets <code>httpStatus</code> rather than Apollo&#39;s <code>extensions.http</code>, because Apollo would apply <code>extensions.http</code> to the whole response, although only one field failed.</p>
+<h4 id="observe-breaker-transitions">Observe breaker transitions</h4>
+<p>Every policy emits typed events: <code>retry</code>, <code>timeout</code>, <code>circuit-open</code>, <code>circuit-half-open</code>, <code>circuit-closed</code>, <code>circuit-rejected</code>, <code>bulkhead-rejected</code>, <code>rate-limited</code> and <code>fallback</code>. Each event carries the <code>policy</code> name, and its <code>source</code> when there is one: the entrypoint (such as <code>ShippingController.getQuotes</code>) or the label passed to <code>execute()</code>. Inject <code>ResilienceEvents</code> to get them: its <code>events$</code> is an RxJS stream of every event from this application&#39;s policies. Log the ones someone should see:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>resilience.logger.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { <span class="hljs-title class_">Injectable</span>, <span class="hljs-title class_">Logger</span>, <span class="hljs-keyword">type</span> <span class="hljs-title class_">OnModuleInit</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/common&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">ResilienceEvents</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/resilience&#x27;</span>;
+
+<span class="hljs-meta">@Injectable</span>()
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">ResilienceLogger</span> <span class="hljs-keyword">implements</span> <span class="hljs-title class_">OnModuleInit</span> {
+  <span class="hljs-keyword">private</span> <span class="hljs-keyword">readonly</span> logger = <span class="hljs-keyword">new</span> <span class="hljs-title class_">Logger</span>(<span class="hljs-string">&#x27;Resilience&#x27;</span>);
+
+  <span class="hljs-title function_">constructor</span>(<span class="hljs-params"><span class="hljs-keyword">private</span> <span class="hljs-keyword">readonly</span> <span class="hljs-attr">resilienceEvents</span>: <span class="hljs-title class_">ResilienceEvents</span></span>) {}
+
+  <span class="hljs-title function_">onModuleInit</span>(<span class="hljs-params"></span>) {
+    <span class="hljs-variable language_">this</span>.<span class="hljs-property">resilienceEvents</span>.<span class="hljs-property">events$</span>.<span class="hljs-title function_">subscribe</span>(<span class="hljs-function">(<span class="hljs-params">event</span>) =&gt;</span> {
+      <span class="hljs-keyword">switch</span> (event.<span class="hljs-property">type</span>) {
+        <span class="hljs-keyword">case</span> <span class="hljs-string">&#x27;circuit-open&#x27;</span>:
+        <span class="hljs-keyword">case</span> <span class="hljs-string">&#x27;circuit-half-open&#x27;</span>:
+        <span class="hljs-keyword">case</span> <span class="hljs-string">&#x27;circuit-closed&#x27;</span>:
+          <span class="hljs-variable language_">this</span>.<span class="hljs-property">logger</span>.<span class="hljs-title function_">warn</span>(<span class="hljs-string">`Circuit &quot;<span class="hljs-subst">${event.policy}</span>&quot; went from <span class="hljs-subst">${event.<span class="hljs-keyword">from</span>}</span> to <span class="hljs-subst">${event.to}</span>`</span>);
+          <span class="hljs-keyword">break</span>;
+        <span class="hljs-keyword">case</span> <span class="hljs-string">&#x27;bulkhead-rejected&#x27;</span>:
+          <span class="hljs-variable language_">this</span>.<span class="hljs-property">logger</span>.<span class="hljs-title function_">warn</span>(<span class="hljs-string">`<span class="hljs-subst">${event.source}</span> is at capacity (<span class="hljs-subst">${event.active}</span> running, <span class="hljs-subst">${event.queued}</span> queued)`</span>);
+          <span class="hljs-keyword">break</span>;
+        <span class="hljs-keyword">case</span> <span class="hljs-string">&#x27;fallback&#x27;</span>:
+          <span class="hljs-variable language_">this</span>.<span class="hljs-property">logger</span>.<span class="hljs-title function_">log</span>(<span class="hljs-string">`<span class="hljs-subst">${event.source}</span> answered with its fallback`</span>);
+          <span class="hljs-keyword">break</span>;
+      }
+    });
+  }
+}</code></pre></div></figure>
+<p>Add <code>ResilienceLogger</code> to the <code>providers</code> array of <code>AppModule</code>.</p>
+<p>Every policy also publishes each event on a <a target="_blank" rel="noopener" href="https://nodejs.org/api/diagnostics_channel.html">diagnostics channel</a> of its own, such as <code>nestjs:resilience:timeout</code> or <code>nestjs:resilience:circuit-open</code>, including policies created without the module. Metrics and tracing tools can subscribe without any dependency on this package. <code>ResilienceTimeoutEvent</code> is the type of one channel&#39;s messages, and <code>ResilienceEvent</code> the union of them all:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { subscribe } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;node:diagnostics_channel&#x27;</span>;
+<span class="hljs-keyword">import</span> <span class="hljs-keyword">type</span> { <span class="hljs-title class_">ResilienceTimeoutEvent</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/resilience&#x27;</span>;
+
+<span class="hljs-keyword">const</span> timeouts = <span class="hljs-keyword">new</span> <span class="hljs-title class_">Map</span>&lt;<span class="hljs-built_in">string</span>, <span class="hljs-built_in">number</span>&gt;();
+
+<span class="hljs-title function_">subscribe</span>(<span class="hljs-string">&#x27;nestjs:resilience:timeout&#x27;</span>, <span class="hljs-function">(<span class="hljs-params">message</span>) =&gt;</span> {
+  <span class="hljs-keyword">const</span> { policy } = message <span class="hljs-keyword">as</span> <span class="hljs-title class_">ResilienceTimeoutEvent</span>;
+  timeouts.<span class="hljs-title function_">set</span>(policy, (timeouts.<span class="hljs-title function_">get</span>(policy) ?? <span class="hljs-number">0</span>) + <span class="hljs-number">1</span>);
+});</code></pre></div></figure>
+<p><a href="#/doc/observability/overview@what-it-offers">NestJS Observe</a> already reads outbound HTTP from Node&#39;s diagnostics channels (see <a href="#/doc/observability/sdk@database-queries-and-outbound-http">Database queries and outbound HTTP</a>). It doesn&#39;t subscribe to the <code>nestjs:resilience</code> channels yet. Once it does, it can attach retries and timeouts to the request&#39;s span, chart breaker state per name, and alert on bulkhead rejections, with no code in either package that depends on the other.</p>
+<h4 id="try-it">Try it</h4>
+<p>Start the application with <code>CARRIER_URL</code> pointing at a carrier stub you control, such as a mock server or a few lines of <code>node:http</code>. While the carrier answers, checkout gets live quotes:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Terminal</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-bash">$ curl <span class="hljs-string">&quot;localhost:3000/shipping/quotes?orderId=1001&quot;</span>
+[{<span class="hljs-string">&quot;service&quot;</span>:<span class="hljs-string">&quot;ground&quot;</span>,<span class="hljs-string">&quot;price&quot;</span>:6.9,<span class="hljs-string">&quot;estimatedDays&quot;</span>:4},{<span class="hljs-string">&quot;service&quot;</span>:<span class="hljs-string">&quot;express&quot;</span>,<span class="hljs-string">&quot;price&quot;</span>:14.5,<span class="hljs-string">&quot;estimatedDays&quot;</span>:1}]</code></pre></div></figure>
+<p>Now make the stub hang. The same request answers <code>504</code> after about 3 seconds, and the stub sees both of its requests cancelled:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Terminal</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-bash">$ curl <span class="hljs-string">&quot;localhost:3000/shipping/quotes?orderId=1001&quot;</span>
+{<span class="hljs-string">&quot;statusCode&quot;</span>:504,<span class="hljs-string">&quot;error&quot;</span>:<span class="hljs-string">&quot;Gateway Timeout&quot;</span>,<span class="hljs-string">&quot;message&quot;</span>:<span class="hljs-string">&quot;The operation timed out&quot;</span>,<span class="hljs-string">&quot;code&quot;</span>:<span class="hljs-string">&quot;TIMEOUT&quot;</span>}</code></pre></div></figure>
+<p>Keep sending it. Each request records two failed attempts. On the fifth slow request, the breaker has 10 calls in its window and 9 of them failed. The breaker opens, the request&#39;s second attempt is rejected, and the fallback answers. The application logs:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Terminal</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-bash">WARN [Resilience] Circuit <span class="hljs-string">&quot;carrier&quot;</span> went from closed to open
+LOG [Resilience] ShippingController.getQuotes answered with its fallback</code></pre></div></figure>
+<p>From now on, booking a shipment fails fast without calling the carrier:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Terminal</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-bash">$ curl -i -X POST localhost:3000/shipping/shipments \
+    -H <span class="hljs-string">&quot;Content-Type: application/json&quot;</span> \
+    -H <span class="hljs-string">&quot;Idempotency-Key: 5f1c2a9e-shipment-1001&quot;</span> \
+    -d <span class="hljs-string">&#x27;{&quot;orderId&quot;:&quot;1001&quot;}&#x27;</span>
+HTTP/1.1 503 Service Unavailable
+Retry-After: 30
+
+{<span class="hljs-string">&quot;statusCode&quot;</span>:503,<span class="hljs-string">&quot;error&quot;</span>:<span class="hljs-string">&quot;Service Unavailable&quot;</span>,<span class="hljs-string">&quot;message&quot;</span>:<span class="hljs-string">&quot;Service temporarily unavailable&quot;</span>,<span class="hljs-string">&quot;code&quot;</span>:<span class="hljs-string">&quot;CIRCUIT_OPEN&quot;</span>}</code></pre></div></figure>
+<p>Quotes, meanwhile, answer immediately with the flat rate:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Terminal</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-bash">$ curl <span class="hljs-string">&quot;localhost:3000/shipping/quotes?orderId=1002&quot;</span>
+[{<span class="hljs-string">&quot;service&quot;</span>:<span class="hljs-string">&quot;flat-rate&quot;</span>,<span class="hljs-string">&quot;price&quot;</span>:4.99,<span class="hljs-string">&quot;estimatedDays&quot;</span>:5}]</code></pre></div></figure>
+<p>Let the stub answer again and wait 30 seconds. The next quote request is the probe. It succeeds, so the breaker closes and checkout shows live quotes again:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Terminal</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-bash">WARN [Resilience] Circuit <span class="hljs-string">&quot;carrier&quot;</span> went from open to half-open
+WARN [Resilience] Circuit <span class="hljs-string">&quot;carrier&quot;</span> went from half-open to closed</code></pre></div></figure>
+<p>Repeating the booking with the same <code>Idempotency-Key</code> now creates the shipment and returns <code>201</code>. The earlier 503 released the key.</p>
+<h4 id="testing">Testing</h4>
+<p>Resilience behavior is worth testing, but not by waiting 30 seconds for a breaker. Replace <code>CarrierClient</code> with a fake, and use Vitest&#39;s fake timers for the clock. Fake only <code>setTimeout</code>, <code>clearTimeout</code> and <code>Date</code>, so that the HTTP server and supertest keep working with real I/O:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>test/shipping.e2e-spec.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> <span class="hljs-keyword">type</span> { <span class="hljs-title class_">INestApplication</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/common&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">ResilienceService</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/resilience&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">Test</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/testing&#x27;</span>;
+<span class="hljs-keyword">import</span> request <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;supertest&#x27;</span>;
+<span class="hljs-keyword">import</span> { afterEach, beforeEach, describe, expect, it, vi } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;vitest&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">AppModule</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;../src/app.module.js&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">CarrierClient</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;../src/shipping/carrier.client.js&#x27;</span>;
+
+<span class="hljs-keyword">const</span> liveQuotes = [{ <span class="hljs-attr">service</span>: <span class="hljs-string">&#x27;ground&#x27;</span>, <span class="hljs-attr">price</span>: <span class="hljs-number">6.9</span>, <span class="hljs-attr">estimatedDays</span>: <span class="hljs-number">4</span> }];
+
+<span class="hljs-comment">/** A carrier call that only ends when its signal aborts. */</span>
+<span class="hljs-keyword">const</span> <span class="hljs-title function_">hang</span> = (<span class="hljs-params"><span class="hljs-attr">_order</span>: <span class="hljs-built_in">unknown</span>, <span class="hljs-attr">signal</span>: <span class="hljs-title class_">AbortSignal</span></span>) =&gt;
+  <span class="hljs-keyword">new</span> <span class="hljs-title class_">Promise</span>(<span class="hljs-function">(<span class="hljs-params">_, reject</span>) =&gt;</span> signal.<span class="hljs-title function_">addEventListener</span>(<span class="hljs-string">&#x27;abort&#x27;</span>, <span class="hljs-function">() =&gt;</span> <span class="hljs-title function_">reject</span>(signal.<span class="hljs-property">reason</span>)));
+
+<span class="hljs-title function_">describe</span>(<span class="hljs-string">&#x27;Shipping quotes&#x27;</span>, <span class="hljs-function">() =&gt;</span> {
+  <span class="hljs-keyword">let</span> <span class="hljs-attr">app</span>: <span class="hljs-title class_">INestApplication</span>;
+  <span class="hljs-keyword">const</span> carrier = { <span class="hljs-attr">getQuotes</span>: vi.<span class="hljs-title function_">fn</span>(), <span class="hljs-attr">createShipment</span>: vi.<span class="hljs-title function_">fn</span>() };
+
+  <span class="hljs-title function_">beforeEach</span>(<span class="hljs-title function_">async</span> () =&gt; {
+    <span class="hljs-keyword">const</span> moduleRef = <span class="hljs-keyword">await</span> <span class="hljs-title class_">Test</span>.<span class="hljs-title function_">createTestingModule</span>({ <span class="hljs-attr">imports</span>: [<span class="hljs-title class_">AppModule</span>] })
+      .<span class="hljs-title function_">overrideProvider</span>(<span class="hljs-title class_">CarrierClient</span>)
+      .<span class="hljs-title function_">useValue</span>(carrier)
+      .<span class="hljs-title function_">compile</span>();
+    app = moduleRef.<span class="hljs-title function_">createNestApplication</span>({ <span class="hljs-attr">logger</span>: <span class="hljs-literal">false</span> });
+    <span class="hljs-keyword">await</span> app.<span class="hljs-title function_">listen</span>(<span class="hljs-number">0</span>, <span class="hljs-string">&#x27;127.0.0.1&#x27;</span>);
+    <span class="hljs-comment">// Fake only timers and Date: the HTTP server and supertest keep real I/O.</span>
+    vi.<span class="hljs-title function_">useFakeTimers</span>({ <span class="hljs-attr">toFake</span>: [<span class="hljs-string">&#x27;setTimeout&#x27;</span>, <span class="hljs-string">&#x27;clearTimeout&#x27;</span>, <span class="hljs-string">&#x27;Date&#x27;</span>] });
+  });
+
+  <span class="hljs-title function_">afterEach</span>(<span class="hljs-title function_">async</span> () =&gt; {
+    vi.<span class="hljs-title function_">useRealTimers</span>();
+    vi.<span class="hljs-title function_">resetAllMocks</span>();
+    <span class="hljs-keyword">await</span> app.<span class="hljs-title function_">close</span>();
+  });
+
+  <span class="hljs-title function_">it</span>(<span class="hljs-string">&#x27;answers 504 and cancels the carrier call when the carrier hangs&#x27;</span>, <span class="hljs-title function_">async</span> () =&gt; {
+    carrier.<span class="hljs-property">getQuotes</span>.<span class="hljs-title function_">mockImplementation</span>(hang);
+
+    <span class="hljs-comment">// .then() sends the request now; the clock only moves when we advance it.</span>
+    <span class="hljs-keyword">const</span> response = <span class="hljs-title function_">request</span>(app.<span class="hljs-title function_">getHttpServer</span>())
+      .<span class="hljs-title function_">get</span>(<span class="hljs-string">&#x27;/shipping/quotes?orderId=1001&#x27;</span>)
+      .<span class="hljs-title function_">then</span>(<span class="hljs-function">(<span class="hljs-params">res</span>) =&gt;</span> res);
+    <span class="hljs-keyword">await</span> vi.<span class="hljs-title function_">waitFor</span>(<span class="hljs-function">() =&gt;</span> <span class="hljs-title function_">expect</span>(carrier.<span class="hljs-property">getQuotes</span>).<span class="hljs-title function_">toHaveBeenCalled</span>());
+    <span class="hljs-keyword">await</span> vi.<span class="hljs-title function_">advanceTimersByTimeAsync</span>(<span class="hljs-number">5_000</span>); <span class="hljs-comment">// two attempts of 1.5 s, plus backoff</span>
+
+    <span class="hljs-title function_">expect</span>((<span class="hljs-keyword">await</span> response).<span class="hljs-property">status</span>).<span class="hljs-title function_">toBe</span>(<span class="hljs-number">504</span>);
+    <span class="hljs-title function_">expect</span>(carrier.<span class="hljs-property">getQuotes</span>).<span class="hljs-title function_">toHaveBeenCalledTimes</span>(<span class="hljs-number">2</span>);
+    <span class="hljs-keyword">const</span> [, signal] = carrier.<span class="hljs-property">getQuotes</span>.<span class="hljs-property">mock</span>.<span class="hljs-property">calls</span>[<span class="hljs-number">0</span>];
+    <span class="hljs-title function_">expect</span>(signal.<span class="hljs-property">aborted</span>).<span class="hljs-title function_">toBe</span>(<span class="hljs-literal">true</span>);
+  });
+
+  <span class="hljs-title function_">it</span>(<span class="hljs-string">&#x27;serves flat rates while the breaker is open, then recovers&#x27;</span>, <span class="hljs-title function_">async</span> () =&gt; {
+    carrier.<span class="hljs-property">getQuotes</span>.<span class="hljs-title function_">mockResolvedValue</span>(liveQuotes);
+    <span class="hljs-keyword">const</span> breaker = app.<span class="hljs-title function_">get</span>(<span class="hljs-title class_">ResilienceService</span>).<span class="hljs-title function_">circuitBreaker</span>(<span class="hljs-string">&#x27;carrier&#x27;</span>);
+    breaker.<span class="hljs-title function_">trip</span>();
+
+    <span class="hljs-keyword">const</span> fallback = <span class="hljs-keyword">await</span> <span class="hljs-title function_">request</span>(app.<span class="hljs-title function_">getHttpServer</span>()).<span class="hljs-title function_">get</span>(<span class="hljs-string">&#x27;/shipping/quotes?orderId=1001&#x27;</span>);
+    <span class="hljs-title function_">expect</span>(fallback.<span class="hljs-property">body</span>).<span class="hljs-title function_">toEqual</span>([
+      { <span class="hljs-attr">service</span>: <span class="hljs-string">&#x27;flat-rate&#x27;</span>, <span class="hljs-attr">price</span>: <span class="hljs-number">4.99</span>, <span class="hljs-attr">estimatedDays</span>: <span class="hljs-number">5</span> },
+    ]);
+    <span class="hljs-title function_">expect</span>(carrier.<span class="hljs-property">getQuotes</span>).<span class="hljs-property">not</span>.<span class="hljs-title function_">toHaveBeenCalled</span>();
+
+    vi.<span class="hljs-title function_">advanceTimersByTime</span>(<span class="hljs-number">30_000</span>); <span class="hljs-comment">// openDuration: the next call is a probe</span>
+    <span class="hljs-keyword">const</span> live = <span class="hljs-keyword">await</span> <span class="hljs-title function_">request</span>(app.<span class="hljs-title function_">getHttpServer</span>()).<span class="hljs-title function_">get</span>(<span class="hljs-string">&#x27;/shipping/quotes?orderId=1001&#x27;</span>);
+    <span class="hljs-title function_">expect</span>(live.<span class="hljs-property">body</span>).<span class="hljs-title function_">toEqual</span>(liveQuotes);
+    <span class="hljs-title function_">expect</span>(breaker.<span class="hljs-property">state</span>).<span class="hljs-title function_">toBe</span>(<span class="hljs-string">&#x27;closed&#x27;</span>);
+  });
+});</code></pre></div></figure>
+<p>A few things make this work:</p>
+<ul>
+<li><code>vi.waitFor()</code> waits until the request has actually reached the carrier. Only then are there timers to advance. With fake timers enabled, <code>vi.waitFor()</code> also moves the clock by its polling interval (50 ms), which stays well within the 1.5-second budget.</li>
+<li><code>vi.advanceTimersByTimeAsync()</code> fires the timeouts and the backoff in order, and lets the promises in between settle.</li>
+<li><code>trip()</code> opens the breaker directly, so you don&#39;t have to produce ten failures to test the open state. Because the breaker checks <code>openDuration</code> against <code>Date</code> on the next call, moving the fake clock forward is enough to make that call a probe.</li>
+<li>Breakers, bulkheads and outbound rate limits belong to the application that created them, so every test application starts with fresh state.</li>
+<li>To test with different settings, such as a shorter <code>openDuration</code>, override the module&#39;s options with <code>overrideProvider(RESILIENCE_MODULE_OPTIONS)</code>.</li>
+</ul>
+<p>See <a href="#/doc/fundamentals/unit-testing@end-to-end-testing">End-to-end testing</a> for the testing basics.</p>
+<h4 id="production-checklist">Production checklist</h4>
+<ul>
+<li><strong>Budget time end to end.</strong> Time per attempt times the number of attempts, plus backoff, must fit inside your client&#39;s timeout and your load balancer&#39;s. For the quotes route, that&#39;s about 3.2 seconds.</li>
+<li><strong>Retry only what is safe.</strong> Set <code>idempotent: true</code> only when a second run within the same request is harmless. Pair it with <code>@Idempotent()</code> to handle client retries.</li>
+<li><strong>Pass the signal to every I/O call.</strong> Without it, timed-out work keeps running in the background, unseen by the bulkhead that admitted it.</li>
+<li><strong>Retry at one layer.</strong> Retry at the entrypoint or in the service policy, not both, and turn off retries in SDKs and HTTP clients underneath.</li>
+<li><strong>Tune each breaker to its dependency.</strong> Make <code>minimumCalls</code> high enough that two errors at night don&#39;t open it, set <code>openDuration</code> close to how long the dependency usually takes to recover, and use <code>recordIf</code> to leave out errors that aren&#39;t outages.</li>
+<li><strong>Give every breaker a timeout.</strong> A breaker learns only from calls that finish. A call that hangs is never counted, and a hanging probe keeps a half-open breaker rejecting everything else.</li>
+<li><strong>Remember that state is per process.</strong> With several instances, each one has its own breakers, bulkheads and outbound rate limits, and a restart starts them fresh. Each breaker opens on its own, bulkhead limits apply per instance, and an outbound rate limit allows <code>limit</code> calls per instance.</li>
+<li><strong>Keep fallbacks cheap and independent.</strong> A fallback must never call the dependency it stands in for.</li>
+<li><strong>Alert on transitions.</strong> A breaker opening and bulkheads rejecting requests are the signals to page on.</li>
+<li><strong>Register an idempotency store.</strong> Without one, <code>@Idempotent()</code> keeps its records in each process&#39;s memory, lost on every restart or deploy, and production refuses to start. See <a href="#/doc/reliability/idempotency@store-keys-in-postgresql">Store keys in PostgreSQL</a> in the idempotency tutorial.</li>
+<li><strong>Wire the modules correctly.</strong> Import <code>ResilienceModule</code> once, in the root module, and <code>IdempotencyModule</code> before it. Use <code>inheritAppConfig: true</code> for hybrid applications.</li>
+<li><strong>Honor Retry-After in your clients.</strong> It tells them when trying again can succeed.</li>
+</ul>
+<h4 id="reference">Reference</h4>
+<h5>Module options</h5>
+<p><code>ResilienceModule.forRoot()</code> takes these options. <code>forRootAsync()</code> builds the same object from a factory, a class implementing <code>ResilienceOptionsFactory</code>, or an existing provider.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Option</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>defaults</code></td>
+<td><code>ResilienceDefaults</code></td>
+<td>none</td>
+<td>Field defaults for <code>retry</code>, <code>timeout</code>, <code>circuitBreaker</code> and <code>bulkhead</code>. They fill in stages that a decorator or preset turns on, and never turn a stage on. See <a href="#/doc/reliability/resilience@register-the-module">Register the module</a>.</td>
+</tr>
+<tr>
+<td><code>presets</code></td>
+<td><code>Record&lt;string, ResiliencePreset&gt;</code></td>
+<td>none</td>
+<td>Named sets of stages: <code>retry</code>, <code>timeout</code>, <code>circuitBreaker</code>, <code>bulkhead</code>, <code>outboundRateLimit</code> and <code>fallback</code>. A preset&#39;s breaker, bulkhead and outbound rate limit are shared under the preset&#39;s name.</td>
+</tr>
+<tr>
+<td><code>mapErrors</code></td>
+<td><code>boolean</code></td>
+<td><code>true</code></td>
+<td>Turns resilience errors thrown by any handler, with or without decorators, into the transport&#39;s error, as listed under Errors below.</td>
+</tr>
+<tr>
+<td><code>isGlobal</code></td>
+<td><code>boolean</code></td>
+<td><code>true</code></td>
+<td>Registers the module globally. Register it once, in the root module.</td>
+</tr>
+</tbody></table></div>
+<p>Every time-valued option takes milliseconds or a string such as <code>&#39;200ms&#39;</code>, <code>&#39;2s&#39;</code> or <code>&#39;15m&#39;</code>. The options&#39; injection token is <code>RESILIENCE_MODULE_OPTIONS</code>.</p>
+<h5>Decorators</h5>
+<p>Each decorator works on a handler or on a class, except <code>@Signal()</code>, which is a parameter decorator.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Decorator</th>
+<th>Options (default)</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>@Retry(options)</code></td>
+<td><code>attempts</code> (3, including the first; <code>Infinity</code> retries until the signal aborts), <code>backoff</code>, <code>retryIf(error, attempt)</code> (every error except client errors), <code>idempotent</code> (see <a href="#/doc/reliability/resilience@retry-a-post-safely">Retry a POST safely</a>). <code>@Retry(5)</code> sets <code>attempts</code>, and <code>@Retry(false)</code> turns off an inherited retry.</td>
+</tr>
+<tr>
+<td><code>backoff</code> (of <code>@Retry()</code>)</td>
+<td><code>delay</code> (<code>&#39;200ms&#39;</code>), <code>factor</code> (2), <code>maxDelay</code> (<code>&#39;30s&#39;</code>), <code>jitter</code>: <code>&#39;full&#39;</code>, <code>&#39;equal&#39;</code> or <code>&#39;none&#39;</code> (<code>&#39;full&#39;</code>, or <code>&#39;none&#39;</code> when <code>factor</code> is 1). Or a function of the failed attempt and its error that returns a duration.</td>
+</tr>
+<tr>
+<td><code>@Timeout(duration)</code></td>
+<td>Budget per attempt. Without an argument, the preset&#39;s or class&#39;s timeout, then <code>defaults.timeout</code>.</td>
+</tr>
+<tr>
+<td><code>@CircuitBreaker(options)</code></td>
+<td><code>name</code>, <code>failureRateThreshold</code> (50, a percentage), <code>minimumCalls</code> (10), <code>slidingWindow</code> (the last 20 calls: <code>type</code> is <code>&#39;count&#39;</code> or <code>&#39;time&#39;</code>, with a <code>size</code>), <code>openDuration</code> (<code>&#39;30s&#39;</code>), <code>halfOpenMaxCalls</code> (1), <code>recordIf(error)</code> (every error except client errors). A string is a breaker name. See <a href="#/doc/reliability/resilience@fail-fast-with-a-circuit-breaker">Fail fast with a circuit breaker</a>.</td>
+</tr>
+<tr>
+<td><code>@Bulkhead(options)</code></td>
+<td><code>name</code>, <code>maxConcurrent</code> (10), <code>maxQueue</code> (0), <code>queueTimeout</code> (no limit). A string is a bulkhead name. See <a href="#/doc/reliability/resilience@cap-concurrent-csv-exports-with-a-bulkhead">Cap concurrent CSV exports with a bulkhead</a>.</td>
+</tr>
+<tr>
+<td><code>@Fallback(method, options)</code></td>
+<td>A method name on the same class, or a function, called with the error and the <code>ExecutionContext</code>. <code>handleIf(error)</code> (every error except client errors).</td>
+</tr>
+<tr>
+<td><code>@Resilience(preset)</code></td>
+<td>Applies a preset from <code>presets</code>, stage by stage.</td>
+</tr>
+<tr>
+<td><code>@Signal()</code></td>
+<td>The current attempt&#39;s <code>AbortSignal</code>.</td>
+</tr>
+</tbody></table></div>
+<p>A preset&#39;s <code>outboundRateLimit</code> takes <code>limit</code> (calls per <code>interval</code>), <code>interval</code> and <code>maxWait</code> (0: reject right away).</p>
+<p><code>ResilienceService</code> provides <code>preset(name)</code>, <code>create(options, name)</code>, <code>circuitBreaker(name)</code>, <code>bulkhead(name)</code>, <code>circuitBreakers()</code> and <code>bulkheads()</code>. See <a href="#/doc/reliability/resilience@use-the-same-policies-inside-services">Use the same policies inside services</a>.</p>
+<h5>Events</h5>
+<p>Every event is published on <code>ResilienceEvents.events$</code> and on the diagnostics channel <code>nestjs:resilience:&lt;type&gt;</code>. Each payload has <code>type</code>, <code>policy</code> and, when there is one, <code>source</code> (see <a href="#/doc/reliability/resilience@observe-breaker-transitions">Observe breaker transitions</a>).</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Type</th>
+<th>Payload type</th>
+<th>Other fields</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>retry</code></td>
+<td><code>ResilienceRetryEvent</code></td>
+<td><code>attempt</code> (the one that failed, 1-based), <code>delayMs</code> (the wait before the next one), <code>error</code></td>
+</tr>
+<tr>
+<td><code>timeout</code></td>
+<td><code>ResilienceTimeoutEvent</code></td>
+<td><code>timeoutMs</code></td>
+</tr>
+<tr>
+<td><code>circuit-open</code></td>
+<td><code>ResilienceCircuitOpenEvent</code></td>
+<td><code>from</code>, <code>to</code></td>
+</tr>
+<tr>
+<td><code>circuit-half-open</code></td>
+<td><code>ResilienceCircuitHalfOpenEvent</code></td>
+<td><code>from</code>, <code>to</code></td>
+</tr>
+<tr>
+<td><code>circuit-closed</code></td>
+<td><code>ResilienceCircuitClosedEvent</code></td>
+<td><code>from</code>, <code>to</code></td>
+</tr>
+<tr>
+<td><code>circuit-rejected</code></td>
+<td><code>ResilienceCircuitRejectedEvent</code></td>
+<td><code>retryAfterMs</code></td>
+</tr>
+<tr>
+<td><code>bulkhead-rejected</code></td>
+<td><code>ResilienceBulkheadRejectedEvent</code></td>
+<td><code>reason</code> (<code>&#39;full&#39;</code> or <code>&#39;queue-timeout&#39;</code>), <code>active</code>, <code>queued</code></td>
+</tr>
+<tr>
+<td><code>rate-limited</code></td>
+<td><code>ResilienceRateLimitedEvent</code></td>
+<td><code>retryAfterMs</code></td>
+</tr>
+<tr>
+<td><code>fallback</code></td>
+<td><code>ResilienceFallbackEvent</code></td>
+<td><code>error</code></td>
+</tr>
+</tbody></table></div>
+<p>A breaker&#39;s state (<code>from</code> and <code>to</code>) is <code>&#39;closed&#39;</code>, <code>&#39;open&#39;</code> or <code>&#39;half-open&#39;</code>. <code>ResilienceEvent</code> is the union of all payload types.</p>
+<h5>Errors</h5>
+<p>All errors extend <code>ResilienceError</code>, which has a <code>code</code> and the <code>policy</code> name.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Error</th>
+<th>Code</th>
+<th>HTTP</th>
+<th>Message sent to clients</th>
+<th>Fields</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>ResilienceTimeoutError</code></td>
+<td><code>TIMEOUT</code></td>
+<td>504</td>
+<td>The operation timed out</td>
+<td><code>timeoutMs</code></td>
+</tr>
+<tr>
+<td><code>CircuitOpenError</code></td>
+<td><code>CIRCUIT_OPEN</code></td>
+<td>503, with <code>Retry-After</code></td>
+<td>Service temporarily unavailable</td>
+<td><code>retryAfterMs</code></td>
+</tr>
+<tr>
+<td><code>BulkheadFullError</code></td>
+<td><code>BULKHEAD_FULL</code></td>
+<td>503</td>
+<td>Server is at capacity</td>
+<td><code>reason</code></td>
+</tr>
+<tr>
+<td><code>OutboundRateLimitError</code></td>
+<td><code>RATE_LIMITED</code></td>
+<td>503, with <code>Retry-After</code></td>
+<td>Rate limit of a dependency exceeded</td>
+<td><code>retryAfterMs</code></td>
+</tr>
+</tbody></table></div>
+<p>On microservice and WebSocket handlers, the error is an <code>RpcException</code> or <code>WsException</code> whose payload has <code>status</code>, <code>code</code>, <code>statusCode</code>, <code>message</code> and, for rejections that know it, <code>retryAfter</code> in seconds. On GraphQL, the field&#39;s error has <code>code</code>, <code>httpStatus</code> and <code>retryAfter</code> in <code>extensions</code> (see <a href="#/doc/reliability/resilience@other-transports">Other transports</a>).</p>

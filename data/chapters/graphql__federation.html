@@ -1,0 +1,699 @@
+<p>Federation lets you split a monolithic GraphQL server into independent microservices. It consists of two components: a gateway and one or more federated microservices. Each microservice holds part of the schema, and the gateway merges the schemas into a single schema that clients consume.</p>
+<p>As described in <a target="_blank" rel="noopener" href="https://blog.apollographql.com/apollo-federation-f260cf525d21">Apollo&#39;s introduction to federation</a>, federation is designed around these core principles:</p>
+<ul>
+<li>Building a graph should be <strong>declarative.</strong> With federation, you compose a graph declaratively from within your schema instead of writing imperative schema stitching code.</li>
+<li>Code should be separated by <strong>concern</strong>, not by types. Often no single team controls every aspect of an important type like a User or Product, so the definition of these types should be distributed across teams and codebases, rather than centralized.</li>
+<li>The graph should be simple for clients to consume. Together, federated services can form a complete, product-focused graph that accurately reflects how it&#39;s being consumed on the client.</li>
+<li>It&#39;s just <strong>GraphQL</strong>, using only spec-compliant features of the language. Any language, not just JavaScript, can implement federation.</li>
+</ul>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Hint</p><p>Subgraphs built with <code>ApolloFederationDriver</code> or <code>MercuriusFederationDriver</code> support subscriptions (with the <code>subscriptions</code> option for Apollo, or <code>subscription: true</code> for Mercurius). The Apollo Gateway (<code>ApolloGatewayDriver</code>) does not forward subscriptions to subgraphs, so to expose them through a single federated endpoint, use a router that supports federated subscriptions, such as Apollo Router, or the Mercurius gateway (set <code>subscription: true</code> on the gateway and <code>wsUrl</code> for each service).</p>
+</div></aside>
+<p>In the following sections, we&#39;ll set up a demo application that consists of a gateway and two federated endpoints: a Users service and a Posts service.</p>
+<h4 id="federation-with-apollo">Federation with Apollo</h4>
+<p>Start by installing the required dependencies:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Terminal</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-bash">$ npm install --save @apollo/subgraph</code></pre></div></figure>
+<h4 id="schema-first">Schema first</h4>
+<p>The Users service provides a simple schema. The <code>@key</code> directive tells the Apollo query planner that a particular instance of <code>User</code> can be fetched by its <code>id</code>. Also note that the schema extends the <code>Query</code> type.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>GraphQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-graphql"><span class="hljs-keyword">type</span> User <span class="hljs-meta">@key</span><span class="hljs-punctuation">(</span><span class="hljs-symbol">fields</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;id&quot;</span><span class="hljs-punctuation">)</span> <span class="hljs-punctuation">{</span>
+  <span class="hljs-symbol">id</span><span class="hljs-punctuation">:</span> ID<span class="hljs-punctuation">!</span>
+  <span class="hljs-symbol">name</span><span class="hljs-punctuation">:</span> String<span class="hljs-punctuation">!</span>
+<span class="hljs-punctuation">}</span>
+
+extend <span class="hljs-keyword">type</span> <span class="hljs-keyword">Query</span> <span class="hljs-punctuation">{</span>
+  getUser<span class="hljs-punctuation">(</span><span class="hljs-symbol">id</span><span class="hljs-punctuation">:</span> ID<span class="hljs-punctuation">!</span><span class="hljs-punctuation">)</span><span class="hljs-punctuation">:</span> User
+<span class="hljs-punctuation">}</span></code></pre></div></figure>
+<p>The resolver provides one additional method named <code>resolveReference()</code>. The Apollo gateway calls this method whenever a related resource requires a <code>User</code> instance. You&#39;ll see an example of this in the Posts service later. The method must be annotated with the <code>@ResolveReference()</code> decorator.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { <span class="hljs-title class_">Args</span>, <span class="hljs-title class_">Query</span>, <span class="hljs-title class_">Resolver</span>, <span class="hljs-title class_">ResolveReference</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/graphql&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">UsersService</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./users.service.js&#x27;</span>;
+
+<span class="hljs-meta">@Resolver</span>(<span class="hljs-string">&#x27;User&#x27;</span>)
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">UsersResolver</span> {
+  <span class="hljs-title function_">constructor</span>(<span class="hljs-params"><span class="hljs-keyword">private</span> <span class="hljs-attr">usersService</span>: <span class="hljs-title class_">UsersService</span></span>) {}
+
+  <span class="hljs-meta">@Query</span>()
+  <span class="hljs-title function_">getUser</span>(<span class="hljs-params"><span class="hljs-meta">@Args</span>(<span class="hljs-string">&#x27;id&#x27;</span>) <span class="hljs-attr">id</span>: <span class="hljs-built_in">string</span></span>) {
+    <span class="hljs-keyword">return</span> <span class="hljs-variable language_">this</span>.<span class="hljs-property">usersService</span>.<span class="hljs-title function_">findById</span>(id);
+  }
+
+  <span class="hljs-meta">@ResolveReference</span>()
+  <span class="hljs-title function_">resolveReference</span>(<span class="hljs-params"><span class="hljs-attr">reference</span>: { __typename: <span class="hljs-built_in">string</span>; id: <span class="hljs-built_in">string</span> }</span>) {
+    <span class="hljs-keyword">return</span> <span class="hljs-variable language_">this</span>.<span class="hljs-property">usersService</span>.<span class="hljs-title function_">findById</span>(reference.<span class="hljs-property">id</span>);
+  }
+}</code></pre></div></figure>
+<p>Finally, wire everything up by registering the <code>GraphQLModule</code> with the <code>ApolloFederationDriver</code> driver in the configuration object:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> {
+  <span class="hljs-title class_">ApolloFederationDriver</span>,
+  <span class="hljs-title class_">ApolloFederationDriverConfig</span>,
+} <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/apollo&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">Module</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/common&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">GraphQLModule</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/graphql&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">UsersResolver</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./users.resolver.js&#x27;</span>;
+
+<span class="hljs-meta">@Module</span>({
+  <span class="hljs-attr">imports</span>: [
+    <span class="hljs-title class_">GraphQLModule</span>.<span class="hljs-property">forRoot</span>&lt;<span class="hljs-title class_">ApolloFederationDriverConfig</span>&gt;({
+      <span class="hljs-attr">driver</span>: <span class="hljs-title class_">ApolloFederationDriver</span>,
+      <span class="hljs-attr">typePaths</span>: [<span class="hljs-string">&#x27;**/*.graphql&#x27;</span>],
+    }),
+  ],
+  <span class="hljs-attr">providers</span>: [<span class="hljs-title class_">UsersResolver</span>],
+})
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">AppModule</span> {}</code></pre></div></figure>
+<h4 id="code-first">Code first</h4>
+<p>Start by adding some extra decorators to the <code>User</code> entity:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { <span class="hljs-title class_">Directive</span>, <span class="hljs-title class_">Field</span>, <span class="hljs-variable constant_">ID</span>, <span class="hljs-title class_">ObjectType</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/graphql&#x27;</span>;
+
+<span class="hljs-meta">@ObjectType</span>()
+<span class="hljs-meta">@Directive</span>(<span class="hljs-string">&#x27;@key(fields: &quot;id&quot;)&#x27;</span>)
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">User</span> {
+  <span class="hljs-meta">@Field</span>(<span class="hljs-function">() =&gt;</span> <span class="hljs-variable constant_">ID</span>)
+  <span class="hljs-attr">id</span>: <span class="hljs-built_in">number</span>;
+
+  <span class="hljs-meta">@Field</span>()
+  <span class="hljs-attr">name</span>: <span class="hljs-built_in">string</span>;
+}</code></pre></div></figure>
+<p>The resolver provides one additional method named <code>resolveReference()</code>. The Apollo gateway calls this method whenever a related resource requires a <code>User</code> instance. You&#39;ll see an example of this in the Posts service later. The method must be annotated with the <code>@ResolveReference()</code> decorator.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { <span class="hljs-title class_">Args</span>, <span class="hljs-title class_">Query</span>, <span class="hljs-title class_">Resolver</span>, <span class="hljs-title class_">ResolveReference</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/graphql&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">User</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./user.entity.js&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">UsersService</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./users.service.js&#x27;</span>;
+
+<span class="hljs-meta">@Resolver</span>(<span class="hljs-function">() =&gt;</span> <span class="hljs-title class_">User</span>)
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">UsersResolver</span> {
+  <span class="hljs-title function_">constructor</span>(<span class="hljs-params"><span class="hljs-keyword">private</span> <span class="hljs-attr">usersService</span>: <span class="hljs-title class_">UsersService</span></span>) {}
+
+  <span class="hljs-meta">@Query</span>(<span class="hljs-function">() =&gt;</span> <span class="hljs-title class_">User</span>)
+  <span class="hljs-title function_">getUser</span>(<span class="hljs-meta">@Args</span>(<span class="hljs-string">&#x27;id&#x27;</span>) <span class="hljs-attr">id</span>: <span class="hljs-built_in">number</span>): <span class="hljs-title class_">User</span> {
+    <span class="hljs-keyword">return</span> <span class="hljs-variable language_">this</span>.<span class="hljs-property">usersService</span>.<span class="hljs-title function_">findById</span>(id);
+  }
+
+  <span class="hljs-meta">@ResolveReference</span>()
+  <span class="hljs-title function_">resolveReference</span>(<span class="hljs-attr">reference</span>: { <span class="hljs-attr">__typename</span>: <span class="hljs-built_in">string</span>; <span class="hljs-attr">id</span>: <span class="hljs-built_in">number</span> }): <span class="hljs-title class_">User</span> {
+    <span class="hljs-keyword">return</span> <span class="hljs-variable language_">this</span>.<span class="hljs-property">usersService</span>.<span class="hljs-title function_">findById</span>(reference.<span class="hljs-property">id</span>);
+  }
+}</code></pre></div></figure>
+<p>Finally, wire everything up by registering the <code>GraphQLModule</code> with the <code>ApolloFederationDriver</code> driver in the configuration object:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> {
+  <span class="hljs-title class_">ApolloFederationDriver</span>,
+  <span class="hljs-title class_">ApolloFederationDriverConfig</span>,
+} <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/apollo&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">Module</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/common&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">GraphQLModule</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/graphql&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">UsersResolver</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./users.resolver.js&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">UsersService</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./users.service.js&#x27;</span>; <span class="hljs-comment">// Not included in this example</span>
+
+<span class="hljs-meta">@Module</span>({
+  <span class="hljs-attr">imports</span>: [
+    <span class="hljs-title class_">GraphQLModule</span>.<span class="hljs-property">forRoot</span>&lt;<span class="hljs-title class_">ApolloFederationDriverConfig</span>&gt;({
+      <span class="hljs-attr">driver</span>: <span class="hljs-title class_">ApolloFederationDriver</span>,
+      <span class="hljs-attr">autoSchemaFile</span>: <span class="hljs-literal">true</span>,
+    }),
+  ],
+  <span class="hljs-attr">providers</span>: [<span class="hljs-title class_">UsersResolver</span>, <span class="hljs-title class_">UsersService</span>],
+})
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">AppModule</span> {}</code></pre></div></figure>
+<p>Working examples are available for the <a target="_blank" rel="noopener" href="https://github.com/nestjs/nest/tree/master/sample/31-graphql-federation-code-first/users-application">code first</a> and <a target="_blank" rel="noopener" href="https://github.com/nestjs/nest/tree/master/sample/32-graphql-federation-schema-first/users-application">schema first</a> approaches.</p>
+<h4 id="federated-example-posts">Federated example: Posts</h4>
+<p>The Posts service serves aggregated posts through the <code>getPosts</code> query, and also extends the <code>User</code> type with a <code>user.posts</code> field.</p>
+<h4 id="schema-first">Schema first</h4>
+<p>The Posts service references the <code>User</code> type in its schema by marking it with the <code>extend</code> keyword. It also declares one additional field on the <code>User</code> type (<code>posts</code>). Note the <code>@key</code> directive, used to match <code>User</code> instances, and the <code>@external</code> directive, which indicates that the <code>id</code> field is managed elsewhere.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>GraphQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-graphql"><span class="hljs-keyword">type</span> Post <span class="hljs-meta">@key</span><span class="hljs-punctuation">(</span><span class="hljs-symbol">fields</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;id&quot;</span><span class="hljs-punctuation">)</span> <span class="hljs-punctuation">{</span>
+  <span class="hljs-symbol">id</span><span class="hljs-punctuation">:</span> ID<span class="hljs-punctuation">!</span>
+  <span class="hljs-symbol">title</span><span class="hljs-punctuation">:</span> String<span class="hljs-punctuation">!</span>
+  <span class="hljs-symbol">body</span><span class="hljs-punctuation">:</span> String<span class="hljs-punctuation">!</span>
+  <span class="hljs-symbol">user</span><span class="hljs-punctuation">:</span> User
+<span class="hljs-punctuation">}</span>
+
+extend <span class="hljs-keyword">type</span> User <span class="hljs-meta">@key</span><span class="hljs-punctuation">(</span><span class="hljs-symbol">fields</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;id&quot;</span><span class="hljs-punctuation">)</span> <span class="hljs-punctuation">{</span>
+  <span class="hljs-symbol">id</span><span class="hljs-punctuation">:</span> ID<span class="hljs-punctuation">!</span> <span class="hljs-meta">@external</span>
+  <span class="hljs-symbol">posts</span><span class="hljs-punctuation">:</span> <span class="hljs-punctuation">[</span>Post<span class="hljs-punctuation">]</span>
+<span class="hljs-punctuation">}</span>
+
+extend <span class="hljs-keyword">type</span> <span class="hljs-keyword">Query</span> <span class="hljs-punctuation">{</span>
+  <span class="hljs-symbol">getPosts</span><span class="hljs-punctuation">:</span> <span class="hljs-punctuation">[</span>Post<span class="hljs-punctuation">]</span>
+<span class="hljs-punctuation">}</span></code></pre></div></figure>
+<p>In the following example, the <code>PostsResolver</code> provides a <code>getUser()</code> method that returns a reference containing <code>__typename</code> plus any additional properties your application needs to resolve the reference, in this case <code>id</code>. The gateway uses <code>__typename</code> to pinpoint the microservice responsible for the <code>User</code> type and retrieve the corresponding instance. To resolve the reference, the gateway sends a request to the Users service described above, which executes its <code>resolveReference()</code> method.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { <span class="hljs-title class_">Query</span>, <span class="hljs-title class_">Resolver</span>, <span class="hljs-title class_">Parent</span>, <span class="hljs-title class_">ResolveField</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/graphql&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">PostsService</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./posts.service.js&#x27;</span>;
+<span class="hljs-keyword">import</span> <span class="hljs-keyword">type</span> { <span class="hljs-title class_">Post</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./posts.interfaces.js&#x27;</span>;
+
+<span class="hljs-meta">@Resolver</span>(<span class="hljs-string">&#x27;Post&#x27;</span>)
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">PostsResolver</span> {
+  <span class="hljs-title function_">constructor</span>(<span class="hljs-params"><span class="hljs-keyword">private</span> <span class="hljs-attr">postsService</span>: <span class="hljs-title class_">PostsService</span></span>) {}
+
+  <span class="hljs-meta">@Query</span>(<span class="hljs-string">&#x27;getPosts&#x27;</span>)
+  <span class="hljs-title function_">getPosts</span>(<span class="hljs-params"></span>) {
+    <span class="hljs-keyword">return</span> <span class="hljs-variable language_">this</span>.<span class="hljs-property">postsService</span>.<span class="hljs-title function_">findAll</span>();
+  }
+
+  <span class="hljs-meta">@ResolveField</span>(<span class="hljs-string">&#x27;user&#x27;</span>)
+  <span class="hljs-title function_">getUser</span>(<span class="hljs-params"><span class="hljs-meta">@Parent</span>() <span class="hljs-attr">post</span>: <span class="hljs-title class_">Post</span></span>) {
+    <span class="hljs-keyword">return</span> { <span class="hljs-attr">__typename</span>: <span class="hljs-string">&#x27;User&#x27;</span>, <span class="hljs-attr">id</span>: post.<span class="hljs-property">userId</span> };
+  }
+}</code></pre></div></figure>
+<p>Lastly, register the <code>GraphQLModule</code>, as in the Users service.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> {
+  <span class="hljs-title class_">ApolloFederationDriver</span>,
+  <span class="hljs-title class_">ApolloFederationDriverConfig</span>,
+} <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/apollo&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">Module</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/common&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">GraphQLModule</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/graphql&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">PostsResolver</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./posts.resolver.js&#x27;</span>;
+
+<span class="hljs-meta">@Module</span>({
+  <span class="hljs-attr">imports</span>: [
+    <span class="hljs-title class_">GraphQLModule</span>.<span class="hljs-property">forRoot</span>&lt;<span class="hljs-title class_">ApolloFederationDriverConfig</span>&gt;({
+      <span class="hljs-attr">driver</span>: <span class="hljs-title class_">ApolloFederationDriver</span>,
+      <span class="hljs-attr">typePaths</span>: [<span class="hljs-string">&#x27;**/*.graphql&#x27;</span>],
+    }),
+  ],
+  <span class="hljs-attr">providers</span>: [<span class="hljs-title class_">PostsResolver</span>],
+})
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">AppModule</span> {}</code></pre></div></figure>
+<h4 id="code-first">Code first</h4>
+<p>First, declare a class representing the <code>User</code> entity. Although the entity itself lives in another service, this service uses it (and extends its definition). Note the <code>@extends</code> and <code>@external</code> directives.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { <span class="hljs-title class_">Directive</span>, <span class="hljs-title class_">ObjectType</span>, <span class="hljs-title class_">Field</span>, <span class="hljs-variable constant_">ID</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/graphql&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">Post</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./post.entity.js&#x27;</span>;
+
+<span class="hljs-meta">@ObjectType</span>()
+<span class="hljs-meta">@Directive</span>(<span class="hljs-string">&#x27;@extends&#x27;</span>)
+<span class="hljs-meta">@Directive</span>(<span class="hljs-string">&#x27;@key(fields: &quot;id&quot;)&#x27;</span>)
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">User</span> {
+  <span class="hljs-meta">@Field</span>(<span class="hljs-function">() =&gt;</span> <span class="hljs-variable constant_">ID</span>)
+  <span class="hljs-meta">@Directive</span>(<span class="hljs-string">&#x27;@external&#x27;</span>)
+  <span class="hljs-attr">id</span>: <span class="hljs-built_in">number</span>;
+
+  <span class="hljs-meta">@Field</span>(<span class="hljs-function">() =&gt;</span> [<span class="hljs-title class_">Post</span>])
+  <span class="hljs-attr">posts</span>?: <span class="hljs-title class_">Post</span>[];
+}</code></pre></div></figure>
+<p>Next, create the resolver for the extension of the <code>User</code> entity:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { <span class="hljs-title class_">Parent</span>, <span class="hljs-title class_">ResolveField</span>, <span class="hljs-title class_">Resolver</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/graphql&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">PostsService</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./posts.service.js&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">Post</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./post.entity.js&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">User</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./user.entity.js&#x27;</span>;
+
+<span class="hljs-meta">@Resolver</span>(<span class="hljs-function">() =&gt;</span> <span class="hljs-title class_">User</span>)
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">UsersResolver</span> {
+  <span class="hljs-title function_">constructor</span>(<span class="hljs-params"><span class="hljs-keyword">private</span> <span class="hljs-keyword">readonly</span> <span class="hljs-attr">postsService</span>: <span class="hljs-title class_">PostsService</span></span>) {}
+
+  <span class="hljs-meta">@ResolveField</span>(<span class="hljs-function">() =&gt;</span> [<span class="hljs-title class_">Post</span>])
+  <span class="hljs-keyword">public</span> <span class="hljs-title function_">posts</span>(<span class="hljs-meta">@Parent</span>() <span class="hljs-attr">user</span>: <span class="hljs-title class_">User</span>): <span class="hljs-title class_">Post</span>[] {
+    <span class="hljs-keyword">return</span> <span class="hljs-variable language_">this</span>.<span class="hljs-property">postsService</span>.<span class="hljs-title function_">forAuthor</span>(user.<span class="hljs-property">id</span>);
+  }
+}</code></pre></div></figure>
+<p>Then define the <code>Post</code> entity class:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { <span class="hljs-title class_">Directive</span>, <span class="hljs-title class_">Field</span>, <span class="hljs-variable constant_">ID</span>, <span class="hljs-title class_">Int</span>, <span class="hljs-title class_">ObjectType</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/graphql&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">User</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./user.entity.js&#x27;</span>;
+
+<span class="hljs-meta">@ObjectType</span>()
+<span class="hljs-meta">@Directive</span>(<span class="hljs-string">&#x27;@key(fields: &quot;id&quot;)&#x27;</span>)
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">Post</span> {
+  <span class="hljs-meta">@Field</span>(<span class="hljs-function">() =&gt;</span> <span class="hljs-variable constant_">ID</span>)
+  <span class="hljs-attr">id</span>: <span class="hljs-built_in">number</span>;
+
+  <span class="hljs-meta">@Field</span>()
+  <span class="hljs-attr">title</span>: <span class="hljs-built_in">string</span>;
+
+  <span class="hljs-meta">@Field</span>(<span class="hljs-function">() =&gt;</span> <span class="hljs-title class_">Int</span>)
+  <span class="hljs-attr">authorId</span>: <span class="hljs-built_in">number</span>;
+
+  <span class="hljs-meta">@Field</span>(<span class="hljs-function">() =&gt;</span> <span class="hljs-title class_">User</span>)
+  <span class="hljs-attr">user</span>?: <span class="hljs-title class_">User</span>;
+}</code></pre></div></figure>
+<p>And its resolver:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { <span class="hljs-title class_">Query</span>, <span class="hljs-title class_">Args</span>, <span class="hljs-title class_">ResolveField</span>, <span class="hljs-title class_">Resolver</span>, <span class="hljs-title class_">Parent</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/graphql&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">PostsService</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./posts.service.js&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">Post</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./post.entity.js&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">User</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./user.entity.js&#x27;</span>;
+
+<span class="hljs-meta">@Resolver</span>(<span class="hljs-function">() =&gt;</span> <span class="hljs-title class_">Post</span>)
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">PostsResolver</span> {
+  <span class="hljs-title function_">constructor</span>(<span class="hljs-params"><span class="hljs-keyword">private</span> <span class="hljs-keyword">readonly</span> <span class="hljs-attr">postsService</span>: <span class="hljs-title class_">PostsService</span></span>) {}
+
+  <span class="hljs-meta">@Query</span>(<span class="hljs-function">() =&gt;</span> <span class="hljs-title class_">Post</span>)
+  <span class="hljs-title function_">findPost</span>(<span class="hljs-meta">@Args</span>(<span class="hljs-string">&#x27;id&#x27;</span>) <span class="hljs-attr">id</span>: <span class="hljs-built_in">number</span>): <span class="hljs-title class_">Post</span> {
+    <span class="hljs-keyword">return</span> <span class="hljs-variable language_">this</span>.<span class="hljs-property">postsService</span>.<span class="hljs-title function_">findOne</span>(id);
+  }
+
+  <span class="hljs-meta">@Query</span>(<span class="hljs-function">() =&gt;</span> [<span class="hljs-title class_">Post</span>])
+  <span class="hljs-title function_">getPosts</span>(): <span class="hljs-title class_">Post</span>[] {
+    <span class="hljs-keyword">return</span> <span class="hljs-variable language_">this</span>.<span class="hljs-property">postsService</span>.<span class="hljs-title function_">all</span>();
+  }
+
+  <span class="hljs-meta">@ResolveField</span>(<span class="hljs-function">() =&gt;</span> <span class="hljs-title class_">User</span>)
+  <span class="hljs-title function_">user</span>(<span class="hljs-meta">@Parent</span>() <span class="hljs-attr">post</span>: <span class="hljs-title class_">Post</span>): <span class="hljs-built_in">any</span> {
+    <span class="hljs-keyword">return</span> { <span class="hljs-attr">__typename</span>: <span class="hljs-string">&#x27;User&#x27;</span>, <span class="hljs-attr">id</span>: post.<span class="hljs-property">authorId</span> };
+  }
+}</code></pre></div></figure>
+<p>Finally, tie everything together in a module. Note the schema build options, which specify that <code>User</code> is an orphaned (external) type.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> {
+  <span class="hljs-title class_">ApolloFederationDriver</span>,
+  <span class="hljs-title class_">ApolloFederationDriverConfig</span>,
+} <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/apollo&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">Module</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/common&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">GraphQLModule</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/graphql&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">User</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./user.entity.js&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">PostsResolver</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./posts.resolver.js&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">UsersResolver</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./users.resolver.js&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">PostsService</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./posts.service.js&#x27;</span>; <span class="hljs-comment">// Not included in this example</span>
+
+<span class="hljs-meta">@Module</span>({
+  <span class="hljs-attr">imports</span>: [
+    <span class="hljs-title class_">GraphQLModule</span>.<span class="hljs-property">forRoot</span>&lt;<span class="hljs-title class_">ApolloFederationDriverConfig</span>&gt;({
+      <span class="hljs-attr">driver</span>: <span class="hljs-title class_">ApolloFederationDriver</span>,
+      <span class="hljs-attr">autoSchemaFile</span>: <span class="hljs-literal">true</span>,
+      <span class="hljs-attr">buildSchemaOptions</span>: {
+        <span class="hljs-attr">orphanedTypes</span>: [<span class="hljs-title class_">User</span>],
+      },
+    }),
+  ],
+  <span class="hljs-attr">providers</span>: [<span class="hljs-title class_">PostsResolver</span>, <span class="hljs-title class_">UsersResolver</span>, <span class="hljs-title class_">PostsService</span>],
+})
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">AppModule</span> {}</code></pre></div></figure>
+<p>Working examples are available for the <a target="_blank" rel="noopener" href="https://github.com/nestjs/nest/tree/master/sample/31-graphql-federation-code-first/posts-application">code first</a> and <a target="_blank" rel="noopener" href="https://github.com/nestjs/nest/tree/master/sample/32-graphql-federation-schema-first/posts-application">schema first</a> approaches.</p>
+<h4 id="federated-example-gateway">Federated example: Gateway</h4>
+<p>Start by installing the required dependency:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Terminal</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-bash">$ npm install --save @apollo/gateway</code></pre></div></figure>
+<p>The gateway requires a list of endpoints, and it discovers the corresponding schemas automatically. Therefore, the gateway implementation is the same for both the code first and schema first approaches.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { <span class="hljs-title class_">IntrospectAndCompose</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@apollo/gateway&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">ApolloGatewayDriver</span>, <span class="hljs-title class_">ApolloGatewayDriverConfig</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/apollo&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">Module</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/common&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">GraphQLModule</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/graphql&#x27;</span>;
+
+<span class="hljs-meta">@Module</span>({
+  <span class="hljs-attr">imports</span>: [
+    <span class="hljs-title class_">GraphQLModule</span>.<span class="hljs-property">forRoot</span>&lt;<span class="hljs-title class_">ApolloGatewayDriverConfig</span>&gt;({
+      <span class="hljs-attr">driver</span>: <span class="hljs-title class_">ApolloGatewayDriver</span>,
+      <span class="hljs-attr">server</span>: {
+        <span class="hljs-comment">// ... Apollo Server options</span>
+      },
+      <span class="hljs-attr">gateway</span>: {
+        <span class="hljs-attr">supergraphSdl</span>: <span class="hljs-keyword">new</span> <span class="hljs-title class_">IntrospectAndCompose</span>({
+          <span class="hljs-attr">subgraphs</span>: [
+            { <span class="hljs-attr">name</span>: <span class="hljs-string">&#x27;users&#x27;</span>, <span class="hljs-attr">url</span>: <span class="hljs-string">&#x27;http://user-service/graphql&#x27;</span> },
+            { <span class="hljs-attr">name</span>: <span class="hljs-string">&#x27;posts&#x27;</span>, <span class="hljs-attr">url</span>: <span class="hljs-string">&#x27;http://post-service/graphql&#x27;</span> },
+          ],
+        }),
+      },
+    }),
+  ],
+})
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">AppModule</span> {}</code></pre></div></figure>
+<p>Working examples are available for the <a target="_blank" rel="noopener" href="https://github.com/nestjs/nest/tree/master/sample/31-graphql-federation-code-first/gateway">code first</a> and <a target="_blank" rel="noopener" href="https://github.com/nestjs/nest/tree/master/sample/32-graphql-federation-schema-first/gateway">schema first</a> approaches.</p>
+<h4 id="federation-with-mercurius">Federation with Mercurius</h4>
+<p>Start by installing the required dependencies:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Terminal</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-bash">$ npm install --save @apollo/subgraph @nestjs/mercurius</code></pre></div></figure>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>The <code>@apollo/subgraph</code> package is required to build a subgraph schema (the <code>buildSubgraphSchema</code> and <code>printSubgraphSchema</code> functions).</p>
+</div></aside>
+<h4 id="schema-first">Schema first</h4>
+<p>The Users service provides a simple schema. The <code>@key</code> directive tells the Mercurius query planner that a particular instance of <code>User</code> can be fetched by its <code>id</code>. Also note that the schema extends the <code>Query</code> type.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>GraphQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-graphql"><span class="hljs-keyword">type</span> User <span class="hljs-meta">@key</span><span class="hljs-punctuation">(</span><span class="hljs-symbol">fields</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;id&quot;</span><span class="hljs-punctuation">)</span> <span class="hljs-punctuation">{</span>
+  <span class="hljs-symbol">id</span><span class="hljs-punctuation">:</span> ID<span class="hljs-punctuation">!</span>
+  <span class="hljs-symbol">name</span><span class="hljs-punctuation">:</span> String<span class="hljs-punctuation">!</span>
+<span class="hljs-punctuation">}</span>
+
+extend <span class="hljs-keyword">type</span> <span class="hljs-keyword">Query</span> <span class="hljs-punctuation">{</span>
+  getUser<span class="hljs-punctuation">(</span><span class="hljs-symbol">id</span><span class="hljs-punctuation">:</span> ID<span class="hljs-punctuation">!</span><span class="hljs-punctuation">)</span><span class="hljs-punctuation">:</span> User
+<span class="hljs-punctuation">}</span></code></pre></div></figure>
+<p>The resolver provides one additional method named <code>resolveReference()</code>. The Mercurius gateway calls this method whenever a related resource requires a <code>User</code> instance. You&#39;ll see an example of this in the Posts service later. The method must be annotated with the <code>@ResolveReference()</code> decorator.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { <span class="hljs-title class_">Args</span>, <span class="hljs-title class_">Query</span>, <span class="hljs-title class_">Resolver</span>, <span class="hljs-title class_">ResolveReference</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/graphql&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">UsersService</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./users.service.js&#x27;</span>;
+
+<span class="hljs-meta">@Resolver</span>(<span class="hljs-string">&#x27;User&#x27;</span>)
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">UsersResolver</span> {
+  <span class="hljs-title function_">constructor</span>(<span class="hljs-params"><span class="hljs-keyword">private</span> <span class="hljs-attr">usersService</span>: <span class="hljs-title class_">UsersService</span></span>) {}
+
+  <span class="hljs-meta">@Query</span>()
+  <span class="hljs-title function_">getUser</span>(<span class="hljs-params"><span class="hljs-meta">@Args</span>(<span class="hljs-string">&#x27;id&#x27;</span>) <span class="hljs-attr">id</span>: <span class="hljs-built_in">string</span></span>) {
+    <span class="hljs-keyword">return</span> <span class="hljs-variable language_">this</span>.<span class="hljs-property">usersService</span>.<span class="hljs-title function_">findById</span>(id);
+  }
+
+  <span class="hljs-meta">@ResolveReference</span>()
+  <span class="hljs-title function_">resolveReference</span>(<span class="hljs-params"><span class="hljs-attr">reference</span>: { __typename: <span class="hljs-built_in">string</span>; id: <span class="hljs-built_in">string</span> }</span>) {
+    <span class="hljs-keyword">return</span> <span class="hljs-variable language_">this</span>.<span class="hljs-property">usersService</span>.<span class="hljs-title function_">findById</span>(reference.<span class="hljs-property">id</span>);
+  }
+}</code></pre></div></figure>
+<p>Finally, wire everything up by registering the <code>GraphQLModule</code> with the <code>MercuriusFederationDriver</code> driver in the configuration object:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> {
+  <span class="hljs-title class_">MercuriusFederationDriver</span>,
+  <span class="hljs-title class_">MercuriusFederationDriverConfig</span>,
+} <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/mercurius&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">Module</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/common&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">GraphQLModule</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/graphql&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">UsersResolver</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./users.resolver.js&#x27;</span>;
+
+<span class="hljs-meta">@Module</span>({
+  <span class="hljs-attr">imports</span>: [
+    <span class="hljs-title class_">GraphQLModule</span>.<span class="hljs-property">forRoot</span>&lt;<span class="hljs-title class_">MercuriusFederationDriverConfig</span>&gt;({
+      <span class="hljs-attr">driver</span>: <span class="hljs-title class_">MercuriusFederationDriver</span>,
+      <span class="hljs-attr">typePaths</span>: [<span class="hljs-string">&#x27;**/*.graphql&#x27;</span>],
+    }),
+  ],
+  <span class="hljs-attr">providers</span>: [<span class="hljs-title class_">UsersResolver</span>],
+})
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">AppModule</span> {}</code></pre></div></figure>
+<h4 id="code-first">Code first</h4>
+<p>Start by adding some extra decorators to the <code>User</code> entity:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { <span class="hljs-title class_">Directive</span>, <span class="hljs-title class_">Field</span>, <span class="hljs-variable constant_">ID</span>, <span class="hljs-title class_">ObjectType</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/graphql&#x27;</span>;
+
+<span class="hljs-meta">@ObjectType</span>()
+<span class="hljs-meta">@Directive</span>(<span class="hljs-string">&#x27;@key(fields: &quot;id&quot;)&#x27;</span>)
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">User</span> {
+  <span class="hljs-meta">@Field</span>(<span class="hljs-function">() =&gt;</span> <span class="hljs-variable constant_">ID</span>)
+  <span class="hljs-attr">id</span>: <span class="hljs-built_in">number</span>;
+
+  <span class="hljs-meta">@Field</span>()
+  <span class="hljs-attr">name</span>: <span class="hljs-built_in">string</span>;
+}</code></pre></div></figure>
+<p>The resolver provides one additional method named <code>resolveReference()</code>. The Mercurius gateway calls this method whenever a related resource requires a <code>User</code> instance. You&#39;ll see an example of this in the Posts service later. The method must be annotated with the <code>@ResolveReference()</code> decorator.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { <span class="hljs-title class_">Args</span>, <span class="hljs-title class_">Query</span>, <span class="hljs-title class_">Resolver</span>, <span class="hljs-title class_">ResolveReference</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/graphql&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">User</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./user.entity.js&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">UsersService</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./users.service.js&#x27;</span>;
+
+<span class="hljs-meta">@Resolver</span>(<span class="hljs-function">() =&gt;</span> <span class="hljs-title class_">User</span>)
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">UsersResolver</span> {
+  <span class="hljs-title function_">constructor</span>(<span class="hljs-params"><span class="hljs-keyword">private</span> <span class="hljs-attr">usersService</span>: <span class="hljs-title class_">UsersService</span></span>) {}
+
+  <span class="hljs-meta">@Query</span>(<span class="hljs-function">() =&gt;</span> <span class="hljs-title class_">User</span>)
+  <span class="hljs-title function_">getUser</span>(<span class="hljs-meta">@Args</span>(<span class="hljs-string">&#x27;id&#x27;</span>) <span class="hljs-attr">id</span>: <span class="hljs-built_in">number</span>): <span class="hljs-title class_">User</span> {
+    <span class="hljs-keyword">return</span> <span class="hljs-variable language_">this</span>.<span class="hljs-property">usersService</span>.<span class="hljs-title function_">findById</span>(id);
+  }
+
+  <span class="hljs-meta">@ResolveReference</span>()
+  <span class="hljs-title function_">resolveReference</span>(<span class="hljs-attr">reference</span>: { <span class="hljs-attr">__typename</span>: <span class="hljs-built_in">string</span>; <span class="hljs-attr">id</span>: <span class="hljs-built_in">number</span> }): <span class="hljs-title class_">User</span> {
+    <span class="hljs-keyword">return</span> <span class="hljs-variable language_">this</span>.<span class="hljs-property">usersService</span>.<span class="hljs-title function_">findById</span>(reference.<span class="hljs-property">id</span>);
+  }
+}</code></pre></div></figure>
+<p>Finally, wire everything up by registering the <code>GraphQLModule</code> with the <code>MercuriusFederationDriver</code> driver in the configuration object:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> {
+  <span class="hljs-title class_">MercuriusFederationDriver</span>,
+  <span class="hljs-title class_">MercuriusFederationDriverConfig</span>,
+} <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/mercurius&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">Module</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/common&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">GraphQLModule</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/graphql&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">UsersResolver</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./users.resolver.js&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">UsersService</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./users.service.js&#x27;</span>; <span class="hljs-comment">// Not included in this example</span>
+
+<span class="hljs-meta">@Module</span>({
+  <span class="hljs-attr">imports</span>: [
+    <span class="hljs-title class_">GraphQLModule</span>.<span class="hljs-property">forRoot</span>&lt;<span class="hljs-title class_">MercuriusFederationDriverConfig</span>&gt;({
+      <span class="hljs-attr">driver</span>: <span class="hljs-title class_">MercuriusFederationDriver</span>,
+      <span class="hljs-attr">autoSchemaFile</span>: <span class="hljs-literal">true</span>,
+    }),
+  ],
+  <span class="hljs-attr">providers</span>: [<span class="hljs-title class_">UsersResolver</span>, <span class="hljs-title class_">UsersService</span>],
+})
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">AppModule</span> {}</code></pre></div></figure>
+<h4 id="federated-example-posts">Federated example: Posts</h4>
+<p>The Posts service serves aggregated posts through the <code>getPosts</code> query, and also extends the <code>User</code> type with a <code>user.posts</code> field.</p>
+<h4 id="schema-first">Schema first</h4>
+<p>The Posts service references the <code>User</code> type in its schema by marking it with the <code>extend</code> keyword. It also declares one additional field on the <code>User</code> type (<code>posts</code>). Note the <code>@key</code> directive, used to match <code>User</code> instances, and the <code>@external</code> directive, which indicates that the <code>id</code> field is managed elsewhere.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>GraphQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-graphql"><span class="hljs-keyword">type</span> Post <span class="hljs-meta">@key</span><span class="hljs-punctuation">(</span><span class="hljs-symbol">fields</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;id&quot;</span><span class="hljs-punctuation">)</span> <span class="hljs-punctuation">{</span>
+  <span class="hljs-symbol">id</span><span class="hljs-punctuation">:</span> ID<span class="hljs-punctuation">!</span>
+  <span class="hljs-symbol">title</span><span class="hljs-punctuation">:</span> String<span class="hljs-punctuation">!</span>
+  <span class="hljs-symbol">body</span><span class="hljs-punctuation">:</span> String<span class="hljs-punctuation">!</span>
+  <span class="hljs-symbol">user</span><span class="hljs-punctuation">:</span> User
+<span class="hljs-punctuation">}</span>
+
+extend <span class="hljs-keyword">type</span> User <span class="hljs-meta">@key</span><span class="hljs-punctuation">(</span><span class="hljs-symbol">fields</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;id&quot;</span><span class="hljs-punctuation">)</span> <span class="hljs-punctuation">{</span>
+  <span class="hljs-symbol">id</span><span class="hljs-punctuation">:</span> ID<span class="hljs-punctuation">!</span> <span class="hljs-meta">@external</span>
+  <span class="hljs-symbol">posts</span><span class="hljs-punctuation">:</span> <span class="hljs-punctuation">[</span>Post<span class="hljs-punctuation">]</span>
+<span class="hljs-punctuation">}</span>
+
+extend <span class="hljs-keyword">type</span> <span class="hljs-keyword">Query</span> <span class="hljs-punctuation">{</span>
+  <span class="hljs-symbol">getPosts</span><span class="hljs-punctuation">:</span> <span class="hljs-punctuation">[</span>Post<span class="hljs-punctuation">]</span>
+<span class="hljs-punctuation">}</span></code></pre></div></figure>
+<p>In the following example, the <code>PostsResolver</code> provides a <code>getUser()</code> method that returns a reference containing <code>__typename</code> plus any additional properties your application needs to resolve the reference, in this case <code>id</code>. The gateway uses <code>__typename</code> to pinpoint the microservice responsible for the <code>User</code> type and retrieve the corresponding instance. To resolve the reference, the gateway sends a request to the Users service described above, which executes its <code>resolveReference()</code> method.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { <span class="hljs-title class_">Query</span>, <span class="hljs-title class_">Resolver</span>, <span class="hljs-title class_">Parent</span>, <span class="hljs-title class_">ResolveField</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/graphql&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">PostsService</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./posts.service.js&#x27;</span>;
+<span class="hljs-keyword">import</span> <span class="hljs-keyword">type</span> { <span class="hljs-title class_">Post</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./posts.interfaces.js&#x27;</span>;
+
+<span class="hljs-meta">@Resolver</span>(<span class="hljs-string">&#x27;Post&#x27;</span>)
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">PostsResolver</span> {
+  <span class="hljs-title function_">constructor</span>(<span class="hljs-params"><span class="hljs-keyword">private</span> <span class="hljs-attr">postsService</span>: <span class="hljs-title class_">PostsService</span></span>) {}
+
+  <span class="hljs-meta">@Query</span>(<span class="hljs-string">&#x27;getPosts&#x27;</span>)
+  <span class="hljs-title function_">getPosts</span>(<span class="hljs-params"></span>) {
+    <span class="hljs-keyword">return</span> <span class="hljs-variable language_">this</span>.<span class="hljs-property">postsService</span>.<span class="hljs-title function_">findAll</span>();
+  }
+
+  <span class="hljs-meta">@ResolveField</span>(<span class="hljs-string">&#x27;user&#x27;</span>)
+  <span class="hljs-title function_">getUser</span>(<span class="hljs-params"><span class="hljs-meta">@Parent</span>() <span class="hljs-attr">post</span>: <span class="hljs-title class_">Post</span></span>) {
+    <span class="hljs-keyword">return</span> { <span class="hljs-attr">__typename</span>: <span class="hljs-string">&#x27;User&#x27;</span>, <span class="hljs-attr">id</span>: post.<span class="hljs-property">userId</span> };
+  }
+}</code></pre></div></figure>
+<p>Lastly, register the <code>GraphQLModule</code>, as in the Users service.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> {
+  <span class="hljs-title class_">MercuriusFederationDriver</span>,
+  <span class="hljs-title class_">MercuriusFederationDriverConfig</span>,
+} <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/mercurius&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">Module</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/common&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">GraphQLModule</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/graphql&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">PostsResolver</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./posts.resolver.js&#x27;</span>;
+
+<span class="hljs-meta">@Module</span>({
+  <span class="hljs-attr">imports</span>: [
+    <span class="hljs-title class_">GraphQLModule</span>.<span class="hljs-property">forRoot</span>&lt;<span class="hljs-title class_">MercuriusFederationDriverConfig</span>&gt;({
+      <span class="hljs-attr">driver</span>: <span class="hljs-title class_">MercuriusFederationDriver</span>,
+      <span class="hljs-attr">typePaths</span>: [<span class="hljs-string">&#x27;**/*.graphql&#x27;</span>],
+    }),
+  ],
+  <span class="hljs-attr">providers</span>: [<span class="hljs-title class_">PostsResolver</span>],
+})
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">AppModule</span> {}</code></pre></div></figure>
+<h4 id="code-first">Code first</h4>
+<p>First, declare a class representing the <code>User</code> entity. Although the entity itself lives in another service, this service uses it (and extends its definition). Note the <code>@extends</code> and <code>@external</code> directives.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { <span class="hljs-title class_">Directive</span>, <span class="hljs-title class_">ObjectType</span>, <span class="hljs-title class_">Field</span>, <span class="hljs-variable constant_">ID</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/graphql&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">Post</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./post.entity.js&#x27;</span>;
+
+<span class="hljs-meta">@ObjectType</span>()
+<span class="hljs-meta">@Directive</span>(<span class="hljs-string">&#x27;@extends&#x27;</span>)
+<span class="hljs-meta">@Directive</span>(<span class="hljs-string">&#x27;@key(fields: &quot;id&quot;)&#x27;</span>)
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">User</span> {
+  <span class="hljs-meta">@Field</span>(<span class="hljs-function">() =&gt;</span> <span class="hljs-variable constant_">ID</span>)
+  <span class="hljs-meta">@Directive</span>(<span class="hljs-string">&#x27;@external&#x27;</span>)
+  <span class="hljs-attr">id</span>: <span class="hljs-built_in">number</span>;
+
+  <span class="hljs-meta">@Field</span>(<span class="hljs-function">() =&gt;</span> [<span class="hljs-title class_">Post</span>])
+  <span class="hljs-attr">posts</span>?: <span class="hljs-title class_">Post</span>[];
+}</code></pre></div></figure>
+<p>Next, create the resolver for the extension of the <code>User</code> entity:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { <span class="hljs-title class_">Parent</span>, <span class="hljs-title class_">ResolveField</span>, <span class="hljs-title class_">Resolver</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/graphql&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">PostsService</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./posts.service.js&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">Post</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./post.entity.js&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">User</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./user.entity.js&#x27;</span>;
+
+<span class="hljs-meta">@Resolver</span>(<span class="hljs-function">() =&gt;</span> <span class="hljs-title class_">User</span>)
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">UsersResolver</span> {
+  <span class="hljs-title function_">constructor</span>(<span class="hljs-params"><span class="hljs-keyword">private</span> <span class="hljs-keyword">readonly</span> <span class="hljs-attr">postsService</span>: <span class="hljs-title class_">PostsService</span></span>) {}
+
+  <span class="hljs-meta">@ResolveField</span>(<span class="hljs-function">() =&gt;</span> [<span class="hljs-title class_">Post</span>])
+  <span class="hljs-keyword">public</span> <span class="hljs-title function_">posts</span>(<span class="hljs-meta">@Parent</span>() <span class="hljs-attr">user</span>: <span class="hljs-title class_">User</span>): <span class="hljs-title class_">Post</span>[] {
+    <span class="hljs-keyword">return</span> <span class="hljs-variable language_">this</span>.<span class="hljs-property">postsService</span>.<span class="hljs-title function_">forAuthor</span>(user.<span class="hljs-property">id</span>);
+  }
+}</code></pre></div></figure>
+<p>Then define the <code>Post</code> entity class:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { <span class="hljs-title class_">Directive</span>, <span class="hljs-title class_">Field</span>, <span class="hljs-variable constant_">ID</span>, <span class="hljs-title class_">Int</span>, <span class="hljs-title class_">ObjectType</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/graphql&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">User</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./user.entity.js&#x27;</span>;
+
+<span class="hljs-meta">@ObjectType</span>()
+<span class="hljs-meta">@Directive</span>(<span class="hljs-string">&#x27;@key(fields: &quot;id&quot;)&#x27;</span>)
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">Post</span> {
+  <span class="hljs-meta">@Field</span>(<span class="hljs-function">() =&gt;</span> <span class="hljs-variable constant_">ID</span>)
+  <span class="hljs-attr">id</span>: <span class="hljs-built_in">number</span>;
+
+  <span class="hljs-meta">@Field</span>()
+  <span class="hljs-attr">title</span>: <span class="hljs-built_in">string</span>;
+
+  <span class="hljs-meta">@Field</span>(<span class="hljs-function">() =&gt;</span> <span class="hljs-title class_">Int</span>)
+  <span class="hljs-attr">authorId</span>: <span class="hljs-built_in">number</span>;
+
+  <span class="hljs-meta">@Field</span>(<span class="hljs-function">() =&gt;</span> <span class="hljs-title class_">User</span>)
+  <span class="hljs-attr">user</span>?: <span class="hljs-title class_">User</span>;
+}</code></pre></div></figure>
+<p>And its resolver:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { <span class="hljs-title class_">Query</span>, <span class="hljs-title class_">Args</span>, <span class="hljs-title class_">ResolveField</span>, <span class="hljs-title class_">Resolver</span>, <span class="hljs-title class_">Parent</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/graphql&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">PostsService</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./posts.service.js&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">Post</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./post.entity.js&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">User</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./user.entity.js&#x27;</span>;
+
+<span class="hljs-meta">@Resolver</span>(<span class="hljs-function">() =&gt;</span> <span class="hljs-title class_">Post</span>)
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">PostsResolver</span> {
+  <span class="hljs-title function_">constructor</span>(<span class="hljs-params"><span class="hljs-keyword">private</span> <span class="hljs-keyword">readonly</span> <span class="hljs-attr">postsService</span>: <span class="hljs-title class_">PostsService</span></span>) {}
+
+  <span class="hljs-meta">@Query</span>(<span class="hljs-function">() =&gt;</span> <span class="hljs-title class_">Post</span>)
+  <span class="hljs-title function_">findPost</span>(<span class="hljs-meta">@Args</span>(<span class="hljs-string">&#x27;id&#x27;</span>) <span class="hljs-attr">id</span>: <span class="hljs-built_in">number</span>): <span class="hljs-title class_">Post</span> {
+    <span class="hljs-keyword">return</span> <span class="hljs-variable language_">this</span>.<span class="hljs-property">postsService</span>.<span class="hljs-title function_">findOne</span>(id);
+  }
+
+  <span class="hljs-meta">@Query</span>(<span class="hljs-function">() =&gt;</span> [<span class="hljs-title class_">Post</span>])
+  <span class="hljs-title function_">getPosts</span>(): <span class="hljs-title class_">Post</span>[] {
+    <span class="hljs-keyword">return</span> <span class="hljs-variable language_">this</span>.<span class="hljs-property">postsService</span>.<span class="hljs-title function_">all</span>();
+  }
+
+  <span class="hljs-meta">@ResolveField</span>(<span class="hljs-function">() =&gt;</span> <span class="hljs-title class_">User</span>)
+  <span class="hljs-title function_">user</span>(<span class="hljs-meta">@Parent</span>() <span class="hljs-attr">post</span>: <span class="hljs-title class_">Post</span>): <span class="hljs-built_in">any</span> {
+    <span class="hljs-keyword">return</span> { <span class="hljs-attr">__typename</span>: <span class="hljs-string">&#x27;User&#x27;</span>, <span class="hljs-attr">id</span>: post.<span class="hljs-property">authorId</span> };
+  }
+}</code></pre></div></figure>
+<p>Finally, tie everything together in a module. Note the schema build options, which specify that <code>User</code> is an orphaned (external) type.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> {
+  <span class="hljs-title class_">MercuriusFederationDriver</span>,
+  <span class="hljs-title class_">MercuriusFederationDriverConfig</span>,
+} <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/mercurius&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">Module</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/common&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">GraphQLModule</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/graphql&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">User</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./user.entity.js&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">PostsResolver</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./posts.resolver.js&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">UsersResolver</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./users.resolver.js&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">PostsService</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./posts.service.js&#x27;</span>; <span class="hljs-comment">// Not included in this example</span>
+
+<span class="hljs-meta">@Module</span>({
+  <span class="hljs-attr">imports</span>: [
+    <span class="hljs-title class_">GraphQLModule</span>.<span class="hljs-property">forRoot</span>&lt;<span class="hljs-title class_">MercuriusFederationDriverConfig</span>&gt;({
+      <span class="hljs-attr">driver</span>: <span class="hljs-title class_">MercuriusFederationDriver</span>,
+      <span class="hljs-attr">autoSchemaFile</span>: <span class="hljs-literal">true</span>,
+      <span class="hljs-attr">buildSchemaOptions</span>: {
+        <span class="hljs-attr">orphanedTypes</span>: [<span class="hljs-title class_">User</span>],
+      },
+    }),
+  ],
+  <span class="hljs-attr">providers</span>: [<span class="hljs-title class_">PostsResolver</span>, <span class="hljs-title class_">UsersResolver</span>, <span class="hljs-title class_">PostsService</span>],
+})
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">AppModule</span> {}</code></pre></div></figure>
+<h4 id="federated-example-gateway">Federated example: Gateway</h4>
+<p>Start by installing the required dependency:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Terminal</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-bash">$ npm install --save @mercuriusjs/gateway</code></pre></div></figure>
+<p>The gateway requires a list of endpoints, and it discovers the corresponding schemas automatically. Therefore, the gateway implementation is the same for both the code first and schema first approaches.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> {
+  <span class="hljs-title class_">MercuriusGatewayDriver</span>,
+  <span class="hljs-title class_">MercuriusGatewayDriverConfig</span>,
+} <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/mercurius&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">Module</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/common&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">GraphQLModule</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/graphql&#x27;</span>;
+
+<span class="hljs-meta">@Module</span>({
+  <span class="hljs-attr">imports</span>: [
+    <span class="hljs-title class_">GraphQLModule</span>.<span class="hljs-property">forRoot</span>&lt;<span class="hljs-title class_">MercuriusGatewayDriverConfig</span>&gt;({
+      <span class="hljs-attr">driver</span>: <span class="hljs-title class_">MercuriusGatewayDriver</span>,
+      <span class="hljs-attr">gateway</span>: {
+        <span class="hljs-attr">services</span>: [
+          { <span class="hljs-attr">name</span>: <span class="hljs-string">&#x27;users&#x27;</span>, <span class="hljs-attr">url</span>: <span class="hljs-string">&#x27;http://user-service/graphql&#x27;</span> },
+          { <span class="hljs-attr">name</span>: <span class="hljs-string">&#x27;posts&#x27;</span>, <span class="hljs-attr">url</span>: <span class="hljs-string">&#x27;http://post-service/graphql&#x27;</span> },
+        ],
+      },
+    }),
+  ],
+})
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">AppModule</span> {}</code></pre></div></figure>
+<h3 id="federation-2">Federation 2</h3>
+<p>According to the <a target="_blank" rel="noopener" href="https://www.apollographql.com/docs/federation/federation-2/new-in-federation-2">Apollo docs</a>, Federation 2 improves the developer experience of the original Apollo Federation (called Federation 1 in this section) and is backward compatible with most original supergraphs.</p>
+<aside class="callout callout-warning"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 4 2.8 20h18.4L12 4z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M12 10v4.4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="17" r="1.3" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Warning</p><p>Mercurius doesn&#39;t fully support Federation 2. See Apollo&#39;s list of <a target="_blank" rel="noopener" href="https://www.apollographql.com/docs/federation/supported-subgraphs#javascript--typescript">subgraph libraries that support Federation 2</a>.</p>
+</div></aside>
+<p>In the following sections, we&#39;ll upgrade the previous example to Federation 2.</p>
+<h4 id="federated-example-users">Federated example: Users</h4>
+<p>In Federation 2, entities have no originating subgraph, so you no longer need to extend <code>Query</code>. For more details, see the <a target="_blank" rel="noopener" href="https://www.apollographql.com/docs/federation/federation-2/new-in-federation-2#entities">entities topic</a> in the Apollo Federation 2 docs.</p>
+<h4 id="schema-first">Schema first</h4>
+<p>Remove the <code>extend</code> keyword from the schema. To opt in to Federation 2, the schema must also import the federation directives it uses with the <code>@link</code> directive:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>GraphQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-graphql">extend <span class="hljs-keyword">schema</span> <span class="hljs-meta">@link</span><span class="hljs-punctuation">(</span><span class="hljs-symbol">url</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;https://specs.apollo.dev/federation/v2.0&quot;</span>, <span class="hljs-symbol">import</span><span class="hljs-punctuation">:</span> <span class="hljs-punctuation">[</span><span class="hljs-string">&quot;@key&quot;</span><span class="hljs-punctuation">]</span><span class="hljs-punctuation">)</span>
+
+<span class="hljs-keyword">type</span> User <span class="hljs-meta">@key</span><span class="hljs-punctuation">(</span><span class="hljs-symbol">fields</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;id&quot;</span><span class="hljs-punctuation">)</span> <span class="hljs-punctuation">{</span>
+  <span class="hljs-symbol">id</span><span class="hljs-punctuation">:</span> ID<span class="hljs-punctuation">!</span>
+  <span class="hljs-symbol">name</span><span class="hljs-punctuation">:</span> String<span class="hljs-punctuation">!</span>
+<span class="hljs-punctuation">}</span>
+
+<span class="hljs-keyword">type</span> <span class="hljs-keyword">Query</span> <span class="hljs-punctuation">{</span>
+  getUser<span class="hljs-punctuation">(</span><span class="hljs-symbol">id</span><span class="hljs-punctuation">:</span> ID<span class="hljs-punctuation">!</span><span class="hljs-punctuation">)</span><span class="hljs-punctuation">:</span> User
+<span class="hljs-punctuation">}</span></code></pre></div></figure>
+<h4 id="code-first">Code first</h4>
+<p>To use Federation 2, specify the federation version in the <code>autoSchemaFile</code> option. Nest then adds the <code>@link</code> directive to the generated schema for you.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> {
+  <span class="hljs-title class_">ApolloFederationDriver</span>,
+  <span class="hljs-title class_">ApolloFederationDriverConfig</span>,
+} <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/apollo&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">Module</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/common&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">GraphQLModule</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/graphql&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">UsersResolver</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./users.resolver.js&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">UsersService</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./users.service.js&#x27;</span>; <span class="hljs-comment">// Not included in this example</span>
+
+<span class="hljs-meta">@Module</span>({
+  <span class="hljs-attr">imports</span>: [
+    <span class="hljs-title class_">GraphQLModule</span>.<span class="hljs-property">forRoot</span>&lt;<span class="hljs-title class_">ApolloFederationDriverConfig</span>&gt;({
+      <span class="hljs-attr">driver</span>: <span class="hljs-title class_">ApolloFederationDriver</span>,
+      <span class="hljs-attr">autoSchemaFile</span>: {
+        <span class="hljs-attr">federation</span>: <span class="hljs-number">2</span>,
+      },
+    }),
+  ],
+  <span class="hljs-attr">providers</span>: [<span class="hljs-title class_">UsersResolver</span>, <span class="hljs-title class_">UsersService</span>],
+})
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">AppModule</span> {}</code></pre></div></figure>
+<h4 id="federated-example-posts">Federated example: Posts</h4>
+<p>For the same reason, you no longer need to extend <code>User</code> and <code>Query</code>.</p>
+<h4 id="schema-first">Schema first</h4>
+<p>Remove the <code>extend</code> keyword and the <code>@external</code> directive from the schema, and add the <code>@link</code> directive:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>GraphQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-graphql">extend <span class="hljs-keyword">schema</span> <span class="hljs-meta">@link</span><span class="hljs-punctuation">(</span><span class="hljs-symbol">url</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;https://specs.apollo.dev/federation/v2.0&quot;</span>, <span class="hljs-symbol">import</span><span class="hljs-punctuation">:</span> <span class="hljs-punctuation">[</span><span class="hljs-string">&quot;@key&quot;</span><span class="hljs-punctuation">]</span><span class="hljs-punctuation">)</span>
+
+<span class="hljs-keyword">type</span> Post <span class="hljs-meta">@key</span><span class="hljs-punctuation">(</span><span class="hljs-symbol">fields</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;id&quot;</span><span class="hljs-punctuation">)</span> <span class="hljs-punctuation">{</span>
+  <span class="hljs-symbol">id</span><span class="hljs-punctuation">:</span> ID<span class="hljs-punctuation">!</span>
+  <span class="hljs-symbol">title</span><span class="hljs-punctuation">:</span> String<span class="hljs-punctuation">!</span>
+  <span class="hljs-symbol">body</span><span class="hljs-punctuation">:</span> String<span class="hljs-punctuation">!</span>
+  <span class="hljs-symbol">user</span><span class="hljs-punctuation">:</span> User
+<span class="hljs-punctuation">}</span>
+
+<span class="hljs-keyword">type</span> User <span class="hljs-meta">@key</span><span class="hljs-punctuation">(</span><span class="hljs-symbol">fields</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;id&quot;</span><span class="hljs-punctuation">)</span> <span class="hljs-punctuation">{</span>
+  <span class="hljs-symbol">id</span><span class="hljs-punctuation">:</span> ID<span class="hljs-punctuation">!</span>
+  <span class="hljs-symbol">posts</span><span class="hljs-punctuation">:</span> <span class="hljs-punctuation">[</span>Post<span class="hljs-punctuation">]</span>
+<span class="hljs-punctuation">}</span>
+
+<span class="hljs-keyword">type</span> <span class="hljs-keyword">Query</span> <span class="hljs-punctuation">{</span>
+  <span class="hljs-symbol">getPosts</span><span class="hljs-punctuation">:</span> <span class="hljs-punctuation">[</span>Post<span class="hljs-punctuation">]</span>
+<span class="hljs-punctuation">}</span></code></pre></div></figure>
+<h4 id="code-first">Code first</h4>
+<p>Because the <code>User</code> entity is no longer extended, remove the <code>@extends</code> and <code>@external</code> directives from <code>User</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { <span class="hljs-title class_">Directive</span>, <span class="hljs-title class_">ObjectType</span>, <span class="hljs-title class_">Field</span>, <span class="hljs-variable constant_">ID</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/graphql&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">Post</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./post.entity.js&#x27;</span>;
+
+<span class="hljs-meta">@ObjectType</span>()
+<span class="hljs-meta">@Directive</span>(<span class="hljs-string">&#x27;@key(fields: &quot;id&quot;)&#x27;</span>)
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">User</span> {
+  <span class="hljs-meta">@Field</span>(<span class="hljs-function">() =&gt;</span> <span class="hljs-variable constant_">ID</span>)
+  <span class="hljs-attr">id</span>: <span class="hljs-built_in">number</span>;
+
+  <span class="hljs-meta">@Field</span>(<span class="hljs-function">() =&gt;</span> [<span class="hljs-title class_">Post</span>])
+  <span class="hljs-attr">posts</span>?: <span class="hljs-title class_">Post</span>[];
+}</code></pre></div></figure>
+<p>As in the Users service, configure the <code>GraphQLModule</code> to use Federation 2:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> {
+  <span class="hljs-title class_">ApolloFederationDriver</span>,
+  <span class="hljs-title class_">ApolloFederationDriverConfig</span>,
+} <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/apollo&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">Module</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/common&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">GraphQLModule</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/graphql&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">User</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./user.entity.js&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">PostsResolver</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./posts.resolver.js&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">UsersResolver</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./users.resolver.js&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">PostsService</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./posts.service.js&#x27;</span>; <span class="hljs-comment">// Not included in this example</span>
+
+<span class="hljs-meta">@Module</span>({
+  <span class="hljs-attr">imports</span>: [
+    <span class="hljs-title class_">GraphQLModule</span>.<span class="hljs-property">forRoot</span>&lt;<span class="hljs-title class_">ApolloFederationDriverConfig</span>&gt;({
+      <span class="hljs-attr">driver</span>: <span class="hljs-title class_">ApolloFederationDriver</span>,
+      <span class="hljs-attr">autoSchemaFile</span>: {
+        <span class="hljs-attr">federation</span>: <span class="hljs-number">2</span>,
+      },
+      <span class="hljs-attr">buildSchemaOptions</span>: {
+        <span class="hljs-attr">orphanedTypes</span>: [<span class="hljs-title class_">User</span>],
+      },
+    }),
+  ],
+  <span class="hljs-attr">providers</span>: [<span class="hljs-title class_">PostsResolver</span>, <span class="hljs-title class_">UsersResolver</span>, <span class="hljs-title class_">PostsService</span>],
+})
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">AppModule</span> {}</code></pre></div></figure>
+<h4 id="hiding-operations-from-the-supergraph">Hiding operations from the supergraph</h4>
+<p>To keep a query, mutation or field out of the public supergraph API while the subgraph still serves it, mark it with Federation 2&#39;s <code>@inaccessible</code> directive. With the code first approach, use the <code>@Directive()</code> decorator:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-meta">@Query</span>(<span class="hljs-function">() =&gt;</span> <span class="hljs-title class_">Int</span>)
+<span class="hljs-meta">@Directive</span>(<span class="hljs-string">&#x27;@inaccessible&#x27;</span>)
+<span class="hljs-title function_">internalStats</span>(<span class="hljs-params"></span>) {
+  <span class="hljs-keyword">return</span> <span class="hljs-variable language_">this</span>.<span class="hljs-property">statsService</span>.<span class="hljs-title function_">count</span>();
+}</code></pre></div></figure>
+<p>The operation stays executable on the subgraph and is listed in its <code>_service { sdl }</code>, but composition leaves it out of the supergraph schema that clients see.</p>
