@@ -1,0 +1,205 @@
+<p>Most of the SDK is automatic instrumentation: you configure it once and it decides what to record. <code>TracerService</code> is the manual half. Inject it anywhere in your application to add spans inside an already-traced request, attach context to that request, capture errors you handled yourself, and report your own metrics.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>cats.service</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { <span class="hljs-title class_">Injectable</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/common&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">TracerService</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/observe&#x27;</span>;
+
+<span class="hljs-meta">@Injectable</span>()
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">CatsService</span> {
+  <span class="hljs-title function_">constructor</span>(<span class="hljs-params"><span class="hljs-keyword">private</span> <span class="hljs-keyword">readonly</span> <span class="hljs-attr">tracerService</span>: <span class="hljs-title class_">TracerService</span></span>) {}
+}</code></pre></div></figure>
+<p><code>ObserveModule.forRoot()</code> registers a global module that exports <code>TracerService</code>, so you can inject it in any module without importing <code>ObserveModule</code> again. (<code>forRootAsync()</code> is global too, unless you pass <code>global: false</code>.) Every method reads the trace from the ambient async context, so calling one outside of a request, job, or other instrumented operation throws: there is no trace to attach to. This is deliberate, because a silently dropped span is harder to notice than an error. The exceptions are <code>currentTraceId()</code>, which returns <code>null</code> instead, and <a href="#custom-metrics">custom metrics</a>, which aren&#39;t tied to a trace.</p>
+<h4 id="creating-spans">Creating spans</h4>
+<p><code>createSpan(name, callback)</code> runs the callback inside a new span nested under the currently active one, and returns a promise of the callback&#39;s return value. The span&#39;s duration is the callback&#39;s duration, so <code>await</code> anything you want measured:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>cats.service</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">async</span> <span class="hljs-title function_">findOne</span>(<span class="hljs-params"><span class="hljs-attr">id</span>: <span class="hljs-built_in">string</span>, <span class="hljs-attr">activeUser</span>: <span class="hljs-title class_">ActiveUserData</span></span>) {
+  <span class="hljs-keyword">return</span> <span class="hljs-variable language_">this</span>.<span class="hljs-property">tracerService</span>.<span class="hljs-title function_">createSpan</span>(<span class="hljs-string">&#x27;cats.findOne&#x27;</span>, <span class="hljs-title function_">async</span> (span) =&gt; {
+    span.<span class="hljs-title function_">addTags</span>({ <span class="hljs-attr">userId</span>: activeUser.<span class="hljs-property">sub</span>, <span class="hljs-attr">catId</span>: id });
+    <span class="hljs-keyword">return</span> <span class="hljs-variable language_">this</span>.<span class="hljs-property">catsRepository</span>.<span class="hljs-title function_">findOne</span>(id);
+  });
+}</code></pre></div></figure>
+<p>Spans nest by call stack: a <code>createSpan()</code> inside another <code>createSpan()</code> callback becomes its child, which produces the waterfall on the trace detail page. The callback may be synchronous or asynchronous. Auto-instrumented spans (controller methods, providers, database calls) and your custom spans share the same tree, so a hand-named span appears exactly where it ran relative to everything else.</p>
+<p>The <code>span</code> argument is a <code>TraceSpanDelegate</code>. Its <code>addTags(tags)</code> method (or <code>setTag(key, value)</code> for a single entry) attaches key-value pairs to that span alone. Like the <code>tags</code> option described in <a href="#/doc/nestjs/observability/sdk@tags-and-custom-attributes">SDK → Tags and custom attributes</a>, they&#39;re searchable and shown on the span in the trace view. The difference is scope: that option covers every request, while these tags cover one span.</p>
+<p><code>activeSpan()</code> resolves to the <code>TraceSpanDelegate</code> of the currently active span without creating a new one. Use it to tag the enclosing span from code that didn&#39;t create it:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">const</span> span = <span class="hljs-keyword">await</span> <span class="hljs-variable language_">this</span>.<span class="hljs-property">tracerService</span>.<span class="hljs-title function_">activeSpan</span>();
+span.<span class="hljs-title function_">addTags</span>({ <span class="hljs-attr">cacheHit</span>: <span class="hljs-string">&#x27;false&#x27;</span> });</code></pre></div></figure>
+<p>It rejects if no span is active for the current trace.</p>
+<figure><img src="https://www.observe.nestjs.com/docs/sdk/spans.webp" alt="Spans" /></figure><aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Hint</p><p>The <strong>Spans</strong> analytics view aggregates by span name, across every route that calls them. Pick names that describe the work (<code>orders.recalculate</code>, <code>cache.lookup</code>) rather than the caller, so the dashboard can tell you whether something is slow everywhere or only from one endpoint.</p>
+</div></aside>
+<h4 id="capturing-handled-errors">Capturing handled errors</h4>
+<p>Errors that propagate out of a controller, job, or span are recorded automatically. <code>captureError()</code> is for the ones that don&#39;t: anything you caught and handled but still want visible in the dashboard:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">try</span> {
+  <span class="hljs-keyword">await</span> <span class="hljs-variable language_">this</span>.<span class="hljs-property">billing</span>.<span class="hljs-title function_">sync</span>(accountId);
+} <span class="hljs-keyword">catch</span> (error) {
+  <span class="hljs-keyword">await</span> <span class="hljs-variable language_">this</span>.<span class="hljs-property">tracerService</span>.<span class="hljs-title function_">captureError</span>(error <span class="hljs-keyword">as</span> <span class="hljs-title class_">Error</span>, {
+    accountId,
+    <span class="hljs-attr">retryable</span>: <span class="hljs-string">&#x27;true&#x27;</span>,
+  });
+}</code></pre></div></figure>
+<p>The error is attached to the current trace, with the optional tags recorded alongside it, and gets the same source-context treatment as any other captured error if <a href="#/doc/nestjs/observability/sdk@error-source-context"><code>sourceContext</code></a> is enabled.</p>
+<h4 id="request-scoped-attributes">Request-scoped attributes</h4>
+<p><code>setAttribute(key, value)</code> and <code>getAttribute(key)</code> write and read the trace&#39;s own context store. Its values live for the duration of the request and are readable from anywhere downstream, without threading them through every function signature:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-variable language_">this</span>.<span class="hljs-property">tracerService</span>.<span class="hljs-title function_">setAttribute</span>(<span class="hljs-string">&#x27;tenantId&#x27;</span>, tenant.<span class="hljs-property">id</span>);
+<span class="hljs-comment">// ...later, in a different service on the same request</span>
+<span class="hljs-keyword">const</span> tenantId = <span class="hljs-variable language_">this</span>.<span class="hljs-property">tracerService</span>.<span class="hljs-title function_">getAttribute</span>(<span class="hljs-string">&#x27;tenantId&#x27;</span>);</code></pre></div></figure>
+<p><code>getAttribute()</code> returns <code>undefined</code> for a key that was never set. Both throw when called outside a traced context.</p>
+<p>The trace id lives in the same store, so <code>getAttribute(traceIdKey)</code> retrieves the current trace id, e.g., to correlate with an external system or to <a href="#/doc/nestjs/observability/distributed-tracing">propagate it to another service</a>. <code>currentTraceId()</code> is a shorthand for that lookup with one deliberate difference: it returns <code>null</code> outside a traced context instead of throwing, because forwarding a trace id downstream can legitimately happen when there is no trace yet.</p>
+<p>To type the store, pass its shape as <code>TracerService</code>&#39;s first type argument. Keys and values are then checked against it, including nested paths:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">interface</span> <span class="hljs-title class_">RequestStore</span> {
+  <span class="hljs-attr">tenantId</span>: <span class="hljs-built_in">string</span>;
+  <span class="hljs-attr">flags</span>: { <span class="hljs-attr">betaCheckout</span>: <span class="hljs-built_in">boolean</span> };
+}
+
+<span class="hljs-meta">@Injectable</span>()
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">CheckoutService</span> {
+  <span class="hljs-title function_">constructor</span>(<span class="hljs-params"><span class="hljs-keyword">private</span> <span class="hljs-keyword">readonly</span> <span class="hljs-attr">tracerService</span>: <span class="hljs-title class_">TracerService</span>&lt;<span class="hljs-title class_">RequestStore</span>&gt;</span>) {}
+
+  <span class="hljs-title function_">enableBeta</span>(<span class="hljs-params"></span>) {
+    <span class="hljs-variable language_">this</span>.<span class="hljs-property">tracerService</span>.<span class="hljs-title function_">setAttribute</span>(<span class="hljs-string">&#x27;flags.betaCheckout&#x27;</span>, <span class="hljs-literal">true</span>);
+  }
+}</code></pre></div></figure>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Hint</p><p><code>ObserveModule</code> also exports the <code>AsyncLocalStorage</code> instance that holds the trace context. <code>setAttribute()</code>/<code>getAttribute()</code> are the supported way to reach it; inject the store directly only if you need something they don&#39;t expose. If you already use the pattern described in the <a href="#/doc/nestjs/recipes/async-local-storage">Async local storage</a> recipe, this store can replace your hand-rolled one.</p>
+</div></aside>
+<h4 id="custom-metrics">Custom metrics</h4>
+<p>Three metric types are available, each created by name (or retrieved, if the name already exists). They report into the <strong>Custom</strong> section of the dashboard, and you can alert on them like any built-in metric.</p>
+<p>Unlike the methods above, metrics aren&#39;t tied to a trace, so you can report them from anywhere, including startup and shutdown code, <code>onModuleInit()</code> hooks, and cron jobs.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Method</th>
+<th>For</th>
+<th>Reporting method</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>counter</code></td>
+<td>Values that only go up - requests served, orders placed, retries attempted</td>
+<td><code>increment()</code></td>
+</tr>
+<tr>
+<td><code>gauge</code></td>
+<td>Values that go up and down - queue depth, active connections, cache ratio</td>
+<td><code>increment()</code>, <code>decrement()</code>, <code>setValue(value)</code></td>
+</tr>
+<tr>
+<td><code>summary</code></td>
+<td>Distributions you want quantiles over - latency, payload size</td>
+<td><code>observe(value)</code></td>
+</tr>
+</tbody></table></div>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>cats.service</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-variable language_">this</span>.<span class="hljs-property">tracerService</span>
+  .<span class="hljs-title function_">counter</span>(<span class="hljs-string">&#x27;cats.lookups&#x27;</span>, { <span class="hljs-attr">description</span>: <span class="hljs-string">&#x27;Number of cat lookups&#x27;</span> })
+  .<span class="hljs-title function_">increment</span>();
+
+<span class="hljs-variable language_">this</span>.<span class="hljs-property">tracerService</span>
+  .<span class="hljs-title function_">gauge</span>(<span class="hljs-string">&#x27;cats.active.sessions&#x27;</span>, {
+    <span class="hljs-attr">kind</span>: <span class="hljs-string">&#x27;ratio&#x27;</span>,
+    <span class="hljs-attr">initialValue</span>: <span class="hljs-number">0</span>,
+    <span class="hljs-attr">description</span>: <span class="hljs-string">&#x27;Number of active sessions&#x27;</span>,
+  })
+  .<span class="hljs-title function_">increment</span>();
+
+<span class="hljs-keyword">const</span> latency = <span class="hljs-variable language_">this</span>.<span class="hljs-property">tracerService</span>.<span class="hljs-title function_">summary</span>(<span class="hljs-string">&#x27;cats.lookup.duration&#x27;</span>, {
+  <span class="hljs-attr">description</span>: <span class="hljs-string">&#x27;Duration of cat lookups in milliseconds&#x27;</span>,
+});
+<span class="hljs-keyword">const</span> startedAt = performance.<span class="hljs-title function_">now</span>();
+<span class="hljs-keyword">try</span> {
+  <span class="hljs-keyword">return</span> <span class="hljs-keyword">await</span> <span class="hljs-variable language_">this</span>.<span class="hljs-property">catsRepository</span>.<span class="hljs-title function_">findOne</span>(id);
+} <span class="hljs-keyword">finally</span> {
+  <span class="hljs-comment">// Observed in a finally so a failed lookup still lands in the distribution -</span>
+  <span class="hljs-comment">// dropping the slow failures is how a latency summary ends up flattering itself.</span>
+  latency.<span class="hljs-title function_">observe</span>(performance.<span class="hljs-title function_">now</span>() - startedAt);
+}</code></pre></div></figure>
+<p>Calling <code>counter(&#39;orders.placed&#39;)</code> twice returns the same instance, so you don&#39;t need to hold a reference in a field, though doing so is cheaper on a hot path. Passing attributes on a later call updates the existing metric&#39;s description and labels in place.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Attribute</th>
+<th>Applies to</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>description</code></td>
+<td>counter, gauge, summary</td>
+<td>Shown alongside the metric in the dashboard. Worth setting: a bare metric name rarely explains itself to a future reader.</td>
+</tr>
+<tr>
+<td><code>labels</code></td>
+<td>counter, gauge, summary</td>
+<td>Dimensions the metric is broken down by, so the chart can be split rather than showing one aggregate line.</td>
+</tr>
+<tr>
+<td><code>initialValue</code></td>
+<td>counter, gauge</td>
+<td>Starting value. Only applied while the metric is still at <code>0</code>, so a restart-time declaration doesn&#39;t clobber a value already counted.</td>
+</tr>
+<tr>
+<td><code>kind</code></td>
+<td>gauge</td>
+<td><code>&#39;ratio&#39;</code> (default) for values that stand alone per report, or <code>&#39;additive&#39;</code> for values that sum across reporting instances.</td>
+</tr>
+<tr>
+<td><code>sampleSize</code></td>
+<td>summary</td>
+<td>How many observations per label are retained to compute quantiles from, which bounds the summary&#39;s memory under load.</td>
+</tr>
+</tbody></table></div>
+<figure><img src="https://www.observe.nestjs.com/docs/sdk/custom-metrics.webp" alt="Custom metrics" /></figure><p>A metric that has been declared but never reported reads as &quot;unknown&quot; rather than <code>0</code> in the dashboard. This is a real state, not missing data: &quot;we have never heard from this metric&quot; and &quot;this metric is currently zero&quot; are different facts, and showing the second in place of the first would hide a broken deploy.</p>
+<h4 id="api-summary">API summary</h4>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Method</th>
+<th align="center">Needs a trace</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>createSpan(name, callback)</code></td>
+<td align="center">✓</td>
+<td>Run <code>callback</code> inside a new child span; returns its result</td>
+</tr>
+<tr>
+<td><code>activeSpan()</code></td>
+<td align="center">✓</td>
+<td>Resolves to the <code>TraceSpanDelegate</code> of the span in flight</td>
+</tr>
+<tr>
+<td><code>captureError(error, tags?)</code></td>
+<td align="center">✓</td>
+<td>Record a handled error on the current trace</td>
+</tr>
+<tr>
+<td><code>setAttribute(key, value)</code></td>
+<td align="center">✓</td>
+<td>Write to the request-scoped context store</td>
+</tr>
+<tr>
+<td><code>getAttribute(key)</code></td>
+<td align="center">✓</td>
+<td>Read from the request-scoped context store</td>
+</tr>
+<tr>
+<td><code>currentTraceId()</code></td>
+<td align="center">✗</td>
+<td>The active trace id, or <code>null</code> outside a trace</td>
+</tr>
+<tr>
+<td><code>counter(name, attributes?)</code></td>
+<td align="center">✗</td>
+<td>Get or create a monotonically increasing metric</td>
+</tr>
+<tr>
+<td><code>gauge(name, attributes?)</code></td>
+<td align="center">✗</td>
+<td>Get or create a metric that can go up and down</td>
+</tr>
+<tr>
+<td><code>summary(name, attributes?)</code></td>
+<td align="center">✗</td>
+<td>Get or create a distribution metric with quantiles</td>
+</tr>
+</tbody></table></div>
+<h4 id="where-to-go-next">Where to go next</h4>
+<ul>
+<li><a href="#/doc/nestjs/observability/distributed-tracing">Distributed tracing</a> - use <code>currentTraceId()</code> to keep one trace across service boundaries.</li>
+<li><a href="#/doc/nestjs/observability/dashboard">Dashboard</a> - where spans, captured errors, and custom metrics show up.</li>
+</ul>

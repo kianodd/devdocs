@@ -1,0 +1,1197 @@
+<p><code>@nestjs/i18n</code> translates what a Nest application sends back (responses, errors, validation messages, GraphQL fields) into the language of each request.</p>
+<p>An online store for cat food and supplies sells to customers in the United States, Poland and Germany, and its order API should answer each of them in their own language. In this tutorial, you&#39;ll translate order confirmations (with correct Polish plurals), error messages, validation messages (from <code>class-validator</code>, or from Zod) and GraphQL fields. You&#39;ll also format prices and dates for each locale.</p>
+<p>The package resolves the locale once per request and keeps it in an <code>AsyncLocalStorage</code> store. Services, exceptions, pipes and GraphQL field resolvers translate without access to the request object, and every provider stays a singleton. It works the same on Express and Fastify, and for microservices and WebSocket gateways too.</p>
+<h4 id="installation">Installation</h4>
+<p>This tutorial extends the store&#39;s order API, which serves customers in English, Polish, and German. Orders are plain objects kept in memory. The example seeds order #1001: two bags of salmon kibble and three packs of clumping litter, $97.95 in total. It was placed on September 14, 2026 and has shipped since.</p>
+<p>Install the package:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Terminal</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-bash">$ npm i --save @nestjs/i18n</code></pre></div></figure>
+<p>The first section derives a type from a JSON file, so enable <code>resolveJsonModule</code> in your <code>tsconfig.json</code>.</p>
+<h4 id="add-catalogs-and-register-the-module">Add catalogs and register the module</h4>
+<p>Translations live in JSON files, one directory per locale. Each file becomes a namespace named after the file, so the <code>notFound</code> message in <code>orders.json</code> has the key <code>orders.notFound</code>.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">src
+├── i18n
+│   ├── de
+│   │   ├── orders.json
+│   │   └── validation.json
+│   ├── en
+│   │   ├── orders.json
+│   │   └── validation.json
+│   ├── pl
+│   │   ├── orders.json
+│   │   └── validation.json
+│   └── translations.ts
+├── orders
+└── app.module.ts</code></pre></div></figure>
+<p>Here&#39;s the English catalog for orders. Words in curly braces are placeholders, filled from the arguments you pass when translating. <code>items</code> is a plural message, which <a href="#/doc/nestjs/application/i18n@translate-order-confirmations">Translate order confirmations</a> explains.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>src/i18n/en/orders.json</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-json"><span class="hljs-punctuation">{</span>
+  <span class="hljs-attr">&quot;items&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-punctuation">{</span>
+    <span class="hljs-attr">&quot;one&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;{count} item&quot;</span><span class="hljs-punctuation">,</span>
+    <span class="hljs-attr">&quot;other&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;{count} items&quot;</span>
+  <span class="hljs-punctuation">}</span><span class="hljs-punctuation">,</span>
+  <span class="hljs-attr">&quot;confirmed&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;Thank you! Order #{id} is confirmed: {items}.&quot;</span><span class="hljs-punctuation">,</span>
+  <span class="hljs-attr">&quot;notFound&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;Order #{id} was not found.&quot;</span><span class="hljs-punctuation">,</span>
+  <span class="hljs-attr">&quot;invalidId&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;The order number must be a whole number.&quot;</span><span class="hljs-punctuation">,</span>
+  <span class="hljs-attr">&quot;unknownProduct&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;Product {id} is not in our catalog.&quot;</span><span class="hljs-punctuation">,</span>
+  <span class="hljs-attr">&quot;tooManyItems&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-punctuation">{</span>
+    <span class="hljs-attr">&quot;one&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;{path} must not exceed {count} item per product&quot;</span><span class="hljs-punctuation">,</span>
+    <span class="hljs-attr">&quot;other&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;{path} must not exceed {count} items per product&quot;</span>
+  <span class="hljs-punctuation">}</span><span class="hljs-punctuation">,</span>
+  <span class="hljs-attr">&quot;unsupportedCountry&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;We only ship to the United States, Poland and Germany.&quot;</span><span class="hljs-punctuation">,</span>
+  <span class="hljs-attr">&quot;status&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-punctuation">{</span>
+    <span class="hljs-attr">&quot;pending&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;Awaiting payment&quot;</span><span class="hljs-punctuation">,</span>
+    <span class="hljs-attr">&quot;paid&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;Paid&quot;</span><span class="hljs-punctuation">,</span>
+    <span class="hljs-attr">&quot;shipped&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;Shipped&quot;</span>
+  <span class="hljs-punctuation">}</span>
+<span class="hljs-punctuation">}</span></code></pre></div></figure>
+<p>The TypeScript compiler doesn&#39;t copy JSON files to <code>dist</code>. Add them to the <a href="#/doc/nestjs/cli/workspaces@assets">assets</a> in <code>nest-cli.json</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JSON</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-json"><span class="hljs-punctuation">{</span>
+  <span class="hljs-attr">&quot;compilerOptions&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-punctuation">{</span>
+    <span class="hljs-attr">&quot;assets&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-punctuation">[</span><span class="hljs-string">&quot;i18n/**/*.json&quot;</span><span class="hljs-punctuation">]</span><span class="hljs-punctuation">,</span>
+    <span class="hljs-attr">&quot;watchAssets&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-literal"><span class="hljs-keyword">true</span></span>
+  <span class="hljs-punctuation">}</span>
+<span class="hljs-punctuation">}</span></code></pre></div></figure>
+<p>Now register <code>I18nModule</code> in the root module:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app.module</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { <span class="hljs-title class_">Module</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/common&#x27;</span>;
+<span class="hljs-keyword">import</span> {
+  <span class="hljs-title class_">AcceptLanguageLocaleResolver</span>,
+  <span class="hljs-title class_">HeaderLocaleResolver</span>,
+  I18nModule,
+  <span class="hljs-title class_">JsonI18</span>nLoader,
+  <span class="hljs-title class_">QueryLocaleResolver</span>,
+} <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/i18n&#x27;</span>;
+<span class="hljs-keyword">import</span> { join } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;node:path&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">OrdersModule</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./orders/orders.module.js&#x27;</span>;
+
+<span class="hljs-meta">@Module</span>({
+  <span class="hljs-attr">imports</span>: [
+    I18nModule.<span class="hljs-title function_">forRoot</span>({
+      <span class="hljs-attr">defaultLocale</span>: <span class="hljs-string">&#x27;en&#x27;</span>,
+      <span class="hljs-attr">supportedLocales</span>: [<span class="hljs-string">&#x27;en&#x27;</span>, <span class="hljs-string">&#x27;pl&#x27;</span>, <span class="hljs-string">&#x27;de&#x27;</span>],
+      <span class="hljs-attr">fallbacks</span>: { <span class="hljs-string">&#x27;de-AT&#x27;</span>: <span class="hljs-string">&#x27;de&#x27;</span> },
+      <span class="hljs-attr">loader</span>: <span class="hljs-keyword">new</span> <span class="hljs-title class_">JsonI18</span>nLoader({
+        <span class="hljs-attr">path</span>: <span class="hljs-title function_">join</span>(<span class="hljs-keyword">import</span>.<span class="hljs-property">meta</span>.<span class="hljs-property">dirname</span>, <span class="hljs-string">&#x27;i18n&#x27;</span>),
+      }),
+      <span class="hljs-attr">resolvers</span>: [
+        <span class="hljs-keyword">new</span> <span class="hljs-title class_">QueryLocaleResolver</span>(<span class="hljs-string">&#x27;lang&#x27;</span>),
+        <span class="hljs-keyword">new</span> <span class="hljs-title class_">HeaderLocaleResolver</span>(<span class="hljs-string">&#x27;x-lang&#x27;</span>),
+        <span class="hljs-keyword">new</span> <span class="hljs-title class_">AcceptLanguageLocaleResolver</span>(),
+      ],
+    }),
+    <span class="hljs-title class_">OrdersModule</span>,
+  ],
+})
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">AppModule</span> {}</code></pre></div></figure>
+<p>The module is global, and it mounts a middleware on every route that resolves the locale before guards, interceptors, pipes and handlers run. Resolution works like this:</p>
+<ul>
+<li><strong>Resolvers run in order.</strong> Each returns one or more candidates, and the first candidate that matches a supported locale wins. Here, <code>?lang=pl</code> beats an <code>x-lang</code> header, which beats <code>Accept-Language</code>.</li>
+<li><strong><code>Accept-Language</code> is parsed properly.</strong> Languages are ordered by their <code>q</code> values, and unsupported ones are skipped, so <code>fr-CH, fr;q=0.9, de;q=0.8</code> resolves to <code>de</code>.</li>
+<li><strong>Regions match their base language.</strong> <code>pl-PL</code> resolves to <code>pl</code>. Nothing to configure.</li>
+<li><strong><code>fallbacks</code> keeps a region as a locale of its own.</strong> <code>de-AT</code> resolves to <code>de-AT</code>, and its messages come from <code>de</code>. The locale matters when <a href="#/doc/nestjs/application/i18n@format-prices-and-dates">formatting prices and dates</a>: Austrian customers get Austrian number formatting. A region that isn&#39;t listed, such as <code>de-CH</code>, resolves to plain <code>de</code>.</li>
+<li><strong>Nothing matches, or there&#39;s no request at all</strong> (a cron job, a queue consumer): the <code>defaultLocale</code> is used.</li>
+</ul>
+<p><code>CookieLocaleResolver</code> reads a cookie instead, <code>lang</code> by default, for a site that remembers the language a visitor picked. <a href="#/doc/nestjs/application/i18n@use-the-customers-saved-language">Use the customer&#39;s saved language</a> adds a resolver of your own.</p>
+<p>Every response says which locale it was written in. The middleware sets <code>Content-Language</code> to the resolved locale and adds the headers the resolvers read to <code>Vary</code>, here <code>Vary: x-lang, Accept-Language</code>, so caches keep one copy per language. Set <code>responseHeaders: false</code> to turn this off.</p>
+<p><code>supportedLocales</code> is optional and defaults to the directories the loader finds. Pinning it means a stray directory never becomes a locale.</p>
+<p>Finally, give your keys a type. The English catalog is the source of truth, and a type-only import reads its shape at compile time without loading the file. The <code>declare module</code> block registers that shape with the package:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>i18n/translations.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> <span class="hljs-keyword">type</span> orders <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./en/orders.json&#x27;</span>;
+<span class="hljs-keyword">import</span> <span class="hljs-keyword">type</span> validation <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./en/validation.json&#x27;</span>;
+
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">interface</span> <span class="hljs-title class_">Translations</span> {
+  <span class="hljs-attr">orders</span>: <span class="hljs-keyword">typeof</span> orders;
+  <span class="hljs-attr">validation</span>: <span class="hljs-keyword">typeof</span> validation;
+}
+
+<span class="hljs-keyword">declare</span> <span class="hljs-variable language_">module</span> <span class="hljs-string">&#x27;@nestjs/i18n&#x27;</span> {
+  <span class="hljs-keyword">interface</span> I18nTypes {
+    <span class="hljs-attr">translations</span>: <span class="hljs-title class_">Translations</span>;
+  }
+}</code></pre></div></figure>
+<p>From now on, <code>I18nService</code> and the helper functions you&#39;ll use to localize exceptions and validation messages, <code>t()</code>, <code>i18nValidationMessage()</code> and <code>i18nIssueMessage()</code>, accept only keys that exist in the English catalog. A typo such as <code>orders.notFund</code> fails to compile, and so does <code>orders.status</code>, because it&#39;s a namespace and not a message. A provider that translates from catalogs of another shape, such as a library&#39;s, injects <code>I18nService&lt;OtherTranslations&gt;</code>, which checks keys against <code>OtherTranslations</code> instead.</p>
+<h4 id="translate-order-confirmations">Translate order confirmations</h4>
+<p>When a customer places an order, the API confirms it with a message that includes the number of items. Inject <code>I18nService</code> into <code>OrdersService</code> and call <code>t()</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>orders/orders.service</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-meta">@Injectable</span>()
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">OrdersService</span> {
+  <span class="hljs-comment">// ...</span>
+  <span class="hljs-title function_">constructor</span>(<span class="hljs-params"><span class="hljs-keyword">private</span> <span class="hljs-keyword">readonly</span> <span class="hljs-attr">i18nService</span>: I18nService</span>) {}
+
+  <span class="hljs-title function_">create</span>(<span class="hljs-params"><span class="hljs-attr">userId</span>: <span class="hljs-built_in">number</span>, <span class="hljs-attr">dto</span>: <span class="hljs-title class_">CreateOrderDto</span></span>) {
+    <span class="hljs-keyword">const</span> <span class="hljs-attr">order</span>: <span class="hljs-title class_">Order</span> = {
+      <span class="hljs-attr">id</span>: <span class="hljs-variable language_">this</span>.<span class="hljs-property">nextId</span>++,
+      userId,
+      <span class="hljs-attr">items</span>: dto.<span class="hljs-property">items</span>,
+      <span class="hljs-attr">total</span>: <span class="hljs-variable language_">this</span>.<span class="hljs-title function_">priceOf</span>(dto.<span class="hljs-property">items</span>),
+      <span class="hljs-attr">status</span>: <span class="hljs-string">&#x27;pending&#x27;</span>,
+      <span class="hljs-attr">createdAt</span>: <span class="hljs-keyword">new</span> <span class="hljs-title class_">Date</span>(),
+    };
+    <span class="hljs-variable language_">this</span>.<span class="hljs-property">orders</span>.<span class="hljs-title function_">push</span>(order);
+
+    <span class="hljs-keyword">return</span> {
+      <span class="hljs-attr">id</span>: order.<span class="hljs-property">id</span>,
+      <span class="hljs-attr">message</span>: <span class="hljs-variable language_">this</span>.<span class="hljs-property">i18nService</span>.<span class="hljs-title function_">t</span>(<span class="hljs-string">&#x27;orders.confirmed&#x27;</span>, {
+        <span class="hljs-attr">args</span>: { <span class="hljs-attr">id</span>: order.<span class="hljs-property">id</span>, <span class="hljs-attr">items</span>: <span class="hljs-variable language_">this</span>.<span class="hljs-title function_">describeItems</span>(order) },
+      }),
+    };
+  }
+
+  <span class="hljs-title function_">describeItems</span>(<span class="hljs-attr">order</span>: <span class="hljs-title class_">Order</span>): <span class="hljs-built_in">string</span> {
+    <span class="hljs-keyword">const</span> count = order.<span class="hljs-property">items</span>.<span class="hljs-title function_">reduce</span>(<span class="hljs-function">(<span class="hljs-params">sum, item</span>) =&gt;</span> sum + item.<span class="hljs-property">quantity</span>, <span class="hljs-number">0</span>);
+    <span class="hljs-keyword">return</span> <span class="hljs-variable language_">this</span>.<span class="hljs-property">i18nService</span>.<span class="hljs-title function_">t</span>(<span class="hljs-string">&#x27;orders.items&#x27;</span>, { <span class="hljs-attr">args</span>: { count } });
+  }
+  <span class="hljs-comment">// ...</span>
+}</code></pre></div></figure>
+<p>You don&#39;t pass a locale to <code>t()</code>. It reads the one resolved for the current request, even though <code>OrdersService</code> is a singleton that never sees the request. Set the <code>locale</code> option only to override it, for example when a background job emails a customer in the language saved on their profile. The option is matched the way a request locale is: <code>pl-PL</code> becomes <code>pl</code>, and a locale you don&#39;t support becomes the default locale, so an outdated profile value can&#39;t break the job.</p>
+<p>The controller has nothing locale-specific in it:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>orders/orders.controller</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-meta">@Controller</span>(<span class="hljs-string">&#x27;orders&#x27;</span>)
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">OrdersController</span> {
+  <span class="hljs-title function_">constructor</span>(<span class="hljs-params"><span class="hljs-keyword">private</span> <span class="hljs-keyword">readonly</span> <span class="hljs-attr">ordersService</span>: <span class="hljs-title class_">OrdersService</span></span>) {}
+
+  <span class="hljs-meta">@Post</span>()
+  <span class="hljs-title function_">create</span>(<span class="hljs-params"><span class="hljs-meta">@Body</span>() <span class="hljs-attr">dto</span>: <span class="hljs-title class_">CreateOrderDto</span></span>) {
+    <span class="hljs-comment">// The Authentication tutorial replaces the fixed customer with the signed-in user.</span>
+    <span class="hljs-keyword">return</span> <span class="hljs-variable language_">this</span>.<span class="hljs-property">ordersService</span>.<span class="hljs-title function_">create</span>(<span class="hljs-number">1</span>, dto);
+  }
+}</code></pre></div></figure>
+<p>English and German have two plural forms. Polish has four, and which one a number takes depends on its last digits. A plural message is an object keyed by plural category:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>src/i18n/pl/orders.json</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-json"><span class="hljs-punctuation">{</span>
+  <span class="hljs-attr">&quot;items&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-punctuation">{</span>
+    <span class="hljs-attr">&quot;one&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;{count} produkt&quot;</span><span class="hljs-punctuation">,</span>
+    <span class="hljs-attr">&quot;few&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;{count} produkty&quot;</span><span class="hljs-punctuation">,</span>
+    <span class="hljs-attr">&quot;many&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;{count} produktów&quot;</span><span class="hljs-punctuation">,</span>
+    <span class="hljs-attr">&quot;other&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;{count} produktu&quot;</span>
+  <span class="hljs-punctuation">}</span><span class="hljs-punctuation">,</span>
+  <span class="hljs-attr">&quot;confirmed&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;Dziękujemy! Zamówienie #{id} zostało przyjęte: {items}.&quot;</span><span class="hljs-punctuation">,</span>
+  <span class="hljs-attr">&quot;notFound&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;Nie znaleziono zamówienia #{id}.&quot;</span><span class="hljs-punctuation">,</span>
+  <span class="hljs-attr">&quot;invalidId&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;Numer zamówienia musi być liczbą całkowitą.&quot;</span><span class="hljs-punctuation">,</span>
+  <span class="hljs-attr">&quot;unknownProduct&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;Produktu {id} nie ma w naszym katalogu.&quot;</span><span class="hljs-punctuation">,</span>
+  <span class="hljs-attr">&quot;tooManyItems&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-punctuation">{</span>
+    <span class="hljs-attr">&quot;one&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;{path}: można zamówić najwyżej {count} sztukę jednego produktu&quot;</span><span class="hljs-punctuation">,</span>
+    <span class="hljs-attr">&quot;few&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;{path}: można zamówić najwyżej {count} sztuki jednego produktu&quot;</span><span class="hljs-punctuation">,</span>
+    <span class="hljs-attr">&quot;many&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;{path}: można zamówić najwyżej {count} sztuk jednego produktu&quot;</span><span class="hljs-punctuation">,</span>
+    <span class="hljs-attr">&quot;other&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;{path}: można zamówić najwyżej {count} sztuki jednego produktu&quot;</span>
+  <span class="hljs-punctuation">}</span><span class="hljs-punctuation">,</span>
+  <span class="hljs-attr">&quot;unsupportedCountry&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;Wysyłamy tylko do Stanów Zjednoczonych, Polski i Niemiec.&quot;</span><span class="hljs-punctuation">,</span>
+  <span class="hljs-attr">&quot;status&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-punctuation">{</span>
+    <span class="hljs-attr">&quot;pending&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;Oczekuje na płatność&quot;</span><span class="hljs-punctuation">,</span>
+    <span class="hljs-attr">&quot;paid&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;Opłacone&quot;</span><span class="hljs-punctuation">,</span>
+    <span class="hljs-attr">&quot;shipped&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;Wysłane&quot;</span>
+  <span class="hljs-punctuation">}</span>
+<span class="hljs-punctuation">}</span></code></pre></div></figure>
+<p>When the arguments include a numeric <code>count</code>, the service picks the form with <code>Intl.PluralRules</code> for the message&#39;s locale. If a category is missing, <code>other</code> is used. The German file mirrors the English one, with <code>one</code> and <code>other</code> forms only.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Items</th>
+<th>English</th>
+<th>Polish</th>
+<th>German</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>1</td>
+<td>1 item</td>
+<td>1 produkt</td>
+<td>1 Produkt</td>
+</tr>
+<tr>
+<td>2</td>
+<td>2 items</td>
+<td>2 produkty</td>
+<td>2 Produkte</td>
+</tr>
+<tr>
+<td>5</td>
+<td>5 items</td>
+<td>5 produktów</td>
+<td>5 Produkte</td>
+</tr>
+<tr>
+<td>22</td>
+<td>22 items</td>
+<td>22 produkty</td>
+<td>22 Produkte</td>
+</tr>
+</tbody></table></div>
+<p>The confirmation is composed from two messages: the plural phrase is translated first and then inserted into the sentence. Placeholders can&#39;t nest, so this is how you combine them.</p>
+<p>A placeholder&#39;s name is made of letters, digits and underscores. A placeholder you pass no argument for stays in the text as written, and so does any other text in braces. To write a brace next to a name, double it: <code>{{id}}</code> prints <code>{id}</code>. For select, ordinals and exact matches, <a href="#/doc/nestjs/application/i18n@use-icu-message-syntax">use ICU message syntax</a>.</p>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Hint</p><p>Only the <code>count</code> argument selects a plural form, so name it <code>count</code> in every plural message you translate with <code>t()</code>. Thanks to the registered catalog type, <code>t()</code> doesn&#39;t compile without it for plural messages. Validation messages get a <code>count</code> automatically, as <a href="#/doc/nestjs/application/i18n@localize-validation-messages">Localize validation messages</a> shows.</p>
+</div></aside>
+<h4 id="localize-exceptions">Localize exceptions</h4>
+<p>A missing order should produce a 404 in the customer&#39;s language. Translate the message when you throw:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>orders/orders.service</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-title function_">findOne</span>(<span class="hljs-attr">id</span>: <span class="hljs-built_in">number</span>): <span class="hljs-title class_">Order</span> {
+  <span class="hljs-keyword">const</span> order = <span class="hljs-variable language_">this</span>.<span class="hljs-property">orders</span>.<span class="hljs-title function_">find</span>(<span class="hljs-function">(<span class="hljs-params">order</span>) =&gt;</span> order.<span class="hljs-property">id</span> === id);
+  <span class="hljs-keyword">if</span> (!order) {
+    <span class="hljs-keyword">throw</span> <span class="hljs-keyword">new</span> <span class="hljs-title class_">NotFoundException</span>(<span class="hljs-variable language_">this</span>.<span class="hljs-property">i18nService</span>.<span class="hljs-title function_">t</span>(<span class="hljs-string">&#x27;orders.notFound&#x27;</span>, { <span class="hljs-attr">args</span>: { id } }));
+  }
+  <span class="hljs-keyword">return</span> order;
+}</code></pre></div></figure>
+<p>The exception carries the finished text, so there is nothing to configure: Nest&#39;s default exception filter, your own filters and GraphQL error formatting all receive the translated message. <code>GET /orders/999</code> with <code>x-lang: pl</code> returns:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JSON</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-json"><span class="hljs-punctuation">{</span>
+  <span class="hljs-attr">&quot;message&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;Nie znaleziono zamówienia #999.&quot;</span><span class="hljs-punctuation">,</span>
+  <span class="hljs-attr">&quot;error&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;Not Found&quot;</span><span class="hljs-punctuation">,</span>
+  <span class="hljs-attr">&quot;statusCode&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-number">404</span>
+<span class="hljs-punctuation">}</span></code></pre></div></figure>
+<p>Code that has no <code>I18nService</code> at hand can use the <code>t()</code> function instead. It translates for the current request in the same way. Built-in pipes such as <code>ParseIntPipe</code> produce English messages, so give the pipe that parses order IDs an exception factory:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>orders/orders.controller</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">const</span> orderIdPipe = <span class="hljs-keyword">new</span> <span class="hljs-title class_">ParseIntPipe</span>({
+  <span class="hljs-attr">exceptionFactory</span>: <span class="hljs-function">() =&gt;</span> <span class="hljs-keyword">new</span> <span class="hljs-title class_">BadRequestException</span>(<span class="hljs-title function_">t</span>(<span class="hljs-string">&#x27;orders.invalidId&#x27;</span>)),
+});
+
+<span class="hljs-meta">@Controller</span>(<span class="hljs-string">&#x27;orders&#x27;</span>)
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">OrdersController</span> {
+  <span class="hljs-title function_">constructor</span>(<span class="hljs-params"><span class="hljs-keyword">private</span> <span class="hljs-keyword">readonly</span> <span class="hljs-attr">ordersService</span>: <span class="hljs-title class_">OrdersService</span></span>) {}
+  <span class="hljs-comment">// ...</span>
+
+  <span class="hljs-meta">@Get</span>(<span class="hljs-string">&#x27;:id&#x27;</span>)
+  <span class="hljs-title function_">findOne</span>(<span class="hljs-params"><span class="hljs-meta">@Param</span>(<span class="hljs-string">&#x27;id&#x27;</span>, orderIdPipe) <span class="hljs-attr">id</span>: <span class="hljs-built_in">number</span></span>) {
+    <span class="hljs-keyword">return</span> <span class="hljs-variable language_">this</span>.<span class="hljs-property">ordersService</span>.<span class="hljs-title function_">getSummary</span>(id);
+  }
+}</code></pre></div></figure>
+<p>The pipe is created once, outside dependency injection, and still answers each request in its own language. You&#39;ll write <code>getSummary()</code> in <a href="#/doc/nestjs/application/i18n@format-prices-and-dates">Format prices and dates</a>.</p>
+<p>If your API shapes errors with its own <a href="#/doc/nestjs/exception-filters@binding-filters">exception filter</a>, for example as RFC 9457 problem details, the filter reads the translated message like any other:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>common/problem-details.filter</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> {
+  <span class="hljs-title class_">Catch</span>,
+  <span class="hljs-title class_">NotFoundException</span>,
+  <span class="hljs-keyword">type</span> <span class="hljs-title class_">ArgumentsHost</span>,
+  <span class="hljs-keyword">type</span> <span class="hljs-title class_">ExceptionFilter</span>,
+} <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/common&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">HttpAdapterHost</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/core&#x27;</span>;
+
+<span class="hljs-meta">@Catch</span>(<span class="hljs-title class_">NotFoundException</span>)
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">ProblemDetailsFilter</span> <span class="hljs-keyword">implements</span> <span class="hljs-title class_">ExceptionFilter</span> {
+  <span class="hljs-title function_">constructor</span>(<span class="hljs-params"><span class="hljs-keyword">private</span> <span class="hljs-keyword">readonly</span> <span class="hljs-attr">httpAdapterHost</span>: <span class="hljs-title class_">HttpAdapterHost</span></span>) {}
+
+  <span class="hljs-keyword">catch</span>(<span class="hljs-attr">exception</span>: <span class="hljs-title class_">NotFoundException</span>, <span class="hljs-attr">host</span>: <span class="hljs-title class_">ArgumentsHost</span>) {
+    <span class="hljs-keyword">const</span> { httpAdapter } = <span class="hljs-variable language_">this</span>.<span class="hljs-property">httpAdapterHost</span>;
+    <span class="hljs-keyword">const</span> response = host.<span class="hljs-title function_">switchToHttp</span>().<span class="hljs-title function_">getResponse</span>();
+    httpAdapter.<span class="hljs-title function_">setHeader</span>(response, <span class="hljs-string">&#x27;Content-Type&#x27;</span>, <span class="hljs-string">&#x27;application/problem+json&#x27;</span>);
+    httpAdapter.<span class="hljs-title function_">reply</span>(
+      response,
+      { <span class="hljs-attr">type</span>: <span class="hljs-string">&#x27;about:blank&#x27;</span>, <span class="hljs-attr">title</span>: <span class="hljs-string">&#x27;Not Found&#x27;</span>, <span class="hljs-attr">status</span>: <span class="hljs-number">404</span>, <span class="hljs-attr">detail</span>: exception.<span class="hljs-property">message</span> },
+      <span class="hljs-number">404</span>,
+    );
+  }
+}</code></pre></div></figure>
+<p>With the filter registered, the same request returns:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JSON</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-json"><span class="hljs-punctuation">{</span>
+  <span class="hljs-attr">&quot;type&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;about:blank&quot;</span><span class="hljs-punctuation">,</span>
+  <span class="hljs-attr">&quot;title&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;Not Found&quot;</span><span class="hljs-punctuation">,</span>
+  <span class="hljs-attr">&quot;status&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-number">404</span><span class="hljs-punctuation">,</span>
+  <span class="hljs-attr">&quot;detail&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;Nie znaleziono zamówienia #999.&quot;</span>
+<span class="hljs-punctuation">}</span></code></pre></div></figure>
+<h4 id="localize-validation-messages">Localize validation messages</h4>
+<p>This step assumes your application validates request bodies with <code>class-validator</code>; if it validates with Zod or another Standard Schema library, read on to <a href="#with-zod">With Zod</a>. <code>I18nValidationPipe</code> is a drop-in replacement for Nest&#39;s <a href="#/doc/nestjs/application/validation@using-the-built-in-validationpipe"><code>ValidationPipe</code></a>: it accepts the same options and only translates the messages. Bind it where <code>ValidationPipe</code> was, here as an <code>APP_PIPE</code> provider of <code>AppModule</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app.module</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-attr">providers</span>: [
+  {
+    <span class="hljs-attr">provide</span>: <span class="hljs-variable constant_">APP_PIPE</span>,
+    <span class="hljs-attr">useValue</span>: <span class="hljs-keyword">new</span> <span class="hljs-title function_">I18nValidationPipe</span>({ <span class="hljs-attr">whitelist</span>: <span class="hljs-literal">true</span>, <span class="hljs-attr">transform</span>: <span class="hljs-literal">true</span> }),
+  },
+],</code></pre></div></figure>
+<p>Start with the DTO for new orders. It uses <code>class-validator</code> decorators without any messages:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>orders/dto/create-order.dto</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { i18nValidationMessage } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/i18n&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">Type</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;class-transformer&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">ArrayNotEmpty</span>, <span class="hljs-title class_">IsInt</span>, <span class="hljs-title class_">IsString</span>, <span class="hljs-title class_">Max</span>, <span class="hljs-title class_">Min</span>, <span class="hljs-title class_">ValidateNested</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;class-validator&#x27;</span>;
+
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">OrderItemDto</span> {
+  <span class="hljs-meta">@IsString</span>()
+  <span class="hljs-attr">productId</span>: <span class="hljs-built_in">string</span>;
+
+  <span class="hljs-meta">@IsInt</span>()
+  <span class="hljs-meta">@Min</span>(<span class="hljs-number">1</span>)
+  <span class="hljs-meta">@Max</span>(<span class="hljs-number">10</span>, { <span class="hljs-attr">message</span>: <span class="hljs-title function_">i18nValidationMessage</span>(<span class="hljs-string">&#x27;orders.tooManyItems&#x27;</span>) })
+  <span class="hljs-attr">quantity</span>: <span class="hljs-built_in">number</span>;
+}
+
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">CreateOrderDto</span> {
+  <span class="hljs-meta">@ArrayNotEmpty</span>()
+  <span class="hljs-meta">@ValidateNested</span>({ <span class="hljs-attr">each</span>: <span class="hljs-literal">true</span> })
+  <span class="hljs-meta">@Type</span>(<span class="hljs-function">() =&gt;</span> <span class="hljs-title class_">OrderItemDto</span>)
+  <span class="hljs-attr">items</span>: <span class="hljs-title class_">OrderItemDto</span>[];
+}</code></pre></div></figure>
+<p>A constraint without a <code>message</code> is looked up in the <code>validation</code> namespace by constraint name: <code>@IsInt()</code> reads <code>validation.isInt</code>, and <code>@Min()</code> reads <code>validation.min</code>. <code>i18nValidationMessage()</code> points a single constraint at a key of your choice, here a store-specific message for the item limit. Messages you write as plain strings are left alone. A message can use these placeholders:</p>
+<ul>
+<li><code>property</code>: the field name, such as <code>quantity</code>.</li>
+<li><code>path</code>: the dotted path from the DTO, such as <code>items.1.quantity</code>. For a top-level field, it&#39;s the same as <code>property</code>.</li>
+<li><code>value</code>: the rejected value, when it&#39;s a string, number or boolean.</li>
+<li><code>constraint1</code>, <code>constraint2</code> and so on: the decorator&#39;s arguments. A list, such as the values <code>@IsIn()</code> accepts, reads <code>US, PL, DE</code>.</li>
+<li><code>count</code>: the first numeric argument, so a plural message agrees with it. <code>@Max(10)</code> selects the form for 10.</li>
+</ul>
+<p>The item limit is a plural message (see the Polish catalog in <a href="#/doc/nestjs/application/i18n@translate-order-confirmations">Translate order confirmations</a>), so <code>@Max(10)</code> reads &quot;10 sztuk&quot; in Polish. Here is the Polish <code>validation</code> catalog for the constraints this tutorial uses. <code>minLength</code> is a plural message too, so <code>@MinLength(2)</code> reads &quot;2 znaki&quot; and <code>@MinLength(5)</code> &quot;5 znaków&quot;:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>src/i18n/pl/validation.json</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-json"><span class="hljs-punctuation">{</span>
+  <span class="hljs-attr">&quot;isInt&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;{path} musi być liczbą całkowitą&quot;</span><span class="hljs-punctuation">,</span>
+  <span class="hljs-attr">&quot;isString&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;{path} musi być tekstem&quot;</span><span class="hljs-punctuation">,</span>
+  <span class="hljs-attr">&quot;min&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;{path} musi wynosić co najmniej {constraint1}&quot;</span><span class="hljs-punctuation">,</span>
+  <span class="hljs-attr">&quot;arrayNotEmpty&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;{path} musi zawierać co najmniej jeden element&quot;</span><span class="hljs-punctuation">,</span>
+  <span class="hljs-attr">&quot;minLength&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-punctuation">{</span>
+    <span class="hljs-attr">&quot;one&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;{path} musi mieć co najmniej {count} znak&quot;</span><span class="hljs-punctuation">,</span>
+    <span class="hljs-attr">&quot;few&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;{path} musi mieć co najmniej {count} znaki&quot;</span><span class="hljs-punctuation">,</span>
+    <span class="hljs-attr">&quot;many&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;{path} musi mieć co najmniej {count} znaków&quot;</span><span class="hljs-punctuation">,</span>
+    <span class="hljs-attr">&quot;other&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;{path} musi mieć co najmniej {count} znaku&quot;</span>
+  <span class="hljs-punctuation">}</span><span class="hljs-punctuation">,</span>
+  <span class="hljs-attr">&quot;matches&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;{path} ma nieprawidłowy format&quot;</span>
+<span class="hljs-punctuation">}</span></code></pre></div></figure>
+<p>A constraint that has no translation keeps the <code>class-validator</code> message, so you can translate the constraints you use one at a time.</p>
+<p>For nested objects, Nest&#39;s <code>ValidationPipe</code> puts the parent path in front of each message. <code>I18nValidationPipe</code> leaves translated messages as they are, so each message decides for itself: <code>path</code> gives <code>items.1.quantity</code>, and <code>property</code> gives just <code>quantity</code>. Messages without a translation keep the prefix.</p>
+<p>Customers set a shipping address on an order. Its DTO relies on the <code>minLength</code> and <code>matches</code> entries of the catalog, and names a store-specific message for the country:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>orders/dto/shipping-address.dto</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { i18nValidationMessage } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/i18n&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">IsIn</span>, <span class="hljs-title class_">Matches</span>, <span class="hljs-title class_">MinLength</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;class-validator&#x27;</span>;
+
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">ShippingAddressDto</span> {
+  <span class="hljs-meta">@MinLength</span>(<span class="hljs-number">2</span>)
+  <span class="hljs-attr">recipient</span>: <span class="hljs-built_in">string</span>;
+
+  <span class="hljs-meta">@MinLength</span>(<span class="hljs-number">2</span>)
+  <span class="hljs-attr">city</span>: <span class="hljs-built_in">string</span>;
+
+  <span class="hljs-meta">@Matches</span>(<span class="hljs-regexp">/^[0-9-]{5,6}$/</span>)
+  <span class="hljs-attr">postalCode</span>: <span class="hljs-built_in">string</span>;
+
+  <span class="hljs-meta">@IsIn</span>([<span class="hljs-string">&#x27;US&#x27;</span>, <span class="hljs-string">&#x27;PL&#x27;</span>, <span class="hljs-string">&#x27;DE&#x27;</span>], { <span class="hljs-attr">message</span>: <span class="hljs-title function_">i18nValidationMessage</span>(<span class="hljs-string">&#x27;orders.unsupportedCountry&#x27;</span>) })
+  <span class="hljs-attr">country</span>: <span class="hljs-string">&#x27;US&#x27;</span> | <span class="hljs-string">&#x27;PL&#x27;</span> | <span class="hljs-string">&#x27;DE&#x27;</span>;
+}</code></pre></div></figure>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>orders/orders.controller</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-meta">@Put</span>(<span class="hljs-string">&#x27;:id/shipping-address&#x27;</span>)
+<span class="hljs-title function_">updateShippingAddress</span>(<span class="hljs-params">
+  <span class="hljs-meta">@Param</span>(<span class="hljs-string">&#x27;id&#x27;</span>, orderIdPipe) <span class="hljs-attr">id</span>: <span class="hljs-built_in">number</span>,
+  <span class="hljs-meta">@Body</span>() <span class="hljs-attr">address</span>: <span class="hljs-title class_">ShippingAddressDto</span>,
+</span>) {
+  <span class="hljs-keyword">return</span> <span class="hljs-variable language_">this</span>.<span class="hljs-property">ordersService</span>.<span class="hljs-title function_">updateShippingAddress</span>(id, address);
+}</code></pre></div></figure>
+<p>A German customer who sends a one-letter recipient, a four-digit postal code and <code>AT</code> as the country gets three translated messages back. The <a href="#try-it">Try it</a> section shows the response.</p>
+<h5 id="with-zod">With Zod</h5>
+<p>If your application validates with Zod, Valibot, ArkType or another <a target="_blank" rel="noopener" href="https://standardschema.dev/">Standard Schema</a> library, bind <code>I18nStandardSchemaValidationPipe</code> instead of <code>I18nValidationPipe</code>. It&#39;s the drop-in replacement for Nest&#39;s <a href="#/doc/nestjs/application/validation@schema-based-validation"><code>StandardSchemaValidationPipe</code></a>, and an application binds one of the two pipes, not both:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app.module</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-attr">providers</span>: [{ <span class="hljs-attr">provide</span>: <span class="hljs-variable constant_">APP_PIPE</span>, <span class="hljs-attr">useValue</span>: <span class="hljs-keyword">new</span> <span class="hljs-title function_">I18nStandardSchemaValidationPipe</span>() }],</code></pre></div></figure>
+<p>Here are the same inputs as Zod schemas. Library messages are plain strings, so <code>i18nIssueMessage()</code> encodes a translation key in the message itself, which works with any Standard Schema library:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>orders/orders.schemas</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { i18nIssueMessage } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/i18n&#x27;</span>;
+<span class="hljs-keyword">import</span> { z } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;zod&#x27;</span>;
+
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">const</span> orderItemSchema = z.<span class="hljs-title function_">object</span>({
+  <span class="hljs-attr">productId</span>: z.<span class="hljs-title function_">string</span>(),
+  <span class="hljs-attr">quantity</span>: z.<span class="hljs-title function_">number</span>().<span class="hljs-title function_">int</span>().<span class="hljs-title function_">min</span>(<span class="hljs-number">1</span>).<span class="hljs-title function_">max</span>(<span class="hljs-number">10</span>, <span class="hljs-title function_">i18nIssueMessage</span>(<span class="hljs-string">&#x27;orders.tooManyItems&#x27;</span>)),
+});
+
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">const</span> createOrderSchema = z.<span class="hljs-title function_">object</span>({
+  <span class="hljs-attr">items</span>: z.<span class="hljs-title function_">array</span>(orderItemSchema).<span class="hljs-title function_">nonempty</span>(),
+});
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">type</span> <span class="hljs-title class_">CreateOrderDto</span> = z.<span class="hljs-property">infer</span>&lt;<span class="hljs-keyword">typeof</span> createOrderSchema&gt;;
+
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">const</span> shippingAddressSchema = z.<span class="hljs-title function_">object</span>({
+  <span class="hljs-attr">recipient</span>: z.<span class="hljs-title function_">string</span>().<span class="hljs-title function_">min</span>(<span class="hljs-number">2</span>),
+  <span class="hljs-attr">city</span>: z.<span class="hljs-title function_">string</span>().<span class="hljs-title function_">min</span>(<span class="hljs-number">2</span>),
+  <span class="hljs-attr">postalCode</span>: z.<span class="hljs-title function_">string</span>().<span class="hljs-title function_">regex</span>(<span class="hljs-regexp">/^[0-9-]{5,6}$/</span>),
+  <span class="hljs-attr">country</span>: z.<span class="hljs-title function_">enum</span>([<span class="hljs-string">&#x27;US&#x27;</span>, <span class="hljs-string">&#x27;PL&#x27;</span>, <span class="hljs-string">&#x27;DE&#x27;</span>], <span class="hljs-title function_">i18nIssueMessage</span>(<span class="hljs-string">&#x27;orders.unsupportedCountry&#x27;</span>)),
+});
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">type</span> <span class="hljs-title class_">ShippingAddress</span> = z.<span class="hljs-property">infer</span>&lt;<span class="hljs-keyword">typeof</span> shippingAddressSchema&gt;;</code></pre></div></figure>
+<p>The body parameters declare their schema instead of a class:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>orders/orders.controller</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> {
+  createOrderSchema,
+  shippingAddressSchema,
+  <span class="hljs-keyword">type</span> <span class="hljs-title class_">CreateOrderDto</span>,
+  <span class="hljs-keyword">type</span> <span class="hljs-title class_">ShippingAddress</span>,
+} <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./orders.schemas.js&#x27;</span>;
+<span class="hljs-comment">// ...</span>
+<span class="hljs-meta">@Post</span>()
+<span class="hljs-title function_">create</span>(<span class="hljs-params"><span class="hljs-meta">@Body</span>({ schema: createOrderSchema }) <span class="hljs-attr">dto</span>: <span class="hljs-title class_">CreateOrderDto</span></span>) {
+  <span class="hljs-comment">// ...</span>
+}
+
+<span class="hljs-meta">@Put</span>(<span class="hljs-string">&#x27;:id/shipping-address&#x27;</span>)
+<span class="hljs-title function_">updateShippingAddress</span>(<span class="hljs-params">
+  <span class="hljs-meta">@Param</span>(<span class="hljs-string">&#x27;id&#x27;</span>, orderIdPipe) <span class="hljs-attr">id</span>: <span class="hljs-built_in">number</span>,
+  <span class="hljs-meta">@Body</span>({ schema: shippingAddressSchema }) <span class="hljs-attr">address</span>: <span class="hljs-title class_">ShippingAddress</span>,
+</span>) {
+  <span class="hljs-keyword">return</span> <span class="hljs-variable language_">this</span>.<span class="hljs-property">ordersService</span>.<span class="hljs-title function_">updateShippingAddress</span>(id, address);
+}</code></pre></div></figure>
+<p>An issue without an explicit key is looked up by the code the library assigns, from the most specific key to the least:</p>
+<ul>
+<li><strong>Format first.</strong> A failed regex reads <code>validation.invalid_format.regex</code>.</li>
+<li><strong>Then the origin.</strong> Zod reports <code>too_small</code> for short strings, small numbers and short arrays alike, and says which in <code>origin</code>. A short string reads <code>validation.too_small.string</code>, so the catalog can talk about characters without getting numbers wrong.</li>
+<li><strong>Then the code alone</strong>, such as <code>validation.too_small</code>.</li>
+</ul>
+<p>Valibot&#39;s issue <code>type</code> works the same way. Messages can use the <code>property</code> and <code>path</code> placeholders as above, the library&#39;s own text as <code>message</code>, and the issue&#39;s parameters, such as <code>minimum</code> or <code>expected</code>. <code>count</code> holds the numeric <code>minimum</code> or <code>maximum</code>, so &quot;2 znaki&quot; and &quot;5 znaków&quot; both come out right, and so does <code>orders.tooManyItems</code> for <code>.max(10)</code>. Here is the Polish catalog again, with the issue-code entries in front of the constraint names:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>src/i18n/pl/validation.json</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-json"><span class="hljs-punctuation">{</span>
+  <span class="hljs-attr">&quot;invalid_type&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;{path} musi być typu {expected}&quot;</span><span class="hljs-punctuation">,</span>
+  <span class="hljs-attr">&quot;too_small&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-punctuation">{</span>
+    <span class="hljs-attr">&quot;string&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-punctuation">{</span>
+      <span class="hljs-attr">&quot;one&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;{path} musi mieć co najmniej {count} znak&quot;</span><span class="hljs-punctuation">,</span>
+      <span class="hljs-attr">&quot;few&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;{path} musi mieć co najmniej {count} znaki&quot;</span><span class="hljs-punctuation">,</span>
+      <span class="hljs-attr">&quot;many&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;{path} musi mieć co najmniej {count} znaków&quot;</span><span class="hljs-punctuation">,</span>
+      <span class="hljs-attr">&quot;other&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;{path} musi mieć co najmniej {count} znaku&quot;</span>
+    <span class="hljs-punctuation">}</span><span class="hljs-punctuation">,</span>
+    <span class="hljs-attr">&quot;number&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;{path} musi wynosić co najmniej {minimum}&quot;</span><span class="hljs-punctuation">,</span>
+    <span class="hljs-attr">&quot;array&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;{path} musi zawierać co najmniej jeden element&quot;</span>
+  <span class="hljs-punctuation">}</span><span class="hljs-punctuation">,</span>
+  <span class="hljs-attr">&quot;invalid_format&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-punctuation">{</span>
+    <span class="hljs-attr">&quot;regex&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;{path} ma nieprawidłowy format&quot;</span>
+  <span class="hljs-punctuation">}</span><span class="hljs-punctuation">,</span>
+  <span class="hljs-attr">&quot;isInt&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;{path} musi być liczbą całkowitą&quot;</span><span class="hljs-punctuation">,</span>
+  <span class="hljs-attr">&quot;isString&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;{path} musi być tekstem&quot;</span><span class="hljs-punctuation">,</span>
+  <span class="hljs-attr">&quot;min&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;{path} musi wynosić co najmniej {constraint1}&quot;</span><span class="hljs-punctuation">,</span>
+  <span class="hljs-attr">&quot;arrayNotEmpty&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;{path} musi zawierać co najmniej jeden element&quot;</span><span class="hljs-punctuation">,</span>
+  <span class="hljs-attr">&quot;minLength&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-punctuation">{</span>
+    <span class="hljs-attr">&quot;one&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;{path} musi mieć co najmniej {count} znak&quot;</span><span class="hljs-punctuation">,</span>
+    <span class="hljs-attr">&quot;few&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;{path} musi mieć co najmniej {count} znaki&quot;</span><span class="hljs-punctuation">,</span>
+    <span class="hljs-attr">&quot;many&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;{path} musi mieć co najmniej {count} znaków&quot;</span><span class="hljs-punctuation">,</span>
+    <span class="hljs-attr">&quot;other&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;{path} musi mieć co najmniej {count} znaku&quot;</span>
+  <span class="hljs-punctuation">}</span><span class="hljs-punctuation">,</span>
+  <span class="hljs-attr">&quot;matches&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;{path} ma nieprawidłowy format&quot;</span>
+<span class="hljs-punctuation">}</span></code></pre></div></figure>
+<p>With these entries, the invalid shipping address from the <a href="#try-it">Try it</a> section gets the same three German messages as with the class, and the invalid order reads:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JSON</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-json"><span class="hljs-punctuation">{</span>
+  <span class="hljs-attr">&quot;message&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-punctuation">[</span>
+    <span class="hljs-string">&quot;items.0.quantity musi wynosić co najmniej 1&quot;</span><span class="hljs-punctuation">,</span>
+    <span class="hljs-string">&quot;items.1.productId musi być typu string&quot;</span><span class="hljs-punctuation">,</span>
+    <span class="hljs-string">&quot;items.1.quantity: można zamówić najwyżej 10 sztuk jednego produktu&quot;</span>
+  <span class="hljs-punctuation">]</span><span class="hljs-punctuation">,</span>
+  <span class="hljs-attr">&quot;error&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;Bad Request&quot;</span><span class="hljs-punctuation">,</span>
+  <span class="hljs-attr">&quot;statusCode&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-number">400</span>
+<span class="hljs-punctuation">}</span></code></pre></div></figure>
+<p>Issues without a translation keep Nest&#39;s usual format, the path followed by the library&#39;s message.</p>
+<h4 id="localize-graphql-fields">Localize GraphQL fields</h4>
+<p>This step applies to an application that serves GraphQL with <code>@nestjs/graphql</code>. The mobile app reads orders over GraphQL, through the Apollo driver and a <a href="#/doc/nestjs/graphql/quick-start@code-first">code first</a> schema registered in <code>AppModule</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app.module</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-title class_">GraphQLModule</span>.<span class="hljs-property">forRoot</span>&lt;<span class="hljs-title class_">ApolloDriverConfig</span>&gt;({
+  <span class="hljs-attr">driver</span>: <span class="hljs-title class_">ApolloDriver</span>,
+  <span class="hljs-attr">autoSchemaFile</span>: <span class="hljs-literal">true</span>,
+}),</code></pre></div></figure>
+<p>The object type exposes raw order data:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>orders/order.model</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { <span class="hljs-title class_">Field</span>, <span class="hljs-title class_">Float</span>, <span class="hljs-title class_">Int</span>, <span class="hljs-title class_">ObjectType</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/graphql&#x27;</span>;
+
+<span class="hljs-meta">@ObjectType</span>(<span class="hljs-string">&#x27;Order&#x27;</span>)
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">OrderModel</span> {
+  <span class="hljs-meta">@Field</span>(<span class="hljs-function">() =&gt;</span> <span class="hljs-title class_">Int</span>)
+  <span class="hljs-attr">id</span>: <span class="hljs-built_in">number</span>;
+
+  <span class="hljs-meta">@Field</span>()
+  <span class="hljs-attr">status</span>: <span class="hljs-built_in">string</span>;
+
+  <span class="hljs-meta">@Field</span>(<span class="hljs-function">() =&gt;</span> <span class="hljs-title class_">Float</span>)
+  <span class="hljs-attr">total</span>: <span class="hljs-built_in">number</span>;
+}</code></pre></div></figure>
+<p>Localized fields are computed by field resolvers, with the same <code>I18nService</code> the REST controller uses:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>orders/orders.resolver</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { <span class="hljs-title class_">Args</span>, <span class="hljs-title class_">Int</span>, <span class="hljs-title class_">Parent</span>, <span class="hljs-title class_">Query</span>, <span class="hljs-title class_">ResolveField</span>, <span class="hljs-title class_">Resolver</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/graphql&#x27;</span>;
+<span class="hljs-keyword">import</span> { I18nService } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/i18n&#x27;</span>;
+<span class="hljs-keyword">import</span> <span class="hljs-keyword">type</span> { <span class="hljs-title class_">Order</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./order.entity.js&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">OrderModel</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./order.model.js&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">OrdersService</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./orders.service.js&#x27;</span>;
+
+<span class="hljs-meta">@Resolver</span>(<span class="hljs-function">() =&gt;</span> <span class="hljs-title class_">OrderModel</span>)
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">OrdersResolver</span> {
+  <span class="hljs-title function_">constructor</span>(<span class="hljs-params">
+    <span class="hljs-keyword">private</span> <span class="hljs-keyword">readonly</span> <span class="hljs-attr">ordersService</span>: <span class="hljs-title class_">OrdersService</span>,
+    <span class="hljs-keyword">private</span> <span class="hljs-keyword">readonly</span> <span class="hljs-attr">i18nService</span>: I18nService,
+  </span>) {}
+
+  <span class="hljs-meta">@Query</span>(<span class="hljs-function">() =&gt;</span> <span class="hljs-title class_">OrderModel</span>)
+  <span class="hljs-title function_">order</span>(<span class="hljs-params"><span class="hljs-meta">@Args</span>(<span class="hljs-string">&#x27;id&#x27;</span>, { <span class="hljs-keyword">type</span>: () =&gt; Int }) <span class="hljs-attr">id</span>: <span class="hljs-built_in">number</span></span>) {
+    <span class="hljs-keyword">return</span> <span class="hljs-variable language_">this</span>.<span class="hljs-property">ordersService</span>.<span class="hljs-title function_">findOne</span>(id);
+  }
+
+  <span class="hljs-meta">@ResolveField</span>(<span class="hljs-function">() =&gt;</span> <span class="hljs-title class_">String</span>)
+  <span class="hljs-title function_">statusLabel</span>(<span class="hljs-params"><span class="hljs-meta">@Parent</span>() <span class="hljs-attr">order</span>: <span class="hljs-title class_">Order</span></span>) {
+    <span class="hljs-keyword">return</span> <span class="hljs-variable language_">this</span>.<span class="hljs-property">i18nService</span>.<span class="hljs-title function_">t</span>(<span class="hljs-string">`orders.status.<span class="hljs-subst">${order.status}</span>`</span>);
+  }
+
+  <span class="hljs-meta">@ResolveField</span>(<span class="hljs-function">() =&gt;</span> <span class="hljs-title class_">String</span>)
+  <span class="hljs-title function_">items</span>(<span class="hljs-params"><span class="hljs-meta">@Parent</span>() <span class="hljs-attr">order</span>: <span class="hljs-title class_">Order</span></span>) {
+    <span class="hljs-keyword">return</span> <span class="hljs-variable language_">this</span>.<span class="hljs-property">ordersService</span>.<span class="hljs-title function_">describeItems</span>(order);
+  }
+}</code></pre></div></figure>
+<p>The <code>statusLabel</code> key is a template literal built from the <code>OrderStatus</code> union, so the compiler still checks that every status has a label.</p>
+<p>On Express, Apollo is mounted after Nest&#39;s middleware, so the locale middleware from <a href="#/doc/nestjs/application/i18n@add-catalogs-and-register-the-module">Add catalogs and register the module</a> wraps every GraphQL operation. <code>?lang</code>, <code>x-lang</code> and <code>Accept-Language</code> work exactly as they do for REST, in resolvers, field resolvers and guards. The <code>NotFoundException</code> thrown by <code>findOne()</code> reaches the client translated, in <code>errors[0].message</code>.</p>
+<aside class="callout callout-warning"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 4 2.8 20h18.4L12 4z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M12 10v4.4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="17" r="1.3" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Warning</p><p>The locale middleware doesn&#39;t wrap subscriptions, which run over WebSockets, or a GraphQL driver that is mounted outside it. That includes the common case of a <a href="#/doc/nestjs/faq/global-prefix">global prefix</a>: Nest mounts the middleware under the prefix, while Apollo stays at <code>/graphql</code>, so set <code>useGlobalPrefix: true</code> on <code>GraphQLModule</code> when you use one. Where the middleware doesn&#39;t run, the package falls back to a global interceptor, which reads the locale from the request on the GraphQL context (for a subscription, the WebSocket handshake) and runs after guards. Field resolvers, including those of subscription events, are only covered if you set <code>fieldResolverEnhancers: [&#39;interceptors&#39;]</code>, guards don&#39;t see the locale, and responses carry no <code>Content-Language</code>.</p>
+</div></aside>
+<h4 id="format-prices-and-dates">Format prices and dates</h4>
+<p>The order summary shows the status, the number of items, the total and the order date, formatted the way each customer expects:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>orders/orders.service</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-title function_">getSummary</span>(<span class="hljs-params"><span class="hljs-attr">id</span>: <span class="hljs-built_in">number</span></span>) {
+  <span class="hljs-keyword">const</span> order = <span class="hljs-variable language_">this</span>.<span class="hljs-title function_">findOne</span>(id);
+  <span class="hljs-keyword">return</span> {
+    <span class="hljs-attr">id</span>: order.<span class="hljs-property">id</span>,
+    <span class="hljs-attr">status</span>: <span class="hljs-variable language_">this</span>.<span class="hljs-property">i18nService</span>.<span class="hljs-title function_">t</span>(<span class="hljs-string">`orders.status.<span class="hljs-subst">${order.status}</span>`</span>),
+    <span class="hljs-attr">items</span>: <span class="hljs-variable language_">this</span>.<span class="hljs-title function_">describeItems</span>(order),
+    <span class="hljs-attr">total</span>: <span class="hljs-variable language_">this</span>.<span class="hljs-property">i18nService</span>.<span class="hljs-title function_">formatNumber</span>(order.<span class="hljs-property">total</span>, { <span class="hljs-attr">style</span>: <span class="hljs-string">&#x27;currency&#x27;</span>, <span class="hljs-attr">currency</span>: <span class="hljs-string">&#x27;USD&#x27;</span> }),
+    <span class="hljs-attr">placedAt</span>: <span class="hljs-variable language_">this</span>.<span class="hljs-property">i18nService</span>.<span class="hljs-title function_">formatDate</span>(order.<span class="hljs-property">createdAt</span>, {
+      <span class="hljs-attr">dateStyle</span>: <span class="hljs-string">&#x27;long&#x27;</span>,
+      <span class="hljs-attr">timeZone</span>: <span class="hljs-string">&#x27;UTC&#x27;</span>,
+    }),
+  };
+}</code></pre></div></figure>
+<p><code>formatNumber()</code> and <code>formatDate()</code> wrap <code>Intl.NumberFormat</code> and <code>Intl.DateTimeFormat</code> with the request&#39;s locale. They take the usual <code>Intl</code> options, plus a <code>locale</code> option that overrides the current locale, as in <code>t()</code>. For order #1001:</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Locale</th>
+<th><code>total</code></th>
+<th><code>placedAt</code></th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>en</code></td>
+<td>$97.95</td>
+<td>September 14, 2026</td>
+</tr>
+<tr>
+<td><code>pl</code></td>
+<td>97,95 USD</td>
+<td>14 września 2026</td>
+</tr>
+<tr>
+<td><code>de</code></td>
+<td>97,95 $</td>
+<td>14. September 2026</td>
+</tr>
+<tr>
+<td><code>de-AT</code></td>
+<td>$ 97,95</td>
+<td>14. September 2026</td>
+</tr>
+</tbody></table></div>
+<p><code>de-AT</code> gets Austrian formatting because the module registration listed it in <code>fallbacks</code>. Its messages still come from the German catalog.</p>
+<p>Two things the locale doesn&#39;t decide:</p>
+<ul>
+<li><strong>Currency.</strong> The locale controls how an amount is written, not what it&#39;s worth. The store charges in US dollars, so every customer sees USD. Take the currency from the order or the store, never from the locale.</li>
+<li><strong>Time zone.</strong> Without <code>timeZone</code>, dates are formatted in the server&#39;s time zone, which can shift the day. Pass the customer&#39;s time zone if you store one, or format in UTC as here.</li>
+</ul>
+<h4 id="use-the-customer39s-saved-language">Use the customer&#39;s saved language</h4>
+<p>Customers pick a language when they sign up, and the customer record keeps it in a <code>locale</code> field, like the <code>customers</code> table of the <a href="#/doc/nestjs/application/mail@send-it-in-the-customers-language">mail chapter</a>. Here, <code>CustomersService</code> keeps customers in memory, as <code>OrdersService</code> keeps orders. For a signed-in customer, that choice should beat <code>Accept-Language</code>, which is only their browser&#39;s default. The guard of <a href="#/doc/nestjs/security/authentication"><code>@nestjs/authentication</code></a>, like a Passport guard, puts the signed-in user on <code>request.user</code>.</p>
+<p>Resolvers run in the locale middleware, before guards, when nobody is signed in yet. A resolver that sets <code>afterGuards</code> runs after guards instead, and receives the <code>executionContext</code> of the call:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>customers/customer-locale.resolver</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { <span class="hljs-title class_">Injectable</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/common&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">LocaleResolver</span>, <span class="hljs-keyword">type</span> <span class="hljs-title class_">LocaleResolverInput</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/i18n&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">CustomersService</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./customers.service.js&#x27;</span>;
+
+<span class="hljs-meta">@Injectable</span>()
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">CustomerLocaleResolver</span> <span class="hljs-keyword">extends</span> <span class="hljs-title class_ inherited__">LocaleResolver</span> {
+  <span class="hljs-comment">// After guards, the authentication guard has put the signed-in user on the request</span>
+  <span class="hljs-keyword">readonly</span> afterGuards = <span class="hljs-literal">true</span>;
+
+  <span class="hljs-title function_">constructor</span>(<span class="hljs-params"><span class="hljs-keyword">private</span> <span class="hljs-keyword">readonly</span> <span class="hljs-attr">customersService</span>: <span class="hljs-title class_">CustomersService</span></span>) {
+    <span class="hljs-variable language_">super</span>();
+  }
+
+  <span class="hljs-title function_">resolve</span>(<span class="hljs-params">{ executionContext }: <span class="hljs-title class_">LocaleResolverInput</span></span>) {
+    <span class="hljs-keyword">const</span> request = executionContext?.<span class="hljs-title function_">switchToHttp</span>().<span class="hljs-property">getRequest</span>&lt;{ <span class="hljs-attr">user</span>?: { <span class="hljs-attr">id</span>: <span class="hljs-built_in">number</span> } }&gt;();
+    <span class="hljs-keyword">const</span> user = request?.<span class="hljs-property">user</span>;
+    <span class="hljs-keyword">return</span> user ? <span class="hljs-variable language_">this</span>.<span class="hljs-property">customersService</span>.<span class="hljs-title function_">findOne</span>(user.<span class="hljs-property">id</span>)?.<span class="hljs-property">locale</span> : <span class="hljs-literal">undefined</span>;
+  }
+}</code></pre></div></figure>
+<p>Nest instantiates a resolver class, so it can inject providers. Put it into <code>resolvers</code> at the rank it should have, and import the module that provides what it injects:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app.module</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">I18nModule.<span class="hljs-title function_">forRoot</span>({
+  <span class="hljs-comment">// ...</span>
+  <span class="hljs-attr">resolvers</span>: [
+    <span class="hljs-keyword">new</span> <span class="hljs-title class_">QueryLocaleResolver</span>(<span class="hljs-string">&#x27;lang&#x27;</span>),
+    <span class="hljs-keyword">new</span> <span class="hljs-title class_">HeaderLocaleResolver</span>(<span class="hljs-string">&#x27;x-lang&#x27;</span>),
+    <span class="hljs-title class_">CustomerLocaleResolver</span>,
+    <span class="hljs-keyword">new</span> <span class="hljs-title class_">AcceptLanguageLocaleResolver</span>(),
+  ],
+  <span class="hljs-attr">imports</span>: [<span class="hljs-title class_">CustomersModule</span>],
+  <span class="hljs-comment">// ...</span>
+}),</code></pre></div></figure>
+<p>The order of the resolvers still decides:</p>
+<ul>
+<li><strong><code>?lang</code> and <code>x-lang</code> win.</strong> They&#39;re a choice made for this request, by a language switcher link or an app setting. When one of them matches, the customer resolver doesn&#39;t run.</li>
+<li><strong>The saved language beats <code>Accept-Language</code>.</strong> Zofia saved Polish, so she reads Polish in any browser. Lukas saved <code>de-AT</code>, which is matched like any candidate, so he gets Austrian formatting.</li>
+<li><strong>Anonymous customers, and customers without a supported saved language,</strong> get what the resolvers below it find, here from <code>Accept-Language</code>.</li>
+</ul>
+<p>Guards see the locale that the resolvers before guards found, and so does the response to an error a guard throws, such as a 401. The handler, and everything after it, sees the customer&#39;s. The resolver runs once per request, also for a GraphQL operation with several root fields. Over GraphQL, the request is at <code>GqlExecutionContext.create(executionContext).getContext().req</code>.</p>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Hint</p><p>A response to a signed-in customer now depends on who asks. Such responses are usually private anyway, but if a shared cache stores them, list the header that identifies the customer, such as <code>Authorization</code>, in the resolver&#39;s <code>varyHeaders</code>, and the middleware adds it to <code>Vary</code>.</p>
+</div></aside>
+<p>When customers change their language, answer them in the new one right away. <code>I18nContext.setLocale()</code> changes the locale for the rest of the request, <code>Content-Language</code> included:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>customers/customers.controller</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-meta">@Controller</span>(<span class="hljs-string">&#x27;customers&#x27;</span>)
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">CustomersController</span> {
+  <span class="hljs-title function_">constructor</span>(<span class="hljs-params">
+    <span class="hljs-keyword">private</span> <span class="hljs-keyword">readonly</span> <span class="hljs-attr">customersService</span>: <span class="hljs-title class_">CustomersService</span>,
+    <span class="hljs-keyword">private</span> <span class="hljs-keyword">readonly</span> <span class="hljs-attr">i18nContext</span>: I18nContext,
+    <span class="hljs-keyword">private</span> <span class="hljs-keyword">readonly</span> <span class="hljs-attr">i18nService</span>: I18nService,
+  </span>) {}
+
+  <span class="hljs-meta">@Put</span>(<span class="hljs-string">&#x27;me/locale&#x27;</span>)
+  <span class="hljs-title function_">updateLocale</span>(<span class="hljs-params"><span class="hljs-meta">@Req</span>() <span class="hljs-attr">request</span>: { user: { id: <span class="hljs-built_in">number</span> } }, <span class="hljs-meta">@Body</span>(<span class="hljs-string">&#x27;locale&#x27;</span>) <span class="hljs-attr">locale</span>: <span class="hljs-built_in">string</span></span>) {
+    <span class="hljs-keyword">const</span> supported = <span class="hljs-variable language_">this</span>.<span class="hljs-property">i18nContext</span>.<span class="hljs-title function_">setLocale</span>(locale);
+    <span class="hljs-keyword">if</span> (!supported) {
+      <span class="hljs-keyword">throw</span> <span class="hljs-keyword">new</span> <span class="hljs-title class_">BadRequestException</span>(<span class="hljs-variable language_">this</span>.<span class="hljs-property">i18nService</span>.<span class="hljs-title function_">t</span>(<span class="hljs-string">&#x27;customers.unsupportedLocale&#x27;</span>));
+    }
+
+    <span class="hljs-variable language_">this</span>.<span class="hljs-property">customersService</span>.<span class="hljs-title function_">updateLocale</span>(request.<span class="hljs-property">user</span>.<span class="hljs-property">id</span>, supported);
+    <span class="hljs-keyword">return</span> { <span class="hljs-attr">locale</span>: supported, <span class="hljs-attr">message</span>: <span class="hljs-variable language_">this</span>.<span class="hljs-property">i18nService</span>.<span class="hljs-title function_">t</span>(<span class="hljs-string">&#x27;customers.localeUpdated&#x27;</span>) };
+  }
+}</code></pre></div></figure>
+<p><code>setLocale()</code> matches the locale the way resolution does and returns the match: <code>de-DE</code> becomes <code>de</code>. For a language the store doesn&#39;t write in, it returns <code>undefined</code> and leaves the locale as it was, so the error is in the language the customer is reading. The two messages live in a new <code>customers</code> catalog in each language, registered with <code>customers: typeof customers</code> in <code>Translations</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>src/i18n/de/customers.json</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-json"><span class="hljs-punctuation">{</span>
+  <span class="hljs-attr">&quot;localeUpdated&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;Erledigt! Ab jetzt schreiben wir Ihnen auf Deutsch.&quot;</span><span class="hljs-punctuation">,</span>
+  <span class="hljs-attr">&quot;unsupportedLocale&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;Wir schreiben nur auf Englisch, Polnisch und Deutsch.&quot;</span>
+<span class="hljs-punctuation">}</span></code></pre></div></figure>
+<h4 id="microservices-and-websocket-gateways">Microservices and WebSocket gateways</h4>
+<p>Message handlers and WebSocket gateways don&#39;t pass through the HTTP middleware. There, the module resolves the locale in a global interceptor, with the same resolvers, so services, exceptions and the <code>t()</code> function work as they do for HTTP requests.</p>
+<p>A message has no headers or query string, but resolvers receive the <code>executionContext</code>, so a resolver can read the locale a producer puts into the message itself. Add it to the <code>resolvers</code> of the microservice&#39;s <code>I18nModule</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>common/message-locale.resolver</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { <span class="hljs-title class_">LocaleResolver</span>, <span class="hljs-keyword">type</span> <span class="hljs-title class_">LocaleResolverInput</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/i18n&#x27;</span>;
+
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">MessageLocaleResolver</span> <span class="hljs-keyword">extends</span> <span class="hljs-title class_ inherited__">LocaleResolver</span> {
+  <span class="hljs-title function_">resolve</span>(<span class="hljs-params">{ executionContext }: <span class="hljs-title class_">LocaleResolverInput</span></span>) {
+    <span class="hljs-keyword">if</span> (executionContext?.<span class="hljs-title function_">getType</span>() !== <span class="hljs-string">&#x27;rpc&#x27;</span>) {
+      <span class="hljs-keyword">return</span> <span class="hljs-literal">undefined</span>;
+    }
+    <span class="hljs-keyword">return</span> executionContext.<span class="hljs-title function_">switchToRpc</span>().<span class="hljs-property">getData</span>&lt;{ <span class="hljs-attr">locale</span>?: <span class="hljs-built_in">string</span> }&gt;()?.<span class="hljs-property">locale</span>;
+  }
+}</code></pre></div></figure>
+<p>A resolver can read a message&#39;s transport metadata the same way, such as the headers of a NATS or Kafka message, from <code>executionContext.switchToRpc().getContext()</code>.</p>
+<p>For a gateway, the built-in resolvers read the headers and query string of the connection&#39;s upgrade request. Socket.IO keeps that request as the handshake, and the resolvers find it there. The <code>ws</code> library, behind <code>WsAdapter</code> from <code>@nestjs/platform-ws</code>, keeps nothing, so store the request on <code>client.request</code> when a client connects (<code>WsAuthenticator</code> of <code>@nestjs/authentication</code> does the same):</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>orders/order-updates.gateway</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-meta">@WebSocketGateway</span>({ <span class="hljs-attr">path</span>: <span class="hljs-string">&#x27;/orders/updates&#x27;</span> })
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">OrderUpdatesGateway</span> <span class="hljs-keyword">implements</span> <span class="hljs-title class_">OnGatewayConnection</span> {
+  <span class="hljs-title function_">constructor</span>(<span class="hljs-params"><span class="hljs-keyword">private</span> <span class="hljs-keyword">readonly</span> <span class="hljs-attr">ordersService</span>: <span class="hljs-title class_">OrdersService</span></span>) {}
+
+  <span class="hljs-title function_">handleConnection</span>(<span class="hljs-params"><span class="hljs-attr">client</span>: <span class="hljs-title class_">WebSocket</span> &amp; { request?: IncomingMessage }, <span class="hljs-attr">request</span>: <span class="hljs-title class_">IncomingMessage</span></span>) {
+    <span class="hljs-comment">// The ws library keeps no reference to the upgrade request, whose headers and query the resolvers read</span>
+    client.<span class="hljs-property">request</span> = request;
+  }
+
+  <span class="hljs-meta">@SubscribeMessage</span>(<span class="hljs-string">&#x27;orders.summary&#x27;</span>)
+  <span class="hljs-title function_">summary</span>(<span class="hljs-params"><span class="hljs-meta">@MessageBody</span>() <span class="hljs-attr">id</span>: <span class="hljs-built_in">number</span></span>) {
+    <span class="hljs-keyword">return</span> { <span class="hljs-attr">event</span>: <span class="hljs-string">&#x27;orders.summary&#x27;</span>, <span class="hljs-attr">data</span>: <span class="hljs-variable language_">this</span>.<span class="hljs-property">ordersService</span>.<span class="hljs-title function_">getSummary</span>(id) };
+  }
+}</code></pre></div></figure>
+<p>A client that connects to <code>/orders/updates?lang=de</code> reads German summaries. Interceptors run after guards, so on these paths guards see the default locale, and an error a guard throws is in the default locale. Pipes and handlers see the resolved one, and resolvers with <code>afterGuards</code> need nothing extra: every resolver already runs after guards here.</p>
+<h4 id="handle-missing-keys-and-reload-catalogs">Handle missing keys and reload catalogs</h4>
+<p>A missing translation should break the build in development and CI, and degrade quietly in production. Here&#39;s the final <code>AppModule</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app.module</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { <span class="hljs-title class_">ApolloDriver</span>, <span class="hljs-keyword">type</span> <span class="hljs-title class_">ApolloDriverConfig</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/apollo&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">Module</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/common&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-variable constant_">APP_PIPE</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/core&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">GraphQLModule</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/graphql&#x27;</span>;
+<span class="hljs-keyword">import</span> {
+  <span class="hljs-title class_">AcceptLanguageLocaleResolver</span>,
+  <span class="hljs-title class_">HeaderLocaleResolver</span>,
+  I18nModule,
+  I18nValidationPipe,
+  <span class="hljs-title class_">JsonI18</span>nLoader,
+  <span class="hljs-title class_">QueryLocaleResolver</span>,
+} <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/i18n&#x27;</span>;
+<span class="hljs-keyword">import</span> { join } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;node:path&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">CustomerLocaleResolver</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./customers/customer-locale.resolver.js&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">CustomersModule</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./customers/customers.module.js&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">OrdersModule</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./orders/orders.module.js&#x27;</span>;
+
+<span class="hljs-keyword">const</span> env = process.<span class="hljs-property">env</span>.<span class="hljs-property">NODE_ENV</span> ?? <span class="hljs-string">&#x27;development&#x27;</span>;
+
+<span class="hljs-meta">@Module</span>({
+  <span class="hljs-attr">imports</span>: [
+    I18nModule.<span class="hljs-title function_">forRoot</span>({
+      <span class="hljs-attr">defaultLocale</span>: <span class="hljs-string">&#x27;en&#x27;</span>,
+      <span class="hljs-attr">supportedLocales</span>: [<span class="hljs-string">&#x27;en&#x27;</span>, <span class="hljs-string">&#x27;pl&#x27;</span>, <span class="hljs-string">&#x27;de&#x27;</span>],
+      <span class="hljs-attr">fallbacks</span>: { <span class="hljs-string">&#x27;de-AT&#x27;</span>: <span class="hljs-string">&#x27;de&#x27;</span> },
+      <span class="hljs-attr">loader</span>: <span class="hljs-keyword">new</span> <span class="hljs-title class_">JsonI18</span>nLoader({
+        <span class="hljs-attr">path</span>: <span class="hljs-title function_">join</span>(<span class="hljs-keyword">import</span>.<span class="hljs-property">meta</span>.<span class="hljs-property">dirname</span>, <span class="hljs-string">&#x27;i18n&#x27;</span>),
+        <span class="hljs-attr">watch</span>: env === <span class="hljs-string">&#x27;development&#x27;</span>,
+      }),
+      <span class="hljs-attr">resolvers</span>: [
+        <span class="hljs-keyword">new</span> <span class="hljs-title class_">QueryLocaleResolver</span>(<span class="hljs-string">&#x27;lang&#x27;</span>),
+        <span class="hljs-keyword">new</span> <span class="hljs-title class_">HeaderLocaleResolver</span>(<span class="hljs-string">&#x27;x-lang&#x27;</span>),
+        <span class="hljs-title class_">CustomerLocaleResolver</span>,
+        <span class="hljs-keyword">new</span> <span class="hljs-title class_">AcceptLanguageLocaleResolver</span>(),
+      ],
+      <span class="hljs-attr">imports</span>: [<span class="hljs-title class_">CustomersModule</span>],
+      <span class="hljs-attr">missingKey</span>: env === <span class="hljs-string">&#x27;production&#x27;</span> ? <span class="hljs-string">&#x27;fallback&#x27;</span> : <span class="hljs-string">&#x27;throw&#x27;</span>,
+    }),
+    <span class="hljs-title class_">GraphQLModule</span>.<span class="hljs-property">forRoot</span>&lt;<span class="hljs-title class_">ApolloDriverConfig</span>&gt;({
+      <span class="hljs-attr">driver</span>: <span class="hljs-title class_">ApolloDriver</span>,
+      <span class="hljs-attr">autoSchemaFile</span>: <span class="hljs-literal">true</span>,
+    }),
+    <span class="hljs-title class_">CustomersModule</span>,
+    <span class="hljs-title class_">OrdersModule</span>,
+  ],
+  <span class="hljs-attr">providers</span>: [
+    {
+      <span class="hljs-attr">provide</span>: <span class="hljs-variable constant_">APP_PIPE</span>,
+      <span class="hljs-attr">useValue</span>: <span class="hljs-keyword">new</span> <span class="hljs-title function_">I18nValidationPipe</span>({ <span class="hljs-attr">whitelist</span>: <span class="hljs-literal">true</span>, <span class="hljs-attr">transform</span>: <span class="hljs-literal">true</span> }),
+    },
+  ],
+})
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">AppModule</span> {}</code></pre></div></figure>
+<p>The <code>missingKey</code> option decides what happens when a key isn&#39;t found for the requested locale:</p>
+<ul>
+<li><strong><code>&#39;throw&#39;</code> outside production.</strong> <code>t()</code> and <code>translate()</code> throw an <code>I18nMissingKeyError</code>, and the request fails with a 500. A Polish message that exists only in English fails too, because this policy never falls back to the default locale. Vitest sets <code>NODE_ENV</code> to <code>test</code>, so your test suite runs with this policy.</li>
+<li><strong><code>&#39;fallback&#39;</code> in production.</strong> A missing Polish message is taken from the default locale, English, and a warning names the key and the locale, once per pair. A key that exists nowhere returns the key itself and logs a warning, once per key.</li>
+</ul>
+<p>The <code>de-AT</code> to <code>de</code> fallback and region-to-base matching apply under every policy. Validation messages looked up by constraint name or issue code never throw either: a constraint or issue without a translation keeps the library&#39;s message. Keys you name with <code>i18nValidationMessage()</code> or <code>i18nIssueMessage()</code> follow the policy, like <code>t()</code>. The other policies are <code>&#39;key&#39;</code>, <code>&#39;empty&#39;</code> and a function that receives the key and the locale.</p>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Hint</p><p>Fallback works per key. When messages are composed as in <a href="#/doc/nestjs/application/i18n@translate-order-confirmations">Translate order confirmations</a>, a Polish customer can receive an English sentence around a Polish plural. The warning tells you it happened; the catalog test in <a href="#/doc/nestjs/application/i18n@testing">Testing</a> keeps it from shipping.</p>
+</div></aside>
+<p>With <code>watch: true</code>, the JSON loader watches the catalog directory and reloads it when a file changes, so translators can edit messages without restarting the app. Enable it in development only:</p>
+<ul>
+<li><strong>Reloads are atomic.</strong> The whole catalog is re-read and swapped in one step, so a request never sees a mix of old and new messages.</li>
+<li><strong>Broken files are ignored.</strong> If a file fails to parse, the previous catalog stays in use, and the error is logged with the file path. The next valid save is picked up.</li>
+<li><strong>Watching stops on shutdown.</strong> The watcher closes when the application closes. Call <code>app.enableShutdownHooks()</code> in <code>main.ts</code> to close it on termination signals as well.</li>
+</ul>
+<p>With <code>watchAssets</code> enabled in <code>nest-cli.json</code>, the CLI copies edited catalogs to <code>dist</code>, where the loader reads them.</p>
+<h5 id="options-from-configuration">Options from configuration</h5>
+<p>The tutorial reads <code>process.env</code> directly, to stay short. In an application, load the environment through <a href="#/doc/nestjs/application/configuration"><code>@nestjs/config</code></a> with a validation schema, and register the module with <code>forRootAsync()</code>. Its factory receives the injected <code>ConfigService</code> and returns the options:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app.module</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">I18nModule.<span class="hljs-title function_">forRootAsync</span>({
+  <span class="hljs-attr">inject</span>: [<span class="hljs-title class_">ConfigService</span>],
+  <span class="hljs-attr">useFactory</span>: <span class="hljs-function">(<span class="hljs-params"><span class="hljs-attr">configService</span>: <span class="hljs-title class_">ConfigService</span></span>) =&gt;</span> {
+    <span class="hljs-keyword">const</span> env = configService.<span class="hljs-property">get</span>&lt;<span class="hljs-built_in">string</span>&gt;(<span class="hljs-string">&#x27;NODE_ENV&#x27;</span>, <span class="hljs-string">&#x27;development&#x27;</span>);
+    <span class="hljs-keyword">return</span> {
+      <span class="hljs-attr">defaultLocale</span>: <span class="hljs-string">&#x27;en&#x27;</span>,
+      <span class="hljs-attr">supportedLocales</span>: [<span class="hljs-string">&#x27;en&#x27;</span>, <span class="hljs-string">&#x27;pl&#x27;</span>, <span class="hljs-string">&#x27;de&#x27;</span>],
+      <span class="hljs-attr">fallbacks</span>: { <span class="hljs-string">&#x27;de-AT&#x27;</span>: <span class="hljs-string">&#x27;de&#x27;</span> },
+      <span class="hljs-attr">loader</span>: <span class="hljs-keyword">new</span> <span class="hljs-title class_">JsonI18</span>nLoader({
+        <span class="hljs-attr">path</span>: <span class="hljs-title function_">join</span>(<span class="hljs-keyword">import</span>.<span class="hljs-property">meta</span>.<span class="hljs-property">dirname</span>, <span class="hljs-string">&#x27;i18n&#x27;</span>),
+        <span class="hljs-attr">watch</span>: env === <span class="hljs-string">&#x27;development&#x27;</span>,
+      }),
+      <span class="hljs-attr">missingKey</span>: env === <span class="hljs-string">&#x27;production&#x27;</span> ? <span class="hljs-string">&#x27;fallback&#x27;</span> : <span class="hljs-string">&#x27;throw&#x27;</span>,
+    };
+  },
+  <span class="hljs-comment">// The list has a class, which Nest instantiates, so it stays next to useFactory</span>
+  <span class="hljs-attr">resolvers</span>: [
+    <span class="hljs-keyword">new</span> <span class="hljs-title class_">QueryLocaleResolver</span>(<span class="hljs-string">&#x27;lang&#x27;</span>),
+    <span class="hljs-keyword">new</span> <span class="hljs-title class_">HeaderLocaleResolver</span>(<span class="hljs-string">&#x27;x-lang&#x27;</span>),
+    <span class="hljs-title class_">CustomerLocaleResolver</span>,
+    <span class="hljs-keyword">new</span> <span class="hljs-title class_">AcceptLanguageLocaleResolver</span>(),
+  ],
+  <span class="hljs-attr">imports</span>: [<span class="hljs-title class_">CustomersModule</span>],
+}),</code></pre></div></figure>
+<p>The factory can return loader, resolver and formatter instances, but not classes: Nest instantiates classes while it builds the module, before any factory runs. So <code>resolvers</code>, which lists <code>CustomerLocaleResolver</code>, stays at the top level with <code>imports</code>. A factory that returns a class, or an option set in both places, fails at startup with a message that names the option.</p>
+<p>To keep the options in a class of their own, pass it as <code>useClass</code>. It implements <code>I18nOptionsFactory</code>, and Nest calls its <code>createI18nOptions()</code> method:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>i18n/i18n-config.service</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-meta">@Injectable</span>()
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">I18nConfigService</span> <span class="hljs-keyword">implements</span> I18nOptionsFactory {
+  <span class="hljs-title function_">constructor</span>(<span class="hljs-params"><span class="hljs-keyword">private</span> <span class="hljs-keyword">readonly</span> <span class="hljs-attr">configService</span>: <span class="hljs-title class_">ConfigService</span></span>) {}
+
+  <span class="hljs-title function_">createI18nOptions</span>(): I18nModuleOptions {
+    <span class="hljs-keyword">const</span> env = <span class="hljs-variable language_">this</span>.<span class="hljs-property">configService</span>.<span class="hljs-property">get</span>&lt;<span class="hljs-built_in">string</span>&gt;(<span class="hljs-string">&#x27;NODE_ENV&#x27;</span>, <span class="hljs-string">&#x27;development&#x27;</span>);
+    <span class="hljs-keyword">return</span> {
+      <span class="hljs-attr">defaultLocale</span>: <span class="hljs-string">&#x27;en&#x27;</span>,
+      <span class="hljs-comment">// ...</span>
+    };
+  }
+}</code></pre></div></figure>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app.module</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">I18nModule.<span class="hljs-title function_">forRootAsync</span>({
+  <span class="hljs-attr">useClass</span>: I18nConfigService,
+  <span class="hljs-attr">resolvers</span>: [
+    <span class="hljs-comment">// ...</span>
+  ],
+  <span class="hljs-attr">imports</span>: [<span class="hljs-title class_">CustomersModule</span>],
+}),</code></pre></div></figure>
+<p>The options the module ends up with are injectable with the <code>I18N_MODULE_OPTIONS</code> token, for a provider of your own that depends on them.</p>
+<h5 id="a-custom-loader">A custom loader</h5>
+<p>Translators often work in a translation platform, which exports every catalog as one JSON document. A loader extends <code>I18nLoader</code>: <code>load()</code> returns the catalogs keyed by locale, and the optional <code>watch()</code> passes new ones to a callback, for hot reload. This one fetches the export at startup, and again every five minutes:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>i18n/remote-i18n.loader</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { <span class="hljs-title class_">Logger</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/common&#x27;</span>;
+<span class="hljs-keyword">import</span> { I18nLoader, <span class="hljs-keyword">type</span> I18nCatalogs } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/i18n&#x27;</span>;
+
+<span class="hljs-comment">/** Catalogs a translation platform exports as one JSON document, fetched again every `interval` ms. */</span>
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">RemoteI18nLoader</span> <span class="hljs-keyword">extends</span> <span class="hljs-title class_ inherited__">I18nLoader</span> {
+  <span class="hljs-keyword">private</span> <span class="hljs-keyword">readonly</span> logger = <span class="hljs-keyword">new</span> <span class="hljs-title class_">Logger</span>(<span class="hljs-title class_">RemoteI18</span>nLoader.<span class="hljs-property">name</span>);
+
+  <span class="hljs-title function_">constructor</span>(<span class="hljs-params">
+    <span class="hljs-keyword">private</span> <span class="hljs-keyword">readonly</span> <span class="hljs-attr">url</span>: <span class="hljs-built_in">string</span>,
+    <span class="hljs-keyword">private</span> <span class="hljs-keyword">readonly</span> interval = <span class="hljs-number">5</span> * <span class="hljs-number">60_000</span>,
+  </span>) {
+    <span class="hljs-variable language_">super</span>();
+  }
+
+  <span class="hljs-keyword">async</span> <span class="hljs-title function_">load</span>(): <span class="hljs-title class_">Promise</span>&lt;I18nCatalogs&gt; {
+    <span class="hljs-keyword">const</span> response = <span class="hljs-keyword">await</span> <span class="hljs-title function_">fetch</span>(<span class="hljs-variable language_">this</span>.<span class="hljs-property">url</span>, { <span class="hljs-attr">signal</span>: <span class="hljs-title class_">AbortSignal</span>.<span class="hljs-title function_">timeout</span>(<span class="hljs-number">10_000</span>) });
+    <span class="hljs-keyword">if</span> (!response.<span class="hljs-property">ok</span>) {
+      <span class="hljs-keyword">throw</span> <span class="hljs-keyword">new</span> <span class="hljs-title class_">Error</span>(<span class="hljs-string">`GET <span class="hljs-subst">${<span class="hljs-variable language_">this</span>.url}</span> answered <span class="hljs-subst">${response.status}</span>`</span>);
+    }
+    <span class="hljs-keyword">return</span> (<span class="hljs-keyword">await</span> response.<span class="hljs-title function_">json</span>()) <span class="hljs-keyword">as</span> I18nCatalogs;
+  }
+
+  <span class="hljs-title function_">watch</span>(<span class="hljs-attr">onChange</span>: <span class="hljs-function">(<span class="hljs-params"><span class="hljs-attr">catalogs</span>: I18nCatalogs</span>) =&gt;</span> <span class="hljs-built_in">void</span>): <span class="hljs-function">() =&gt;</span> <span class="hljs-built_in">void</span> {
+    <span class="hljs-keyword">const</span> timer = <span class="hljs-built_in">setInterval</span>(<span class="hljs-function">() =&gt;</span> {
+      <span class="hljs-variable language_">this</span>.<span class="hljs-title function_">load</span>().<span class="hljs-title function_">then</span>(onChange, <span class="hljs-function">(<span class="hljs-params"><span class="hljs-attr">err</span>: <span class="hljs-title class_">Error</span></span>) =&gt;</span>
+        <span class="hljs-variable language_">this</span>.<span class="hljs-property">logger</span>.<span class="hljs-title function_">warn</span>(<span class="hljs-string">`Keeping the current catalogs: <span class="hljs-subst">${err.message}</span>`</span>),
+      );
+    }, <span class="hljs-variable language_">this</span>.<span class="hljs-property">interval</span>);
+    <span class="hljs-comment">// Polling alone doesn&#x27;t keep the process alive</span>
+    timer.<span class="hljs-title function_">unref</span>();
+    <span class="hljs-keyword">return</span> <span class="hljs-function">() =&gt;</span> <span class="hljs-built_in">clearInterval</span>(timer);
+  }
+}</code></pre></div></figure>
+<p>Pass an instance as <code>loader</code>. A failed fetch at startup fails the bootstrap, and a failed poll keeps the catalogs in use. The module calls <code>watch()</code> when it initializes, and the function <code>watch()</code> returns when it shuts down. New catalogs are checked like the first ones, and a set that doesn&#39;t fit, such as one without a catalog for the default locale, is logged and ignored. To read catalogs from your database, pass a loader class instead, which Nest instantiates with the repository it injects, and list the repository&#39;s module in <code>imports</code>.</p>
+<h4 id="use-icu-message-syntax">Use ICU message syntax</h4>
+<p>The built-in syntax has placeholders, and plural forms as catalog objects. Translation platforms such as Crowdin and Lokalise often export catalogs in ICU MessageFormat instead, which also has exact matches such as <code>=0</code>, <code>select</code> (for a message that depends on a value, such as a pet&#39;s species), and <code>selectordinal</code> (1st, 2nd, 3rd). Here is the Polish <code>items</code> message in ICU:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JSON</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-json"><span class="hljs-punctuation">{</span>
+  <span class="hljs-attr">&quot;items&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;{count, plural, one {# produkt} few {# produkty} many {# produktów} other {# produktu}}&quot;</span>
+<span class="hljs-punctuation">}</span></code></pre></div></figure>
+<p>The <code>formatter</code> option plugs in another syntax. A formatter extends <code>I18nMessageFormatter</code> and implements <code>format()</code>, which receives the message, the arguments and the locale. This one hands the message to the <a target="_blank" rel="noopener" href="https://formatjs.github.io/docs/intl-messageformat/"><code>intl-messageformat</code></a> library, which your application installs:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>i18n/icu-message.formatter</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { I18nMessageFormatter } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/i18n&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">IntlMessageFormat</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;intl-messageformat&#x27;</span>;
+
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">IcuMessageFormatter</span> <span class="hljs-keyword">extends</span> <span class="hljs-title class_ inherited__">I18nMessageFormatter</span> {
+  <span class="hljs-comment">// Parsing a message costs far more than formatting it, and the catalogs hold a fixed set</span>
+  <span class="hljs-keyword">private</span> <span class="hljs-keyword">readonly</span> compiled = <span class="hljs-keyword">new</span> <span class="hljs-title class_">Map</span>&lt;<span class="hljs-built_in">string</span>, <span class="hljs-title class_">IntlMessageFormat</span>&gt;();
+
+  <span class="hljs-title function_">format</span>(<span class="hljs-attr">message</span>: <span class="hljs-built_in">string</span>, <span class="hljs-attr">args</span>: <span class="hljs-title class_">Record</span>&lt;<span class="hljs-built_in">string</span>, <span class="hljs-built_in">unknown</span>&gt;, <span class="hljs-attr">locale</span>: <span class="hljs-built_in">string</span>): <span class="hljs-built_in">string</span> {
+    <span class="hljs-keyword">const</span> key = <span class="hljs-string">`<span class="hljs-subst">${locale}</span>\u0000<span class="hljs-subst">${message}</span>`</span>;
+    <span class="hljs-keyword">let</span> compiled = <span class="hljs-variable language_">this</span>.<span class="hljs-property">compiled</span>.<span class="hljs-title function_">get</span>(key);
+    <span class="hljs-keyword">if</span> (!compiled) {
+      compiled = <span class="hljs-keyword">new</span> <span class="hljs-title class_">IntlMessageFormat</span>(message, locale, <span class="hljs-literal">undefined</span>, { <span class="hljs-attr">ignoreTag</span>: <span class="hljs-literal">true</span> });
+      <span class="hljs-variable language_">this</span>.<span class="hljs-property">compiled</span>.<span class="hljs-title function_">set</span>(key, compiled);
+    }
+    <span class="hljs-keyword">return</span> <span class="hljs-title class_">String</span>(compiled.<span class="hljs-property">format</span>&lt;<span class="hljs-built_in">unknown</span>&gt;(args));
+  }
+}</code></pre></div></figure>
+<p><code>ignoreTag</code> keeps <code>&lt;</code> and <code>&gt;</code> as text, where the library would otherwise read rich-text tags. Pass an instance, or a class that Nest instantiates, as <code>formatter</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app.module</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">I18nModule.<span class="hljs-title function_">forRoot</span>({
+  <span class="hljs-comment">// ...</span>
+  <span class="hljs-attr">formatter</span>: <span class="hljs-keyword">new</span> <span class="hljs-title class_">IcuMessageFormatter</span>(),
+}),</code></pre></div></figure>
+<p>With the formatter in place:</p>
+<ul>
+<li><strong>The tutorial&#39;s catalogs work unchanged.</strong> A placeholder is a simple ICU argument, and plural objects still work: the module picks the form, and the formatter formats it. Polish <code>items</code> reads &quot;5 produktów&quot; as a plural object and as the ICU message above.</li>
+<li><strong>The locale is the request&#39;s.</strong> A message that <code>de-AT</code> reads from the German catalog is formatted for <code>de-AT</code>, so a number argument with a currency style reads <code>$ 97,95</code>. A message that fell back to the default locale is formatted for the default locale, whose grammar it&#39;s written in.</li>
+<li><strong>Keys stay checked, plural counts don&#39;t.</strong> The compiler requires a numeric <code>count</code> for a plural object, but an ICU plural is a string to it, so pass its argument yourself.</li>
+</ul>
+<h4 id="try-it">Try it</h4>
+<p>Start the application and place an order with Polish in <code>Accept-Language</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Terminal</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-bash">$ curl -X POST http://localhost:3000/orders \
+    -H <span class="hljs-string">&#x27;Content-Type: application/json&#x27;</span> \
+    -H <span class="hljs-string">&#x27;Accept-Language: pl-PL,pl;q=0.9,en;q=0.8&#x27;</span> \
+    -d <span class="hljs-string">&#x27;{&quot;items&quot;:[{&quot;productId&quot;:&quot;salmon-kibble-2kg&quot;,&quot;quantity&quot;:2},{&quot;productId&quot;:&quot;sisal-scratching-post&quot;,&quot;quantity&quot;:3}]}&#x27;</span>
+{<span class="hljs-string">&quot;id&quot;</span>:1002,<span class="hljs-string">&quot;message&quot;</span>:<span class="hljs-string">&quot;Dziękujemy! Zamówienie #1002 zostało przyjęte: 5 produktów.&quot;</span>}</code></pre></div></figure>
+<p>The <code>lang</code> query parameter wins over any header:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Terminal</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-bash">$ curl -X POST <span class="hljs-string">&#x27;http://localhost:3000/orders?lang=de&#x27;</span> \
+    -H <span class="hljs-string">&#x27;Content-Type: application/json&#x27;</span> \
+    -d <span class="hljs-string">&#x27;{&quot;items&quot;:[{&quot;productId&quot;:&quot;feather-wand&quot;,&quot;quantity&quot;:1}]}&#x27;</span>
+{<span class="hljs-string">&quot;id&quot;</span>:1003,<span class="hljs-string">&quot;message&quot;</span>:<span class="hljs-string">&quot;Vielen Dank! Bestellung #1003 ist bestätigt: 1 Produkt.&quot;</span>}</code></pre></div></figure>
+<p>Read the summary of order #1001 as an Austrian customer:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Terminal</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-bash">$ curl http://localhost:3000/orders/1001 -H <span class="hljs-string">&#x27;Accept-Language: de-AT&#x27;</span></code></pre></div></figure>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JSON</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-json"><span class="hljs-punctuation">{</span>
+  <span class="hljs-attr">&quot;id&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-number">1001</span><span class="hljs-punctuation">,</span>
+  <span class="hljs-attr">&quot;status&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;Versandt&quot;</span><span class="hljs-punctuation">,</span>
+  <span class="hljs-attr">&quot;items&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;5 Produkte&quot;</span><span class="hljs-punctuation">,</span>
+  <span class="hljs-attr">&quot;total&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;$ 97,95&quot;</span><span class="hljs-punctuation">,</span>
+  <span class="hljs-attr">&quot;placedAt&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;14. September 2026&quot;</span>
+<span class="hljs-punctuation">}</span></code></pre></div></figure>
+<p>Ask for an order that doesn&#39;t exist, with the <code>x-lang</code> header:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Terminal</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-bash">$ curl http://localhost:3000/orders/999 -H <span class="hljs-string">&#x27;x-lang: pl&#x27;</span></code></pre></div></figure>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JSON</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-json"><span class="hljs-punctuation">{</span>
+  <span class="hljs-attr">&quot;message&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;Nie znaleziono zamówienia #999.&quot;</span><span class="hljs-punctuation">,</span>
+  <span class="hljs-attr">&quot;error&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;Not Found&quot;</span><span class="hljs-punctuation">,</span>
+  <span class="hljs-attr">&quot;statusCode&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-number">404</span>
+<span class="hljs-punctuation">}</span></code></pre></div></figure>
+<p>Send an invalid order:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Terminal</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-bash">$ curl -X POST <span class="hljs-string">&#x27;http://localhost:3000/orders?lang=pl&#x27;</span> \
+    -H <span class="hljs-string">&#x27;Content-Type: application/json&#x27;</span> \
+    -d <span class="hljs-string">&#x27;{&quot;items&quot;:[{&quot;productId&quot;:&quot;salmon-kibble-2kg&quot;,&quot;quantity&quot;:0},{&quot;productId&quot;:42,&quot;quantity&quot;:12}]}&#x27;</span></code></pre></div></figure>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JSON</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-json"><span class="hljs-punctuation">{</span>
+  <span class="hljs-attr">&quot;message&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-punctuation">[</span>
+    <span class="hljs-string">&quot;items.0.quantity musi wynosić co najmniej 1&quot;</span><span class="hljs-punctuation">,</span>
+    <span class="hljs-string">&quot;items.1.productId musi być tekstem&quot;</span><span class="hljs-punctuation">,</span>
+    <span class="hljs-string">&quot;items.1.quantity: można zamówić najwyżej 10 sztuk jednego produktu&quot;</span>
+  <span class="hljs-punctuation">]</span><span class="hljs-punctuation">,</span>
+  <span class="hljs-attr">&quot;error&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;Bad Request&quot;</span><span class="hljs-punctuation">,</span>
+  <span class="hljs-attr">&quot;statusCode&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-number">400</span>
+<span class="hljs-punctuation">}</span></code></pre></div></figure>
+<p>Send an invalid shipping address:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Terminal</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-bash">$ curl -X PUT http://localhost:3000/orders/1001/shipping-address \
+    -H <span class="hljs-string">&#x27;Content-Type: application/json&#x27;</span> \
+    -H <span class="hljs-string">&#x27;Accept-Language: de&#x27;</span> \
+    -d <span class="hljs-string">&#x27;{&quot;recipient&quot;:&quot;A&quot;,&quot;city&quot;:&quot;Wien&quot;,&quot;postalCode&quot;:&quot;1010&quot;,&quot;country&quot;:&quot;AT&quot;}&#x27;</span></code></pre></div></figure>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JSON</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-json"><span class="hljs-punctuation">{</span>
+  <span class="hljs-attr">&quot;message&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-punctuation">[</span>
+    <span class="hljs-string">&quot;recipient muss mindestens 2 Zeichen lang sein&quot;</span><span class="hljs-punctuation">,</span>
+    <span class="hljs-string">&quot;postalCode hat ein ungültiges Format&quot;</span><span class="hljs-punctuation">,</span>
+    <span class="hljs-string">&quot;Wir liefern nur in die USA, nach Polen und nach Deutschland.&quot;</span>
+  <span class="hljs-punctuation">]</span><span class="hljs-punctuation">,</span>
+  <span class="hljs-attr">&quot;error&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;Bad Request&quot;</span><span class="hljs-punctuation">,</span>
+  <span class="hljs-attr">&quot;statusCode&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-number">400</span>
+<span class="hljs-punctuation">}</span></code></pre></div></figure>
+<p>Finally, query the order over GraphQL:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Terminal</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-bash">$ curl -X POST <span class="hljs-string">&#x27;http://localhost:3000/graphql?lang=pl&#x27;</span> \
+    -H <span class="hljs-string">&#x27;Content-Type: application/json&#x27;</span> \
+    -d <span class="hljs-string">&#x27;{&quot;query&quot;:&quot;{ order(id: 1001) { id status statusLabel items } }&quot;}&#x27;</span></code></pre></div></figure>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JSON</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-json"><span class="hljs-punctuation">{</span>
+  <span class="hljs-attr">&quot;data&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-punctuation">{</span>
+    <span class="hljs-attr">&quot;order&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-punctuation">{</span>
+      <span class="hljs-attr">&quot;id&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-number">1001</span><span class="hljs-punctuation">,</span>
+      <span class="hljs-attr">&quot;status&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;shipped&quot;</span><span class="hljs-punctuation">,</span>
+      <span class="hljs-attr">&quot;statusLabel&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;Wysłane&quot;</span><span class="hljs-punctuation">,</span>
+      <span class="hljs-attr">&quot;items&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;5 produktów&quot;</span>
+    <span class="hljs-punctuation">}</span>
+  <span class="hljs-punctuation">}</span>
+<span class="hljs-punctuation">}</span></code></pre></div></figure>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Hint</p><p><code>Intl</code> separates the amount and the currency with a no-break space (U+00A0) in <code>97,95 USD</code>, <code>97,95 $</code> and <code>$ 97,95</code>. The responses above show a regular space. Keep that in mind when you compare formatted strings in tests.</p>
+</div></aside>
+<h4 id="testing">Testing</h4>
+<p>An <a href="#/doc/nestjs/fundamentals/unit-testing@end-to-end-testing">end-to-end test</a> sets the language the same way a client does:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>test/orders.e2e.spec</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> <span class="hljs-keyword">type</span> { <span class="hljs-title class_">INestApplication</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/common&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">Test</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/testing&#x27;</span>;
+<span class="hljs-keyword">import</span> request <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;supertest&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">AppModule</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;../src/app.module.js&#x27;</span>;
+
+<span class="hljs-title function_">describe</span>(<span class="hljs-string">&#x27;Orders (e2e)&#x27;</span>, <span class="hljs-function">() =&gt;</span> {
+  <span class="hljs-keyword">let</span> <span class="hljs-attr">app</span>: <span class="hljs-title class_">INestApplication</span>;
+
+  <span class="hljs-title function_">beforeAll</span>(<span class="hljs-title function_">async</span> () =&gt; {
+    <span class="hljs-keyword">const</span> moduleRef = <span class="hljs-keyword">await</span> <span class="hljs-title class_">Test</span>.<span class="hljs-title function_">createTestingModule</span>({
+      <span class="hljs-attr">imports</span>: [<span class="hljs-title class_">AppModule</span>],
+    }).<span class="hljs-title function_">compile</span>();
+    app = moduleRef.<span class="hljs-title function_">createNestApplication</span>();
+    <span class="hljs-keyword">await</span> app.<span class="hljs-title function_">listen</span>(<span class="hljs-number">0</span>, <span class="hljs-string">&#x27;127.0.0.1&#x27;</span>);
+  });
+
+  <span class="hljs-title function_">afterAll</span>(<span class="hljs-function">() =&gt;</span> app.<span class="hljs-title function_">close</span>());
+
+  <span class="hljs-title function_">it</span>(<span class="hljs-string">&#x27;confirms an order in the language of the request&#x27;</span>, <span class="hljs-title function_">async</span> () =&gt; {
+    <span class="hljs-keyword">const</span> res = <span class="hljs-keyword">await</span> <span class="hljs-title function_">request</span>(app.<span class="hljs-title function_">getHttpServer</span>())
+      .<span class="hljs-title function_">post</span>(<span class="hljs-string">&#x27;/orders&#x27;</span>)
+      .<span class="hljs-title function_">set</span>(<span class="hljs-string">&#x27;Accept-Language&#x27;</span>, <span class="hljs-string">&#x27;pl-PL,pl;q=0.9&#x27;</span>)
+      .<span class="hljs-title function_">send</span>({ <span class="hljs-attr">items</span>: [{ <span class="hljs-attr">productId</span>: <span class="hljs-string">&#x27;salmon-kibble-2kg&#x27;</span>, <span class="hljs-attr">quantity</span>: <span class="hljs-number">5</span> }] })
+      .<span class="hljs-title function_">expect</span>(<span class="hljs-number">201</span>);
+
+    <span class="hljs-title function_">expect</span>(res.<span class="hljs-property">body</span>.<span class="hljs-property">message</span>).<span class="hljs-title function_">toBe</span>(
+      <span class="hljs-string">&#x27;Dziękujemy! Zamówienie #1002 zostało przyjęte: 5 produktów.&#x27;</span>,
+    );
+  });
+
+  <span class="hljs-title function_">it</span>(<span class="hljs-string">&#x27;localizes errors&#x27;</span>, <span class="hljs-title function_">async</span> () =&gt; {
+    <span class="hljs-keyword">const</span> res = <span class="hljs-keyword">await</span> <span class="hljs-title function_">request</span>(app.<span class="hljs-title function_">getHttpServer</span>())
+      .<span class="hljs-title function_">get</span>(<span class="hljs-string">&#x27;/orders/999?lang=de&#x27;</span>)
+      .<span class="hljs-title function_">expect</span>(<span class="hljs-number">404</span>);
+
+    <span class="hljs-title function_">expect</span>(res.<span class="hljs-property">body</span>.<span class="hljs-property">message</span>).<span class="hljs-title function_">toBe</span>(<span class="hljs-string">&#x27;Bestellung #999 wurde nicht gefunden.&#x27;</span>);
+  });
+});</code></pre></div></figure>
+<p>Outside a request, <code>I18nService</code> uses the default locale. To test a service in another language without HTTP, run the call inside <code>I18nContext.run()</code>, which makes the locale current as a request would:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>test/orders.service.spec</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { I18nContext } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/i18n&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">Test</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/testing&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">AppModule</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;../src/app.module.js&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">OrdersService</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;../src/orders/orders.service.js&#x27;</span>;
+
+<span class="hljs-title function_">describe</span>(<span class="hljs-string">&#x27;OrdersService&#x27;</span>, <span class="hljs-function">() =&gt;</span> {
+  <span class="hljs-keyword">let</span> <span class="hljs-attr">ordersService</span>: <span class="hljs-title class_">OrdersService</span>;
+  <span class="hljs-keyword">let</span> <span class="hljs-attr">i18nContext</span>: I18nContext;
+
+  <span class="hljs-title function_">beforeAll</span>(<span class="hljs-title function_">async</span> () =&gt; {
+    <span class="hljs-keyword">const</span> moduleRef = <span class="hljs-keyword">await</span> <span class="hljs-title class_">Test</span>.<span class="hljs-title function_">createTestingModule</span>({
+      <span class="hljs-attr">imports</span>: [<span class="hljs-title class_">AppModule</span>],
+    }).<span class="hljs-title function_">compile</span>();
+    ordersService = moduleRef.<span class="hljs-title function_">get</span>(<span class="hljs-title class_">OrdersService</span>);
+    i18nContext = moduleRef.<span class="hljs-title function_">get</span>(I18nContext);
+  });
+
+  it.<span class="hljs-title function_">each</span>([
+    [<span class="hljs-number">1</span>, <span class="hljs-string">&#x27;1 produkt&#x27;</span>],
+    [<span class="hljs-number">2</span>, <span class="hljs-string">&#x27;2 produkty&#x27;</span>],
+    [<span class="hljs-number">5</span>, <span class="hljs-string">&#x27;5 produktów&#x27;</span>],
+    [<span class="hljs-number">22</span>, <span class="hljs-string">&#x27;22 produkty&#x27;</span>],
+  ])(<span class="hljs-string">&#x27;describes %i item(s) in Polish&#x27;</span>, <span class="hljs-function">(<span class="hljs-params">quantity, expected</span>) =&gt;</span> {
+    <span class="hljs-keyword">const</span> order = {
+      ...ordersService.<span class="hljs-title function_">findOne</span>(<span class="hljs-number">1001</span>),
+      <span class="hljs-attr">items</span>: [{ <span class="hljs-attr">productId</span>: <span class="hljs-string">&#x27;salmon-kibble-2kg&#x27;</span>, quantity }],
+    };
+    <span class="hljs-title function_">expect</span>(i18nContext.<span class="hljs-title function_">run</span>(<span class="hljs-string">&#x27;pl&#x27;</span>, <span class="hljs-function">() =&gt;</span> ordersService.<span class="hljs-title function_">describeItems</span>(order))).<span class="hljs-title function_">toBe</span>(expected);
+  });
+
+  <span class="hljs-title function_">it</span>(<span class="hljs-string">&#x27;falls back to the default locale outside a request&#x27;</span>, <span class="hljs-function">() =&gt;</span> {
+    <span class="hljs-keyword">const</span> order = ordersService.<span class="hljs-title function_">findOne</span>(<span class="hljs-number">1001</span>);
+    <span class="hljs-title function_">expect</span>(ordersService.<span class="hljs-title function_">describeItems</span>(order)).<span class="hljs-title function_">toBe</span>(<span class="hljs-string">&#x27;5 items&#x27;</span>);
+  });
+});</code></pre></div></figure>
+<p>To run the application with other catalogs, for example with a translation removed to test the missing-key policy, replace the loader on the testing module: <code>overrideProvider(I18nLoader).useValue(new InMemoryI18nLoader(catalogs))</code>.</p>
+<p>The <code>&#39;throw&#39;</code> policy catches missing keys on the paths your tests exercise. A catalog test catches the rest: every locale must have the same keys and placeholders as English, and every plural message must have the forms its language needs. <code>Intl.PluralRules</code> knows which forms those are:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>test/catalogs.spec</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { <span class="hljs-title class_">JsonI18</span>nLoader, <span class="hljs-keyword">type</span> I18nCatalog } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/i18n&#x27;</span>;
+<span class="hljs-keyword">import</span> { join } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;node:path&#x27;</span>;
+
+<span class="hljs-keyword">type</span> <span class="hljs-title class_">Message</span> = <span class="hljs-built_in">string</span> | <span class="hljs-title class_">Record</span>&lt;<span class="hljs-built_in">string</span>, <span class="hljs-built_in">string</span>&gt;;
+
+<span class="hljs-comment">/** Flattens a catalog to [key, message] pairs; plural forms count as one message. */</span>
+<span class="hljs-keyword">function</span> <span class="hljs-title function_">messages</span>(<span class="hljs-params"><span class="hljs-attr">tree</span>: I18nCatalog, prefix = <span class="hljs-string">&#x27;&#x27;</span></span>): [<span class="hljs-built_in">string</span>, <span class="hljs-title class_">Message</span>][] {
+  <span class="hljs-keyword">return</span> <span class="hljs-title class_">Object</span>.<span class="hljs-title function_">entries</span>(tree).<span class="hljs-title function_">flatMap</span>(([name, value]): [<span class="hljs-built_in">string</span>, <span class="hljs-title class_">Message</span>][] =&gt;
+    <span class="hljs-keyword">typeof</span> value === <span class="hljs-string">&#x27;string&#x27;</span> || <span class="hljs-string">&#x27;other&#x27;</span> <span class="hljs-keyword">in</span> value
+      ? [[prefix + name, value <span class="hljs-keyword">as</span> <span class="hljs-title class_">Message</span>]]
+      : <span class="hljs-title function_">messages</span>(value, <span class="hljs-string">`<span class="hljs-subst">${prefix}</span><span class="hljs-subst">${name}</span>.`</span>),
+  );
+}
+
+<span class="hljs-keyword">const</span> <span class="hljs-title function_">placeholders</span> = (<span class="hljs-params"><span class="hljs-attr">message</span>: <span class="hljs-title class_">Message</span></span>) =&gt;
+  [...<span class="hljs-keyword">new</span> <span class="hljs-title class_">Set</span>(<span class="hljs-title class_">JSON</span>.<span class="hljs-title function_">stringify</span>(message).<span class="hljs-title function_">match</span>(<span class="hljs-regexp">/\{\w+\}/g</span>))].<span class="hljs-title function_">sort</span>();
+
+<span class="hljs-keyword">const</span> loader = <span class="hljs-keyword">new</span> <span class="hljs-title class_">JsonI18</span>nLoader({ <span class="hljs-attr">path</span>: <span class="hljs-title function_">join</span>(<span class="hljs-keyword">import</span>.<span class="hljs-property">meta</span>.<span class="hljs-property">dirname</span>, <span class="hljs-string">&#x27;../src/i18n&#x27;</span>) });
+<span class="hljs-keyword">const</span> catalogs = <span class="hljs-keyword">await</span> loader.<span class="hljs-title function_">load</span>();
+<span class="hljs-keyword">const</span> english = <span class="hljs-keyword">new</span> <span class="hljs-title class_">Map</span>(<span class="hljs-title function_">messages</span>(catalogs.<span class="hljs-property">en</span>));
+
+describe.<span class="hljs-title function_">each</span>(<span class="hljs-title class_">Object</span>.<span class="hljs-title function_">keys</span>(catalogs))(<span class="hljs-string">&#x27;the %s catalog&#x27;</span>, <span class="hljs-function">(<span class="hljs-params">lang</span>) =&gt;</span> {
+  <span class="hljs-keyword">const</span> translated = <span class="hljs-keyword">new</span> <span class="hljs-title class_">Map</span>(<span class="hljs-title function_">messages</span>(catalogs[lang]));
+
+  <span class="hljs-title function_">it</span>(<span class="hljs-string">&#x27;has the same keys and placeholders as the English one&#x27;</span>, <span class="hljs-function">() =&gt;</span> {
+    <span class="hljs-title function_">expect</span>([...translated.<span class="hljs-title function_">keys</span>()].<span class="hljs-title function_">sort</span>()).<span class="hljs-title function_">toEqual</span>([...english.<span class="hljs-title function_">keys</span>()].<span class="hljs-title function_">sort</span>());
+    <span class="hljs-keyword">for</span> (<span class="hljs-keyword">const</span> [key, message] <span class="hljs-keyword">of</span> translated) {
+      <span class="hljs-title function_">expect</span>(<span class="hljs-title function_">placeholders</span>(message), key).<span class="hljs-title function_">toEqual</span>(<span class="hljs-title function_">placeholders</span>(english.<span class="hljs-title function_">get</span>(key)!));
+    }
+  });
+
+  <span class="hljs-title function_">it</span>(<span class="hljs-string">&#x27;has every plural form the language needs&#x27;</span>, <span class="hljs-function">() =&gt;</span> {
+    <span class="hljs-keyword">const</span> forms = <span class="hljs-keyword">new</span> <span class="hljs-title class_">Intl</span>.<span class="hljs-title class_">PluralRules</span>(lang).<span class="hljs-title function_">resolvedOptions</span>().<span class="hljs-property">pluralCategories</span>;
+    <span class="hljs-keyword">for</span> (<span class="hljs-keyword">const</span> [key, message] <span class="hljs-keyword">of</span> translated) {
+      <span class="hljs-keyword">if</span> (<span class="hljs-keyword">typeof</span> message === <span class="hljs-string">&#x27;object&#x27;</span>) {
+        <span class="hljs-title function_">expect</span>(<span class="hljs-title class_">Object</span>.<span class="hljs-title function_">keys</span>(message), key).<span class="hljs-title function_">toEqual</span>(expect.<span class="hljs-title function_">arrayContaining</span>(forms));
+      }
+    }
+  });
+});</code></pre></div></figure>
+<p>Delete the <code>many</code> form from the Polish <code>items</code> message, and the second test fails with the list of forms Polish needs.</p>
+<h4 id="production-checklist">Production checklist</h4>
+<ul>
+<li><strong>Ship the catalogs.</strong> Check that <code>dist/i18n</code> exists after <code>nest build</code>. The loader reads the directory at startup, and a missing directory fails the bootstrap.</li>
+<li><strong>Use <code>&#39;fallback&#39;</code> in production and <code>&#39;throw&#39;</code> everywhere else</strong>, and run the catalog test in CI. Watch production logs for fallback warnings.</li>
+<li><strong>Turn off <code>watch</code> in production.</strong> Hot reload is a development tool.</li>
+<li><strong>Pin <code>supportedLocales</code>.</strong> Otherwise every directory under <code>i18n</code> becomes a locale, including one that appears while the app is running with <code>watch</code> enabled.</li>
+<li><strong>Add formatting regions to <code>fallbacks</code>.</strong> A region resolves to its base language unless it&#39;s listed, and then it&#39;s formatted like the base language too.</li>
+<li><strong>Set the locale outside requests.</strong> Cron jobs, queue consumers and outgoing emails have no request, so <code>I18nService</code> falls back to the default locale there, and the <code>t()</code> function returns the key. Save each customer&#39;s preferred locale, and run the work inside <code>I18nContext.run()</code>.</li>
+<li><strong>Mind caches.</strong> Responses to the same URL differ by <code>Accept-Language</code> and <code>x-lang</code>. The middleware lists both in <code>Vary</code>; check that your cache or CDN honors it. The <code>lang</code> query parameter is part of the URL, so it needs nothing extra.</li>
+<li><strong>Keep GraphQL under the global prefix.</strong> With <code>setGlobalPrefix()</code>, the locale middleware only covers routes under the prefix. Give <code>GraphQLModule</code> <code>useGlobalPrefix: true</code>, or guards on resolvers stop seeing the locale (see <a href="#/doc/nestjs/application/i18n@localize-graphql-fields">Localize GraphQL fields</a>).</li>
+<li><strong>Escape messages that end up in HTML.</strong> Arguments such as a customer&#39;s name are inserted as they are. That&#39;s right for JSON responses, but an HTML email must escape the message like any other text.</li>
+<li><strong>Keep numbers and dates in the locale&#39;s hands, and currency and time zone out of them.</strong> See <a href="#/doc/nestjs/application/i18n@format-prices-and-dates">Format prices and dates</a>.</li>
+</ul>
+<h4 id="reference">Reference</h4>
+<h5 id="module-options">Module options</h5>
+<p><code>I18nModule.forRoot()</code> takes these options. <code>forRootAsync()</code> takes the same values from its factory (<code>useFactory</code> with <code>inject</code>, or a <code>useClass</code> or <code>useExisting</code> class that implements <code>I18nOptionsFactory</code>), while <code>imports</code>, <code>isGlobal</code> and loader, resolver or formatter classes stay at the top level. See <a href="#/doc/nestjs/application/i18n@options-from-configuration">Options from configuration</a>. The resolved options are injectable with the <code>I18N_MODULE_OPTIONS</code> token.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Option</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>loader</code></td>
+<td>required</td>
+<td>Where catalogs come from: an <code>I18nLoader</code> instance such as <code>JsonI18nLoader</code>, or a loader class Nest instantiates. See <a href="#/doc/nestjs/application/i18n@add-catalogs-and-register-the-module">Add catalogs and register the module</a>.</td>
+</tr>
+<tr>
+<td><code>resolvers</code></td>
+<td><code>[new AcceptLanguageLocaleResolver()]</code></td>
+<td>Locale resolvers, tried in order: instances, or classes Nest instantiates.</td>
+</tr>
+<tr>
+<td><code>formatter</code></td>
+<td>the built-in syntax</td>
+<td>An <code>I18nMessageFormatter</code> instance, or a class Nest instantiates, that turns messages into text. See <a href="#/doc/nestjs/application/i18n@use-icu-message-syntax">Use ICU message syntax</a>.</td>
+</tr>
+<tr>
+<td><code>defaultLocale</code></td>
+<td><code>&#39;en&#39;</code></td>
+<td>Used when no resolver finds a supported locale, and outside requests.</td>
+</tr>
+<tr>
+<td><code>supportedLocales</code></td>
+<td>the loaded locales</td>
+<td>The locales a request can get, as BCP 47 tags.</td>
+</tr>
+<tr>
+<td><code>fallbacks</code></td>
+<td>none</td>
+<td>An object that maps a locale to the one its messages come from, such as <code>&#39;de-AT&#39;: &#39;de&#39;</code>. Keys count as supported locales.</td>
+</tr>
+<tr>
+<td><code>missingKey</code></td>
+<td><code>&#39;fallback&#39;</code></td>
+<td>What a missing key returns: <code>&#39;fallback&#39;</code>, <code>&#39;key&#39;</code>, <code>&#39;empty&#39;</code>, <code>&#39;throw&#39;</code>, or a function that receives the key and the locale. See <a href="#/doc/nestjs/application/i18n@handle-missing-keys-and-reload-catalogs">Handle missing keys and reload catalogs</a>.</td>
+</tr>
+<tr>
+<td><code>logMissingKeys</code></td>
+<td><code>&#39;once&#39;</code></td>
+<td>Warn about missing keys and default-locale fallbacks <code>&#39;once&#39;</code> per key, <code>&#39;always&#39;</code>, or <code>&#39;never&#39;</code>.</td>
+</tr>
+<tr>
+<td><code>responseHeaders</code></td>
+<td><code>true</code></td>
+<td>Set <code>Content-Language</code> and <code>Vary</code> on HTTP responses.</td>
+</tr>
+<tr>
+<td><code>imports</code></td>
+<td>none</td>
+<td>Modules whose exported providers loader, resolver and formatter classes inject.</td>
+</tr>
+<tr>
+<td><code>isGlobal</code></td>
+<td><code>true</code></td>
+<td>Register the module globally.</td>
+</tr>
+</tbody></table></div>
+<p><code>JsonI18nLoader</code> takes <code>path</code>, the directory with one subdirectory per locale, and <code>watch</code> (default <code>false</code>), which reloads catalogs when a file changes. <code>InMemoryI18nLoader</code> takes the catalogs as an object keyed by locale.</p>
+<h5 id="locale-resolvers">Locale resolvers</h5>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Resolver</th>
+<th>Reads</th>
+<th>Default name</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>QueryLocaleResolver</code></td>
+<td>a query parameter</td>
+<td><code>lang</code></td>
+</tr>
+<tr>
+<td><code>HeaderLocaleResolver</code></td>
+<td>a request header</td>
+<td><code>x-lang</code></td>
+</tr>
+<tr>
+<td><code>AcceptLanguageLocaleResolver</code></td>
+<td><code>Accept-Language</code>, ordered by <code>q</code> values</td>
+<td>none</td>
+</tr>
+<tr>
+<td><code>CookieLocaleResolver</code></td>
+<td>a cookie in the <code>Cookie</code> header</td>
+<td><code>lang</code></td>
+</tr>
+</tbody></table></div>
+<p>A custom resolver extends <code>LocaleResolver</code> and implements <code>resolve()</code>, which receives the request <code>headers</code> and <code>query</code>, and returns a candidate, a list of candidates, or nothing. It lists the headers it reads in <code>varyHeaders</code>. With <code>afterGuards</code> set, it runs after guards, keeping its rank, and receives the <code>executionContext</code>, as every resolver does for microservices, WebSocket gateways and GraphQL subscriptions. See <a href="#/doc/nestjs/application/i18n@use-the-customers-saved-language">Use the customer&#39;s saved language</a>.</p>
+<h5 id="translation-api">Translation API</h5>
+<ul>
+<li><code>I18nService.t(key, options)</code>: translates for the current locale. <code>options</code> takes <code>args</code>, the placeholder values (a numeric <code>count</code> selects the plural form), and <code>locale</code>, an explicit locale. See <a href="#/doc/nestjs/application/i18n@translate-order-confirmations">Translate order confirmations</a>. <code>I18nService&lt;OtherTranslations&gt;</code> checks keys against another catalog shape.</li>
+<li><code>I18nService.translate(key, options)</code>: the same with an unchecked key, for keys built at runtime.</li>
+<li><code>I18nService.exists(key, locale)</code>: whether a key has a message.</li>
+<li><code>I18nService.formatNumber(value, options)</code> and <code>formatDate(value, options)</code>: <code>Intl</code> formatting in the current locale, with the usual <code>Intl</code> options plus <code>locale</code>. See <a href="#/doc/nestjs/application/i18n@format-prices-and-dates">Format prices and dates</a>.</li>
+<li><code>I18nService.matchLocale(candidate)</code>: maps a locale, such as one saved on a profile, to a supported one, or <code>undefined</code>.</li>
+<li><code>I18nService.defaultLocale</code> and <code>supportedLocales</code>: the configured locales, for a language picker.</li>
+<li><code>I18nContext.locale</code> and <code>I18nContext.run(locale, fn)</code>: read the current locale, or make one current for code outside a request.</li>
+<li><code>I18nContext.setLocale(locale)</code>: changes the locale for the rest of the request and returns the matched locale, or <code>undefined</code> for an unsupported one, which changes nothing. It throws outside a request, and on microservices, WebSocket gateways and GraphQL subscriptions in guards, which run before the locale is resolved.</li>
+<li><code>@CurrentLocale()</code>: the current locale as a handler parameter.</li>
+<li><code>t(key, options)</code>: <code>I18nService.t()</code> for code without dependency injection. Outside a request, it returns the key. See <a href="#/doc/nestjs/application/i18n@localize-exceptions">Localize exceptions</a>.</li>
+</ul>
+<h5 id="validation">Validation</h5>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Export</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>I18nValidationPipe</code></td>
+<td>Takes the <code>ValidationPipe</code> options, plus <code>namespace</code> (default <code>&#39;validation&#39;</code>) for constraint messages. See <a href="#/doc/nestjs/application/i18n@localize-validation-messages">Localize validation messages</a>.</td>
+</tr>
+<tr>
+<td><code>I18nStandardSchemaValidationPipe</code></td>
+<td>Takes the <code>StandardSchemaValidationPipe</code> options, plus <code>namespace</code> and <code>issueKeys</code>, a function that returns extra candidate keys for an issue. See <a href="#/doc/nestjs/application/i18n@with-zod">With Zod</a>.</td>
+</tr>
+<tr>
+<td><code>i18nValidationMessage(key, args)</code></td>
+<td>Points a <code>class-validator</code> constraint at a key.</td>
+</tr>
+<tr>
+<td><code>i18nIssueMessage(key, args)</code></td>
+<td>Points a Standard Schema issue at a key.</td>
+</tr>
+<tr>
+<td><code>translateValidationErrors(errors, options)</code></td>
+<td>Translates <code>class-validator</code> errors, for pipes of your own.</td>
+</tr>
+<tr>
+<td><code>translateStandardSchemaIssues(issues, options)</code></td>
+<td>Translates Standard Schema issues, for pipes of your own.</td>
+</tr>
+</tbody></table></div>
+<h5 id="errors">Errors</h5>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Error</th>
+<th>When</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>I18nMissingKeyError</code></td>
+<td>A key is missing under <code>missingKey: &#39;throw&#39;</code>. It carries <code>key</code> and <code>locale</code>, and isn&#39;t an <code>HttpException</code>, so the request fails with a 500.</td>
+</tr>
+</tbody></table></div>

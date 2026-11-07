@@ -1,0 +1,121 @@
+<p>The shadow database is a second, <em>temporary</em> database that is <strong>created and deleted automatically</strong>* each time you run <code>prisma migrate dev</code> and is primarily used to <strong>detect problems</strong> such as schema drift or potential data loss of the generated migration.</p>
+<p><a href="#/doc/prisma/reference/prisma-cli-reference@migrate-diff"><code>migrate diff</code> command</a> also requires a shadow database when diffing against a local <code>migrations</code> directory with <code>--from-migrations</code> or <code>--to-migrations</code>.</p>
+<ul>
+<li>If your database does not allow creation and deleting of databases (e.g. in a cloud-hosted environment), you need to <a href="#cloud-hosted-shadow-databases-must-be-created-manually">create and configure the shadow database manually</a>.</li>
+</ul>
+<aside class="callout callout-warning"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 4 2.8 20h18.4L12 4z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M12 10v4.4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="17" r="1.3" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Warning</p><p>The shadow database is <strong>not</strong> required in production, and is not used by production-focused commands such as <code>prisma migrate resolve</code> and <code>prisma migrate deploy</code>.</p>
+</div></aside>
+<h2 id="how-the-shadow-database-works">How the shadow database works</h2>
+<p>When you run <code>prisma migrate dev</code> to create a new migration, Prisma Migrate uses the shadow database to:</p>
+<ul>
+<li><a href="#detecting-schema-drift">Detect schema drift</a>, which means checking that no <strong>unexpected changes</strong> have been made to the development database</li>
+<li><a href="#generating-new-migrations">Generate new migrations</a> and evaluate if those could lead to <strong>data loss</strong> when applied</li>
+</ul>
+<h3 id="detecting-schema-drift">Detecting schema drift</h3>
+<p>To detect drift in development, Prisma Migrate:</p>
+<ul>
+<li>Creates a fresh copy of the shadow database (or performs a soft reset if the shadow database is configured via <a href="#/doc/prisma/reference/prisma-schema-reference@datasource"><code>shadowDatabaseUrl</code></a>)</li>
+<li>Reruns the <strong>current</strong>, existing migration history in the shadow database.</li>
+<li><strong>Introspects</strong> the shadow database to generate the &#39;current state&#39; of your Prisma schema.</li>
+<li>Compares the end state of the current migration history to the development database.</li>
+<li>Reports <strong>schema drift</strong> if the end state of the current migration history (via the shadow database) does not match the development database (for example, due to a manual change)</li>
+</ul>
+<p>If Prisma Migrate does not detect schema drift, it moves on to <a href="#generating-new-migrations">generating new migrations</a>.</p>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">[Note]</p><p>The shadow database is not responsible for checking if a migration file has been <strong>edited or deleted</strong>. This is done using the <code>checksum</code> field in the <code>_prisma_migrations</code> table.</p>
+</div></aside>
+<p>If Prisma Migrate detects schema drift, it outputs detailed information about which parts of the database have drifted. The following example output could be shown when the development database has been modified manually: The <code>Color</code> enum is missing the expected variant <code>RED</code> and includes the unexpected variant <code>TRANSPARENT</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">[*] Changed the `Color` enum
+  [+] Added variant `TRANSPARENT`
+  [-] Removed variant `RED`</code></pre></div></figure>
+<h3 id="generating-new-migrations">Generating new migrations</h3>
+<p>Assuming Prisma Migrate did not <a href="#detecting-schema-drift">detect schema drift</a>, it moves on to generating new migrations from Prisma schema changes. To generate new migrations, Prisma Migrate:</p>
+<ol>
+<li>Calculates the target database schema as a function of the current Prisma schema.</li>
+<li>Compares the end state of the existing migration history and the target schema, and generates steps to get from one to the other.</li>
+<li>Renders these steps to a SQL string and saves it in the new migration file.</li>
+<li>Evaluate data loss caused by the SQL and warns about that.</li>
+<li>Applies the generated migration to the development database (assuming you have not specified the <code>--create-only</code> flag)</li>
+<li>Drops the shadow database (shadow databases configured via <a href="#/doc/prisma/reference/prisma-schema-reference@datasource"><code>shadowDatabaseUrl</code></a> are not dropped, but are reset at the start of the <code>migrate dev</code> command)</li>
+</ol>
+<h2 id="manually-configuring-the-shadow-database">Manually configuring the shadow database</h2>
+<p>In some cases it might make sense (e.g. when <a href="#cloud-hosted-shadow-databases-must-be-created-manually">creating and dropping databases is not allowed on cloud-hosted databases</a>) to manually define the connection string and name of the database that should be used as the shadow database for <code>migrate dev</code>. In such a case you can:</p>
+<ol>
+<li>Create a dedicated database that should be used as the shadow database</li>
+<li>Add the connection string of that database your environment variable <code>SHADOW_DATABASE_URL</code> (or <code>.env</code> file)</li>
+<li>Configure the <code>shadowDatabaseUrl</code> field in <code>prisma.config.ts</code> under the <code>datasource</code> object. In Prisma 6 and below, add the <code>shadowDatabaseUrl</code> field to the <code>datasource</code> block in your <code>schema.prisma</code> file.</li>
+</ol>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>prisma.config.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">
+  <span class="hljs-attr">schema</span>: <span class="hljs-string">&quot;prisma/schema.prisma&quot;</span>,
+  <span class="hljs-attr">migrations</span>: {
+    <span class="hljs-attr">path</span>: <span class="hljs-string">&quot;prisma/migrations&quot;</span>,
+  },
+  <span class="hljs-attr">datasource</span>: {
+    <span class="hljs-attr">url</span>: <span class="hljs-title function_">env</span>(<span class="hljs-string">&quot;DATABASE_URL&quot;</span>),
+    <span class="hljs-attr">shadowDatabaseUrl</span>: <span class="hljs-title function_">env</span>(<span class="hljs-string">&quot;SHADOW_DATABASE_URL&quot;</span>), <span class="hljs-comment">// [!code highlight]</span>
+  },
+});</code></pre></div></figure>
+<aside class="callout callout-warning"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 4 2.8 20h18.4L12 4z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M12 10v4.4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="17" r="1.3" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">[Important]</p><p>Do not use the exact same values for <code>url</code> and <code>shadowDatabaseUrl</code> as that might delete all the data in your database.</p>
+</div></aside>
+<h2 id="cloud-hosted-shadow-databases-must-be-created-manually">Cloud-hosted shadow databases must be created manually</h2>
+<p>Some cloud providers do not allow you to drop and create databases with SQL. Some require to create or drop the database via an online interface, and some really limit you to 1 database. If you <strong>develop</strong> in such a cloud-hosted environment, you must:</p>
+<ol>
+<li>Create a dedicated cloud-hosted shadow database</li>
+<li>Add the URL to your environment variable <code>SHADOW_DATABASE_URL</code></li>
+<li>Configure the <code>shadowDatabaseUrl</code> field in <code>prisma.config.ts</code> under the <code>datasource</code> object. In Prisma 6 and below, add the <code>shadowDatabaseUrl</code> field to the <code>datasource</code> block in your <code>schema.prisma</code> file.</li>
+</ol>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>prisma.config.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">
+  <span class="hljs-attr">schema</span>: <span class="hljs-string">&quot;prisma/schema.prisma&quot;</span>,
+  <span class="hljs-attr">migrations</span>: {
+    <span class="hljs-attr">path</span>: <span class="hljs-string">&quot;prisma/migrations&quot;</span>,
+  },
+  <span class="hljs-attr">datasource</span>: {
+    <span class="hljs-attr">url</span>: <span class="hljs-title function_">env</span>(<span class="hljs-string">&quot;DATABASE_URL&quot;</span>),
+    <span class="hljs-attr">shadowDatabaseUrl</span>: <span class="hljs-title function_">env</span>(<span class="hljs-string">&quot;SHADOW_DATABASE_URL&quot;</span>), <span class="hljs-comment">// [!code highlight]</span>
+  },
+});</code></pre></div></figure>
+<aside class="callout callout-warning"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 4 2.8 20h18.4L12 4z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M12 10v4.4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="17" r="1.3" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">[Important]</p><p>Do not use the exact same values for <code>url</code> and <code>shadowDatabaseUrl</code> as that might delete all the data in your database.</p>
+</div></aside>
+<h2 id="shadow-database-user-permissions">Shadow database user permissions</h2>
+<p>In order to create and delete the shadow database when using <code>migrate dev</code>, Prisma Migrate currently requires that the database user defined in your <code>datasource</code> has permission to <strong>create databases</strong>.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Database</th>
+<th>Database user requirements</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>SQLite</td>
+<td>No special requirements.</td>
+</tr>
+<tr>
+<td>MySQL/MariaDB</td>
+<td>Database user must have <code>CREATE</code>, <code>ALTER</code>, <code>DROP</code>, <code>INDEX</code>, and <code>REFERENCES</code> on shadow databases (see <a href="#mysqlmariadb-shadow-database-privileges">MySQL/MariaDB shadow database privileges</a> below)</td>
+</tr>
+<tr>
+<td>PostgreSQL</td>
+<td>The user must be a super user or have <code>CREATEDB</code> privilege. See <code>CREATE ROLE</code> (<a target="_blank" rel="noopener" href="https://www.postgresql.org/docs/12/sql-createrole.html">PostgreSQL official documentation</a>)</td>
+</tr>
+<tr>
+<td>Microsoft SQL Server</td>
+<td>The user must be a site admin or have the <code>SERVER</code> securable. See the <a target="_blank" rel="noopener" href="https://learn.microsoft.com/en-us/sql/relational-databases/security/permissions-database-engine?view=sql-server-ver15">official documentation</a>.</td>
+</tr>
+</tbody></table></div>
+<h3 id="mysqlmariadb-shadow-database-privileges">MySQL/MariaDB shadow database privileges</h3>
+<p>When Prisma Migrate creates shadow databases automatically during <code>migrate dev</code>, it names them <code>prisma_migrate_shadow_db_&lt;id&gt;</code>. Grant the required privileges on that name pattern instead of on all databases (<code>*.*</code>):</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">GRANT CREATE, ALTER, DROP, INDEX, REFERENCES ON `prisma_migrate_shadow_db%`.* TO &#x27;user&#x27;@&#x27;%&#x27;;</code></pre></div></figure>
+<p><code>INDEX</code> is required because generated migrations create and drop indexes with standalone <code>CREATE INDEX</code> and <code>DROP INDEX</code> statements, which the <code>CREATE</code> and <code>ALTER</code> privileges alone do not permit.</p>
+<p>If you configure a dedicated shadow database with <code>shadowDatabaseUrl</code>, grant the same privileges on that database (for example <code>`myapp_shadow`.*</code>) instead of on the <code>prisma_migrate_shadow_db%</code> pattern.</p>
+<p>Wildcard database names in <code>GRANT</code> are deprecated in MySQL as of 8.0.35, and when the <a target="_blank" rel="noopener" href="https://dev.mysql.com/doc/refman/8.0/en/partial-revokes.html"><code>partial_revokes</code></a> system variable is enabled MySQL treats <code>%</code> as a literal character, so the grant above no longer matches the generated shadow database names. On such servers, configure a dedicated shadow database with <code>shadowDatabaseUrl</code> and grant the privileges on that database by name. See <a target="_blank" rel="noopener" href="https://dev.mysql.com/doc/refman/8.0/en/grant.html#grant-database-privileges">Database privileges in the MySQL <code>GRANT</code> reference</a>. MariaDB supports wildcard database names without these caveats.</p>
+<p>Prisma Migrate throws the following error if it cannot create the shadow database with the credentials your connection URL supplied:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">Error: A migration failed when applied to the shadow database
+Database error: Error querying the database: db error: ERROR: permission denied to create database</code></pre></div></figure>
+<p>To resolve this error:</p>
+<ul>
+<li>If you are working locally, we recommend that you update the database user&#39;s privileges.</li>
+<li>If you are developing against a database that does not allow creating and dropping databases (for any reason) see <a href="#manually-configuring-the-shadow-database">Manually configuring the shadow database</a></li>
+<li>If you are developing against a cloud-based database (for example, on Heroku or Digital Ocean) see: <a href="#cloud-hosted-shadow-databases-must-be-created-manually">Cloud-hosted shadow databases</a>.</li>
+<li>If you are developing against a cloud-based database (for example, on Heroku or Digital Ocean) and are currently <strong>prototyping</strong> such that you don&#39;t care about generated migration files and only need to apply your Prisma schema to the database schema, you can run <a href="#/doc/prisma/reference/prisma-cli-reference@db"><code>prisma db push</code></a> instead of the <code>prisma migrate dev</code> command.</li>
+</ul>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">[Important]</p><p>The shadow database is <em>only</em> required in a development environment (specifically for the <code>prisma migrate dev</code> command) - you <strong>do not</strong> need to make any changes to your production environment.</p>
+</div></aside>

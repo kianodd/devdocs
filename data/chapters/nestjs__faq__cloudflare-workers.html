@@ -1,0 +1,77 @@
+<p>Cloudflare Workers and Nest solve different problems, and many systems use both. Workers run small functions across Cloudflare&#39;s network, close to each user, with no server to keep running. Nest organizes a backend, usually a long-running Node.js process. This page helps you choose.</p>
+<h4 id="when-to-use-which">When to use which</h4>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>What you&#39;re building</th>
+<th>Better fit</th>
+<th>Why</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Logic in front of a site or an API: redirects, A/B tests, rewriting headers, checking a token</td>
+<td>Workers</td>
+<td>It runs close to every user, before a request reaches your origin</td>
+</tr>
+<tr>
+<td>A small API with a few routes, and traffic that comes in spikes or barely at all</td>
+<td>Workers</td>
+<td>It costs nothing while idle, and there&#39;s no server to run</td>
+</tr>
+<tr>
+<td>A backend with many modules, or several developers working on it</td>
+<td>Nest</td>
+<td>Modules, dependency injection, guards and pipes give it one structure, and services are easy to test</td>
+</tr>
+<tr>
+<td>A relational database with transactions and a connection pool</td>
+<td>Nest</td>
+<td>A long-running process keeps its pool. A Worker reaches a database through Hyperdrive or D1</td>
+</tr>
+<tr>
+<td>Background jobs that run for minutes, or queue consumers</td>
+<td>Nest</td>
+<td><a href="#/doc/nestjs/application/queues">Queues</a> and <a href="#/doc/nestjs/application/task-scheduling">scheduled jobs</a> run in your process. Workers have Queues, Cron Triggers and Workflows, which are Cloudflare&#39;s own</td>
+</tr>
+<tr>
+<td>Heavy CPU or memory work, or native Node.js modules</td>
+<td>Nest</td>
+<td>A Worker&#39;s isolate has limits, listed below</td>
+</tr>
+<tr>
+<td>WebSockets with many rooms</td>
+<td>Either</td>
+<td>Nest has <a href="#/doc/nestjs/websockets/gateways">gateways</a>, and Workers have Durable Objects</td>
+</tr>
+<tr>
+<td>Something that has to run on another cloud, or on your own servers</td>
+<td>Nest</td>
+<td>It runs anywhere Node.js does, while Worker bindings such as KV and D1 tie the code to Cloudflare</td>
+</tr>
+</tbody></table></div>
+<p>Cloudflare <a target="_blank" rel="noopener" href="https://developers.cloudflare.com/workers/platform/limits/">lists its limits</a>, which may change. At the time of writing, an isolate gets 128 MB of memory and one second to start, and a request gets 30 seconds of CPU time by default, up to 5 minutes on a paid plan.</p>
+<h4 id="use-both">Use both</h4>
+<p>A Worker can sit in front of a Nest application: it answers what it can at the edge, and passes the rest on. Cookies, headers and bodies go through unchanged:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>worker.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">interface</span> <span class="hljs-title class_">Env</span> {
+  <span class="hljs-attr">API_ORIGIN</span>: <span class="hljs-built_in">string</span>;
+}
+
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">default</span> {
+  <span class="hljs-title function_">fetch</span>(<span class="hljs-params"><span class="hljs-attr">request</span>: <span class="hljs-title class_">Request</span>, <span class="hljs-attr">env</span>: <span class="hljs-title class_">Env</span></span>) {
+    <span class="hljs-keyword">const</span> { pathname, search } = <span class="hljs-keyword">new</span> <span class="hljs-title function_">URL</span>(request.<span class="hljs-property">url</span>);
+    <span class="hljs-keyword">if</span> (pathname.<span class="hljs-title function_">startsWith</span>(<span class="hljs-string">&#x27;/api/&#x27;</span>)) {
+      <span class="hljs-keyword">return</span> <span class="hljs-title function_">fetch</span>(<span class="hljs-string">`<span class="hljs-subst">${env.API_ORIGIN}</span><span class="hljs-subst">${pathname}</span><span class="hljs-subst">${search}</span>`</span>, request);
+    }
+    <span class="hljs-keyword">return</span> <span class="hljs-keyword">new</span> <span class="hljs-title class_">Response</span>(<span class="hljs-string">`Hello from <span class="hljs-subst">${request.cf?.colo ?? <span class="hljs-string">&#x27;the edge&#x27;</span>}</span>`</span>);
+  },
+};</code></pre></div></figure>
+<p>Nest then runs on any Node.js host (see <a href="#/doc/nestjs/deployment">Deployment</a>), including <a target="_blank" rel="noopener" href="https://developers.cloudflare.com/containers/">Cloudflare Containers</a>, which run a container image alongside your Workers.</p>
+<h4 id="can-nest-run-on-a-worker">Can Nest run on a Worker?</h4>
+<p>It can, but Nest doesn&#39;t officially support it, and it&#39;s rarely the best of both. Workers implement <code>node:http</code>, so the Express adapter starts in <code>workerd</code>. An application with a controller and a provider comes to about 500 KB gzipped. What to expect:</p>
+<ul>
+<li><strong>Dependency injection needs <code>@Inject()</code>.</strong> Workers bundle with esbuild, which doesn&#39;t emit decorator metadata, so a dependency needs its token named, as with <code>constructor(@Inject(TodosService) todos: TodosService)</code>.</li>
+<li><strong>Optional packages have to be aliased.</strong> Nest loads packages such as <code>class-validator</code> and <code>@nestjs/microservices</code> only if they&#39;re installed, and the bundler tries to resolve them anyway.</li>
+<li><strong>The application bootstraps in every new isolate</strong>, and that time counts against the startup limit. State in memory isn&#39;t shared between isolates.</li>
+<li><strong>Some features aren&#39;t available</strong>, such as <a href="#/doc/nestjs/websockets/gateways">WebSocket gateways</a>, <a href="#/doc/nestjs/fundamentals/lifecycle-events">shutdown hooks</a> and TCP <a href="#/doc/nestjs/microservices/basics">microservice transports</a>.</li>
+</ul>
+<p>If you want Workers for most of the backend, a framework written for them is a better fit. If you want Nest, run it where it gets a long-running process, and put a Worker in front.</p>

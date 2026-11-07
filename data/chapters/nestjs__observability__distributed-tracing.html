@@ -1,0 +1,149 @@
+<p>A <strong>trace</strong> is everything your applications recorded under a single trace id: the request or job that started it, and every span underneath. Within a single service this is automatic. The SDK generates a trace id when work starts, and every span underneath, including ones you add manually with <a href="#/doc/nestjs/observability/manual-instrumentation"><code>TracerService</code></a>, inherits it.</p>
+<p>Across services, it depends on the channel. HTTP calls and queue jobs carry the trace id on their own, and so do the built-in microservice transports on a recent enough <code>@nestjs/microservices</code> (12.0.4 for TCP and Redis, 12.3.3 for NATS, Kafka, RabbitMQ, MQTT 5, and gRPC). On earlier versions, the trace id needs forwarding. A single user action that touches more than one service (an API call that fans out to a gRPC service, or a message sent to another application over a microservice transport) shows up as <strong>one trace</strong> in your dashboard only if every service involved uses the same trace id. Otherwise, each service mints its own via <code>traceIdGenerator</code>, and the action shows up as several disconnected traces, one per service.</p>
+<figure><img src="https://www.observe.nestjs.com/docs/telemetry/service-flow.webp" alt="Trace correlation across services" /></figure><p>Where forwarding is needed, it is application code, not a dashboard setting, and the pattern is always the same: the caller puts its current trace id on whatever channel the protocol has, and the callee&#39;s <code>traceIdGenerator</code> reads it back out. This page shows how for each transport.</p>
+<h4 id="reading-the-current-trace-id">Reading the current trace id</h4>
+<p>To forward a trace id downstream, a service first reads the one it&#39;s currently running under. <code>TracerService.currentTraceId()</code> returns it:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>orders.service</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { <span class="hljs-title class_">Injectable</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/common&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">TracerService</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/observe&#x27;</span>;
+
+<span class="hljs-meta">@Injectable</span>()
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">OrdersService</span> {
+  <span class="hljs-title function_">constructor</span>(<span class="hljs-params"><span class="hljs-keyword">private</span> <span class="hljs-keyword">readonly</span> <span class="hljs-attr">tracerService</span>: <span class="hljs-title class_">TracerService</span></span>) {}
+
+  <span class="hljs-keyword">async</span> <span class="hljs-title function_">report</span>(<span class="hljs-params"><span class="hljs-attr">orderId</span>: <span class="hljs-built_in">string</span></span>) {
+    <span class="hljs-keyword">const</span> traceId = <span class="hljs-variable language_">this</span>.<span class="hljs-property">tracerService</span>.<span class="hljs-title function_">currentTraceId</span>();
+    <span class="hljs-comment">// ...forward traceId to the next service</span>
+  }
+}</code></pre></div></figure>
+<p>It reads from the same context store as <code>getAttribute()</code>/<code>setAttribute()</code>, but unlike those it doesn&#39;t throw outside a traced context. It returns <code>null</code> instead, so code that forwards a trace id from startup hooks or other untraced paths doesn&#39;t need a <code>try</code>/<code>catch</code>. If your code can run outside a trace, check for <code>null</code> before setting a header.</p>
+<h4 id="http-to-http">HTTP to HTTP</h4>
+<p>HTTP propagation is automatic in both directions. On the way in, the default <code>traceIdGenerator</code> adopts a well-formed <code>x-request-id</code> header and otherwise mints a time-ordered UUID (v7). On the way out, the SDK adds the current trace id as <code>x-request-id</code> to outbound requests that don&#39;t already carry one, so a call from one instrumented service to another lands in the same trace with no application code.</p>
+<p>Outbound propagation covers <code>fetch</code> and <code>undici</code>, including the <a href="#/doc/nestjs/application/http-client">HTTP client</a>, on every supported Node version, and clients built on <code>node:http</code> (axios, got, <code>@nestjs/axios</code>) on Node 22.12 and later, the first release that lets a header be added after the request object is created. To limit which hosts receive the header, or switch it off, see <a href="#/doc/nestjs/observability/sdk@database-queries-and-outbound-http"><code>outgoing.http.propagateTraceId</code></a>.</p>
+<p>On an older Node version with an axios-based client, register a request interceptor once to forward the id yourself:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>orders.module</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-meta">@Module</span>({
+  <span class="hljs-attr">imports</span>: [<span class="hljs-title class_">HttpModule</span>],
+})
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">OrdersModule</span> <span class="hljs-keyword">implements</span> <span class="hljs-title class_">OnModuleInit</span> {
+  <span class="hljs-title function_">constructor</span>(<span class="hljs-params">
+    <span class="hljs-keyword">private</span> <span class="hljs-keyword">readonly</span> <span class="hljs-attr">httpService</span>: <span class="hljs-title class_">HttpService</span>,
+    <span class="hljs-keyword">private</span> <span class="hljs-keyword">readonly</span> <span class="hljs-attr">tracerService</span>: <span class="hljs-title class_">TracerService</span>,
+  </span>) {}
+
+  <span class="hljs-title function_">onModuleInit</span>(<span class="hljs-params"></span>) {
+    <span class="hljs-variable language_">this</span>.<span class="hljs-property">httpService</span>.<span class="hljs-property">axiosRef</span>.<span class="hljs-property">interceptors</span>.<span class="hljs-property">request</span>.<span class="hljs-title function_">use</span>(<span class="hljs-function">(<span class="hljs-params">config</span>) =&gt;</span> {
+      config.<span class="hljs-property">headers</span>[<span class="hljs-string">&#x27;x-request-id&#x27;</span>] = <span class="hljs-variable language_">this</span>.<span class="hljs-property">tracerService</span>.<span class="hljs-title function_">currentTraceId</span>();
+      <span class="hljs-keyword">return</span> config;
+    });
+  }
+}</code></pre></div></figure>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Hint</p><p>Many reverse proxies and load balancers (nginx, Envoy, AWS ALB) can set <code>x-request-id</code> on every inbound request. When they do, the trace id in your dashboard matches the request id in your proxy&#39;s access logs. With the <a href="#/doc/nestjs/observability/opentelemetry@running-beside-opentelemetry"><code>openTelemetry</code></a> option on, a W3C <code>traceparent</code> takes precedence over an <code>x-request-id</code> that names a different trace.</p>
+</div></aside>
+<h4 id="opentelemetry-and-w3c-trace-context">OpenTelemetry and W3C Trace Context</h4>
+<p>Services instrumented with OpenTelemetry pass the trace on in the W3C <code>traceparent</code> header rather than in <code>x-request-id</code>. With the <code>openTelemetry</code> option on, the SDK reads <code>traceparent</code> on the way in, and the trace id it names becomes the request&#39;s trace id. On the way out, it sends <code>traceparent</code> beside <code>x-request-id</code>. A Nest service then joins the traces the services around it share, whatever language they&#39;re written in. See <a href="#/doc/nestjs/observability/opentelemetry@running-beside-opentelemetry">Running beside OpenTelemetry</a>.</p>
+<h4 id="grpc">gRPC</h4>
+<p>gRPC has no headers, only metadata. On <code>@nestjs/microservices</code> 12.3.3 or later, the trace id travels in it on its own: the SDK adds the current trace id as <code>x-request-id</code> metadata to every call made through a <code>ClientGrpc</code> registered as a provider (e.g., with <code>ClientsModule</code>), and the default <code>traceIdGenerator</code> of the gRPC service adopts it, so no application code is needed. Metadata you pass to a call yourself wins: an <code>x-request-id</code> in it is the one the service adopts. With the <a href="#/doc/nestjs/observability/opentelemetry@running-beside-opentelemetry"><code>openTelemetry</code></a> option on, the metadata carries a W3C <code>traceparent</code> too, so a gRPC server instrumented with OpenTelemetry, in any language, continues the trace.</p>
+<p>On earlier versions, the caller attaches the trace id as metadata, and the gRPC service overrides <code>traceIdGenerator</code> to read it back out, since the default generator doesn&#39;t read gRPC metadata there:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>caller.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { <span class="hljs-title class_">Metadata</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@grpc/grpc-js&#x27;</span>;
+
+<span class="hljs-keyword">const</span> metadata = <span class="hljs-keyword">new</span> <span class="hljs-title class_">Metadata</span>();
+<span class="hljs-keyword">const</span> traceId = <span class="hljs-variable language_">this</span>.<span class="hljs-property">tracerService</span>.<span class="hljs-title function_">currentTraceId</span>();
+<span class="hljs-keyword">if</span> (traceId) {
+  metadata.<span class="hljs-title function_">set</span>(<span class="hljs-string">&#x27;x-request-id&#x27;</span>, traceId);
+}
+<span class="hljs-variable language_">this</span>.<span class="hljs-property">heroesService</span>.<span class="hljs-title function_">findOne</span>({ <span class="hljs-attr">id</span>: <span class="hljs-number">1</span> }, metadata);</code></pre></div></figure>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app.module</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { randomUUID } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;node:crypto&#x27;</span>;
+
+<span class="hljs-comment">// gRPC service - passed to createObserveModule(), not forRoot()</span>
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">const</span> { <span class="hljs-title class_">ObserveModule</span>, <span class="hljs-title class_">ObserveInstrument</span> } = <span class="hljs-title function_">createObserveModule</span>({
+  <span class="hljs-attr">traceIdGenerator</span>: <span class="hljs-function">(<span class="hljs-params"><span class="hljs-attr">call</span>: <span class="hljs-built_in">any</span></span>) =&gt;</span> {
+    <span class="hljs-keyword">const</span> inbound = call.<span class="hljs-property">metadata</span>?.<span class="hljs-property">get</span>?.(<span class="hljs-string">&#x27;x-request-id&#x27;</span>)?.[<span class="hljs-number">0</span>];
+    <span class="hljs-keyword">return</span> <span class="hljs-keyword">typeof</span> inbound === <span class="hljs-string">&#x27;string&#x27;</span> &amp;&amp; inbound.<span class="hljs-property">length</span> &gt; <span class="hljs-number">0</span>
+      ? inbound
+      : <span class="hljs-title function_">randomUUID</span>(); <span class="hljs-comment">// no id was propagated - this call started its own trace</span>
+  },
+});</code></pre></div></figure>
+<p>See the <a href="#/doc/nestjs/microservices/grpc">gRPC</a> chapter for how metadata is read and written on both sides of a call.</p>
+<h4 id="tcp-redis-nats-and-other-microservice-transports">TCP, Redis, NATS, and other microservice transports</h4>
+<p>Every built-in microservice transport carries the trace id on its own, once both services run a recent enough <code>@nestjs/microservices</code>, with <code>@nestjs/observe</code> 0.3.0 or later:</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Transport</th>
+<th>From <code>@nestjs/microservices</code></th>
+<th>The trace id travels</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>TCP, Redis</td>
+<td>12.0.4</td>
+<td>inside the packet</td>
+</tr>
+<tr>
+<td>NATS</td>
+<td>12.3.3</td>
+<td>as a message header</td>
+</tr>
+<tr>
+<td>Kafka</td>
+<td>12.3.3</td>
+<td>as a record header</td>
+</tr>
+<tr>
+<td>RabbitMQ</td>
+<td>12.3.3</td>
+<td>in the message&#39;s <code>headers</code> property</td>
+</tr>
+<tr>
+<td>MQTT</td>
+<td>12.3.3, over MQTT 5 (<code>protocolVersion: 5</code>)</td>
+<td>as a user property</td>
+</tr>
+<tr>
+<td>gRPC</td>
+<td>12.3.3</td>
+<td>as call metadata (see <a href="#grpc">gRPC</a>)</td>
+</tr>
+</tbody></table></div>
+<p>The SDK attaches the current trace id, as <code>x-request-id</code>, to every packet sent through a <code>ClientProxy</code> registered as a provider (e.g., with <code>ClientsModule</code>), and the default <code>traceIdGenerator</code> on the receiving side adopts it, so no application code is needed. On the transports that carry it as a header, a header of the same name that your code sets itself, on a record builder or in the client&#39;s <code>headers</code> or <code>userProperties</code> option, wins over the SDK&#39;s. Because the id is a plain <code>x-request-id</code> header there, a service that isn&#39;t written with Nest can read it, or send one to a Nest service. With the <a href="#/doc/nestjs/observability/opentelemetry@running-beside-opentelemetry"><code>openTelemetry</code></a> option on, a W3C <code>traceparent</code> travels beside it the same way, so such a service instrumented with OpenTelemetry, in any language, continues the trace.</p>
+<p>On an earlier <code>@nestjs/microservices</code>, and over MQTT 3.1.1, which has no user properties, the trace id doesn&#39;t travel on its own, and each service starts its own trace. If you can&#39;t upgrade, forward the id in a header the transport does carry (<code>NatsRecordBuilder#setHeaders()</code>, <code>RmqRecordBuilder#setOptions({ headers })</code>, a Kafka message&#39;s <code>headers</code>), and override <code>traceIdGenerator</code> to read it back from the context the transport hands it:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app.module</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { randomUUID } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;node:crypto&#x27;</span>;
+
+<span class="hljs-comment">// receiving service, over NATS</span>
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">const</span> { <span class="hljs-title class_">ObserveModule</span>, <span class="hljs-title class_">ObserveInstrument</span> } = <span class="hljs-title function_">createObserveModule</span>({
+  <span class="hljs-attr">traceIdGenerator</span>: <span class="hljs-function">(<span class="hljs-params"><span class="hljs-attr">ctx</span>: <span class="hljs-built_in">any</span></span>) =&gt;</span>
+    ctx.<span class="hljs-property">getHeaders</span>?.()?.<span class="hljs-title function_">get</span>(<span class="hljs-string">&#x27;x-request-id&#x27;</span>) || <span class="hljs-title function_">randomUUID</span>(),
+});</code></pre></div></figure>
+<p>The generator receives the transport&#39;s context object, so the same code works for request-response (<code>send()</code>) and event-based (<code>emit()</code>) messages. A custom transport carries the id like the built-in ones when its client sends a packet&#39;s <code>metadata</code> along with it, and its context returns that from a <code>getMetadata()</code> method: the default generator adopts an <code>x-request-id</code> from there.</p>
+<aside class="callout callout-warning"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 4 2.8 20h18.4L12 4z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M12 10v4.4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="17" r="1.3" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Warning</p><p>The same <code>traceIdGenerator</code> is called with HTTP requests and RPC contexts alike. In a <a href="#/doc/nestjs/faq/hybrid-application">hybrid application</a> that serves both HTTP and a microservice transport, write the generator defensively: check for <code>headers</code> first, then fall back to the transport&#39;s context.</p>
+</div></aside>
+<h4 id="graphql">GraphQL</h4>
+<p>No extra configuration is needed when the GraphQL server sits behind the same service&#39;s HTTP layer. It joins whatever trace the HTTP agent already opened for that request, which may itself have been propagated via <code>x-request-id</code> as described above. Only operations with no enclosing HTTP trace, such as a subscription over a raw WebSocket, need separate handling, and there&#39;s currently no built-in propagation hook for that case.</p>
+<h4 id="queue-jobs-bullmq-and-bull">Queue jobs (BullMQ and Bull)</h4>
+<p>Queue propagation is automatic. When a job is added from inside a traced operation (a request handler, an RPC handler, another job), the SDK stamps the current trace id onto the job&#39;s options, and the processor that picks the job up runs under that id instead of minting its own. The request and every job it enqueued render as one trace, with no application code involved:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>orders.controller</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-meta">@Post</span>()
+<span class="hljs-keyword">async</span> <span class="hljs-title function_">create</span>(<span class="hljs-params"><span class="hljs-meta">@Body</span>() <span class="hljs-attr">dto</span>: <span class="hljs-title class_">CreateOrderDto</span></span>) {
+  <span class="hljs-keyword">const</span> order = <span class="hljs-keyword">await</span> <span class="hljs-variable language_">this</span>.<span class="hljs-property">ordersService</span>.<span class="hljs-title function_">create</span>(dto);
+  <span class="hljs-comment">// The job inherits this request&#x27;s trace id</span>
+  <span class="hljs-keyword">await</span> <span class="hljs-variable language_">this</span>.<span class="hljs-property">ordersQueue</span>.<span class="hljs-title function_">add</span>(<span class="hljs-string">&#x27;send-confirmation&#x27;</span>, { <span class="hljs-attr">orderId</span>: order.<span class="hljs-property">id</span> });
+  <span class="hljs-keyword">return</span> order;
+}</code></pre></div></figure>
+<p>This works the same way for <code>@nestjs/bullmq</code> and <code>@nestjs/bull</code>, for <code>add()</code> and <code>addBulk()</code>, and whether the worker runs in the same process as the producer or in a separate service: the id travels through Redis with the job. A retried job keeps the id it was enqueued with, so every attempt lands in the same trace.</p>
+<p>Two cases deliberately start a trace of their own:</p>
+<ul>
+<li><strong>Repeatable jobs and <code>@nestjs/schedule</code> handlers.</strong> A schedule outlives the operation that registered it, so each firing is its own trace rather than part of an ever-growing trace attached to whichever request set the schedule up.</li>
+<li><strong>Jobs added outside any traced operation</strong>, e.g., from a bootstrap hook or a plain script. There is no trace to inherit.</li>
+</ul>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Hint</p><p>The trace id is stored under the <code>observeTraceId</code> job option. To attach a job to a trace the SDK did not see (e.g., one enqueued by a non-Nest producer), set that option yourself when adding the job.</p>
+</div></aside>
+<p>With the <a href="#/doc/nestjs/observability/opentelemetry@running-beside-opentelemetry"><code>openTelemetry</code></a> option on, from <code>@nestjs/observe</code> 0.3.23, a job also carries the W3C trace context it was added in, under the <code>observeTraceparent</code> job option, and the processor runs in it. An OpenTelemetry SDK in the process that runs the job then continues the request&#39;s trace: the job&#39;s spans in your OpenTelemetry backend, and the services the job calls, are in the same trace as the request, as the job is in Observe. With BullMQ&#39;s own OpenTelemetry add-on, <a target="_blank" rel="noopener" href="https://www.npmjs.com/package/bullmq-otel"><code>bullmq-otel</code></a>, on the queue and the worker, the processor runs in the consumer span the add-on opens, a span of the same trace, and from <code>@nestjs/observe</code> 0.3.24 the job&#39;s spans nest under it.</p>
+<aside class="callout callout-warning"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 4 2.8 20h18.4L12 4z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M12 10v4.4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="17" r="1.3" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Warning</p><p>Trace inheritance for jobs requires <code>@nestjs/observe</code> 0.3.0 or later on <strong>both</strong> the service that adds the job and the service that processes it. With an older producer, jobs carry no id and each run opens its own trace, as before.</p>
+</div></aside>
+<h4 id="what-a-trace-looks-like-in-the-dashboard">What a trace looks like in the dashboard</h4>
+<p>Once services agree on a trace id, the trace detail page renders every execution that ran under it, across services, requests, and jobs, as one waterfall: nesting depth as indentation, duration as bar length, and horizontal position as when the span ran. When reading it, keep the following in mind:</p>
+<ul>
+<li><strong>Self time</strong> is the number that matters. A span&#39;s duration minus the time its children account for is the time the span spent in its own code. Ranking by total duration always puts the controller at the top (it contains everything); ranking by self time surfaces the repository call that actually burned the time. Every execution page carries a spans table sorted this way.</li>
+<li><strong>Overlapping children are flagged.</strong> When a span&#39;s children sum to more than the span&#39;s own duration, they ran concurrently (<code>Promise.all</code>, a parallel fan-out) and the row says so.</li>
+<li><strong>Failing spans are marked</strong>, and the execution page leads with an error card for the first span that threw - class, message, the trimmed stack trace with the throwing frame marked, and the source lines around it when <a href="#/doc/nestjs/observability/sdk@error-source-context"><code>sourceContext</code></a> is on.</li>
+<li><strong>Logs sit on the trace&#39;s clock.</strong> With <code>forwardLogs</code> enabled, each line is placed at its offset from the start of the trace and labeled with the span that was in flight when it was written; hovering a line marks that instant on the waterfall.</li>
+</ul>
+<figure><img src="https://www.observe.nestjs.com/docs/telemetry/traces.webp" alt="Trace waterfall" /></figure><p>From any failed or unusually slow execution, the <strong>Copy agent prompt</strong> button packages the whole page (context, error, stack trace with source, top spans by self time, and logs) as a self-contained markdown prompt for a coding agent. See <a href="#/doc/nestjs/observability/dashboard@handing-a-failure-to-a-coding-agent">Dashboard</a>.</p>

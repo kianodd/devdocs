@@ -1,0 +1,94 @@
+<p>With socket activation, the service manager opens the listening socket for your application. <a target="_blank" rel="noopener" href="https://systemd.io/">systemd</a> listens on the port, starts the application when the first connection arrives, and hands the socket over to it. Connections that arrive while the application starts or restarts wait in the kernel&#39;s queue instead of being refused.</p>
+<p>This is useful for services that are called rarely, such as internal tools, admin panels, or the many services of a development or staging machine. If the application also exits after some time without requests, such a service holds no memory while nobody uses it. The cost is a cold start: the first request after a pause waits until Node.js loads the application and Nest bootstraps it.</p>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Hint</p><p>Listening on a socket passed by the service manager is a feature of Node.js&#39;s <a target="_blank" rel="noopener" href="https://nodejs.org/api/net.html#serverlistenhandle-backlog-callback"><code>server.listen()</code></a>. It is not supported on Windows.</p>
+</div></aside>
+<h4 id="systemd-units">systemd units</h4>
+<p>Create a socket unit, for example <code>/etc/systemd/system/my-app.socket</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Terminal</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-bash">[Socket]
+ListenStream=3000
+
+[Install]
+WantedBy=sockets.target</code></pre></div></figure>
+<p>Next to it, create a service unit with the same name, <code>/etc/systemd/system/my-app.service</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Terminal</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-bash">[Service]
+WorkingDirectory=/srv/my-app
+ExecStart=/usr/bin/node dist/main.js
+Restart=on-failure</code></pre></div></figure>
+<p>Then enable the socket only. systemd starts <code>my-app.service</code> on the first connection:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Terminal</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-bash">$ <span class="hljs-built_in">sudo</span> systemctl daemon-reload
+$ <span class="hljs-built_in">sudo</span> systemctl <span class="hljs-built_in">enable</span> --now my-app.socket</code></pre></div></figure>
+<aside class="callout callout-warning"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 4 2.8 20h18.4L12 4z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M12 10v4.4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="17" r="1.3" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Warning</p><p>Start <code>node</code> directly in <code>ExecStart</code>. systemd passes the socket as file descriptor <code>3</code> and sets the <code>LISTEN_FDS</code> and <code>LISTEN_PID</code> environment variables, where <code>LISTEN_PID</code> is the ID of the process it started. With <code>npm start</code>, <code>nest start</code>, or a shell script in between, <code>LISTEN_PID</code> doesn&#39;t match your application&#39;s process. The bootstrap below then falls back to listening on the port, which fails with <code>EADDRINUSE</code> because systemd already holds it.</p>
+</div></aside>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Hint</p><p>To try it without unit files, run <code>systemd-socket-activate --listen=3000 node dist/main.js</code>. It passes the socket the same way, but starts the application only once. It also doesn&#39;t forward variables such as <code>NODE_ENV</code> unless you name them with <code>--setenv=NODE_ENV</code>.</p>
+</div></aside>
+<h4 id="bootstrap">Bootstrap</h4>
+<p>In your <code>main.ts</code> file, listen on the passed socket when the application was started this way, and on a port otherwise:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>main.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { <span class="hljs-title class_">NestFactory</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/core&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">AppModule</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./app.module.js&#x27;</span>;
+
+<span class="hljs-keyword">async</span> <span class="hljs-keyword">function</span> <span class="hljs-title function_">bootstrap</span>(<span class="hljs-params"></span>) {
+  <span class="hljs-keyword">const</span> app = <span class="hljs-keyword">await</span> <span class="hljs-title class_">NestFactory</span>.<span class="hljs-title function_">create</span>(<span class="hljs-title class_">AppModule</span>);
+  app.<span class="hljs-title function_">enableShutdownHooks</span>();
+
+  <span class="hljs-comment">// Set by systemd when it passes the listening socket to this process</span>
+  <span class="hljs-keyword">const</span> activated =
+    process.<span class="hljs-property">env</span>.<span class="hljs-property">LISTEN_FDS</span> === <span class="hljs-string">&#x27;1&#x27;</span> &amp;&amp;
+    process.<span class="hljs-property">env</span>.<span class="hljs-property">LISTEN_PID</span> === <span class="hljs-title class_">String</span>(process.<span class="hljs-property">pid</span>);
+
+  <span class="hljs-keyword">if</span> (activated) {
+    <span class="hljs-keyword">await</span> app.<span class="hljs-title function_">listen</span>({ <span class="hljs-attr">fd</span>: <span class="hljs-number">3</span> } <span class="hljs-keyword">as</span> <span class="hljs-built_in">any</span>);
+  } <span class="hljs-keyword">else</span> {
+    <span class="hljs-keyword">await</span> app.<span class="hljs-title function_">listen</span>(process.<span class="hljs-property">env</span>.<span class="hljs-property">PORT</span> ?? <span class="hljs-number">3000</span>);
+  }
+}
+
+<span class="hljs-keyword">await</span> <span class="hljs-title function_">bootstrap</span>();</code></pre></div></figure>
+<p>The Express and Node adapters pass the options object to Node.js&#39;s <code>server.listen()</code> as is, but their <code>listen()</code> typings accept only a port, hence the cast. The Fastify adapter accepts <code>fd</code> in its typed listen options:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">const</span> app = <span class="hljs-keyword">await</span> <span class="hljs-title class_">NestFactory</span>.<span class="hljs-property">create</span>&lt;<span class="hljs-title class_">NestFastifyApplication</span>&gt;(
+  <span class="hljs-title class_">AppModule</span>,
+  <span class="hljs-keyword">new</span> <span class="hljs-title class_">FastifyAdapter</span>(),
+);
+<span class="hljs-comment">// ...</span>
+<span class="hljs-keyword">await</span> app.<span class="hljs-title function_">listen</span>({ <span class="hljs-attr">fd</span>: <span class="hljs-number">3</span> });</code></pre></div></figure>
+<h4 id="exiting-when-idle">Exiting when idle</h4>
+<p>systemd doesn&#39;t stop the application on its own. To free its memory, let the application exit after some time without requests, and systemd starts it again on the next connection. The following helper counts in-flight requests on the underlying HTTP server, so it works with every adapter and also sees requests that never reach a route handler:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>exit-when-idle.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> <span class="hljs-keyword">type</span> { <span class="hljs-title class_">INestApplication</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/common&#x27;</span>;
+<span class="hljs-keyword">import</span> <span class="hljs-keyword">type</span> { <span class="hljs-title class_">Server</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;node:http&#x27;</span>;
+
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">function</span> <span class="hljs-title function_">exitWhenIdle</span>(<span class="hljs-params"><span class="hljs-attr">app</span>: <span class="hljs-title class_">INestApplication</span>, <span class="hljs-attr">idleMs</span>: <span class="hljs-built_in">number</span></span>) {
+  <span class="hljs-keyword">const</span> <span class="hljs-attr">server</span>: <span class="hljs-title class_">Server</span> = app.<span class="hljs-title function_">getHttpServer</span>();
+  <span class="hljs-keyword">let</span> inFlight = <span class="hljs-number">0</span>;
+  <span class="hljs-keyword">let</span> <span class="hljs-attr">timer</span>: <span class="hljs-title class_">NodeJS</span>.<span class="hljs-property">Timeout</span> | <span class="hljs-literal">undefined</span>;
+
+  <span class="hljs-keyword">const</span> <span class="hljs-title function_">scheduleExit</span> = (<span class="hljs-params"></span>) =&gt; {
+    timer = <span class="hljs-built_in">setTimeout</span>(<span class="hljs-title function_">async</span> () =&gt; {
+      <span class="hljs-keyword">await</span> app.<span class="hljs-title function_">close</span>();
+      process.<span class="hljs-title function_">exit</span>(<span class="hljs-number">0</span>);
+    }, idleMs);
+  };
+
+  server.<span class="hljs-title function_">on</span>(<span class="hljs-string">&#x27;request&#x27;</span>, <span class="hljs-function">(<span class="hljs-params">req, res</span>) =&gt;</span> {
+    inFlight++;
+    <span class="hljs-built_in">clearTimeout</span>(timer);
+    res.<span class="hljs-title function_">once</span>(<span class="hljs-string">&#x27;close&#x27;</span>, <span class="hljs-function">() =&gt;</span> {
+      <span class="hljs-keyword">if</span> (--inFlight === <span class="hljs-number">0</span>) {
+        <span class="hljs-title function_">scheduleExit</span>();
+      }
+    });
+  });
+  <span class="hljs-title function_">scheduleExit</span>();
+}</code></pre></div></figure>
+<p>Call it once the application listens on the passed socket:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">if</span> (activated) {
+  <span class="hljs-keyword">await</span> app.<span class="hljs-title function_">listen</span>({ <span class="hljs-attr">fd</span>: <span class="hljs-number">3</span> } <span class="hljs-keyword">as</span> <span class="hljs-built_in">any</span>);
+  <span class="hljs-title function_">exitWhenIdle</span>(app, <span class="hljs-number">5</span> * <span class="hljs-number">60_000</span>); <span class="hljs-comment">// Exit after 5 minutes without requests</span>
+}</code></pre></div></figure>
+<p><code>app.close()</code> runs the same <a href="#/doc/nestjs/fundamentals/lifecycle-events@application-shutdown">shutdown hooks</a> as <code>enableShutdownHooks()</code> does when systemd stops the service with <code>SIGTERM</code>. Exit code <code>0</code> tells systemd that the service stopped cleanly, so <code>Restart=on-failure</code> doesn&#39;t start it again. systemd keeps its own copy of the socket open, so a connection that arrives while the application exits waits for the next start.</p>
+<p>The helper counts HTTP requests only. A server-sent events stream counts until the client disconnects, but an open WebSocket connection doesn&#39;t. If your application uses WebSockets, also count the sockets of the server&#39;s <code>upgrade</code> event until they close.</p>
+<h4 id="things-to-keep-in-mind">Things to keep in mind</h4>
+<ul>
+<li>Use <code>Restart=on-failure</code>, not <code>Restart=always</code>. With <code>always</code>, systemd starts the application again right after it exits on idle.</li>
+<li>Health checks and uptime monitors that send requests to the application start it and keep it running.</li>
+<li>Scheduled jobs (see <a href="#/doc/nestjs/application/task-scheduling">Task scheduling</a>) and queue consumers don&#39;t run while the application is stopped. Run them in a process that stays up.</li>
+<li>The first request after a pause waits for the whole bootstrap, including database connections opened by <a href="#/doc/nestjs/fundamentals/async-components">async providers</a>. The <a href="#/doc/nestjs/faq/serverless">Serverless</a> chapter shows ways to shorten it. Node.js can also reuse its <a target="_blank" rel="noopener" href="https://nodejs.org/api/module.html#module-compile-cache">compile cache</a> between starts: add <code>Environment=NODE_COMPILE_CACHE=/var/cache/my-app</code> and <code>CacheDirectory=my-app</code> to the service unit. Node.js writes the cache when the process exits, and a process killed by <code>SIGTERM</code> without <code>enableShutdownHooks()</code> doesn&#39;t write it.</li>
+</ul>

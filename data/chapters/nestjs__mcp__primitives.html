@@ -1,0 +1,499 @@
+<p>An MCP server exposes three primitives: <strong>tools</strong>, actions the model calls, <strong>resources</strong>, data the client reads, and <strong>prompts</strong>, templates the user picks. Each is a method of one of your providers, with a decorator, and runs through the same guards, interceptors, pipes and exception filters as your routes.</p>
+<h4 id="tools">Tools</h4>
+<p>A tool is a method decorated with <code>@Tool()</code>. <code>inputSchema</code> describes its arguments: the SDK advertises it to the client as JSON Schema, and validates every call against it before the method runs. <code>.describe()</code> texts reach the model, which reads them to fill the arguments in:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>orders/orders.tools</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { <span class="hljs-title class_">Injectable</span>, <span class="hljs-title class_">NotFoundException</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/common&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">Tool</span>, <span class="hljs-keyword">type</span> <span class="hljs-title class_">McpContext</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/mcp&#x27;</span>;
+<span class="hljs-keyword">import</span> * <span class="hljs-keyword">as</span> z <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;zod&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">OrdersService</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./orders.service&#x27;</span>;
+
+<span class="hljs-meta">@Injectable</span>()
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">OrdersTools</span> {
+  <span class="hljs-title function_">constructor</span>(<span class="hljs-params"><span class="hljs-keyword">private</span> <span class="hljs-keyword">readonly</span> <span class="hljs-attr">orders</span>: <span class="hljs-title class_">OrdersService</span></span>) {}
+
+  <span class="hljs-meta">@Tool</span>({
+    <span class="hljs-attr">name</span>: <span class="hljs-string">&#x27;find-order&#x27;</span>,
+    <span class="hljs-attr">description</span>:
+      <span class="hljs-string">&#x27;Find an order by its id, or the latest orders of a customer by email&#x27;</span>,
+    <span class="hljs-attr">inputSchema</span>: z.<span class="hljs-title function_">object</span>({
+      <span class="hljs-attr">orderId</span>: z.<span class="hljs-title function_">string</span>().<span class="hljs-title function_">optional</span>().<span class="hljs-title function_">describe</span>(<span class="hljs-string">&#x27;The order id, such as ord_123&#x27;</span>),
+      <span class="hljs-attr">email</span>: z.<span class="hljs-title function_">email</span>().<span class="hljs-title function_">optional</span>().<span class="hljs-title function_">describe</span>(<span class="hljs-string">&quot;The customer&#x27;s email address&quot;</span>),
+    }),
+    <span class="hljs-attr">annotations</span>: { <span class="hljs-attr">readOnlyHint</span>: <span class="hljs-literal">true</span> },
+  })
+  <span class="hljs-keyword">async</span> <span class="hljs-title function_">find</span>(<span class="hljs-params">{ orderId, email }: { orderId?: <span class="hljs-built_in">string</span>; email?: <span class="hljs-built_in">string</span> }</span>) {
+    <span class="hljs-keyword">const</span> orders = orderId
+      ? [<span class="hljs-keyword">await</span> <span class="hljs-variable language_">this</span>.<span class="hljs-property">orders</span>.<span class="hljs-title function_">findById</span>(orderId)]
+      : <span class="hljs-keyword">await</span> <span class="hljs-variable language_">this</span>.<span class="hljs-property">orders</span>.<span class="hljs-title function_">latestFor</span>(email!);
+    <span class="hljs-keyword">if</span> (orders.<span class="hljs-property">length</span> === <span class="hljs-number">0</span> || !orders[<span class="hljs-number">0</span>]) {
+      <span class="hljs-keyword">throw</span> <span class="hljs-keyword">new</span> <span class="hljs-title class_">NotFoundException</span>(<span class="hljs-string">&#x27;No such order&#x27;</span>);
+    }
+    <span class="hljs-keyword">return</span> orders;
+  }
+
+  <span class="hljs-meta">@Tool</span>({
+    <span class="hljs-attr">name</span>: <span class="hljs-string">&#x27;change-address&#x27;</span>,
+    <span class="hljs-attr">description</span>:
+      <span class="hljs-string">&#x27;Change the delivery address of an order that has not shipped yet&#x27;</span>,
+    <span class="hljs-attr">inputSchema</span>: z.<span class="hljs-title function_">object</span>({ <span class="hljs-attr">orderId</span>: z.<span class="hljs-title function_">string</span>(), <span class="hljs-attr">address</span>: z.<span class="hljs-title function_">string</span>().<span class="hljs-title function_">min</span>(<span class="hljs-number">10</span>) }),
+    <span class="hljs-attr">outputSchema</span>: z.<span class="hljs-title function_">object</span>({
+      <span class="hljs-attr">orderId</span>: z.<span class="hljs-title function_">string</span>(),
+      <span class="hljs-attr">address</span>: z.<span class="hljs-title function_">string</span>(),
+      <span class="hljs-attr">status</span>: z.<span class="hljs-title function_">string</span>(),
+    }),
+  })
+  <span class="hljs-keyword">async</span> <span class="hljs-title function_">changeAddress</span>(<span class="hljs-params">
+    { orderId, address }: { orderId: <span class="hljs-built_in">string</span>; address: <span class="hljs-built_in">string</span> },
+    <span class="hljs-attr">ctx</span>: <span class="hljs-title class_">McpContext</span>,
+  </span>) {
+    <span class="hljs-keyword">const</span> order = <span class="hljs-keyword">await</span> <span class="hljs-variable language_">this</span>.<span class="hljs-property">orders</span>.<span class="hljs-title function_">changeAddress</span>(
+      orderId,
+      address,
+      ctx.<span class="hljs-property">authInfo</span>?.<span class="hljs-property">clientId</span>,
+    );
+    <span class="hljs-keyword">return</span> { <span class="hljs-attr">orderId</span>: order.<span class="hljs-property">id</span>, <span class="hljs-attr">address</span>: order.<span class="hljs-property">address</span>, <span class="hljs-attr">status</span>: order.<span class="hljs-property">status</span> };
+  }
+}</code></pre></div></figure>
+<p>Register the class as a provider, as any other:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>orders/orders.module</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-meta">@Module</span>({
+  <span class="hljs-attr">providers</span>: [<span class="hljs-title class_">OrdersService</span>, <span class="hljs-title class_">OrdersTools</span>],
+})
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">OrdersModule</span> {}</code></pre></div></figure>
+<p>The method is called with the validated arguments and the call&#39;s <a href="#/doc/nestjs/mcp/primitives@the-call-context">context</a>. What it returns becomes the tool&#39;s result:</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>The method returns</th>
+<th>The client gets</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>A string</td>
+<td>One text block</td>
+</tr>
+<tr>
+<td>Another value, with an <code>outputSchema</code></td>
+<td>The value as <code>structuredContent</code> (validated against the schema), and as a JSON text block</td>
+</tr>
+<tr>
+<td>Another value, without one</td>
+<td>A JSON text block</td>
+</tr>
+<tr>
+<td>A <code>CallToolResult</code> (<code>{ content, structuredContent?, isError? }</code>)</td>
+<td>It, as it is, for images, audio, embedded resources and links</td>
+</tr>
+<tr>
+<td><code>undefined</code></td>
+<td>An empty result</td>
+</tr>
+</tbody></table></div>
+<p>The name defaults to the method&#39;s (<code>find</code>); tool names have 1 to 128 characters out of <code>A-Z a-z 0-9 _ - .</code>, and two tools with one name fail at startup. <code>annotations</code> are hints for the client, such as <code>readOnlyHint: true</code>, which lets it run the tool without asking the user first.</p>
+<p>To return something other than text, such as a picture the model should look at, return a <code>CallToolResult</code> (from <code>@modelcontextprotocol/server</code>) yourself:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>orders/orders.tools</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-meta">@Tool</span>({
+  <span class="hljs-attr">name</span>: <span class="hljs-string">&#x27;product-photo&#x27;</span>,
+  <span class="hljs-attr">description</span>:
+    <span class="hljs-string">&#x27;Show the photo of a product, to compare it with what the customer describes&#x27;</span>,
+  <span class="hljs-attr">inputSchema</span>: z.<span class="hljs-title function_">object</span>({
+    <span class="hljs-attr">sku</span>: z.<span class="hljs-title function_">string</span>().<span class="hljs-title function_">describe</span>(<span class="hljs-string">&#x27;The product SKU, such as SKU-1042&#x27;</span>),
+  }),
+  <span class="hljs-attr">annotations</span>: { <span class="hljs-attr">readOnlyHint</span>: <span class="hljs-literal">true</span> },
+})
+<span class="hljs-keyword">async</span> <span class="hljs-title function_">photo</span>({ sku }: { <span class="hljs-attr">sku</span>: <span class="hljs-built_in">string</span> }): <span class="hljs-title class_">Promise</span>&lt;<span class="hljs-title class_">CallToolResult</span>&gt; {
+  <span class="hljs-keyword">const</span> photo = <span class="hljs-keyword">await</span> <span class="hljs-variable language_">this</span>.<span class="hljs-property">catalog</span>.<span class="hljs-title function_">photo</span>(sku);
+  <span class="hljs-keyword">return</span> {
+    <span class="hljs-attr">content</span>: [
+      {
+        <span class="hljs-attr">type</span>: <span class="hljs-string">&#x27;image&#x27;</span>,
+        <span class="hljs-attr">data</span>: photo.<span class="hljs-title function_">toString</span>(<span class="hljs-string">&#x27;base64&#x27;</span>),
+        <span class="hljs-attr">mimeType</span>: <span class="hljs-string">&#x27;image/jpeg&#x27;</span>,
+      },
+    ],
+  };
+}</code></pre></div></figure>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Hint</p><p>The model picks a tool by its name and description, and fills the arguments in from their <code>.describe()</code> texts, so write them for the model: what the tool does and when to use it, what each argument means, with an example value. Say when a tool changes something.</p>
+</div></aside>
+<h4 id="resources">Resources</h4>
+<p>A resource is data the client reads, and shows the user or hands the model. <code>@Resource()</code> serves a fixed URI, <code>@ResourceTemplate()</code> every URI that matches an <a target="_blank" rel="noopener" href="https://datatracker.ietf.org/doc/html/rfc6570">RFC 6570</a> template, whose variables the method receives:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>orders/orders.tools</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-meta">@Resource</span>({
+  <span class="hljs-attr">uri</span>: <span class="hljs-string">&#x27;catalog://products&#x27;</span>,
+  <span class="hljs-attr">description</span>: <span class="hljs-string">&#x27;Every product and its stock&#x27;</span>,
+  <span class="hljs-attr">mimeType</span>: <span class="hljs-string">&#x27;application/json&#x27;</span>,
+})
+<span class="hljs-title function_">catalog</span>(<span class="hljs-params"></span>) {
+  <span class="hljs-keyword">return</span> <span class="hljs-variable language_">this</span>.<span class="hljs-property">catalog</span>.<span class="hljs-title function_">all</span>();
+}
+
+<span class="hljs-meta">@ResourceTemplate</span>({
+  <span class="hljs-attr">uriTemplate</span>: <span class="hljs-string">&#x27;orders://{orderId}&#x27;</span>,
+  <span class="hljs-attr">description</span>: <span class="hljs-string">&#x27;One order&#x27;</span>,
+  <span class="hljs-attr">mimeType</span>: <span class="hljs-string">&#x27;application/json&#x27;</span>,
+})
+<span class="hljs-keyword">async</span> <span class="hljs-title function_">order</span>(<span class="hljs-params">{ orderId }: { orderId: <span class="hljs-built_in">string</span> }</span>) {
+  <span class="hljs-keyword">const</span> order = <span class="hljs-keyword">await</span> <span class="hljs-variable language_">this</span>.<span class="hljs-property">orders</span>.<span class="hljs-title function_">findById</span>(orderId);
+  <span class="hljs-keyword">if</span> (!order) {
+    <span class="hljs-keyword">throw</span> <span class="hljs-keyword">new</span> <span class="hljs-title class_">NotFoundException</span>();
+  }
+  <span class="hljs-keyword">return</span> order;
+}</code></pre></div></figure>
+<p>A string is sent as text of the <code>mimeType</code>, a <code>Uint8Array</code> or <code>Buffer</code> as a binary blob, a <code>ReadResourceResult</code> (<code>{ contents: [...] }</code>) as it is, and anything else as JSON. A <code>NotFoundException</code> is answered with the spec&#39;s resource-not-found error.</p>
+<p>Resources suit content the client loads into the conversation as it is: the catalog, an order, the return policy. Clients decide when to read them, often when the user attaches one. To let the model look something up, with arguments, give it a tool.</p>
+<h4 id="prompts">Prompts</h4>
+<p>A prompt is a message template the user picks in the client. Its arguments are a schema too, and the client asks the user for each one:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>orders/orders.tools</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-meta">@Prompt</span>({
+  <span class="hljs-attr">name</span>: <span class="hljs-string">&#x27;draft-reply&#x27;</span>,
+  <span class="hljs-attr">description</span>: <span class="hljs-string">&#x27;Draft a reply to a customer about an order&#x27;</span>,
+  <span class="hljs-attr">argsSchema</span>: z.<span class="hljs-title function_">object</span>({
+    <span class="hljs-attr">orderId</span>: z.<span class="hljs-title function_">string</span>().<span class="hljs-title function_">describe</span>(<span class="hljs-string">&#x27;The order the customer wrote about&#x27;</span>),
+    <span class="hljs-attr">tone</span>: z.<span class="hljs-title function_">enum</span>([<span class="hljs-string">&#x27;formal&#x27;</span>, <span class="hljs-string">&#x27;friendly&#x27;</span>]).<span class="hljs-title function_">describe</span>(<span class="hljs-string">&#x27;How the reply sounds&#x27;</span>),
+  }),
+})
+<span class="hljs-keyword">async</span> <span class="hljs-title function_">draftReply</span>(<span class="hljs-params">{
+  orderId,
+  tone,
+}: {
+  orderId: <span class="hljs-built_in">string</span>;
+  tone: <span class="hljs-string">&#x27;formal&#x27;</span> | <span class="hljs-string">&#x27;friendly&#x27;</span>;
+}</span>) {
+  <span class="hljs-keyword">const</span> order = <span class="hljs-keyword">await</span> <span class="hljs-variable language_">this</span>.<span class="hljs-property">orders</span>.<span class="hljs-title function_">findById</span>(orderId);
+  <span class="hljs-keyword">return</span> <span class="hljs-string">`Draft a <span class="hljs-subst">${tone}</span> reply to the customer of order <span class="hljs-subst">${orderId}</span>. The order: <span class="hljs-subst">${<span class="hljs-built_in">JSON</span>.stringify(order)}</span>`</span>;
+}</code></pre></div></figure>
+<p>A string is one user message; an array of messages, or a <code>GetPromptResult</code> (<code>{ messages: [...] }</code>), is sent as it is.</p>
+<p>A prompt can also open the conversation with more than one message. This one attaches the order as an embedded resource, then asks the question:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>orders/orders.tools</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-meta">@Prompt</span>({
+  <span class="hljs-attr">name</span>: <span class="hljs-string">&#x27;review-complaint&#x27;</span>,
+  <span class="hljs-attr">description</span>: <span class="hljs-string">&#x27;Review a complaint about an order&#x27;</span>,
+  <span class="hljs-attr">argsSchema</span>: z.<span class="hljs-title function_">object</span>({
+    <span class="hljs-attr">orderId</span>: z.<span class="hljs-title function_">string</span>().<span class="hljs-title function_">describe</span>(<span class="hljs-string">&#x27;The order the complaint is about&#x27;</span>),
+  }),
+})
+<span class="hljs-keyword">async</span> <span class="hljs-title function_">reviewComplaint</span>({
+  orderId,
+}: {
+  <span class="hljs-attr">orderId</span>: <span class="hljs-built_in">string</span>;
+}): <span class="hljs-title class_">Promise</span>&lt;<span class="hljs-title class_">PromptMessage</span>[]&gt; {
+  <span class="hljs-keyword">const</span> order = <span class="hljs-keyword">await</span> <span class="hljs-variable language_">this</span>.<span class="hljs-property">orders</span>.<span class="hljs-title function_">findById</span>(orderId);
+  <span class="hljs-keyword">return</span> [
+    {
+      <span class="hljs-attr">role</span>: <span class="hljs-string">&#x27;user&#x27;</span>,
+      <span class="hljs-attr">content</span>: {
+        <span class="hljs-attr">type</span>: <span class="hljs-string">&#x27;resource&#x27;</span>,
+        <span class="hljs-attr">resource</span>: {
+          <span class="hljs-attr">uri</span>: <span class="hljs-string">`orders://<span class="hljs-subst">${orderId}</span>`</span>,
+          <span class="hljs-attr">mimeType</span>: <span class="hljs-string">&#x27;application/json&#x27;</span>,
+          <span class="hljs-attr">text</span>: <span class="hljs-title class_">JSON</span>.<span class="hljs-title function_">stringify</span>(order),
+        },
+      },
+    },
+    {
+      <span class="hljs-attr">role</span>: <span class="hljs-string">&#x27;user&#x27;</span>,
+      <span class="hljs-attr">content</span>: {
+        <span class="hljs-attr">type</span>: <span class="hljs-string">&#x27;text&#x27;</span>,
+        <span class="hljs-attr">text</span>: <span class="hljs-string">&#x27;Is the complaint about this order justified? Answer in two sentences.&#x27;</span>,
+      },
+    },
+  ];
+}</code></pre></div></figure>
+<p><code>PromptMessage</code> is a type from <code>@modelcontextprotocol/server</code>.</p>
+<h4 id="try-it">Try it</h4>
+<p>Start the application, and the endpoint is at <code>http://localhost:3000/mcp</code>. The <a target="_blank" rel="noopener" href="https://modelcontextprotocol.io/docs/tools/inspector">MCP Inspector</a> lists and calls everything the server exposes:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Terminal</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-bash">$ npx @modelcontextprotocol/inspector</code></pre></div></figure>
+<p>Choose <strong>Streamable HTTP</strong>, enter the URL, and <strong>Connect</strong>. Assistants that connect to remote MCP servers take the same URL.</p>
+<h4 id="the-call-context">The call context</h4>
+<p>The second argument of every MCP method is an <code>McpContext</code>:</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Property</th>
+<th>What it is</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>kind</code>, <code>name</code>, <code>uri</code></td>
+<td><code>&#39;tool&#39;</code>, <code>&#39;resource&#39;</code> or <code>&#39;prompt&#39;</code>; the tool&#39;s or prompt&#39;s name, or the resource&#39;s; the URI being read</td>
+</tr>
+<tr>
+<td><code>authInfo</code></td>
+<td>The verified access token, with <a href="#/doc/nestjs/mcp/primitives@authorization">authorization</a>: <code>clientId</code>, <code>scopes</code>, <code>expiresAt</code>, <code>extra</code></td>
+</tr>
+<tr>
+<td><code>request</code></td>
+<td>The HTTP platform&#39;s request (Express, Fastify, the Node adapter), with its headers and whatever middleware set on it; for the in-memory test client, a plain <code>{ method, url, headers }</code> object; <code>undefined</code> over stdio</td>
+</tr>
+<tr>
+<td><code>requestInfo</code></td>
+<td>The web-standard <code>Request</code> the SDK served</td>
+</tr>
+<tr>
+<td><code>transport</code>, <code>era</code></td>
+<td><code>&#39;http&#39;</code> or <code>&#39;stdio&#39;</code>; <code>&#39;modern&#39;</code> (protocol revision 2026-07-28) or <code>&#39;legacy&#39;</code> (the 2025 revisions)</td>
+</tr>
+<tr>
+<td><code>signal</code></td>
+<td>An <code>AbortSignal</code>, aborted when the client cancels the call or goes away: pass it on to <code>fetch()</code> and your database</td>
+</tr>
+<tr>
+<td><code>reportProgress(progress, total?, message?)</code></td>
+<td>Sends a progress notification, when the client asked for them</td>
+</tr>
+<tr>
+<td><code>server</code></td>
+<td>The SDK&#39;s own request context, for the rest (<code>mcpReq.envelope</code>, <code>mcpReq.inputResponses</code>)</td>
+</tr>
+</tbody></table></div>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-meta">@Tool</span>({
+  <span class="hljs-attr">name</span>: <span class="hljs-string">&#x27;export-orders&#x27;</span>,
+  <span class="hljs-attr">description</span>: <span class="hljs-string">&#x27;Export a month of orders as CSV&#x27;</span>,
+})
+<span class="hljs-keyword">async</span> <span class="hljs-title function_">export</span>(<span class="hljs-params"><span class="hljs-attr">_input</span>: <span class="hljs-built_in">unknown</span>, <span class="hljs-attr">ctx</span>: <span class="hljs-title class_">McpContext</span></span>) {
+  <span class="hljs-keyword">const</span> pages = <span class="hljs-keyword">await</span> <span class="hljs-variable language_">this</span>.<span class="hljs-property">orders</span>.<span class="hljs-title function_">pages</span>();
+  <span class="hljs-keyword">for</span> (<span class="hljs-keyword">let</span> page = <span class="hljs-number">0</span>; page &lt; pages; page++) {
+    ctx.<span class="hljs-property">signal</span>.<span class="hljs-title function_">throwIfAborted</span>();
+    <span class="hljs-keyword">await</span> <span class="hljs-variable language_">this</span>.<span class="hljs-property">orders</span>.<span class="hljs-title function_">exportPage</span>(page, { <span class="hljs-attr">signal</span>: ctx.<span class="hljs-property">signal</span> });
+    <span class="hljs-keyword">await</span> ctx.<span class="hljs-title function_">reportProgress</span>(page + <span class="hljs-number">1</span>, pages);
+  }
+  <span class="hljs-keyword">return</span> <span class="hljs-string">&#x27;Exported&#x27;</span>;
+}</code></pre></div></figure>
+<p><strong>Asking the user.</strong> A tool that needs the user&#39;s confirmation, or a missing value, returns <code>inputRequired()</code> from <code>@modelcontextprotocol/server</code>: the client asks the user, and calls the tool again with the answer, which <code>acceptedContent()</code> reads and validates:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-meta">@Tool</span>({
+  <span class="hljs-attr">name</span>: <span class="hljs-string">&#x27;cancel-order&#x27;</span>,
+  <span class="hljs-attr">description</span>: <span class="hljs-string">&#x27;Cancel an order&#x27;</span>,
+  <span class="hljs-attr">inputSchema</span>: z.<span class="hljs-title function_">object</span>({ <span class="hljs-attr">orderId</span>: z.<span class="hljs-title function_">string</span>() }),
+})
+<span class="hljs-title function_">cancel</span>(<span class="hljs-params">{ orderId }: { orderId: <span class="hljs-built_in">string</span> }, <span class="hljs-attr">ctx</span>: <span class="hljs-title class_">McpContext</span></span>) {
+  <span class="hljs-keyword">const</span> <span class="hljs-title class_">Confirmation</span> = z.<span class="hljs-title function_">object</span>({ <span class="hljs-attr">confirm</span>: z.<span class="hljs-title function_">boolean</span>() });
+  <span class="hljs-keyword">const</span> answer = <span class="hljs-title function_">acceptedContent</span>(
+    ctx.<span class="hljs-property">server</span>.<span class="hljs-property">mcpReq</span>.<span class="hljs-property">inputResponses</span>,
+    <span class="hljs-string">&#x27;confirm&#x27;</span>,
+    <span class="hljs-title class_">Confirmation</span>,
+  );
+  <span class="hljs-keyword">if</span> (!answer) {
+    <span class="hljs-keyword">return</span> <span class="hljs-title function_">inputRequired</span>({
+      <span class="hljs-attr">inputRequests</span>: {
+        <span class="hljs-attr">confirm</span>: inputRequired.<span class="hljs-title function_">elicit</span>({
+          <span class="hljs-attr">message</span>: <span class="hljs-string">`Cancel order <span class="hljs-subst">${orderId}</span>?`</span>,
+          <span class="hljs-attr">requestedSchema</span>: <span class="hljs-title class_">Confirmation</span>,
+        }),
+      },
+    });
+  }
+  <span class="hljs-keyword">return</span> answer.<span class="hljs-property">confirm</span> ? <span class="hljs-variable language_">this</span>.<span class="hljs-property">orders</span>.<span class="hljs-title function_">cancel</span>(orderId) : <span class="hljs-string">&#x27;Kept the order&#x27;</span>;
+}</code></pre></div></figure>
+<aside class="callout callout-warning"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 4 2.8 20h18.4L12 4z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M12 10v4.4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="17" r="1.3" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Warning</p><p>Over HTTP, this works with clients of the 2026-07-28 revision. A client of a 2025 revision is asked through a request from the server, which needs a session, and the endpoint keeps none: the call ends with a tool error. Over stdio, both work.</p>
+</div></aside>
+<h4 id="guards-interceptors-pipes-and-filters">Guards, interceptors, pipes and filters</h4>
+<p>Every call runs through Nest&#39;s enhancers, bound on the class, on the method or globally, as for a route. The execution context&#39;s type is <code>&#39;mcp&#39;</code>, and <code>McpExecutionContext</code> reads the call, as <code>GqlExecutionContext</code> does for a GraphQL resolver. Only the support team may change an order:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>orders/support-team.guard</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> {
+  <span class="hljs-title class_">Injectable</span>,
+  <span class="hljs-keyword">type</span> <span class="hljs-title class_">CanActivate</span>,
+  <span class="hljs-keyword">type</span> <span class="hljs-title class_">ExecutionContext</span>,
+} <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/common&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">McpExecutionContext</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/mcp&#x27;</span>;
+
+<span class="hljs-meta">@Injectable</span>()
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">SupportTeamGuard</span> <span class="hljs-keyword">implements</span> <span class="hljs-title class_">CanActivate</span> {
+  <span class="hljs-title function_">canActivate</span>(<span class="hljs-attr">context</span>: <span class="hljs-title class_">ExecutionContext</span>): <span class="hljs-built_in">boolean</span> {
+    <span class="hljs-keyword">const</span> mcp = <span class="hljs-title class_">McpExecutionContext</span>.<span class="hljs-title function_">create</span>(context);
+    <span class="hljs-keyword">return</span> mcp.<span class="hljs-title function_">getAuthInfo</span>()?.<span class="hljs-property">extra</span>?.<span class="hljs-property">team</span> === <span class="hljs-string">&#x27;support&#x27;</span>;
+  }
+}</code></pre></div></figure>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>orders/orders.tools</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-meta">@Tool</span>({ <span class="hljs-attr">name</span>: <span class="hljs-string">&#x27;change-address&#x27;</span>, ... })
+<span class="hljs-meta">@UseGuards</span>(<span class="hljs-title class_">SupportTeamGuard</span>)
+<span class="hljs-keyword">async</span> <span class="hljs-title function_">changeAddress</span>(<span class="hljs-params">...</span>) {}</code></pre></div></figure>
+<p><code>McpExecutionContext.create(context)</code> has <code>getInput()</code> (the arguments), <code>getContext()</code> (the <code>McpContext</code>), <code>getKind()</code>, <code>getName()</code>, <code>getRequest()</code> and <code>getAuthInfo()</code>. Interceptors see the method&#39;s return value before it becomes the result, and can time, log or transform it. Pipes see the input as the call&#39;s <code>body</code>, so a global <code>ValidationPipe({ transform: true })</code> validates a DTO class you type the input with, as it does for a route. Custom parameter decorators made with <code>createParamDecorator()</code> work after the input and the context, as on GraphQL resolvers: <code>add(input, ctx, @CurrentUser() user)</code>.</p>
+<p>Interceptors work the same way. This one logs how long each call takes, with its kind and name:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>orders/call-logging.interceptor</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> {
+  <span class="hljs-title class_">Injectable</span>,
+  <span class="hljs-title class_">Logger</span>,
+  <span class="hljs-keyword">type</span> <span class="hljs-title class_">CallHandler</span>,
+  <span class="hljs-keyword">type</span> <span class="hljs-title class_">ExecutionContext</span>,
+  <span class="hljs-keyword">type</span> <span class="hljs-title class_">NestInterceptor</span>,
+} <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/common&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">McpExecutionContext</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/mcp&#x27;</span>;
+<span class="hljs-keyword">import</span> { tap, <span class="hljs-keyword">type</span> <span class="hljs-title class_">Observable</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;rxjs&#x27;</span>;
+
+<span class="hljs-meta">@Injectable</span>()
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">CallLoggingInterceptor</span> <span class="hljs-keyword">implements</span> <span class="hljs-title class_">NestInterceptor</span> {
+  <span class="hljs-keyword">private</span> <span class="hljs-keyword">readonly</span> logger = <span class="hljs-keyword">new</span> <span class="hljs-title class_">Logger</span>(<span class="hljs-string">&#x27;MCP&#x27;</span>);
+
+  <span class="hljs-title function_">intercept</span>(<span class="hljs-attr">context</span>: <span class="hljs-title class_">ExecutionContext</span>, <span class="hljs-attr">next</span>: <span class="hljs-title class_">CallHandler</span>): <span class="hljs-title class_">Observable</span>&lt;<span class="hljs-built_in">unknown</span>&gt; {
+    <span class="hljs-keyword">const</span> mcp = <span class="hljs-title class_">McpExecutionContext</span>.<span class="hljs-title function_">create</span>(context);
+    <span class="hljs-keyword">const</span> started = performance.<span class="hljs-title function_">now</span>();
+    <span class="hljs-keyword">return</span> next
+      .<span class="hljs-title function_">handle</span>()
+      .<span class="hljs-title function_">pipe</span>(
+        <span class="hljs-title function_">tap</span>(<span class="hljs-function">() =&gt;</span>
+          <span class="hljs-variable language_">this</span>.<span class="hljs-property">logger</span>.<span class="hljs-title function_">log</span>(
+            <span class="hljs-string">`<span class="hljs-subst">${mcp.getKind()}</span> <span class="hljs-subst">${mcp.getName()}</span> took <span class="hljs-subst">${<span class="hljs-built_in">Math</span>.round(performance.now() - started)}</span> ms`</span>,
+          ),
+        ),
+      );
+  }
+}</code></pre></div></figure>
+<p><code>@UseInterceptors(CallLoggingInterceptor)</code> on the <code>OrdersTools</code> class logs every tool, resource and prompt of the class.</p>
+<aside class="callout callout-warning"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 4 2.8 20h18.4L12 4z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M12 10v4.4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="17" r="1.3" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Warning</p><p>Global guards, interceptors and filters (<code>app.useGlobalGuards()</code>, <code>APP_GUARD</code>) run on MCP calls too, as they do on GraphQL resolvers, and on the HTTP request that carries them. An enhancer written for HTTP routes that reads <code>context.switchToHttp().getRequest()</code> should check <code>context.getType() === &#39;http&#39;</code> first.</p>
+</div></aside>
+<h4 id="errors">Errors</h4>
+<p>What a tool throws becomes a result with <code>isError: true</code>, which the model reads and can recover from: the message of an <code>HttpException</code> (a <code>BadRequestException(&#39;The address has no postcode&#39;)</code>), and <code>Internal server error</code> for any other error, which Nest&#39;s exception handler logs and whose message never reaches the client. Resources and prompts answer with JSON-RPC errors: a <code>NotFoundException</code> as resource-not-found, a <code>BadRequestException</code> as invalid params, another <code>HttpException</code> as an internal error carrying its message and status. An exception filter can answer instead: what it returns is the result, and a <code>ProtocolError</code> (from <code>@modelcontextprotocol/server</code>) it throws is the JSON-RPC error.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-meta">@Catch</span>(<span class="hljs-title class_">PaymentProviderError</span>)
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">PaymentProviderFilter</span> <span class="hljs-keyword">implements</span> <span class="hljs-title class_">ExceptionFilter</span> {
+  <span class="hljs-keyword">catch</span>(<span class="hljs-attr">exception</span>: <span class="hljs-title class_">PaymentProviderError</span>, <span class="hljs-attr">host</span>: <span class="hljs-title class_">ArgumentsHost</span>) {
+    <span class="hljs-keyword">if</span> (host.<span class="hljs-property">getType</span>&lt;<span class="hljs-title class_">McpContextType</span>&gt;() !== <span class="hljs-string">&#x27;mcp&#x27;</span>) {
+      <span class="hljs-keyword">throw</span> exception;
+    }
+    <span class="hljs-keyword">return</span> {
+      <span class="hljs-attr">content</span>: [
+        {
+          <span class="hljs-attr">type</span>: <span class="hljs-string">&#x27;text&#x27;</span>,
+          <span class="hljs-attr">text</span>: <span class="hljs-string">&#x27;Payments are down; try again in a few minutes.&#x27;</span>,
+        },
+      ],
+      <span class="hljs-attr">isError</span>: <span class="hljs-literal">true</span>,
+    };
+  }
+}</code></pre></div></figure>
+<h4 id="authorization">Authorization</h4>
+<p>The order API&#39;s MCP server answers questions about customers, so it requires a signed-in user. In MCP, the server is an OAuth 2.1 <strong>resource server</strong>: the client gets an access token from the store&#39;s identity provider (Auth0, Keycloak, Entra ID, WorkOS, your own), and sends it with every request. The server verifies it, and never issues tokens. Configure <code>auth</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app.module</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-title class_">McpModule</span>.<span class="hljs-title function_">forRoot</span>({
+  <span class="hljs-attr">name</span>: <span class="hljs-string">&#x27;cat-store&#x27;</span>,
+  <span class="hljs-attr">version</span>: <span class="hljs-string">&#x27;1.0.0&#x27;</span>,
+  <span class="hljs-attr">auth</span>: {
+    <span class="hljs-attr">verifier</span>: <span class="hljs-title class_">IdentityProviderTokenVerifier</span>,
+    <span class="hljs-attr">resource</span>: <span class="hljs-string">&#x27;https://api.catstore.example/mcp&#x27;</span>,
+    <span class="hljs-attr">authorizationServers</span>: [<span class="hljs-string">&#x27;https://auth.catstore.example&#x27;</span>],
+    <span class="hljs-attr">scopesSupported</span>: [<span class="hljs-string">&#x27;orders:read&#x27;</span>],
+  },
+}),</code></pre></div></figure>
+<ul>
+<li><code>resource</code> is the canonical URL of the MCP server. Clients ask the identity provider for a token for it, and the server accepts only tokens issued for it (their audience), as the spec requires.</li>
+<li><code>authorizationServers</code> are the issuers whose tokens it accepts. The module serves them, with <code>scopesSupported</code>, as the <a target="_blank" rel="noopener" href="https://datatracker.ietf.org/doc/html/rfc9728">protected resource metadata</a> (RFC 9728) at <code>/.well-known/oauth-protected-resource/mcp</code>, where clients discover how to sign in.</li>
+<li>A request without a valid token gets 401 with a <code>WWW-Authenticate: Bearer</code> challenge that points at the metadata. That challenge is what starts the client&#39;s sign-in.</li>
+</ul>
+<p>The <strong>verifier</strong> decides which tokens are valid. It&#39;s a class of yours with <code>verifyAccessToken(token)</code>, which returns the token&#39;s <code>AuthInfo</code>, or <code>null</code> to refuse it. Nest instantiates it, so it injects what it needs. For JWT access tokens, <code>JwtVerifier</code> from <code>@nestjs/authentication</code> checks the signature against the identity provider&#39;s keys, the issuer, the audience and the expiry:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>auth/identity-provider-token.verifier</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { <span class="hljs-title class_">Injectable</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/common&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">JwtVerifier</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/authentication&#x27;</span>;
+<span class="hljs-keyword">import</span> <span class="hljs-keyword">type</span> { <span class="hljs-title class_">McpTokenVerifier</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/mcp&#x27;</span>;
+<span class="hljs-keyword">import</span> <span class="hljs-keyword">type</span> { <span class="hljs-title class_">AuthInfo</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@modelcontextprotocol/server&#x27;</span>;
+
+<span class="hljs-keyword">const</span> <span class="hljs-variable constant_">RESOURCE</span> = <span class="hljs-string">&#x27;https://api.catstore.example/mcp&#x27;</span>;
+
+<span class="hljs-meta">@Injectable</span>()
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">IdentityProviderTokenVerifier</span> <span class="hljs-keyword">implements</span> <span class="hljs-title class_">McpTokenVerifier</span> {
+  <span class="hljs-keyword">private</span> <span class="hljs-keyword">readonly</span> jwt = <span class="hljs-keyword">new</span> <span class="hljs-title class_">JwtVerifier</span>({
+    <span class="hljs-attr">jwks</span>: <span class="hljs-string">&#x27;https://auth.catstore.example/.well-known/jwks.json&#x27;</span>,
+    <span class="hljs-attr">issuer</span>: <span class="hljs-string">&#x27;https://auth.catstore.example&#x27;</span>,
+    <span class="hljs-attr">audience</span>: <span class="hljs-variable constant_">RESOURCE</span>,
+    <span class="hljs-attr">type</span>: <span class="hljs-string">&#x27;at+jwt&#x27;</span>,
+  });
+
+  <span class="hljs-keyword">async</span> <span class="hljs-title function_">verifyAccessToken</span>(<span class="hljs-attr">token</span>: <span class="hljs-built_in">string</span>): <span class="hljs-title class_">Promise</span>&lt;<span class="hljs-title class_">AuthInfo</span>&gt; {
+    <span class="hljs-comment">// A bad signature, an expired token or another audience throws a JwtError: answered with 401.</span>
+    <span class="hljs-keyword">const</span> claims = <span class="hljs-keyword">await</span> <span class="hljs-variable language_">this</span>.<span class="hljs-property">jwt</span>.<span class="hljs-title function_">verify</span>(token);
+    <span class="hljs-keyword">return</span> {
+      token,
+      <span class="hljs-attr">clientId</span>: <span class="hljs-title class_">String</span>(claims.<span class="hljs-property">client_id</span> ?? claims.<span class="hljs-property">sub</span>),
+      <span class="hljs-attr">scopes</span>: <span class="hljs-keyword">typeof</span> claims.<span class="hljs-property">scope</span> === <span class="hljs-string">&#x27;string&#x27;</span> ? claims.<span class="hljs-property">scope</span>.<span class="hljs-title function_">split</span>(<span class="hljs-string">&#x27; &#x27;</span>) : [],
+      <span class="hljs-attr">expiresAt</span>: claims.<span class="hljs-property">exp</span>,
+      <span class="hljs-attr">resource</span>: <span class="hljs-keyword">new</span> <span class="hljs-title function_">URL</span>(<span class="hljs-variable constant_">RESOURCE</span>),
+      <span class="hljs-attr">extra</span>: { <span class="hljs-attr">team</span>: claims.<span class="hljs-property">team</span> },
+    };
+  }
+}</code></pre></div></figure>
+<p>An error with <code>status: 401</code> (<code>JwtError</code>, <code>UnauthorizedException</code>) refuses the token; any other error (the keys could not be fetched) is answered with 500. Opaque tokens go through your identity provider&#39;s introspection endpoint instead, behind the same method.</p>
+<p>For opaque tokens, the verifier asks the identity provider&#39;s introspection endpoint (<a target="_blank" rel="noopener" href="https://datatracker.ietf.org/doc/html/rfc7662">RFC 7662</a>) instead:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>auth/introspection-token.verifier</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { <span class="hljs-title class_">Injectable</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/common&#x27;</span>;
+<span class="hljs-keyword">import</span> <span class="hljs-keyword">type</span> { <span class="hljs-title class_">McpTokenVerifier</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/mcp&#x27;</span>;
+<span class="hljs-keyword">import</span> <span class="hljs-keyword">type</span> { <span class="hljs-title class_">AuthInfo</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@modelcontextprotocol/server&#x27;</span>;
+
+<span class="hljs-keyword">const</span> <span class="hljs-variable constant_">RESOURCE</span> = <span class="hljs-string">&#x27;https://api.catstore.example/mcp&#x27;</span>;
+
+<span class="hljs-meta">@Injectable</span>()
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">IntrospectionTokenVerifier</span> <span class="hljs-keyword">implements</span> <span class="hljs-title class_">McpTokenVerifier</span> {
+  <span class="hljs-keyword">async</span> <span class="hljs-title function_">verifyAccessToken</span>(<span class="hljs-attr">token</span>: <span class="hljs-built_in">string</span>): <span class="hljs-title class_">Promise</span>&lt;<span class="hljs-title class_">AuthInfo</span> | <span class="hljs-literal">null</span>&gt; {
+    <span class="hljs-keyword">const</span> credentials = <span class="hljs-title function_">btoa</span>(
+      <span class="hljs-string">`<span class="hljs-subst">${process.env.INTROSPECTION_CLIENT_ID}</span>:<span class="hljs-subst">${process.env.INTROSPECTION_CLIENT_SECRET}</span>`</span>,
+    );
+    <span class="hljs-keyword">const</span> response = <span class="hljs-keyword">await</span> <span class="hljs-title function_">fetch</span>(
+      <span class="hljs-string">&#x27;https://auth.catstore.example/oauth/introspect&#x27;</span>,
+      {
+        <span class="hljs-attr">method</span>: <span class="hljs-string">&#x27;POST&#x27;</span>,
+        <span class="hljs-attr">headers</span>: {
+          <span class="hljs-string">&#x27;content-type&#x27;</span>: <span class="hljs-string">&#x27;application/x-www-form-urlencoded&#x27;</span>,
+          <span class="hljs-attr">authorization</span>: <span class="hljs-string">`Basic <span class="hljs-subst">${credentials}</span>`</span>,
+        },
+        <span class="hljs-attr">body</span>: <span class="hljs-keyword">new</span> <span class="hljs-title class_">URLSearchParams</span>({ token }),
+      },
+    );
+    <span class="hljs-keyword">if</span> (!response.<span class="hljs-property">ok</span>) {
+      <span class="hljs-comment">// No verdict on the token: answered with 500.</span>
+      <span class="hljs-keyword">throw</span> <span class="hljs-keyword">new</span> <span class="hljs-title class_">Error</span>(<span class="hljs-string">`Token introspection failed with <span class="hljs-subst">${response.status}</span>`</span>);
+    }
+    <span class="hljs-keyword">const</span> claims = (<span class="hljs-keyword">await</span> response.<span class="hljs-title function_">json</span>()) <span class="hljs-keyword">as</span> {
+      <span class="hljs-attr">active</span>: <span class="hljs-built_in">boolean</span>;
+      <span class="hljs-attr">aud</span>?: <span class="hljs-built_in">string</span> | <span class="hljs-built_in">string</span>[];
+      <span class="hljs-attr">client_id</span>: <span class="hljs-built_in">string</span>;
+      <span class="hljs-attr">scope</span>?: <span class="hljs-built_in">string</span>;
+      <span class="hljs-attr">exp</span>: <span class="hljs-built_in">number</span>;
+    };
+    <span class="hljs-keyword">if</span> (!claims.<span class="hljs-property">active</span> || ![claims.<span class="hljs-property">aud</span>].<span class="hljs-title function_">flat</span>().<span class="hljs-title function_">includes</span>(<span class="hljs-variable constant_">RESOURCE</span>)) {
+      <span class="hljs-keyword">return</span> <span class="hljs-literal">null</span>; <span class="hljs-comment">// Answered with 401.</span>
+    }
+    <span class="hljs-keyword">return</span> {
+      token,
+      <span class="hljs-attr">clientId</span>: claims.<span class="hljs-property">client_id</span>,
+      <span class="hljs-attr">scopes</span>: claims.<span class="hljs-property">scope</span> ? claims.<span class="hljs-property">scope</span>.<span class="hljs-title function_">split</span>(<span class="hljs-string">&#x27; &#x27;</span>) : [],
+      <span class="hljs-attr">expiresAt</span>: claims.<span class="hljs-property">exp</span>,
+      <span class="hljs-attr">resource</span>: <span class="hljs-keyword">new</span> <span class="hljs-title function_">URL</span>(<span class="hljs-variable constant_">RESOURCE</span>),
+    };
+  }
+}</code></pre></div></figure>
+<p>Whichever verifier you write, the module checks two things in what it returns: <code>resource</code> must be the <code>auth.resource</code> URL, and <code>expiresAt</code> must be set and in the future. A token that fails either is refused with 401.</p>
+<p><strong>Scopes.</strong> <code>scopes</code> on a tool, a resource or a prompt names what the token must carry for it. A call without them is answered, before the method runs, with 403 and the missing scopes in the challenge, and the client asks the user to grant them (step-up authorization). <code>requiredScopes</code> in <code>auth</code> requires scopes on every request:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-meta">@Tool</span>({ <span class="hljs-attr">name</span>: <span class="hljs-string">&#x27;change-address&#x27;</span>, ..., <span class="hljs-attr">scopes</span>: [<span class="hljs-string">&#x27;orders:write&#x27;</span>] })</code></pre></div></figure>
+<p>Declaring <code>scopes</code> without <code>auth</code> fails at startup, because nothing would check them. The token is <code>ctx.authInfo</code> in methods, and <code>McpExecutionContext.create(context).getAuthInfo()</code> in guards, for decisions scopes don&#39;t express.</p>
+<p><strong>With <code>@nestjs/authentication</code> and <code>@nestjs/authorization</code>.</strong> Their global guards run on every MCP call. The authentication guard authenticates the call with your providers, from the HTTP request it arrived in: a <code>JwtBearerProvider</code> that accepts the identity provider&#39;s tokens accepts the MCP client&#39;s. <code>@CurrentUser()</code> and <code>AuthenticationContext</code> then work in tools, and <code>@Can()</code> policies decide each call:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>orders/orders.tools</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-meta">@Tool</span>({
+  <span class="hljs-attr">name</span>: <span class="hljs-string">&#x27;refund&#x27;</span>,
+  <span class="hljs-attr">description</span>: <span class="hljs-string">&#x27;Refund an order&#x27;</span>,
+  <span class="hljs-attr">inputSchema</span>: z.<span class="hljs-title function_">object</span>({ <span class="hljs-attr">orderId</span>: z.<span class="hljs-title function_">string</span>() }),
+})
+<span class="hljs-meta">@Can</span>(<span class="hljs-title class_">OrderPolicy</span>, <span class="hljs-string">&#x27;refund&#x27;</span>)
+<span class="hljs-title function_">refund</span>(<span class="hljs-params">
+  { orderId }: { orderId: <span class="hljs-built_in">string</span> },
+  <span class="hljs-attr">ctx</span>: <span class="hljs-title class_">McpContext</span>,
+  <span class="hljs-meta">@CurrentUser</span>() <span class="hljs-attr">agent</span>: <span class="hljs-title class_">Agent</span>,
+</span>) {
+  <span class="hljs-keyword">return</span> <span class="hljs-variable language_">this</span>.<span class="hljs-property">orders</span>.<span class="hljs-title function_">refund</span>(orderId, agent);
+}</code></pre></div></figure>
+<p>Exempt the endpoint&#39;s route from the authentication guard with <code>decorators: [Public()]</code>, and let <code>auth</code> answer its unauthenticated requests: the guard&#39;s own challenge doesn&#39;t point MCP clients at the metadata. A refusal on a call is a tool error, <code>Unauthorized</code> or <code>Forbidden</code>, and a tool that declares no <code>@Can()</code> is denied, as a route is. Over stdio there is no request, so a call is anonymous unless a provider of your own authenticates it from the environment.</p>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Hint</p><p>This needs <code>@nestjs/authentication</code> 0.1.3 and <code>@nestjs/authorization</code> 0.1.1 or later, the first versions that know MCP calls (context type <code>&#39;mcp&#39;</code>). With earlier ones, the global guard finds no credentials on a call: mark the providers of your tools <code>@Public()</code>.</p>
+</div></aside>
+<h4 id="decorators">Decorators</h4>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Decorator</th>
+<th>Options</th>
+<th>The method is called with</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>@Tool()</code></td>
+<td><code>name</code>, <code>title</code>, <code>description</code>, <code>inputSchema</code>, <code>outputSchema</code>, <code>annotations</code>, <code>icons</code>, <code>_meta</code>, <code>scopes</code></td>
+<td>The validated arguments, the context</td>
+</tr>
+<tr>
+<td><code>@Resource()</code></td>
+<td><code>uri</code>, <code>name</code>, <code>title</code>, <code>description</code>, <code>mimeType</code>, <code>size</code>, <code>annotations</code>, <code>icons</code>, <code>_meta</code>, <code>cacheHint</code>, <code>scopes</code></td>
+<td><code>{}</code>, the context (<code>ctx.uri</code>)</td>
+</tr>
+<tr>
+<td><code>@ResourceTemplate()</code></td>
+<td><code>uriTemplate</code>, and the same</td>
+<td>The template&#39;s variables, the context</td>
+</tr>
+<tr>
+<td><code>@Prompt()</code></td>
+<td><code>name</code>, <code>title</code>, <code>description</code>, <code>argsSchema</code>, <code>icons</code>, <code>_meta</code>, <code>scopes</code></td>
+<td>The validated arguments, the context</td>
+</tr>
+</tbody></table></div>

@@ -1,0 +1,151 @@
+<p>Cross-site request forgery (CSRF or XSRF) is an attack in which a malicious site makes a user&#39;s browser send unwanted, state-changing requests to your application. Because the browser attaches the user&#39;s cookies to those requests, the application treats them as if the user had sent them on purpose.</p>
+<p>Starting with NestJS v12.1, Nest has built-in CSRF protection. It works the same way on Express and Fastify, and needs no extra package, cookie, session, or change to your client code.</p>
+<h4 id="how-it-works">How it works</h4>
+<p>Modern browsers tell the server where each request comes from. They send a <a target="_blank" rel="noopener" href="https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Sec-Fetch-Site"><code>Sec-Fetch-Site</code></a> header (part of Fetch Metadata), which is <code>same-origin</code> when one of your own pages made the request, and <code>same-site</code> or <code>cross-site</code> when another site did. They also send an <code>Origin</code> header with cross-origin requests. The built-in protection rejects state-changing requests that the browser reports as cross-origin, following the algorithm of Go 1.25&#39;s <a target="_blank" rel="noopener" href="https://pkg.go.dev/net/http#CrossOriginProtection"><code>CrossOriginProtection</code></a>.</p>
+<p>In detail, each request is checked as follows:</p>
+<ol>
+<li><code>GET</code>, <code>HEAD</code> and <code>OPTIONS</code> requests are always allowed.</li>
+<li>If the request has a <code>Sec-Fetch-Site</code> header, the values <code>same-origin</code> and <code>none</code> (a navigation the user started, such as opening a bookmark) are allowed. Any other value, including <code>same-site</code>, is rejected.</li>
+<li>If the request has neither a <code>Sec-Fetch-Site</code> nor an <code>Origin</code> header, it is allowed, because it does not come from a browser.</li>
+<li>Otherwise, the host of the <code>Origin</code> header must match the request&#39;s <code>Host</code> header (<code>:authority</code> on HTTP/2). The comparison is case-insensitive and ignores the default port of the scheme, so <code>https://example.com</code> matches <code>example.com:443</code>. The <code>X-Forwarded-Host</code> header is ignored.</li>
+</ol>
+<p>A request that would be rejected is still allowed when it matches an <a href="#/doc/nestjs/security/csrf@excluding-routes">excluded route</a>, or when its <code>Origin</code> is one of the <a href="#/doc/nestjs/security/csrf@trusted-origins">trusted origins</a>.</p>
+<h4 id="getting-started">Getting started</h4>
+<p>To enable the protection, call the <code>enableCsrfProtection()</code> method on the Nest application object:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-comment">// main.ts</span>
+<span class="hljs-keyword">const</span> app = <span class="hljs-keyword">await</span> <span class="hljs-title class_">NestFactory</span>.<span class="hljs-title function_">create</span>(<span class="hljs-title class_">AppModule</span>);
+app.<span class="hljs-title function_">enableCsrfProtection</span>();
+<span class="hljs-keyword">await</span> app.<span class="hljs-title function_">listen</span>(process.<span class="hljs-property">env</span>.<span class="hljs-property">PORT</span> ?? <span class="hljs-number">3000</span>);</code></pre></div></figure>
+<p>The check runs for every request, including requests to routes that do not exist, before Nest middleware, body parsing, guards, interceptors and route handlers. The following rules apply:</p>
+<ul>
+<li>Call <code>enableCsrfProtection()</code> before <code>app.init()</code> or <code>app.listen()</code>. Calling it afterwards, or calling it twice, throws an error.</li>
+<li>Options are validated when you call the method, so a bad configuration fails at startup. For example, a misspelled option throws <code>Invalid CSRF protection options: unknown option &quot;trustedOrigin&quot; (expected &quot;trustedOrigins&quot;, &quot;exclude&quot;).</code></li>
+<li>The check is registered as a framework-level middleware (Express) or <code>onRequest</code> hook (Fastify) at the point where you call the method. Middleware registered with <code>app.use()</code> before that call runs first, so call <code>enableCsrfProtection()</code> right after <code>NestFactory.create()</code>.</li>
+<li><code>app.useSecurityHeaders()</code> (see <a href="#/doc/nestjs/security/helmet">Security headers</a>) shares the same request hook. You can call the two methods in any order: the headers are always written before the CSRF check runs, so rejected requests carry them too.</li>
+<li><code>setGlobalPrefix()</code> and <code>enableVersioning()</code> can be called before or after <code>enableCsrfProtection()</code>, because exclusions are resolved when the application initializes.</li>
+</ul>
+<h4 id="rejected-requests">Rejected requests</h4>
+<p>A rejected request becomes a <code>ForbiddenException</code>, which goes through your global <a href="#/doc/nestjs/exception-filters">exception filters</a> like any other exception. Without a custom filter, the client receives a <code>403</code> response like this:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JSON</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-json"><span class="hljs-punctuation">{</span>
+  <span class="hljs-attr">&quot;message&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;Cross-origin request detected from Sec-Fetch-Site header&quot;</span><span class="hljs-punctuation">,</span>
+  <span class="hljs-attr">&quot;error&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;Forbidden&quot;</span><span class="hljs-punctuation">,</span>
+  <span class="hljs-attr">&quot;statusCode&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-number">403</span>
+<span class="hljs-punctuation">}</span></code></pre></div></figure>
+<p>When the request has no <code>Sec-Fetch-Site</code> header and its <code>Origin</code> does not match <code>Host</code>, the message is <code>Cross-origin request detected, and/or browser is out of date: Sec-Fetch-Site is missing, and Origin does not match Host</code>.</p>
+<p>Since the check runs before routing, controller-scoped filters, guards and interceptors don&#39;t run for rejected requests.</p>
+<h4 id="options">Options</h4>
+<p>The <code>enableCsrfProtection()</code> method takes an optional options object:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">app.<span class="hljs-title function_">enableCsrfProtection</span>({
+  <span class="hljs-attr">trustedOrigins</span>: [<span class="hljs-string">&#x27;https://admin.example.com&#x27;</span>],
+  <span class="hljs-attr">exclude</span>: [{ <span class="hljs-attr">path</span>: <span class="hljs-string">&#x27;webhooks/stripe&#x27;</span>, <span class="hljs-attr">method</span>: <span class="hljs-title class_">RequestMethod</span>.<span class="hljs-property">POST</span> }],
+});</code></pre></div></figure>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Option</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>trustedOrigins</code></td>
+<td><code>string[]</code></td>
+<td>Origins that may send cross-origin, state-changing requests. Defaults to none.</td>
+</tr>
+<tr>
+<td><code>exclude</code></td>
+<td>an array of paths and <code>RouteInfo</code> objects, or a function</td>
+<td>Requests that skip the check. Consulted only for requests that would otherwise be rejected.</td>
+</tr>
+</tbody></table></div>
+<p>Any other option is rejected when the method is called.</p>
+<h4 id="trusted-origins">Trusted origins</h4>
+<p>A frontend served from another origin, such as an admin panel on a sibling subdomain, sends cross-origin requests. The browser reports them as <code>same-site</code> or <code>cross-site</code>, so they are rejected unless you list the frontend&#39;s origin in <code>trustedOrigins</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">app.<span class="hljs-title function_">enableCsrfProtection</span>({
+  <span class="hljs-attr">trustedOrigins</span>: [<span class="hljs-string">&#x27;https://admin.example.com&#x27;</span>, <span class="hljs-string">&#x27;http://localhost:4200&#x27;</span>],
+});</code></pre></div></figure>
+<p>Each entry must be a serialized origin in the form <code>scheme://host[:port]</code>:</p>
+<ul>
+<li>A path (even a trailing <code>/</code>), query string, fragment, credentials and wildcards are not allowed. List every origin separately.</li>
+<li>Entries are normalized the way browsers serialize the <code>Origin</code> header: lower-case, without the default port. <code>https://Example.com:443</code> becomes <code>https://example.com</code>.</li>
+<li>A request is exempt when its <code>Origin</code> header equals one of the entries exactly.</li>
+</ul>
+<p>An invalid entry throws at startup, for example <code>Invalid trusted origin &quot;https://example.com/&quot;: expected &quot;scheme://host[:port]&quot;, without a path, query string or fragment.</code></p>
+<aside class="callout callout-warning"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 4 2.8 20h18.4L12 4z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M12 10v4.4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="17" r="1.3" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Warning</p><p>Origins allowed by <a href="#/doc/nestjs/security/cors">CORS</a> are not trusted automatically. If a cross-origin frontend sends state-changing requests with credentials, list its origin in <code>trustedOrigins</code> too.</p>
+</div></aside>
+<h4 id="excluding-routes">Excluding routes</h4>
+<p>Server-to-server requests usually carry neither <code>Sec-Fetch-Site</code> nor <code>Origin</code>, so they pass the check without any configuration. Exclude a route when it must accept requests with a foreign origin, for example from a webhook sender that sets an <code>Origin</code> header, or from an identity provider that sends the user back to your application with a cross-site form <code>POST</code> (SAML, or OAuth&#39;s <code>form_post</code> response mode).</p>
+<p>Exclusions are declared like the ones of <code>MiddlewareConsumer.exclude()</code> (see <a href="#/doc/nestjs/middlewares">Middleware</a>): as a path, which matches every request method, or as a <code>RouteInfo</code> object with a <code>path</code>, a <code>method</code>, and an optional <code>version</code>. Paths are declared without the global prefix:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-comment">// main.ts</span>
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">RequestMethod</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/common&#x27;</span>;
+
+app.<span class="hljs-title function_">setGlobalPrefix</span>(<span class="hljs-string">&#x27;api&#x27;</span>);
+app.<span class="hljs-title function_">enableCsrfProtection</span>({
+  <span class="hljs-attr">exclude</span>: [
+    <span class="hljs-comment">// POST /api/webhooks/stripe</span>
+    { <span class="hljs-attr">path</span>: <span class="hljs-string">&#x27;webhooks/stripe&#x27;</span>, <span class="hljs-attr">method</span>: <span class="hljs-title class_">RequestMethod</span>.<span class="hljs-property">POST</span> },
+    <span class="hljs-comment">// POST /api/auth/saml/callback</span>
+    { <span class="hljs-attr">path</span>: <span class="hljs-string">&#x27;auth/saml/callback&#x27;</span>, <span class="hljs-attr">method</span>: <span class="hljs-title class_">RequestMethod</span>.<span class="hljs-property">POST</span> },
+  ],
+});</code></pre></div></figure>
+<p>Exclusions are resolved when the application initializes:</p>
+<ul>
+<li>The <a href="#/doc/nestjs/faq/global-prefix">global prefix</a> is added, unless the route is excluded from it. If an exclusion matches a path that is excluded from the prefix and has no parameters or wildcards, it also applies to that path, which is served without the prefix. This match is always case-sensitive. For example, with <code>webhooks/stripe</code> excluded from the prefix, <code>webhooks/*path</code> excludes both <code>/api/webhooks/github</code> and <code>/webhooks/stripe</code>.</li>
+<li>With <a href="#/doc/nestjs/http/versioning">URI versioning</a>, the version segment of the <code>version</code> property is added. The default version is not applied, so set <code>version</code> on the exclusion of a versioned route.</li>
+<li>Route parameters and wildcards work as in route paths, for example <code>webhooks/:provider</code> or <code>webhooks/*path</code>.</li>
+</ul>
+<p>Unlike <code>MiddlewareConsumer.exclude()</code>, the match is exact, because a lenient match could let a request reach a route that is not excluded:</p>
+<ul>
+<li>Matching is case-sensitive, and a trailing slash does not match. The query string is ignored.</li>
+<li>Non-canonical request paths never match: paths that contain <code>//</code>, <code>.</code> or <code>..</code> segments, <code>;</code>, <code>#</code>, <code>\</code>, or a percent-encoded <code>.</code>, <code>/</code> or <code>\</code>. Such requests go through the check like any other, so the protection fails closed.</li>
+<li>On Fastify, exclusions are matched against the URL before <code>rewriteUrl</code> runs, as with <code>MiddlewareConsumer.exclude()</code>.</li>
+</ul>
+<p>If your Fastify application enables the <code>ignoreTrailingSlash</code> or <code>caseSensitive: false</code> router options, variants of an excluded path still reach the route but are not excluded, so they are rejected. If clients need such variants, list them explicitly. Because a trailing slash is stripped from an exclusion path, use an optional group to match it:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">app.<span class="hljs-title function_">enableCsrfProtection</span>({
+  <span class="hljs-attr">exclude</span>: [
+    <span class="hljs-comment">// matches /webhooks/stripe and /webhooks/stripe/</span>
+    { <span class="hljs-attr">path</span>: <span class="hljs-string">&#x27;webhooks/stripe{/}&#x27;</span>, <span class="hljs-attr">method</span>: <span class="hljs-title class_">RequestMethod</span>.<span class="hljs-property">POST</span> },
+    <span class="hljs-comment">// a variant accepted with caseSensitive: false</span>
+    { <span class="hljs-attr">path</span>: <span class="hljs-string">&#x27;webhooks/Stripe&#x27;</span>, <span class="hljs-attr">method</span>: <span class="hljs-title class_">RequestMethod</span>.<span class="hljs-property">POST</span> },
+  ],
+});</code></pre></div></figure>
+<p>Instead of a list, <code>exclude</code> also accepts a predicate that receives the platform request object (an Express <code>Request</code> or a <code>FastifyRequest</code>) and returns <code>true</code> to skip the check. It is called only for requests that would otherwise be rejected.</p>
+<aside class="callout callout-warning"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 4 2.8 20h18.4L12 4z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M12 10v4.4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="17" r="1.3" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Warning</p><p>A predicate receives the raw request, so none of the matching rules above apply to it. For example, a predicate that tests whether <code>request.url</code> starts with <code>/public/</code> also skips the check for <code>/public/../account</code>, which a router or proxy may resolve to <code>/account</code>. Prefer a list of routes where you can.</p>
+</div></aside>
+<h4 id="limitations">Limitations</h4>
+<ul>
+<li>The protection is not a token scheme. It relies on the browser&#39;s <code>Sec-Fetch-Site</code> header, which browsers only send to secure origins (HTTPS or <code>localhost</code>), or on the <code>Origin</code> header.</li>
+<li><code>GET</code>, <code>HEAD</code> and <code>OPTIONS</code> requests are never checked, so handlers for these methods must not change state.</li>
+<li>The <code>Origin</code>/<code>Host</code> fallback does not know the scheme. For browsers that don&#39;t send <code>Sec-Fetch-Site</code>, a request from <code>http://example.com</code> to <code>https://example.com</code> is allowed (fails open), as in Go. <a href="#/doc/nestjs/security/helmet@default-headers">HSTS</a>, which <code>app.useSecurityHeaders()</code> sends by default, mitigates this.</li>
+<li><code>X-Forwarded-Host</code> is ignored. Behind a proxy that rewrites the <code>Host</code> header, browsers that don&#39;t send <code>Sec-Fetch-Site</code> hit the fallback and receive a <code>403</code>. Configure the proxy to preserve <code>Host</code>, or add your public origin to <code>trustedOrigins</code>.</li>
+<li>A <code>403</code> response does not carry CORS headers when CORS is registered after the protection, which is the case with the <code>cors</code> option of <code>NestFactory.create()</code>.</li>
+<li>Middleware registered with <code>app.use()</code> before <code>enableCsrfProtection()</code> runs before the check, and requests that such middleware answers are not checked.</li>
+<li>WebSocket upgrade requests are not checked. If your <a href="#/doc/nestjs/websockets/gateways">gateways</a> authenticate connections with cookies, validate the handshake&#39;s <code>Origin</code> header yourself.</li>
+</ul>
+<h4 id="when-you-need-a-token-based-approach">When you need a token-based approach</h4>
+<p>CSRF abuses the credentials that a browser attaches to requests automatically, so non-browser clients, such as mobile apps, CLI tools and other servers, don&#39;t need CSRF protection. Their requests carry neither <code>Sec-Fetch-Site</code> nor <code>Origin</code>, and are allowed.</p>
+<p>Every evergreen browser has sent <code>Sec-Fetch-Site</code> since 2023. Very old browsers that send neither header look like non-browser clients, so their requests are allowed too. If you must protect users of such browsers, add a token-based scheme, as described below.</p>
+<h4 id="token-based-protection">Token-based protection</h4>
+<p>Token-based schemes store a secret in a cookie or session, and require the client to send a matching token with each state-changing request. They need changes to your client code and a package that depends on the underlying platform.</p>
+<h5 id="express">Express</h5>
+<p>Install the <a target="_blank" rel="noopener" href="https://github.com/Psifi-Solutions/csrf-csrf">csrf-csrf</a> package:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Terminal</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-bash">$ npm i csrf-csrf</code></pre></div></figure>
+<p>Then register its middleware as global middleware. The <code>doubleCsrf()</code> function requires the <code>getSecret</code> and <code>getSessionIdentifier</code> options; the other options have defaults:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-comment">// main.ts</span>
+<span class="hljs-keyword">import</span> { doubleCsrf } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;csrf-csrf&#x27;</span>;
+
+<span class="hljs-keyword">const</span> { doubleCsrfProtection } = <span class="hljs-title function_">doubleCsrf</span>(doubleCsrfOptions);
+app.<span class="hljs-title function_">use</span>(doubleCsrfProtection);</code></pre></div></figure>
+<aside class="callout callout-warning"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 4 2.8 20h18.4L12 4z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M12 10v4.4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="17" r="1.3" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Warning</p><p>As noted in the <a target="_blank" rel="noopener" href="https://github.com/Psifi-Solutions/csrf-csrf?tab=readme-ov-file#getting-started">csrf-csrf documentation</a>, this middleware requires session middleware or <code>cookie-parser</code> to be initialized beforehand. <code>doubleCsrf()</code> also returns a function that generates the tokens your routes hand to clients. Please refer to the documentation for further details.</p>
+</div></aside>
+<h5 id="fastify">Fastify</h5>
+<p>Install the <a target="_blank" rel="noopener" href="https://github.com/fastify/csrf-protection">@fastify/csrf-protection</a> package:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Terminal</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-bash">$ npm i @fastify/csrf-protection</code></pre></div></figure>
+<p>Then register it as a Fastify plugin:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-comment">// main.ts</span>
+<span class="hljs-keyword">import</span> fastifyCsrf <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@fastify/csrf-protection&#x27;</span>;
+
+<span class="hljs-comment">// after registering a storage plugin</span>
+<span class="hljs-keyword">await</span> app.<span class="hljs-title function_">register</span>(fastifyCsrf);</code></pre></div></figure>
+<aside class="callout callout-warning"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 4 2.8 20h18.4L12 4z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M12 10v4.4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="17" r="1.3" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Warning</p><p>As explained in the <a target="_blank" rel="noopener" href="https://github.com/fastify/csrf-protection#usage">@fastify/csrf-protection documentation</a>, this plugin requires a storage plugin (<code>@fastify/cookie</code>, <code>@fastify/session</code>, or <code>@fastify/secure-session</code>) to be registered first.</p>
+</div></aside>

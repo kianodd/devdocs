@@ -1,0 +1,386 @@
+<p>Integration tests focus on testing how separate parts of the program work together. In the context of applications using a database, integration tests usually require a database to be available and contain data that is convenient to the scenarios intended to be tested.</p>
+<p>One way to simulate a real world environment is to use <a target="_blank" rel="noopener" href="https://www.docker.com/get-started/">Docker</a> to encapsulate a database and some test data. This can be spun up and torn down with the tests and so operate as an isolated environment away from your production databases.</p>
+<blockquote>
+<p><strong>Note:</strong> Prisma&#39;s testing series offers a more detailed walkthrough of setting up integration tests against a real database if you want a deeper companion resource.</p>
+</blockquote>
+<h2 id="prerequisites">Prerequisites</h2>
+<p>This guide assumes you have <a target="_blank" rel="noopener" href="https://docs.docker.com/get-started/get-docker/">Docker</a> and <a target="_blank" rel="noopener" href="https://docs.docker.com/compose/install/">Docker Compose</a> installed on your machine as well as <code>Jest</code> setup in your project.</p>
+<p>See our <a href="#/doc/prisma/reference/system-requirements">system requirements</a> for all minimum version requirements.</p>
+<p>The following e-commerce schema will be used throughout the guide. This varies from the traditional <code>User</code> and <code>Post</code> models used in other parts of the docs, mainly because it is unlikely you will be running integration tests against your blog.</p>
+<details><summary>Ecommerce schema</summary><figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>schema.prisma</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-prisma"><span class="hljs-comment">// Can have 1 customer</span>
+<span class="hljs-comment">// Can have many order details</span>
+<span class="hljs-keyword">model</span> <span class="hljs-type">CustomerOrder</span> {
+  id           <span class="hljs-type">Int</span>            <span class="hljs-attr">@id</span> <span class="hljs-attr">@default</span>(autoincrement())
+  createdAt    <span class="hljs-type">DateTime</span>       <span class="hljs-attr">@default</span>(now())
+  customer     <span class="hljs-type">Customer</span>       <span class="hljs-attr">@relation</span>(fields: [customerId], references: [id])
+  customerId   <span class="hljs-type">Int</span>
+  orderDetails <span class="hljs-type">OrderDetails</span>[]
+}
+
+<span class="hljs-comment">// Can have 1 order</span>
+<span class="hljs-comment">// Can have many products</span>
+<span class="hljs-keyword">model</span> <span class="hljs-type">OrderDetails</span> {
+  id        <span class="hljs-type">Int</span>           <span class="hljs-attr">@id</span> <span class="hljs-attr">@default</span>(autoincrement())
+  products  <span class="hljs-type">Product</span>       <span class="hljs-attr">@relation</span>(fields: [productId], references: [id])
+  productId <span class="hljs-type">Int</span>
+  order     <span class="hljs-type">CustomerOrder</span> <span class="hljs-attr">@relation</span>(fields: [orderId], references: [id])
+  orderId   <span class="hljs-type">Int</span>
+  total     <span class="hljs-type">Decimal</span>
+  quantity  <span class="hljs-type">Int</span>
+}
+
+<span class="hljs-comment">// Can have many order details</span>
+<span class="hljs-comment">// Can have 1 category</span>
+<span class="hljs-keyword">model</span> <span class="hljs-type">Product</span> {
+  id           <span class="hljs-type">Int</span>            <span class="hljs-attr">@id</span> <span class="hljs-attr">@default</span>(autoincrement())
+  name         <span class="hljs-type">String</span>
+  description  <span class="hljs-type">String</span>
+  price        <span class="hljs-type">Decimal</span>
+  sku          <span class="hljs-type">Int</span>
+  orderDetails <span class="hljs-type">OrderDetails</span>[]
+  category     <span class="hljs-type">Category</span>       <span class="hljs-attr">@relation</span>(fields: [categoryId], references: [id])
+  categoryId   <span class="hljs-type">Int</span>
+}
+
+<span class="hljs-comment">// Can have many products</span>
+<span class="hljs-keyword">model</span> <span class="hljs-type">Category</span> {
+  id       <span class="hljs-type">Int</span>       <span class="hljs-attr">@id</span> <span class="hljs-attr">@default</span>(autoincrement())
+  name     <span class="hljs-type">String</span>
+  products <span class="hljs-type">Product</span>[]
+}
+
+<span class="hljs-comment">// Can have many orders</span>
+<span class="hljs-keyword">model</span> <span class="hljs-type">Customer</span> {
+  id      <span class="hljs-type">Int</span>             <span class="hljs-attr">@id</span> <span class="hljs-attr">@default</span>(autoincrement())
+  email   <span class="hljs-type">String</span>          <span class="hljs-attr">@unique</span>
+  address <span class="hljs-type">String</span>?
+  name    <span class="hljs-type">String</span>?
+  orders  <span class="hljs-type">CustomerOrder</span>[]
+}</code></pre></div></figure>
+</details><p>The guide uses a singleton pattern for Prisma Client setup. Refer to the <a href="#/doc/prisma/prisma-client/testing/unit-testing@singleton">singleton</a> docs for a walk through of how to set that up.</p>
+<h2 id="add-docker-to-your-project">Add Docker to your project</h2>
+<p><img src="assets/prisma/orm/prisma-client/testing/Docker_Diagram_V1.png" loading="lazy" alt="Docker compose code pointing towards image of container holding a Postgres database"></p>
+<p>With Docker and Docker compose both installed on your machine you can use them in your project.</p>
+<ol>
+<li>Begin by creating a <code>docker-compose.yml</code> file at your projects root. Here you will add a Postgres image and specify the environments credentials.</li>
+</ol>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>docker-compose.yml</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-yaml">
+<span class="hljs-attr">version:</span> <span class="hljs-string">&quot;3.9&quot;</span>
+
+<span class="hljs-comment"># The containers that compose the project</span>
+<span class="hljs-attr">services:</span>
+  <span class="hljs-attr">db:</span>
+    <span class="hljs-attr">image:</span> <span class="hljs-string">postgres:13</span>
+    <span class="hljs-attr">restart:</span> <span class="hljs-string">always</span>
+    <span class="hljs-attr">container_name:</span> <span class="hljs-string">integration-tests-prisma</span>
+    <span class="hljs-attr">ports:</span>
+      <span class="hljs-bullet">-</span> <span class="hljs-string">&quot;5433:5432&quot;</span>
+    <span class="hljs-attr">environment:</span>
+      <span class="hljs-attr">POSTGRES_USER:</span> <span class="hljs-string">prisma</span>
+      <span class="hljs-attr">POSTGRES_PASSWORD:</span> <span class="hljs-string">prisma</span>
+      <span class="hljs-attr">POSTGRES_DB:</span> <span class="hljs-string">tests</span></code></pre></div></figure>
+<blockquote>
+<p><strong>Note</strong>: The compose version used here (<code>3.9</code>) is the latest at the time of writing, if you are following along be sure to use the same version for consistency.</p>
+</blockquote>
+<p>The <code>docker-compose.yml</code> file defines the following:</p>
+<ul>
+<li>The Postgres image (<code>postgres</code>) and version tag (<code>:13</code>). This will be downloaded if you do not have it locally available.</li>
+<li>The port <code>5433</code> is mapped to the internal (Postgres default) port <code>5432</code>. This will be the port number the database is exposed on externally.</li>
+<li>The database user credentials are set and the database given a name.</li>
+</ul>
+<ol start="2">
+<li>To connect to the database in the container, create a new connection string with the credentials defined in the <code>docker-compose.yml</code> file. For example:</li>
+</ol>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>.env.test</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-bash">DATABASE_URL=<span class="hljs-string">&quot;postgresql://prisma:prisma@localhost:5433/tests&quot;</span></code></pre></div></figure>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Info</p><p>The above <code>.env.test</code> file is used as part of a multiple <code>.env</code> file setup. Checkout the <a href="#/doc/prisma/more/dev-environment/environment-variables">using multiple .env files.</a> section to learn more about setting up your project with multiple <code>.env</code> files</p>
+</div></aside>
+<ol start="3">
+<li>To create the container in a detached state so that you can continue to use the terminal tab, run the following command:</li>
+</ol>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Terminal</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-bash">docker compose up -d</code></pre></div></figure>
+<ol start="4">
+<li><p>Next you can check that the database has been created by executing a <code>psql</code> command inside the container. Make a note of the container id.</p>
+<pre><code>docker ps
+</code></pre>
+<pre><code class="language-bash">CONTAINER ID   IMAGE             COMMAND                  CREATED         STATUS        PORTS                    NAMES
+1322e42d833f   postgres:13       &quot;docker-entrypoint.s…&quot;   2 seconds ago   Up 1 second   0.0.0.0:5433-&gt;5432/tcp   integration-tests-prisma
+</code></pre>
+</li>
+</ol>
+<blockquote>
+<p><strong>Note</strong>: The container id is unique to each container, you will see a different id displayed.</p>
+</blockquote>
+<ol start="5">
+<li><p>Using the container id from the previous step, run <code>psql</code> in the container, login with the created user and check the database is created:</p>
+<pre><code>docker exec -it 1322e42d833f psql -U prisma tests
+</code></pre>
+<pre><code class="language-bash">tests=# \l
+                              List of databases
+   Name    | Owner  | Encoding |  Collate   |   Ctype    | Access privileges
+
+ postgres  | prisma | UTF8     | en_US.utf8 | en_US.utf8 |
+ template0 | prisma | UTF8     | en_US.utf8 | en_US.utf8 | =c/prisma        +
+           |        |          |            |            | prisma=CTc/prisma
+ template1 | prisma | UTF8     | en_US.utf8 | en_US.utf8 | =c/prisma        +
+           |        |          |            |            | prisma=CTc/prisma
+ tests     | prisma | UTF8     | en_US.utf8 | en_US.utf8 |
+(4 rows)
+</code></pre>
+</li>
+</ol>
+<h2 id="integration-testing">Integration testing</h2>
+<p>Integration tests will be run against a database in a <strong>dedicated test environment</strong> instead of the production or development environments.</p>
+<h3 id="the-flow-of-operations">The flow of operations</h3>
+<p>The flow for running said tests goes as follows:</p>
+<ol>
+<li>Start the container and create the database</li>
+<li>Migrate the schema</li>
+<li>Run the tests</li>
+<li>Destroy the container</li>
+</ol>
+<p>Each test suite will seed the database before all the test are run. After all the tests in the suite have finished, the data from all the tables will be dropped and the connection terminated.</p>
+<h3 id="the-function-to-test">The function to test</h3>
+<p>The ecommerce application you are testing has a function which creates an order. This function does the following:</p>
+<ul>
+<li>Accepts input about the customer making the order</li>
+<li>Accepts input about the product being ordered</li>
+<li>Checks if the customer has an existing account</li>
+<li>Checks if the product is in stock</li>
+<li>Returns an &quot;Out of stock&quot; message if the product doesn&#39;t exist</li>
+<li>Creates an account if the customer doesn&#39;t exist in the database</li>
+<li>Create the order</li>
+</ul>
+<p>An example of how such a function might look can be seen below:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>create-order.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">
+  <span class="hljs-attr">id</span>?: <span class="hljs-built_in">number</span>;
+  <span class="hljs-attr">name</span>?: <span class="hljs-built_in">string</span>;
+  <span class="hljs-attr">email</span>: <span class="hljs-built_in">string</span>;
+  <span class="hljs-attr">address</span>?: <span class="hljs-built_in">string</span>;
+}
+
+  <span class="hljs-attr">customer</span>: <span class="hljs-title class_">Customer</span>;
+  <span class="hljs-attr">productId</span>: <span class="hljs-built_in">number</span>;
+  <span class="hljs-attr">quantity</span>: <span class="hljs-built_in">number</span>;
+}
+
+<span class="hljs-comment">/**
+ * Creates an order with customer.
+ * <span class="hljs-doctag">@param</span> input The order parameters
+ */</span>
+
+  <span class="hljs-keyword">const</span> { productId, quantity, customer } = input;
+  <span class="hljs-keyword">const</span> { name, email, address } = customer;
+
+  <span class="hljs-comment">// Get the product</span>
+  <span class="hljs-keyword">const</span> product = <span class="hljs-keyword">await</span> prisma.<span class="hljs-property">product</span>.<span class="hljs-title function_">findUnique</span>({
+    <span class="hljs-attr">where</span>: {
+      <span class="hljs-attr">id</span>: productId,
+    },
+  });
+
+  <span class="hljs-comment">// If the product is null its out of stock, return error.</span>
+  <span class="hljs-keyword">if</span> (!product) <span class="hljs-keyword">return</span> <span class="hljs-keyword">new</span> <span class="hljs-title class_">Error</span>(<span class="hljs-string">&quot;Out of stock&quot;</span>);
+
+  <span class="hljs-comment">// If the customer is new then create the record, otherwise connect via their unique email</span>
+  <span class="hljs-keyword">await</span> prisma.<span class="hljs-property">customerOrder</span>.<span class="hljs-title function_">create</span>({
+    <span class="hljs-attr">data</span>: {
+      <span class="hljs-attr">customer</span>: {
+        <span class="hljs-attr">connectOrCreate</span>: {
+          <span class="hljs-attr">create</span>: {
+            name,
+            email,
+            address,
+          },
+          <span class="hljs-attr">where</span>: {
+            email,
+          },
+        },
+      },
+      <span class="hljs-attr">orderDetails</span>: {
+        <span class="hljs-attr">create</span>: {
+          <span class="hljs-attr">total</span>: product.<span class="hljs-property">price</span>,
+          quantity,
+          <span class="hljs-attr">products</span>: {
+            <span class="hljs-attr">connect</span>: {
+              <span class="hljs-attr">id</span>: product.<span class="hljs-property">id</span>,
+            },
+          },
+        },
+      },
+    },
+  });
+}</code></pre></div></figure>
+<h3 id="the-test-suite">The test suite</h3>
+<p>The following tests will check if the <code>createOrder</code> function works as it should do. They will test:</p>
+<ul>
+<li>Creating a new order with a new customer</li>
+<li>Creating an order with an existing customer</li>
+<li>Show an &quot;Out of stock&quot; error message if a product doesn&#39;t exist</li>
+</ul>
+<p>Before the test suite is run the database is seeded with data. After the test suite has finished a <a href="#/doc/prisma/reference/prisma-client-reference@deletemany"><code>deleteMany</code></a> is used to clear the database of its data.</p>
+<aside class="callout callout-tip"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M9.5 18h5M10.5 21h3M12 3a6 6 0 0 0-3.6 10.8c.7.6 1.1 1.3 1.3 2.2h4.6c.2-.9.6-1.6 1.3-2.2A6 6 0 0 0 12 3Z" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round"/></svg></span><div class="callout-body"><p class="callout-title">Tip</p><p>Using <code>deleteMany</code> may suffice in situations where you know ahead of time how your schema is structured. This is because the operations need to be executed in the correct order according to how the model relations are setup.</p>
+<p>However, this doesn&#39;t scale as well as having a more generic solution that maps over your models and performs a truncate on them. For those scenarios and examples of using raw SQL queries see <a href="#/doc/prisma/prisma-client/queries/crud@deleting-all-data-with-raw-sql--truncate">Deleting all data with raw SQL / <code>TRUNCATE</code></a></p>
+</div></aside>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>__tests__/create-order.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">
+
+
+<span class="hljs-title function_">beforeAll</span>(<span class="hljs-title function_">async</span> () =&gt; {
+  <span class="hljs-comment">// create product categories</span>
+  <span class="hljs-keyword">await</span> prisma.<span class="hljs-property">category</span>.<span class="hljs-title function_">createMany</span>({
+    <span class="hljs-attr">data</span>: [{ <span class="hljs-attr">name</span>: <span class="hljs-string">&quot;Wand&quot;</span> }, { <span class="hljs-attr">name</span>: <span class="hljs-string">&quot;Broomstick&quot;</span> }],
+  });
+
+  <span class="hljs-variable language_">console</span>.<span class="hljs-title function_">log</span>(<span class="hljs-string">&quot;✨ 2 categories successfully created!&quot;</span>);
+
+  <span class="hljs-comment">// create products</span>
+  <span class="hljs-keyword">await</span> prisma.<span class="hljs-property">product</span>.<span class="hljs-title function_">createMany</span>({
+    <span class="hljs-attr">data</span>: [
+      {
+        <span class="hljs-attr">name</span>: <span class="hljs-string">&#x27;Holly, 11&quot;, phoenix feather&#x27;</span>,
+        <span class="hljs-attr">description</span>: <span class="hljs-string">&quot;Harry Potters wand&quot;</span>,
+        <span class="hljs-attr">price</span>: <span class="hljs-number">100</span>,
+        <span class="hljs-attr">sku</span>: <span class="hljs-number">1</span>,
+        <span class="hljs-attr">categoryId</span>: <span class="hljs-number">1</span>,
+      },
+      {
+        <span class="hljs-attr">name</span>: <span class="hljs-string">&quot;Nimbus 2000&quot;</span>,
+        <span class="hljs-attr">description</span>: <span class="hljs-string">&quot;Harry Potters broom&quot;</span>,
+        <span class="hljs-attr">price</span>: <span class="hljs-number">500</span>,
+        <span class="hljs-attr">sku</span>: <span class="hljs-number">2</span>,
+        <span class="hljs-attr">categoryId</span>: <span class="hljs-number">2</span>,
+      },
+    ],
+  });
+
+  <span class="hljs-variable language_">console</span>.<span class="hljs-title function_">log</span>(<span class="hljs-string">&quot;✨ 2 products successfully created!&quot;</span>);
+
+  <span class="hljs-comment">// create the customer</span>
+  <span class="hljs-keyword">await</span> prisma.<span class="hljs-property">customer</span>.<span class="hljs-title function_">create</span>({
+    <span class="hljs-attr">data</span>: {
+      <span class="hljs-attr">name</span>: <span class="hljs-string">&quot;Harry Potter&quot;</span>,
+      <span class="hljs-attr">email</span>: <span class="hljs-string">&quot;harry@hogwarts.io&quot;</span>,
+      <span class="hljs-attr">address</span>: <span class="hljs-string">&quot;4 Privet Drive&quot;</span>,
+    },
+  });
+
+  <span class="hljs-variable language_">console</span>.<span class="hljs-title function_">log</span>(<span class="hljs-string">&quot;✨ 1 customer successfully created!&quot;</span>);
+});
+
+<span class="hljs-title function_">afterAll</span>(<span class="hljs-title function_">async</span> () =&gt; {
+  <span class="hljs-keyword">const</span> deleteOrderDetails = prisma.<span class="hljs-property">orderDetails</span>.<span class="hljs-title function_">deleteMany</span>();
+  <span class="hljs-keyword">const</span> deleteProduct = prisma.<span class="hljs-property">product</span>.<span class="hljs-title function_">deleteMany</span>();
+  <span class="hljs-keyword">const</span> deleteCategory = prisma.<span class="hljs-property">category</span>.<span class="hljs-title function_">deleteMany</span>();
+  <span class="hljs-keyword">const</span> deleteCustomerOrder = prisma.<span class="hljs-property">customerOrder</span>.<span class="hljs-title function_">deleteMany</span>();
+  <span class="hljs-keyword">const</span> deleteCustomer = prisma.<span class="hljs-property">customer</span>.<span class="hljs-title function_">deleteMany</span>();
+
+  <span class="hljs-keyword">await</span> prisma.$transaction([
+    deleteOrderDetails,
+    deleteProduct,
+    deleteCategory,
+    deleteCustomerOrder,
+    deleteCustomer,
+  ]);
+
+  <span class="hljs-keyword">await</span> prisma.$disconnect();
+});
+
+<span class="hljs-title function_">it</span>(<span class="hljs-string">&quot;should create 1 new customer with 1 order&quot;</span>, <span class="hljs-title function_">async</span> () =&gt; {
+  <span class="hljs-comment">// The new customers details</span>
+  <span class="hljs-keyword">const</span> <span class="hljs-attr">customer</span>: <span class="hljs-title class_">Customer</span> = {
+    <span class="hljs-attr">id</span>: <span class="hljs-number">2</span>,
+    <span class="hljs-attr">name</span>: <span class="hljs-string">&quot;Hermione Granger&quot;</span>,
+    <span class="hljs-attr">email</span>: <span class="hljs-string">&quot;hermione@hogwarts.io&quot;</span>,
+    <span class="hljs-attr">address</span>: <span class="hljs-string">&quot;2 Hampstead Heath&quot;</span>,
+  };
+  <span class="hljs-comment">// The new orders details</span>
+  <span class="hljs-keyword">const</span> <span class="hljs-attr">order</span>: <span class="hljs-title class_">OrderInput</span> = {
+    customer,
+    <span class="hljs-attr">productId</span>: <span class="hljs-number">1</span>,
+    <span class="hljs-attr">quantity</span>: <span class="hljs-number">1</span>,
+  };
+
+  <span class="hljs-comment">// Create the order and customer</span>
+  <span class="hljs-keyword">await</span> <span class="hljs-title function_">createOrder</span>(order);
+
+  <span class="hljs-comment">// Check if the new customer was created by filtering on unique email field</span>
+  <span class="hljs-keyword">const</span> newCustomer = <span class="hljs-keyword">await</span> prisma.<span class="hljs-property">customer</span>.<span class="hljs-title function_">findUnique</span>({
+    <span class="hljs-attr">where</span>: {
+      <span class="hljs-attr">email</span>: customer.<span class="hljs-property">email</span>,
+    },
+  });
+
+  <span class="hljs-comment">// Check if the new order was created by filtering on unique email field of the customer</span>
+  <span class="hljs-keyword">const</span> newOrder = <span class="hljs-keyword">await</span> prisma.<span class="hljs-property">customerOrder</span>.<span class="hljs-title function_">findFirst</span>({
+    <span class="hljs-attr">where</span>: {
+      <span class="hljs-attr">customer</span>: {
+        <span class="hljs-attr">email</span>: customer.<span class="hljs-property">email</span>,
+      },
+    },
+  });
+
+  <span class="hljs-comment">// Expect the new customer to have been created and match the input</span>
+  <span class="hljs-title function_">expect</span>(newCustomer).<span class="hljs-title function_">toEqual</span>(customer);
+  <span class="hljs-comment">// Expect the new order to have been created and contain the new customer</span>
+  <span class="hljs-title function_">expect</span>(newOrder).<span class="hljs-title function_">toHaveProperty</span>(<span class="hljs-string">&quot;customerId&quot;</span>, <span class="hljs-number">2</span>);
+});
+
+<span class="hljs-title function_">it</span>(<span class="hljs-string">&quot;should create 1 order with an existing customer&quot;</span>, <span class="hljs-title function_">async</span> () =&gt; {
+  <span class="hljs-comment">// The existing customers email</span>
+  <span class="hljs-keyword">const</span> <span class="hljs-attr">customer</span>: <span class="hljs-title class_">Customer</span> = {
+    <span class="hljs-attr">email</span>: <span class="hljs-string">&quot;harry@hogwarts.io&quot;</span>,
+  };
+  <span class="hljs-comment">// The new orders details</span>
+  <span class="hljs-keyword">const</span> <span class="hljs-attr">order</span>: <span class="hljs-title class_">OrderInput</span> = {
+    customer,
+    <span class="hljs-attr">productId</span>: <span class="hljs-number">1</span>,
+    <span class="hljs-attr">quantity</span>: <span class="hljs-number">1</span>,
+  };
+
+  <span class="hljs-comment">// Create the order and connect the existing customer</span>
+  <span class="hljs-keyword">await</span> <span class="hljs-title function_">createOrder</span>(order);
+
+  <span class="hljs-comment">// Check if the new order was created by filtering on unique email field of the customer</span>
+  <span class="hljs-keyword">const</span> newOrder = <span class="hljs-keyword">await</span> prisma.<span class="hljs-property">customerOrder</span>.<span class="hljs-title function_">findFirst</span>({
+    <span class="hljs-attr">where</span>: {
+      <span class="hljs-attr">customer</span>: {
+        <span class="hljs-attr">email</span>: customer.<span class="hljs-property">email</span>,
+      },
+    },
+  });
+
+  <span class="hljs-comment">// Expect the new order to have been created and contain the existing customer with an id of 1 (Harry Potter from the seed script)</span>
+  <span class="hljs-title function_">expect</span>(newOrder).<span class="hljs-title function_">toHaveProperty</span>(<span class="hljs-string">&quot;customerId&quot;</span>, <span class="hljs-number">1</span>);
+});
+
+<span class="hljs-title function_">it</span>(<span class="hljs-string">&quot;should show &#x27;Out of stock&#x27; message if productId doesn&#x27;t exit&quot;</span>, <span class="hljs-title function_">async</span> () =&gt; {
+  <span class="hljs-comment">// The existing customers email</span>
+  <span class="hljs-keyword">const</span> <span class="hljs-attr">customer</span>: <span class="hljs-title class_">Customer</span> = {
+    <span class="hljs-attr">email</span>: <span class="hljs-string">&quot;harry@hogwarts.io&quot;</span>,
+  };
+  <span class="hljs-comment">// The new orders details</span>
+  <span class="hljs-keyword">const</span> <span class="hljs-attr">order</span>: <span class="hljs-title class_">OrderInput</span> = {
+    customer,
+    <span class="hljs-attr">productId</span>: <span class="hljs-number">3</span>,
+    <span class="hljs-attr">quantity</span>: <span class="hljs-number">1</span>,
+  };
+
+  <span class="hljs-comment">// The productId supplied doesn&#x27;t exit so the function should return an &quot;Out of stock&quot; message</span>
+  <span class="hljs-keyword">await</span> <span class="hljs-title function_">expect</span>(<span class="hljs-title function_">createOrder</span>(order)).<span class="hljs-property">resolves</span>.<span class="hljs-title function_">toEqual</span>(<span class="hljs-keyword">new</span> <span class="hljs-title class_">Error</span>(<span class="hljs-string">&quot;Out of stock&quot;</span>));
+});</code></pre></div></figure>
+<h2 id="running-the-tests">Running the tests</h2>
+<p>This setup isolates a real world scenario so that you can test your applications functionality against real data in a controlled environment.</p>
+<p>You can add some scripts to your projects <code>package.json</code> file which will setup the database and run the tests, then afterwards manually destroy the container.</p>
+<aside class="callout callout-warning"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 4 2.8 20h18.4L12 4z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M12 10v4.4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="17" r="1.3" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Warning</p><p>If the test doesn&#39;t work for you, you&#39;ll need to ensure the test database is properly set up and ready before the suite runs.</p>
+</div></aside>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>package.json</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-json">  <span class="hljs-attr">&quot;scripts&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-punctuation">{</span>
+    <span class="hljs-attr">&quot;docker:up&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;docker compose up -d&quot;</span><span class="hljs-punctuation">,</span>
+    <span class="hljs-attr">&quot;docker:down&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;docker compose down&quot;</span><span class="hljs-punctuation">,</span>
+    <span class="hljs-attr">&quot;test&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;yarn docker:up &amp;&amp; yarn prisma migrate deploy &amp;&amp; jest -i&quot;</span>
+  <span class="hljs-punctuation">}</span><span class="hljs-punctuation">,</span></code></pre></div></figure>
+<p>The <code>test</code> script does the following:</p>
+<ol>
+<li>Runs <code>docker compose up -d</code> to create the container with the Postgres image and database.</li>
+<li>Applies the migrations found in <code>./prisma/migrations/</code> directory to the database, this creates the tables in the container&#39;s database.</li>
+<li>Executes the tests.</li>
+</ol>
+<p>Once you are satisfied you can run <code>yarn docker:down</code> to destroy the container, its database and any test data.</p>

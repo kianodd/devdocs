@@ -1,0 +1,495 @@
+<p>An Express application can move to Nest one route at a time, with both serving requests, or all at once, in a single release. This page covers both.</p>
+<h4 id="choose-an-approach">Choose an approach</h4>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Question</th>
+<th>One route at a time</th>
+<th>All at once</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>How does it work?</td>
+<td>Nest runs on your Express app, and routes move to it one by one</td>
+<td>A new Nest application replaces the Express app in one release</td>
+</tr>
+<tr>
+<td>What gets deployed?</td>
+<td>Each moved route, on its own</td>
+<td>Everything, once</td>
+</tr>
+<tr>
+<td>What happens to feature work?</td>
+<td>It continues, and new endpoints go into Nest</td>
+<td>It waits, or gets written twice, until the switch</td>
+</tr>
+<tr>
+<td>How do you go back?</td>
+<td>Restore one route</td>
+<td>Deploy the last Express release</td>
+</tr>
+<tr>
+<td>Which Express version?</td>
+<td>Express 5, so upgrade first</td>
+<td>Any, since the Express app isn&#39;t touched</td>
+</tr>
+<tr>
+<td>What about existing middleware?</td>
+<td>It keeps running, for Nest&#39;s routes too</td>
+<td>It moves to Nest with everything else</td>
+</tr>
+<tr>
+<td>How long are there two styles in the code?</td>
+<td>Until the last route moves</td>
+<td>Never</td>
+</tr>
+</tbody></table></div>
+<p>Move one route at a time when the application is large, when several people work on it, or when it can&#39;t wait. Move it all at once when it&#39;s small enough to review as one change and you can pin what it does with tests. That also suits a <a href="#/doc/nestjs/recipes/express-migration@give-it-to-a-coding-agent">coding agent</a>, which can translate a whole application in one go, but can&#39;t tell on its own what must stay the same.</p>
+<h4 id="one-route-at-a-time">One route at a time</h4>
+<p>The Express app keeps its routes, middleware and error handler, new endpoints are written in Nest, and existing ones move over when you next change them. Both answer on the same port, behind the same middleware, so clients, sessions and authentication don&#39;t notice, and every step can be deployed on its own.</p>
+<h5 id="requirements">Requirements</h5>
+<ul>
+<li><strong>Express 5.</strong> Nest&#39;s Express adapter drives an Express 5 application, and an Express 4 one fails as soon as Nest starts. Upgrade the app first, with Express&#39;s <a target="_blank" rel="noopener" href="https://expressjs.com/en/guide/migrating-5.html">migration guide</a> and its codemod, <code>npx @expressjs/codemod upgrade</code>.</li>
+<li><strong>TypeScript.</strong> The Nest code on this page is TypeScript. If the Express app is written in JavaScript, its files can stay as they are: TypeScript&#39;s <code>allowJs</code> option compiles them with the rest.</li>
+</ul>
+<p>A CommonJS app can stay CommonJS. Nest&#39;s packages are ESM, which a CommonJS application loads on the Node.js versions listed in the <a href="#/doc/nestjs/migration@esm-packages">migration guide</a>.</p>
+<p>Install Nest next to Express:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Terminal</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-bash">$ npm i --save @nestjs/core @nestjs/common @nestjs/platform-express reflect-metadata rxjs</code></pre></div></figure>
+<h5 id="run-nest-on-the-express-app">Run Nest on the Express app</h5>
+<p>Nest normally creates its own Express app. Give it yours instead. Stop the Express app from listening, and export a function that builds it, so that tests can build their own:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>legacy/app.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> express <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;express&#x27;</span>;
+<span class="hljs-keyword">import</span> { authenticate } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./auth.js&#x27;</span>;
+<span class="hljs-keyword">import</span> { errorHandler } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./errors.js&#x27;</span>;
+<span class="hljs-keyword">import</span> { ordersRouter } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./orders.router.js&#x27;</span>;
+
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">function</span> <span class="hljs-title function_">createLegacyApp</span>(<span class="hljs-params"></span>) {
+  <span class="hljs-keyword">const</span> app = <span class="hljs-title function_">express</span>();
+  app.<span class="hljs-title function_">use</span>(express.<span class="hljs-title function_">json</span>());
+  app.<span class="hljs-title function_">use</span>(authenticate); <span class="hljs-comment">// sets req.user</span>
+  app.<span class="hljs-title function_">use</span>(<span class="hljs-string">&#x27;/orders&#x27;</span>, ordersRouter);
+  app.<span class="hljs-title function_">use</span>(errorHandler);
+  <span class="hljs-comment">// app.listen(3000); &lt;- Nest listens from now on</span>
+  <span class="hljs-keyword">return</span> app;
+}</code></pre></div></figure>
+<p>Then pass it to the <code>ExpressAdapter</code>, and let Nest listen:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>main.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { <span class="hljs-title class_">NestFactory</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/core&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">ExpressAdapter</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/platform-express&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">AppModule</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./app.module.js&#x27;</span>;
+<span class="hljs-keyword">import</span> { createLegacyApp } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./legacy/app.js&#x27;</span>;
+
+<span class="hljs-keyword">async</span> <span class="hljs-keyword">function</span> <span class="hljs-title function_">bootstrap</span>(<span class="hljs-params"></span>) {
+  <span class="hljs-keyword">const</span> app = <span class="hljs-keyword">await</span> <span class="hljs-title class_">NestFactory</span>.<span class="hljs-title function_">create</span>(
+    <span class="hljs-title class_">AppModule</span>,
+    <span class="hljs-keyword">new</span> <span class="hljs-title class_">ExpressAdapter</span>(<span class="hljs-title function_">createLegacyApp</span>()),
+  );
+  <span class="hljs-keyword">await</span> app.<span class="hljs-title function_">listen</span>(process.<span class="hljs-property">env</span>.<span class="hljs-property">PORT</span> ?? <span class="hljs-number">3000</span>);
+}
+
+<span class="hljs-keyword">await</span> <span class="hljs-title function_">bootstrap</span>();</code></pre></div></figure>
+<p>Express runs its middleware and routes in the order they were added. Everything the Express app added comes first. Nest adds its routes when the application starts, in <code>listen()</code> or <code>init()</code>, and then a handler that answers the requests no route matched with a <code>404</code>. So:</p>
+<ul>
+<li>The Express routes answer as they did before.</li>
+<li>Nest&#39;s routes answer the requests the Express routes don&#39;t.</li>
+<li>Nest&#39;s routes see what the Express middleware put on the request, such as <code>req.user</code>, and the body its parsers read.</li>
+<li>A request for a route neither has gets Nest&#39;s <code>404</code> response.</li>
+</ul>
+<aside class="callout callout-warning"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 4 2.8 20h18.4L12 4z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M12 10v4.4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="17" r="1.3" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Warning</p><p>Remove a catch-all <code>404</code> handler, such as <code>app.use((req, res) =&gt; res.status(404).send())</code>, from the Express app. It comes before Nest&#39;s routes, so it answers their requests too, and Nest&#39;s handler answers unknown routes in its place. Keep the error handler: an Express error handler only receives the errors of the middleware and routes added before it, so it keeps handling the Express routes&#39; errors, while Nest&#39;s <a href="#/doc/nestjs/exception-filters">exception filters</a> handle the errors of Nest&#39;s.</p>
+</div></aside>
+<p>Which part of the application runs for which routes:</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Part</th>
+<th>Express routes</th>
+<th>Nest routes</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Middleware added to the Express app (body parsers, sessions, authentication)</td>
+<td>Yes</td>
+<td>Yes</td>
+</tr>
+<tr>
+<td>The Express app&#39;s error handler</td>
+<td>Yes</td>
+<td>No</td>
+</tr>
+<tr>
+<td>Middleware added through Nest: <a href="#/doc/nestjs/middlewares"><code>MiddlewareConsumer</code></a>, <code>app.use()</code>, <code>app.enableCors()</code></td>
+<td>No</td>
+<td>Yes</td>
+</tr>
+<tr>
+<td><a href="#/doc/nestjs/guards">Guards</a>, <a href="#/doc/nestjs/interceptors">interceptors</a>, <a href="#/doc/nestjs/pipes">pipes</a> and <a href="#/doc/nestjs/exception-filters">exception filters</a></td>
+<td>No</td>
+<td>Yes</td>
+</tr>
+</tbody></table></div>
+<p>The middleware the Express app already runs is in front of Nest&#39;s routes as well, so a <a href="#/doc/nestjs/guards">guard</a> can check the user that the existing authentication middleware put on the request:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>authenticated.guard</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { <span class="hljs-title class_">CanActivate</span>, <span class="hljs-title class_">ExecutionContext</span>, <span class="hljs-title class_">Injectable</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/common&#x27;</span>;
+
+<span class="hljs-meta">@Injectable</span>()
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">AuthenticatedGuard</span> <span class="hljs-keyword">implements</span> <span class="hljs-title class_">CanActivate</span> {
+  <span class="hljs-title function_">canActivate</span>(<span class="hljs-attr">context</span>: <span class="hljs-title class_">ExecutionContext</span>): <span class="hljs-built_in">boolean</span> {
+    <span class="hljs-keyword">const</span> request = context.<span class="hljs-title function_">switchToHttp</span>().<span class="hljs-title function_">getRequest</span>();
+    <span class="hljs-keyword">return</span> <span class="hljs-title class_">Boolean</span>(request.<span class="hljs-property">user</span>);
+  }
+}</code></pre></div></figure>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Hint</p><p>With a <a href="#/doc/nestjs/faq/global-prefix">global prefix</a>, Nest&#39;s <code>404</code> handler answers only the paths under the prefix. A path outside it that no Express route matches gets Express&#39;s default <code>404</code> page.</p>
+</div></aside>
+<h5 id="move-a-route">Move a route</h5>
+<p>Write new endpoints in Nest. To move an existing one, write it as a Nest route and delete it from the Express router. Because the Express routes come first, a Nest route with the same method and path doesn&#39;t answer until the Express one is gone, so both can be in the code until you&#39;re ready to switch:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>orders/orders.controller</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { <span class="hljs-title class_">Controller</span>, <span class="hljs-title class_">Get</span>, <span class="hljs-title class_">Param</span>, <span class="hljs-title class_">UseGuards</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/common&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">AuthenticatedGuard</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;../authenticated.guard.js&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">OrdersService</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./orders.service.js&#x27;</span>;
+
+<span class="hljs-meta">@Controller</span>(<span class="hljs-string">&#x27;orders&#x27;</span>)
+<span class="hljs-meta">@UseGuards</span>(<span class="hljs-title class_">AuthenticatedGuard</span>)
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">OrdersController</span> {
+  <span class="hljs-title function_">constructor</span>(<span class="hljs-params"><span class="hljs-keyword">private</span> <span class="hljs-keyword">readonly</span> <span class="hljs-attr">ordersService</span>: <span class="hljs-title class_">OrdersService</span></span>) {}
+
+  <span class="hljs-meta">@Get</span>(<span class="hljs-string">&#x27;:id&#x27;</span>)
+  <span class="hljs-title function_">findOne</span>(<span class="hljs-params"><span class="hljs-meta">@Param</span>(<span class="hljs-string">&#x27;id&#x27;</span>) <span class="hljs-attr">id</span>: <span class="hljs-built_in">string</span></span>) {
+    <span class="hljs-keyword">return</span> <span class="hljs-variable language_">this</span>.<span class="hljs-property">ordersService</span>.<span class="hljs-title function_">findOne</span>(id);
+  }
+}</code></pre></div></figure>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>legacy/orders.router</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> express <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;express&#x27;</span>;
+<span class="hljs-keyword">import</span> { getOrder, listOrders } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./orders.handlers.js&#x27;</span>;
+
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">const</span> ordersRouter = express.<span class="hljs-title class_">Router</span>();
+
+ordersRouter.<span class="hljs-title function_">get</span>(<span class="hljs-string">&#x27;/&#x27;</span>, listOrders);
+<span class="hljs-comment">// ordersRouter.get(&#x27;/:id&#x27;, getOrder); &lt;- deleted: Nest answers GET /orders/:id</span></code></pre></div></figure>
+<p><code>GET /orders</code> is still answered by Express, and <code>GET /orders/:id</code> falls through the Express router to Nest.</p>
+<p><a href="#/doc/nestjs/fundamentals/unit-testing@end-to-end-testing">End-to-end tests</a> cover both kinds of route when the test application is built on the Express app too. Pass the adapter to <code>createNestApplication()</code>, and the same test checks a route before and after it moves:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>test/orders.e2e-spec.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> <span class="hljs-keyword">type</span> { <span class="hljs-title class_">INestApplication</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/common&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">Test</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/testing&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">ExpressAdapter</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/platform-express&#x27;</span>;
+<span class="hljs-keyword">import</span> request <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;supertest&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">AppModule</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;../src/app.module.js&#x27;</span>;
+<span class="hljs-keyword">import</span> { createLegacyApp } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;../src/legacy/app.js&#x27;</span>;
+
+<span class="hljs-title function_">describe</span>(<span class="hljs-string">&#x27;Orders&#x27;</span>, <span class="hljs-function">() =&gt;</span> {
+  <span class="hljs-keyword">let</span> <span class="hljs-attr">app</span>: <span class="hljs-title class_">INestApplication</span>;
+
+  <span class="hljs-title function_">beforeAll</span>(<span class="hljs-title function_">async</span> () =&gt; {
+    <span class="hljs-keyword">const</span> moduleRef = <span class="hljs-keyword">await</span> <span class="hljs-title class_">Test</span>.<span class="hljs-title function_">createTestingModule</span>({
+      <span class="hljs-attr">imports</span>: [<span class="hljs-title class_">AppModule</span>],
+    }).<span class="hljs-title function_">compile</span>();
+    app = moduleRef.<span class="hljs-title function_">createNestApplication</span>(<span class="hljs-keyword">new</span> <span class="hljs-title class_">ExpressAdapter</span>(<span class="hljs-title function_">createLegacyApp</span>()));
+    <span class="hljs-keyword">await</span> app.<span class="hljs-title function_">init</span>();
+  });
+
+  <span class="hljs-title function_">it</span>(<span class="hljs-string">&#x27;lists orders (Express)&#x27;</span>, <span class="hljs-function">() =&gt;</span> {
+    <span class="hljs-keyword">return</span> <span class="hljs-title function_">request</span>(app.<span class="hljs-title function_">getHttpServer</span>()).<span class="hljs-title function_">get</span>(<span class="hljs-string">&#x27;/orders&#x27;</span>).<span class="hljs-title function_">expect</span>(<span class="hljs-number">200</span>);
+  });
+
+  <span class="hljs-title function_">it</span>(<span class="hljs-string">&#x27;returns one order (Nest)&#x27;</span>, <span class="hljs-function">() =&gt;</span> {
+    <span class="hljs-keyword">return</span> <span class="hljs-title function_">request</span>(app.<span class="hljs-title function_">getHttpServer</span>())
+      .<span class="hljs-title function_">get</span>(<span class="hljs-string">&#x27;/orders/ord_1001&#x27;</span>)
+      .<span class="hljs-title function_">set</span>(<span class="hljs-string">&#x27;Authorization&#x27;</span>, <span class="hljs-string">&#x27;Bearer test-token&#x27;</span>)
+      .<span class="hljs-title function_">expect</span>(<span class="hljs-number">200</span>);
+  });
+
+  <span class="hljs-title function_">afterAll</span>(<span class="hljs-title function_">async</span> () =&gt; {
+    <span class="hljs-keyword">await</span> app.<span class="hljs-title function_">close</span>();
+  });
+});</code></pre></div></figure>
+<h5 id="share-code-between-the-two">Share code between the two</h5>
+<p>The Express app already has objects that Nest code needs, such as a database pool, repositories, or a mailer. Register them as <a href="#/doc/nestjs/fundamentals/dependency-injection@value-providers-usevalue">value providers</a>, so that Nest injects the same instances the Express code uses:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>legacy/legacy.module</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { <span class="hljs-title class_">Global</span>, <span class="hljs-title class_">Module</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/common&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">OrdersRepository</span>, ordersRepository } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;./orders.repository.js&#x27;</span>;
+
+<span class="hljs-meta">@Global</span>()
+<span class="hljs-meta">@Module</span>({
+  <span class="hljs-attr">providers</span>: [{ <span class="hljs-attr">provide</span>: <span class="hljs-title class_">OrdersRepository</span>, <span class="hljs-attr">useValue</span>: ordersRepository }],
+  <span class="hljs-attr">exports</span>: [<span class="hljs-title class_">OrdersRepository</span>],
+})
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">LegacyModule</span> {}</code></pre></div></figure>
+<p>Import <code>LegacyModule</code> once in <code>AppModule</code>, and any provider can inject <code>OrdersRepository</code> by its class.</p>
+<p>It works the other way too. Once <code>NestFactory.create()</code> returns, <code>app.get()</code> returns any provider, so a route that stays in Express can call logic that has already moved into a Nest service. Add the route before <code>listen()</code>, and it comes before Nest&#39;s routes like the rest of the Express app:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>main.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">const</span> legacyApp = <span class="hljs-title function_">createLegacyApp</span>();
+<span class="hljs-keyword">const</span> app = <span class="hljs-keyword">await</span> <span class="hljs-title class_">NestFactory</span>.<span class="hljs-title function_">create</span>(<span class="hljs-title class_">AppModule</span>, <span class="hljs-keyword">new</span> <span class="hljs-title class_">ExpressAdapter</span>(legacyApp));
+legacyApp.<span class="hljs-title function_">use</span>(<span class="hljs-string">&#x27;/reports&#x27;</span>, <span class="hljs-title function_">reportsRouter</span>(app.<span class="hljs-title function_">get</span>(<span class="hljs-title class_">ReportsService</span>)));
+<span class="hljs-keyword">await</span> app.<span class="hljs-title function_">listen</span>(process.<span class="hljs-property">env</span>.<span class="hljs-property">PORT</span> ?? <span class="hljs-number">3000</span>);</code></pre></div></figure>
+<h5 id="finish-the-migration">Finish the migration</h5>
+<p>When the Express routers are empty, move what&#39;s left of the Express app into Nest: middleware into <a href="#/doc/nestjs/middlewares">Nest middleware</a> or <code>app.use()</code>, and the error handler into an <a href="#/doc/nestjs/exception-filters">exception filter</a>. Then delete the <code>legacy</code> folder, and create the application without an adapter argument:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">const</span> app = <span class="hljs-keyword">await</span> <span class="hljs-title class_">NestFactory</span>.<span class="hljs-title function_">create</span>(<span class="hljs-title class_">AppModule</span>);</code></pre></div></figure>
+<h4 id="all-at-once">All at once</h4>
+<p>A new Nest application replaces the Express app in one release. Until then the Express app stays as it is, on whichever version of Express it runs, and it&#39;s the reference for what the new application must do.</p>
+<p>Most of the risk isn&#39;t in the translation, because a wrong translation usually fails loudly. It&#39;s in what changes without an error: a status code, the shape of an error response, how a query string is parsed. So the migration starts with tests that notice those changes.</p>
+<h5 id="pin-the-api-with-tests">Pin the API with tests</h5>
+<p>Write tests that know only URLs, so that the same tests run against both applications. Go through every router and <code>app.use()</code> call, and cover each route&#39;s status code, body and important headers, for failures as well as successes:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> assert <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;node:assert/strict&#x27;</span>;
+<span class="hljs-keyword">import</span> { test } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;node:test&#x27;</span>;
+
+<span class="hljs-keyword">const</span> <span class="hljs-variable constant_">BASE</span> = process.<span class="hljs-property">env</span>.<span class="hljs-property">BASE_URL</span> ?? <span class="hljs-string">&#x27;http://localhost:3000&#x27;</span>;
+
+<span class="hljs-title function_">test</span>(<span class="hljs-string">&#x27;creating an order answers 200&#x27;</span>, <span class="hljs-title function_">async</span> () =&gt; {
+  <span class="hljs-keyword">const</span> res = <span class="hljs-keyword">await</span> <span class="hljs-title function_">fetch</span>(<span class="hljs-string">`<span class="hljs-subst">${BASE}</span>/api/orders`</span>, {
+    <span class="hljs-attr">method</span>: <span class="hljs-string">&#x27;POST&#x27;</span>,
+    <span class="hljs-attr">headers</span>: { <span class="hljs-string">&#x27;content-type&#x27;</span>: <span class="hljs-string">&#x27;application/json&#x27;</span>, <span class="hljs-attr">authorization</span>: <span class="hljs-string">`Bearer <span class="hljs-subst">${token}</span>`</span> },
+    <span class="hljs-attr">body</span>: <span class="hljs-title class_">JSON</span>.<span class="hljs-title function_">stringify</span>({ <span class="hljs-attr">total</span>: <span class="hljs-number">10</span> }),
+  });
+  assert.<span class="hljs-title function_">equal</span>(res.<span class="hljs-property">status</span>, <span class="hljs-number">200</span>);
+  assert.<span class="hljs-title function_">equal</span>((<span class="hljs-keyword">await</span> res.<span class="hljs-title function_">json</span>()).<span class="hljs-property">status</span>, <span class="hljs-string">&#x27;pending&#x27;</span>);
+});
+
+<span class="hljs-title function_">test</span>(<span class="hljs-string">&#x27;errors keep their shape&#x27;</span>, <span class="hljs-title function_">async</span> () =&gt; {
+  <span class="hljs-keyword">const</span> res = <span class="hljs-keyword">await</span> <span class="hljs-title function_">fetch</span>(<span class="hljs-string">`<span class="hljs-subst">${BASE}</span>/api/orders/nope`</span>, {
+    <span class="hljs-attr">headers</span>: { <span class="hljs-attr">authorization</span>: <span class="hljs-string">`Bearer <span class="hljs-subst">${token}</span>`</span> },
+  });
+  assert.<span class="hljs-title function_">equal</span>(res.<span class="hljs-property">status</span>, <span class="hljs-number">404</span>);
+  assert.<span class="hljs-title function_">deepEqual</span>(<span class="hljs-keyword">await</span> res.<span class="hljs-title function_">json</span>(), {
+    <span class="hljs-attr">error</span>: { <span class="hljs-attr">code</span>: <span class="hljs-string">&#x27;ORDER_NOT_FOUND&#x27;</span>, <span class="hljs-attr">message</span>: <span class="hljs-string">&#x27;Order nope not found&#x27;</span> },
+  });
+});</code></pre></div></figure>
+<p>Run them against the Express app until they all pass, before writing any Nest code:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Terminal</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-bash">$ BASE_URL=http://localhost:3000 node --<span class="hljs-built_in">test</span> <span class="hljs-built_in">test</span>/contract.test.mjs</code></pre></div></figure>
+<h5 id="translate-the-application">Translate the application</h5>
+<p>Create the Nest application with <code>nest new</code> next to the Express one, and move each router to a controller:</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Express</th>
+<th>Nest</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>express.Router()</code> for a resource</td>
+<td>A <a href="#/doc/nestjs/controllers">controller</a> in a <a href="#/doc/nestjs/modules">module</a> (<code>nest generate resource</code>)</td>
+</tr>
+<tr>
+<td><code>router.get(&#39;/:id&#39;, handler)</code></td>
+<td><code>@Get(&#39;:id&#39;)</code> on a method</td>
+</tr>
+<tr>
+<td><code>req.params</code>, <code>req.query</code>, <code>req.body</code></td>
+<td><code>@Param()</code>, <code>@Query()</code>, <code>@Body()</code></td>
+</tr>
+<tr>
+<td>Validating <code>req.body</code> by hand</td>
+<td>A <a href="#/doc/nestjs/application/validation">schema or a DTO</a>, or keep the check if the tests pin its status and message</td>
+</tr>
+<tr>
+<td>Authentication middleware that sets <code>req.user</code></td>
+<td>A <a href="#/doc/nestjs/guards">guard</a> that sets it, and a <a href="#/doc/nestjs/custom-decorators">custom decorator</a> that reads it</td>
+</tr>
+<tr>
+<td><code>requireRole(&#39;admin&#39;)</code></td>
+<td>Metadata on the route, read by a guard</td>
+</tr>
+<tr>
+<td><code>router.param(&#39;id&#39;, load)</code></td>
+<td>A <a href="#/doc/nestjs/pipes">pipe</a>: <code>@Param(&#39;id&#39;, OrderByIdPipe)</code>. Guards run before pipes, so authentication still comes first</td>
+</tr>
+<tr>
+<td><code>res.json(x)</code></td>
+<td><code>return x</code>, with <code>@HttpCode()</code> when the status isn&#39;t the default</td>
+</tr>
+<tr>
+<td><code>res.status(204).end()</code></td>
+<td><code>@HttpCode(204)</code>, and return nothing</td>
+</tr>
+<tr>
+<td><code>res.redirect(301, url)</code></td>
+<td><code>@Redirect(url, 301)</code></td>
+</tr>
+<tr>
+<td><code>res.cookie()</code></td>
+<td><code>@Res({ passthrough: true }) res</code>, then <code>res.cookie()</code> and <code>return</code> as usual</td>
+</tr>
+<tr>
+<td><code>res.type()</code>, <code>res.attachment()</code></td>
+<td><code>@Header()</code></td>
+</tr>
+<tr>
+<td><code>res.write()</code></td>
+<td><code>@Res() res</code>, then write to it as in Express</td>
+</tr>
+<tr>
+<td><code>next(err)</code></td>
+<td><code>throw err</code>, handled by an <a href="#/doc/nestjs/exception-filters">exception filter</a></td>
+</tr>
+<tr>
+<td>The error handler and catch-all <code>404</code></td>
+<td>One global exception filter</td>
+</tr>
+<tr>
+<td><code>app.use(helmet())</code></td>
+<td><code>app.use(helmet())</code></td>
+</tr>
+<tr>
+<td><code>app.use(cors(options))</code></td>
+<td><code>app.enableCors(options)</code></td>
+</tr>
+<tr>
+<td><code>express.static(dir)</code></td>
+<td><code>app.useStaticAssets(dir, { prefix })</code></td>
+</tr>
+<tr>
+<td><code>multer(options).single(&#39;file&#39;)</code></td>
+<td><code>@UseInterceptors(FileInterceptor(&#39;file&#39;, options))</code> and <code>@UploadedFile()</code></td>
+</tr>
+<tr>
+<td>Modules holding a database pool or a mailer</td>
+<td><a href="#/doc/nestjs/fundamentals/dependency-injection@value-providers-usevalue">Value providers</a>, at first, then services</td>
+</tr>
+</tbody></table></div>
+<p>A router with authentication, a role check and a parameter handler becomes:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>orders/orders.controller</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-meta">@Controller</span>(<span class="hljs-string">&#x27;api/orders&#x27;</span>)
+<span class="hljs-meta">@UseGuards</span>(<span class="hljs-title class_">AuthGuard</span>, <span class="hljs-title class_">RoleGuard</span>)
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">OrdersController</span> {
+  <span class="hljs-meta">@Post</span>()
+  <span class="hljs-meta">@HttpCode</span>(<span class="hljs-number">200</span>) <span class="hljs-comment">// Express answered 200, and a client depends on it</span>
+  <span class="hljs-title function_">create</span>(<span class="hljs-params"><span class="hljs-meta">@CurrentUser</span>() <span class="hljs-attr">user</span>: <span class="hljs-title class_">User</span>, <span class="hljs-meta">@Body</span>() <span class="hljs-attr">body</span>?: <span class="hljs-title class_">CreateOrderBody</span></span>) {
+    <span class="hljs-keyword">const</span> { total, tags } = body ?? {};
+    <span class="hljs-keyword">if</span> (<span class="hljs-keyword">typeof</span> total !== <span class="hljs-string">&#x27;number&#x27;</span> || total &lt;= <span class="hljs-number">0</span>) {
+      <span class="hljs-keyword">throw</span> <span class="hljs-keyword">new</span> <span class="hljs-title class_">ApiError</span>(<span class="hljs-number">422</span>, <span class="hljs-string">&#x27;INVALID_TOTAL&#x27;</span>, <span class="hljs-string">&#x27;total must be a positive number&#x27;</span>);
+    }
+    <span class="hljs-keyword">return</span> <span class="hljs-title function_">createOrder</span>(user.<span class="hljs-property">id</span>, total, tags);
+  }
+
+  <span class="hljs-meta">@Get</span>(<span class="hljs-string">&#x27;summary&#x27;</span>) <span class="hljs-comment">// Declared before &#x27;:orderId&#x27;, which would match it too</span>
+  <span class="hljs-meta">@Role</span>(<span class="hljs-string">&#x27;admin&#x27;</span>)
+  <span class="hljs-title function_">summary</span>(<span class="hljs-params"></span>) {
+    <span class="hljs-keyword">return</span> { <span class="hljs-attr">total</span>: orders.<span class="hljs-property">size</span> };
+  }
+
+  <span class="hljs-meta">@Get</span>(<span class="hljs-string">&#x27;:orderId&#x27;</span>)
+  <span class="hljs-title function_">findOne</span>(<span class="hljs-params"><span class="hljs-meta">@CurrentUser</span>() <span class="hljs-attr">user</span>: <span class="hljs-title class_">User</span>, <span class="hljs-meta">@Param</span>(<span class="hljs-string">&#x27;orderId&#x27;</span>, OrderByIdPipe) <span class="hljs-attr">order</span>: <span class="hljs-title class_">Order</span></span>) {
+    <span class="hljs-keyword">if</span> (user.<span class="hljs-property">role</span> !== <span class="hljs-string">&#x27;admin&#x27;</span> &amp;&amp; order.<span class="hljs-property">userId</span> !== user.<span class="hljs-property">id</span>) {
+      <span class="hljs-keyword">throw</span> <span class="hljs-keyword">new</span> <span class="hljs-title class_">ApiError</span>(<span class="hljs-number">403</span>, <span class="hljs-string">&#x27;FORBIDDEN&#x27;</span>, <span class="hljs-string">&#x27;Not your order&#x27;</span>);
+    }
+    <span class="hljs-keyword">return</span> order;
+  }
+}</code></pre></div></figure>
+<h5 id="keep-what-would-change-without-an-error">Keep what would change without an error</h5>
+<p>These are the differences that compile, start and look right, and that your tests have to catch:</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>In Express</th>
+<th>In a Nest application</th>
+<th>To keep the old behavior</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>res.json()</code> answers <code>200</code>, on a <code>POST</code> too</td>
+<td>A <code>POST</code> handler answers <code>201</code></td>
+<td><code>@HttpCode(200)</code></td>
+</tr>
+<tr>
+<td>Errors have the shape your handler gives them</td>
+<td><code>{ statusCode, message, error }</code></td>
+<td>A global exception filter</td>
+</tr>
+<tr>
+<td>An unknown route gets your <code>404</code></td>
+<td><code>NotFoundException</code>, with Nest&#39;s body</td>
+<td>The same filter</td>
+</tr>
+<tr>
+<td>Malformed JSON reaches your handler as <code>entity.parse.failed</code></td>
+<td><code>BadRequestException</code>, which a malformed URL such as <code>/orders/%FF</code> also raises</td>
+<td>The same filter</td>
+</tr>
+<tr>
+<td>A JSON body over 100 kB reaches your handler as <code>entity.too.large</code></td>
+<td>An <code>HttpException</code> with status <code>413</code></td>
+<td>The same filter</td>
+</tr>
+<tr>
+<td>A multer error reaches your handler as <code>MulterError</code></td>
+<td><code>FileInterceptor</code> raises <code>PayloadTooLargeException</code> for a size error, and a <code>400</code> for most others</td>
+<td>The same filter, or run multer yourself</td>
+</tr>
+<tr>
+<td>Only the body formats you added a parser for are read</td>
+<td>JSON and URL-encoded bodies are both read</td>
+<td><code>bodyParser: false</code> in <code>NestFactory.create()</code>, then <code>app.use(express.json())</code></td>
+</tr>
+<tr>
+<td><code>router.use(authenticate)</code> also answers for paths with no route under it</td>
+<td>A guard runs only on routes that exist, so those paths get a <code>404</code></td>
+<td>Keep it as a middleware, with <code>consumer.apply(authenticate).forRoutes(&#39;api/orders/{*path}&#39;)</code>, if clients can tell</td>
+</tr>
+<tr>
+<td><code>router.param()</code> runs before a route&#39;s own middleware, so a missing record is a <code>404</code> for anyone</td>
+<td>Every guard runs before any pipe, so <code>requireRole</code> answers first, with a <code>403</code></td>
+<td>Check the role in the handler, after the pipe, if clients can tell</td>
+</tr>
+<tr>
+<td>On Express 4, <code>?min[total]=10</code> is <code>{ min: { total: &#39;10&#39; } }</code></td>
+<td>Express 5&#39;s parser gives <code>{ &#39;min[total]&#39;: &#39;10&#39; }</code></td>
+<td><code>app.set(&#39;query parser&#39;, &#39;extended&#39;)</code></td>
+</tr>
+<tr>
+<td>On Express 4, a request with no body has <code>req.body</code> as <code>{}</code></td>
+<td><code>@Body()</code> is <code>undefined</code>, so destructuring it throws</td>
+<td><code>body ?? {}</code></td>
+</tr>
+<tr>
+<td><code>res.json(&#39;1.2.3&#39;)</code> sends a JSON string</td>
+<td>Returning a string sends <code>text/html</code></td>
+<td><code>@Res() res</code>, then <code>res.json(&#39;1.2.3&#39;)</code></td>
+</tr>
+</tbody></table></div>
+<p>Route paths have to change too, but those fail loudly: <code>/search/:term?</code> stops the application at startup, and needs <code>search{/:term}</code>. A wildcard needs a name, <code>assets/*path</code>, and <code>@Param(&#39;path&#39;)</code> gives its segments as an array. <code>assets/*path</code> doesn&#39;t match <code>/assets/</code> with nothing after it, so use <code>assets/{*path}</code> if Express 4 answered that path.</p>
+<p>Coming from Express 4 also brings Express 5&#39;s own small changes, which tests that compare exact bytes will find: <code>charset=utf-8</code> where static files said <code>UTF-8</code>, and a different body on redirects. No client should depend on those, so accept them rather than pinning old versions of Express&#39;s libraries to reproduce them.</p>
+<p>The filter and <code>main.ts</code> hold most of it. They must keep your error shape for every error, including the ones Nest raises itself, so check which of them your tests expect. This filter, for example, reports any <code>BadRequestException</code> as malformed JSON:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>common/api-exception.filter</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-meta">@Catch</span>()
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">ApiExceptionFilter</span> <span class="hljs-keyword">implements</span> <span class="hljs-title class_">ExceptionFilter</span> {
+  <span class="hljs-keyword">catch</span>(<span class="hljs-attr">exception</span>: <span class="hljs-built_in">unknown</span>, <span class="hljs-attr">host</span>: <span class="hljs-title class_">ArgumentsHost</span>) {
+    <span class="hljs-keyword">const</span> http = host.<span class="hljs-title function_">switchToHttp</span>();
+    <span class="hljs-keyword">const</span> request = http.<span class="hljs-property">getRequest</span>&lt;<span class="hljs-title class_">Request</span>&gt;();
+    <span class="hljs-keyword">const</span> response = http.<span class="hljs-property">getResponse</span>&lt;<span class="hljs-title class_">Response</span>&gt;();
+    <span class="hljs-keyword">const</span> <span class="hljs-title function_">send</span> = (<span class="hljs-params"><span class="hljs-attr">status</span>: <span class="hljs-built_in">number</span>, <span class="hljs-attr">code</span>: <span class="hljs-built_in">string</span>, <span class="hljs-attr">message</span>: <span class="hljs-built_in">string</span></span>) =&gt;
+      response.<span class="hljs-title function_">status</span>(status).<span class="hljs-title function_">json</span>({ <span class="hljs-attr">error</span>: { code, message } });
+
+    <span class="hljs-keyword">if</span> (exception <span class="hljs-keyword">instanceof</span> <span class="hljs-title class_">ApiError</span>) {
+      <span class="hljs-keyword">return</span> <span class="hljs-title function_">send</span>(exception.<span class="hljs-property">status</span>, exception.<span class="hljs-property">code</span>, exception.<span class="hljs-property">message</span>);
+    }
+    <span class="hljs-keyword">if</span> (exception <span class="hljs-keyword">instanceof</span> <span class="hljs-title class_">NotFoundException</span>) {
+      <span class="hljs-keyword">return</span> <span class="hljs-title function_">send</span>(<span class="hljs-number">404</span>, <span class="hljs-string">&#x27;NOT_FOUND&#x27;</span>, <span class="hljs-string">`No route for <span class="hljs-subst">${request.method}</span> <span class="hljs-subst">${request.path}</span>`</span>);
+    }
+    <span class="hljs-keyword">if</span> (exception <span class="hljs-keyword">instanceof</span> <span class="hljs-title class_">BadRequestException</span>) {
+      <span class="hljs-keyword">return</span> <span class="hljs-title function_">send</span>(<span class="hljs-number">400</span>, <span class="hljs-string">&#x27;BAD_JSON&#x27;</span>, <span class="hljs-string">&#x27;Malformed JSON&#x27;</span>);
+    }
+    <span class="hljs-keyword">if</span> (exception <span class="hljs-keyword">instanceof</span> <span class="hljs-title class_">PayloadTooLargeException</span>) {
+      <span class="hljs-keyword">return</span> <span class="hljs-title function_">send</span>(<span class="hljs-number">413</span>, <span class="hljs-string">&#x27;FILE_TOO_LARGE&#x27;</span>, <span class="hljs-string">&#x27;File too large&#x27;</span>);
+    }
+    <span class="hljs-keyword">if</span> (exception <span class="hljs-keyword">instanceof</span> <span class="hljs-title class_">HttpException</span>) {
+      <span class="hljs-keyword">return</span> <span class="hljs-title function_">send</span>(exception.<span class="hljs-title function_">getStatus</span>(), <span class="hljs-string">&#x27;ERROR&#x27;</span>, exception.<span class="hljs-property">message</span>);
+    }
+    <span class="hljs-variable language_">console</span>.<span class="hljs-title function_">error</span>(exception);
+    <span class="hljs-keyword">return</span> <span class="hljs-title function_">send</span>(<span class="hljs-number">500</span>, <span class="hljs-string">&#x27;INTERNAL&#x27;</span>, <span class="hljs-string">&#x27;Something went wrong&#x27;</span>);
+  }
+}</code></pre></div></figure>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>main.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">async</span> <span class="hljs-keyword">function</span> <span class="hljs-title function_">bootstrap</span>(<span class="hljs-params"></span>) {
+  <span class="hljs-keyword">const</span> app = <span class="hljs-keyword">await</span> <span class="hljs-title class_">NestFactory</span>.<span class="hljs-property">create</span>&lt;<span class="hljs-title class_">NestExpressApplication</span>&gt;(<span class="hljs-title class_">AppModule</span>);
+  app.<span class="hljs-title function_">set</span>(<span class="hljs-string">&#x27;query parser&#x27;</span>, <span class="hljs-string">&#x27;extended&#x27;</span>);
+  app.<span class="hljs-title function_">use</span>(<span class="hljs-title function_">helmet</span>());
+  app.<span class="hljs-title function_">enableCors</span>({ <span class="hljs-attr">origin</span>: <span class="hljs-string">&#x27;https://shop.example.com&#x27;</span>, <span class="hljs-attr">credentials</span>: <span class="hljs-literal">true</span> });
+  app.<span class="hljs-title function_">useStaticAssets</span>(<span class="hljs-title function_">join</span>(<span class="hljs-keyword">import</span>.<span class="hljs-property">meta</span>.<span class="hljs-property">dirname</span>, <span class="hljs-string">&#x27;..&#x27;</span>, <span class="hljs-string">&#x27;public&#x27;</span>), { <span class="hljs-attr">prefix</span>: <span class="hljs-string">&#x27;/static&#x27;</span> });
+  app.<span class="hljs-title function_">useGlobalFilters</span>(<span class="hljs-keyword">new</span> <span class="hljs-title class_">ApiExceptionFilter</span>());
+  <span class="hljs-keyword">await</span> app.<span class="hljs-title function_">listen</span>(process.<span class="hljs-property">env</span>.<span class="hljs-property">PORT</span> ?? <span class="hljs-number">3000</span>);
+}
+
+<span class="hljs-keyword">await</span> <span class="hljs-title function_">bootstrap</span>();</code></pre></div></figure>
+<h5 id="switch-over">Switch over</h5>
+<p>Run the same tests against the Nest application, and fix the application rather than the tests:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Terminal</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-bash">$ BASE_URL=http://localhost:3001 node --<span class="hljs-built_in">test</span> <span class="hljs-built_in">test</span>/contract.test.mjs</code></pre></div></figure>
+<p>When they pass, deploy it in place of the Express app, and keep the last Express release deployable until the new one has served real traffic.</p>
+<h4 id="give-it-to-a-coding-agent">Give it to a coding agent</h4>
+<p>Either approach works with a coding agent, and all at once is the better fit when the application is small enough to review in one change. Point the agent at this page and hold it to the tests, so that it can&#39;t declare success on code that merely compiles:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Terminal</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-bash">Migrate this Express application to NestJS all at once, following
+https://docs.nestjs.com/recipes/express-migration.md.
+
+1. Before changing anything, write black-box HTTP tests that cover every
+   route: status codes, bodies and important headers, failures included.
+   Run them against the Express app <span class="hljs-keyword">until</span> they all pass.
+2. Build the Nest application next to it, using the page<span class="hljs-string">&#x27;s translation table.
+3. Check every row of &quot;Keep what would change without an error&quot;.
+4. Run the same tests against the Nest application. Don&#x27;</span>t edit a <span class="hljs-built_in">test</span> to
+   make it pass. If behavior has to change, stop and tell me.</code></pre></div></figure>

@@ -1,0 +1,252 @@
+<p>An interceptor is a class annotated with the <code>@Injectable()</code> decorator that implements the <code>NestInterceptor</code> interface.</p>
+<figure><img class="illustrative-image" src="assets/docs/Interceptors_1.png" loading="lazy" /></figure><p>Interceptors offer a set of capabilities inspired by the <a target="_blank" rel="noopener" href="https://en.wikipedia.org/wiki/Aspect-oriented_programming">Aspect Oriented Programming</a> (AOP) technique. They make it possible to:</p>
+<ul>
+<li>bind extra logic before or after method execution</li>
+<li>transform the result returned from a function</li>
+<li>transform the exception thrown from a function</li>
+<li>extend the basic function behavior</li>
+<li>completely override a function depending on specific conditions (e.g., for caching purposes)</li>
+</ul>
+<h4 id="basics">Basics</h4>
+<p>Each interceptor implements the <code>intercept()</code> method, which takes two arguments. The first is the <code>ExecutionContext</code> instance (exactly the same object as for <a href="#/doc/nestjs/guards">guards</a>). <code>ExecutionContext</code> extends <code>ArgumentsHost</code>, which we covered in the exception filters chapter. There, we saw that it&#39;s a wrapper around the arguments passed to the original handler, and that it contains different argument arrays depending on the type of application. See the <a href="#/doc/nestjs/exception-filters@arguments-host">exception filters</a> chapter for more on this topic.</p>
+<h4 id="execution-context">Execution context</h4>
+<p>By extending <code>ArgumentsHost</code>, <code>ExecutionContext</code> adds several helper methods that provide additional details about the current execution process. These details help you build more generic interceptors that work across a broad set of controllers, methods, and execution contexts. See the <a href="#/doc/nestjs/fundamentals/execution-context">execution context</a> chapter to learn more about <code>ExecutionContext</code>.</p>
+<h4 id="call-handler">Call handler</h4>
+<p>The second argument is a <code>CallHandler</code>. The <code>CallHandler</code> interface exposes a <code>handle()</code> method, which you use to invoke the route handler method at some point in your interceptor. If you don&#39;t call <code>handle()</code> in your implementation of the <code>intercept()</code> method, the route handler method won&#39;t be executed at all.</p>
+<p>This means that the <code>intercept()</code> method effectively <strong>wraps</strong> the request/response stream. As a result, you can implement custom logic <strong>both before and after</strong> the execution of the final route handler. Running code <strong>before</strong> the handler is straightforward: place it before the <code>handle()</code> call. To act on what happens afterward, use the <code>Observable</code> that <code>handle()</code> returns: you can apply <a target="_blank" rel="noopener" href="https://github.com/ReactiveX/rxjs">RxJS</a> operators to it to further manipulate the response. In Aspect Oriented Programming terminology, the invocation of the route handler (i.e., calling <code>handle()</code>) is called a <a target="_blank" rel="noopener" href="https://en.wikipedia.org/wiki/Pointcut">Pointcut</a>, indicating that it&#39;s the point at which our additional logic is inserted.</p>
+<p>Consider, for example, an incoming <code>POST /cats</code> request. This request is destined for the <code>create()</code> handler defined inside <code>CatsController</code>. If an interceptor that doesn&#39;t call <code>handle()</code> is invoked anywhere along the way, the <code>create()</code> method won&#39;t be executed. Once <code>handle()</code> is called and the <code>Observable</code> it returns is subscribed to (Nest subscribes to the stream your <code>intercept()</code> method returns), the <code>create()</code> handler is triggered. As the handler&#39;s result flows through the stream, you can apply additional operations to it before the final result is returned to the caller.</p>
+<h4 id="aspect-interception">Aspect interception</h4>
+<p>The first use case we&#39;ll look at is using an interceptor to log user interaction (e.g., storing user calls, asynchronously dispatching events, or calculating a timestamp). The following example shows a simple <code>LoggingInterceptor</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>logging.interceptor</span></span><span class="code-head-r"><span class="code-tabs" role="tablist"><button type="button" role="tab" data-lang-tab="0" class="on">TypeScript</button><button type="button" role="tab" data-lang-tab="1" class="">JavaScript</button></span><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { <span class="hljs-title class_">Injectable</span>, <span class="hljs-title class_">NestInterceptor</span>, <span class="hljs-title class_">ExecutionContext</span>, <span class="hljs-title class_">CallHandler</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/common&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">Observable</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;rxjs&#x27;</span>;
+<span class="hljs-keyword">import</span> { tap } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;rxjs/operators&#x27;</span>;
+
+<span class="hljs-meta">@Injectable</span>()
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">LoggingInterceptor</span> <span class="hljs-keyword">implements</span> <span class="hljs-title class_">NestInterceptor</span> {
+  <span class="hljs-title function_">intercept</span>(<span class="hljs-attr">context</span>: <span class="hljs-title class_">ExecutionContext</span>, <span class="hljs-attr">next</span>: <span class="hljs-title class_">CallHandler</span>): <span class="hljs-title class_">Observable</span>&lt;<span class="hljs-built_in">any</span>&gt; {
+    <span class="hljs-variable language_">console</span>.<span class="hljs-title function_">log</span>(<span class="hljs-string">&#x27;Before...&#x27;</span>);
+
+    <span class="hljs-keyword">const</span> now = <span class="hljs-title class_">Date</span>.<span class="hljs-title function_">now</span>();
+    <span class="hljs-keyword">return</span> next
+      .<span class="hljs-title function_">handle</span>()
+      .<span class="hljs-title function_">pipe</span>(
+        <span class="hljs-title function_">tap</span>(<span class="hljs-function">() =&gt;</span> <span class="hljs-variable language_">console</span>.<span class="hljs-title function_">log</span>(<span class="hljs-string">`After... <span class="hljs-subst">${<span class="hljs-built_in">Date</span>.now() - now}</span>ms`</span>)),
+      );
+  }
+}</code></pre></div><div class="code-pane" data-pane="1" hidden><pre><code class="hljs language-typescript">
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">Injectable</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/common&#x27;</span>;
+<span class="hljs-keyword">import</span> { tap } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;rxjs/operators&#x27;</span>;
+
+<span class="hljs-meta">@Injectable</span>()
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">LoggingInterceptor</span> {
+  <span class="hljs-title function_">intercept</span>(<span class="hljs-params">context, next</span>) {
+    <span class="hljs-variable language_">console</span>.<span class="hljs-title function_">log</span>(<span class="hljs-string">&#x27;Before...&#x27;</span>);
+
+    <span class="hljs-keyword">const</span> now = <span class="hljs-title class_">Date</span>.<span class="hljs-title function_">now</span>();
+    <span class="hljs-keyword">return</span> next
+      .<span class="hljs-title function_">handle</span>()
+      .<span class="hljs-title function_">pipe</span>(
+        <span class="hljs-title function_">tap</span>(<span class="hljs-function">() =&gt;</span> <span class="hljs-variable language_">console</span>.<span class="hljs-title function_">log</span>(<span class="hljs-string">`After... <span class="hljs-subst">${<span class="hljs-built_in">Date</span>.now() - now}</span>ms`</span>)),
+      );
+  }
+}</code></pre></div></figure>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Hint</p><p><code>NestInterceptor&lt;T, R&gt;</code> is a generic interface in which <code>T</code> is the type of the values emitted by the <code>Observable&lt;T&gt;</code> that <code>next.handle()</code> returns (the response stream), and <code>R</code> is the type of the values emitted by the <code>Observable&lt;R&gt;</code> that <code>intercept()</code> returns.</p>
+</div></aside>
+<aside class="callout callout-warning"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 4 2.8 20h18.4L12 4z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M12 10v4.4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="17" r="1.3" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Notice</p><p>Interceptors, like controllers, providers, guards, and so on, can <strong>inject dependencies</strong> through their <code>constructor</code>.</p>
+</div></aside>
+<p>Since <code>handle()</code> returns an RxJS <code>Observable</code>, you can choose from a wide range of operators to manipulate the stream. The example above uses the <code>tap()</code> operator, which calls our logging function when the stream emits the route handler&#39;s result, without otherwise interfering with the response cycle. Note that this function is not called if the route handler throws; to run logic in that case as well, pass an observer object with an <code>error</code> callback to <code>tap()</code>, or use the <code>finalize()</code> operator.</p>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Hint</p><p>Timing a handler by hand, as above, is a minimal version of what an APM does. <a target="_blank" rel="noopener" href="https://www.observe.nestjs.com/" title="NestJS Observe">NestJS Observe</a> records the same measurement for every controller, provider, and queue consumer, with no interceptor to write or bind. It also records the time each one spent on its own, with everything it awaited subtracted out. See the <a href="#/doc/nestjs/observability/overview">Observability</a> chapter.</p>
+</div></aside>
+<h4 id="binding-interceptors">Binding interceptors</h4>
+<p>To set up the interceptor, use the <code>@UseInterceptors()</code> decorator. Like <a href="#/doc/nestjs/pipes">pipes</a> and <a href="#/doc/nestjs/guards">guards</a>, interceptors can be controller-scoped, method-scoped, or global-scoped.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>cats.controller</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-meta">@UseInterceptors</span>(<span class="hljs-title class_">LoggingInterceptor</span>)
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">CatsController</span> {}</code></pre></div></figure>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Hint</p><p>The <code>@UseInterceptors()</code> decorator is imported from the <code>@nestjs/common</code> package.</p>
+</div></aside>
+<p>With the construction above, each route handler defined in <code>CatsController</code> uses <code>LoggingInterceptor</code>. When a client calls the <code>GET /cats</code> endpoint, you&#39;ll see the following in standard output:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-title class_">Before</span>...
+<span class="hljs-title class_">After</span>... 1ms</code></pre></div></figure>
+<p>Note that we passed the <code>LoggingInterceptor</code> class (instead of an instance), leaving responsibility for instantiation to the framework and enabling dependency injection. As with pipes, guards, and exception filters, you can also pass an in-place instance:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>cats.controller</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-meta">@UseInterceptors</span>(<span class="hljs-keyword">new</span> <span class="hljs-title class_">LoggingInterceptor</span>())
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">CatsController</span> {}</code></pre></div></figure>
+<p>The construction above attaches the interceptor to every handler declared by this controller. To restrict the interceptor to a single method, apply the decorator at the <strong>method level</strong>.</p>
+<p>To set up a global interceptor, use the <code>useGlobalInterceptors()</code> method of the Nest application instance:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">const</span> app = <span class="hljs-keyword">await</span> <span class="hljs-title class_">NestFactory</span>.<span class="hljs-title function_">create</span>(<span class="hljs-title class_">AppModule</span>);
+app.<span class="hljs-title function_">useGlobalInterceptors</span>(<span class="hljs-keyword">new</span> <span class="hljs-title class_">LoggingInterceptor</span>());</code></pre></div></figure>
+<p>Global interceptors apply to every controller and every route handler in the application. However, a global interceptor registered outside of any module (with <code>useGlobalInterceptors()</code>, as in the example above) cannot inject dependencies, because the registration happens outside the context of any module. To solve this, register the interceptor <strong>directly from any module</strong> using the following construction:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app.module</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { <span class="hljs-title class_">Module</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/common&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-variable constant_">APP_INTERCEPTOR</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/core&#x27;</span>;
+
+<span class="hljs-meta">@Module</span>({
+  <span class="hljs-attr">providers</span>: [
+    {
+      <span class="hljs-attr">provide</span>: <span class="hljs-variable constant_">APP_INTERCEPTOR</span>,
+      <span class="hljs-attr">useClass</span>: <span class="hljs-title class_">LoggingInterceptor</span>,
+    },
+  ],
+})
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">AppModule</span> {}</code></pre></div></figure>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Hint</p><p>When you use this approach to perform dependency injection for the interceptor, the interceptor is global regardless of the module in which you register it. We recommend registering it in the module where the interceptor (<code>LoggingInterceptor</code> in the example above) is defined. Also, <code>useClass</code> is not the only way to register a custom provider. See <a href="#/doc/nestjs/fundamentals/dependency-injection">Custom providers</a> to learn more.</p>
+</div></aside>
+<h4 id="response-mapping">Response mapping</h4>
+<p>The stream returned by <code>handle()</code> contains the value <strong>returned</strong> from the route handler, so you can transform it with RxJS&#39;s <code>map()</code> operator.</p>
+<aside class="callout callout-warning"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 4 2.8 20h18.4L12 4z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M12 10v4.4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="17" r="1.3" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Warning</p><p>Response mapping doesn&#39;t work with the library-specific response strategy, i.e., when a route handler injects the response object with <code>@Res()</code> and sends the response itself. To combine the two, enable the <code>passthrough</code> option (see <a href="#/doc/nestjs/controllers@library-specific-approach">Library-specific approach</a>).</p>
+</div></aside>
+<p>Let&#39;s create a <code>TransformInterceptor</code> that modifies each response in a trivial way to demonstrate the process. It uses RxJS&#39;s <code>map()</code> operator to assign the response object to the <code>data</code> property of a newly created object, and returns the new object to the client.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>transform.interceptor</span></span><span class="code-head-r"><span class="code-tabs" role="tablist"><button type="button" role="tab" data-lang-tab="0" class="on">TypeScript</button><button type="button" role="tab" data-lang-tab="1" class="">JavaScript</button></span><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { <span class="hljs-title class_">Injectable</span>, <span class="hljs-title class_">NestInterceptor</span>, <span class="hljs-title class_">ExecutionContext</span>, <span class="hljs-title class_">CallHandler</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/common&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">Observable</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;rxjs&#x27;</span>;
+<span class="hljs-keyword">import</span> { map } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;rxjs/operators&#x27;</span>;
+
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">interface</span> <span class="hljs-title class_">Response</span>&lt;T&gt; {
+  <span class="hljs-attr">data</span>: T;
+}
+
+<span class="hljs-meta">@Injectable</span>()
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">TransformInterceptor</span>&lt;T&gt; <span class="hljs-keyword">implements</span> <span class="hljs-title class_">NestInterceptor</span>&lt;T, <span class="hljs-title class_">Response</span>&lt;T&gt;&gt; {
+  <span class="hljs-title function_">intercept</span>(<span class="hljs-attr">context</span>: <span class="hljs-title class_">ExecutionContext</span>, <span class="hljs-attr">next</span>: <span class="hljs-title class_">CallHandler</span>): <span class="hljs-title class_">Observable</span>&lt;<span class="hljs-title class_">Response</span>&lt;T&gt;&gt; {
+    <span class="hljs-keyword">return</span> next.<span class="hljs-title function_">handle</span>().<span class="hljs-title function_">pipe</span>(<span class="hljs-title function_">map</span>(<span class="hljs-function"><span class="hljs-params">data</span> =&gt;</span> ({ data })));
+  }
+}</code></pre></div><div class="code-pane" data-pane="1" hidden><pre><code class="hljs language-typescript">
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">Injectable</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/common&#x27;</span>;
+<span class="hljs-keyword">import</span> { map } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;rxjs/operators&#x27;</span>;
+
+<span class="hljs-meta">@Injectable</span>()
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">TransformInterceptor</span> {
+  <span class="hljs-title function_">intercept</span>(<span class="hljs-params">context, next</span>) {
+    <span class="hljs-keyword">return</span> next.<span class="hljs-title function_">handle</span>().<span class="hljs-title function_">pipe</span>(<span class="hljs-title function_">map</span>(<span class="hljs-function"><span class="hljs-params">data</span> =&gt;</span> ({ data })));
+  }
+}</code></pre></div></figure>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Hint</p><p>The <code>intercept()</code> method can be synchronous or asynchronous. Declare it <code>async</code> if you need to await something before returning the stream.</p>
+</div></aside>
+<p>With this interceptor bound, a <code>GET /cats</code> request whose route handler returns an empty array <code>[]</code> produces the following response:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JSON</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-json"><span class="hljs-punctuation">{</span>
+  <span class="hljs-attr">&quot;data&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-punctuation">[</span><span class="hljs-punctuation">]</span>
+<span class="hljs-punctuation">}</span></code></pre></div></figure>
+<p>Interceptors are well suited to building reusable solutions for requirements that span the entire application. For example, imagine you need to replace every <code>null</code> response value with an empty string <code>&#39;&#39;</code>. You can do this with one line of code, and bind the interceptor globally so that every registered handler uses it automatically.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><span class="code-tabs" role="tablist"><button type="button" role="tab" data-lang-tab="0" class="on">TypeScript</button><button type="button" role="tab" data-lang-tab="1" class="">JavaScript</button></span><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { <span class="hljs-title class_">Injectable</span>, <span class="hljs-title class_">NestInterceptor</span>, <span class="hljs-title class_">ExecutionContext</span>, <span class="hljs-title class_">CallHandler</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/common&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">Observable</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;rxjs&#x27;</span>;
+<span class="hljs-keyword">import</span> { map } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;rxjs/operators&#x27;</span>;
+
+<span class="hljs-meta">@Injectable</span>()
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">ExcludeNullInterceptor</span> <span class="hljs-keyword">implements</span> <span class="hljs-title class_">NestInterceptor</span> {
+  <span class="hljs-title function_">intercept</span>(<span class="hljs-attr">context</span>: <span class="hljs-title class_">ExecutionContext</span>, <span class="hljs-attr">next</span>: <span class="hljs-title class_">CallHandler</span>): <span class="hljs-title class_">Observable</span>&lt;<span class="hljs-built_in">any</span>&gt; {
+    <span class="hljs-keyword">return</span> next
+      .<span class="hljs-title function_">handle</span>()
+      .<span class="hljs-title function_">pipe</span>(<span class="hljs-title function_">map</span>(<span class="hljs-function"><span class="hljs-params">value</span> =&gt;</span> value === <span class="hljs-literal">null</span> ? <span class="hljs-string">&#x27;&#x27;</span> : value ));
+  }
+}</code></pre></div><div class="code-pane" data-pane="1" hidden><pre><code class="hljs language-typescript">
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">Injectable</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/common&#x27;</span>;
+<span class="hljs-keyword">import</span> { map } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;rxjs/operators&#x27;</span>;
+
+<span class="hljs-meta">@Injectable</span>()
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">ExcludeNullInterceptor</span> {
+  <span class="hljs-title function_">intercept</span>(<span class="hljs-params">context, next</span>) {
+    <span class="hljs-keyword">return</span> next
+      .<span class="hljs-title function_">handle</span>()
+      .<span class="hljs-title function_">pipe</span>(<span class="hljs-title function_">map</span>(<span class="hljs-function"><span class="hljs-params">value</span> =&gt;</span> value === <span class="hljs-literal">null</span> ? <span class="hljs-string">&#x27;&#x27;</span> : value ));
+  }
+}</code></pre></div></figure>
+<h4 id="exception-mapping">Exception mapping</h4>
+<p>Another use case is overriding thrown exceptions with RxJS&#39;s <code>catchError()</code> operator:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>errors.interceptor</span></span><span class="code-head-r"><span class="code-tabs" role="tablist"><button type="button" role="tab" data-lang-tab="0" class="on">TypeScript</button><button type="button" role="tab" data-lang-tab="1" class="">JavaScript</button></span><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> {
+  <span class="hljs-title class_">Injectable</span>,
+  <span class="hljs-title class_">NestInterceptor</span>,
+  <span class="hljs-title class_">ExecutionContext</span>,
+  <span class="hljs-title class_">BadGatewayException</span>,
+  <span class="hljs-title class_">CallHandler</span>,
+} <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/common&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">Observable</span>, throwError } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;rxjs&#x27;</span>;
+<span class="hljs-keyword">import</span> { catchError } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;rxjs/operators&#x27;</span>;
+
+<span class="hljs-meta">@Injectable</span>()
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">ErrorsInterceptor</span> <span class="hljs-keyword">implements</span> <span class="hljs-title class_">NestInterceptor</span> {
+  <span class="hljs-title function_">intercept</span>(<span class="hljs-attr">context</span>: <span class="hljs-title class_">ExecutionContext</span>, <span class="hljs-attr">next</span>: <span class="hljs-title class_">CallHandler</span>): <span class="hljs-title class_">Observable</span>&lt;<span class="hljs-built_in">any</span>&gt; {
+    <span class="hljs-keyword">return</span> next
+      .<span class="hljs-title function_">handle</span>()
+      .<span class="hljs-title function_">pipe</span>(
+        <span class="hljs-title function_">catchError</span>(<span class="hljs-function"><span class="hljs-params">err</span> =&gt;</span> <span class="hljs-title function_">throwError</span>(<span class="hljs-function">() =&gt;</span> <span class="hljs-keyword">new</span> <span class="hljs-title class_">BadGatewayException</span>())),
+      );
+  }
+}</code></pre></div><div class="code-pane" data-pane="1" hidden><pre><code class="hljs language-typescript">
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">Injectable</span>, <span class="hljs-title class_">BadGatewayException</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/common&#x27;</span>;
+<span class="hljs-keyword">import</span> { throwError } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;rxjs&#x27;</span>;
+<span class="hljs-keyword">import</span> { catchError } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;rxjs/operators&#x27;</span>;
+
+<span class="hljs-meta">@Injectable</span>()
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">ErrorsInterceptor</span> {
+  <span class="hljs-title function_">intercept</span>(<span class="hljs-params">context, next</span>) {
+    <span class="hljs-keyword">return</span> next
+      .<span class="hljs-title function_">handle</span>()
+      .<span class="hljs-title function_">pipe</span>(
+        <span class="hljs-title function_">catchError</span>(<span class="hljs-function"><span class="hljs-params">err</span> =&gt;</span> <span class="hljs-title function_">throwError</span>(<span class="hljs-function">() =&gt;</span> <span class="hljs-keyword">new</span> <span class="hljs-title class_">BadGatewayException</span>())),
+      );
+  }
+}</code></pre></div></figure>
+<h4 id="stream-overriding">Stream overriding</h4>
+<p>Sometimes you may want to skip calling the handler entirely and return a different value instead. A typical example is a cache that improves response time. Let&#39;s look at a simple <strong>cache interceptor</strong> that returns its response from a cache. A realistic implementation would also need to consider factors such as TTL, cache invalidation, and cache size, which are beyond the scope of this discussion. The following basic example demonstrates the main concept.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>cache.interceptor</span></span><span class="code-head-r"><span class="code-tabs" role="tablist"><button type="button" role="tab" data-lang-tab="0" class="on">TypeScript</button><button type="button" role="tab" data-lang-tab="1" class="">JavaScript</button></span><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { <span class="hljs-title class_">Injectable</span>, <span class="hljs-title class_">NestInterceptor</span>, <span class="hljs-title class_">ExecutionContext</span>, <span class="hljs-title class_">CallHandler</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/common&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">Observable</span>, <span class="hljs-keyword">of</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;rxjs&#x27;</span>;
+
+<span class="hljs-meta">@Injectable</span>()
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">CacheInterceptor</span> <span class="hljs-keyword">implements</span> <span class="hljs-title class_">NestInterceptor</span> {
+  <span class="hljs-title function_">intercept</span>(<span class="hljs-attr">context</span>: <span class="hljs-title class_">ExecutionContext</span>, <span class="hljs-attr">next</span>: <span class="hljs-title class_">CallHandler</span>): <span class="hljs-title class_">Observable</span>&lt;<span class="hljs-built_in">any</span>&gt; {
+    <span class="hljs-keyword">const</span> isCached = <span class="hljs-literal">true</span>;
+    <span class="hljs-keyword">if</span> (isCached) {
+      <span class="hljs-keyword">return</span> <span class="hljs-title function_">of</span>([]);
+    }
+    <span class="hljs-keyword">return</span> next.<span class="hljs-title function_">handle</span>();
+  }
+}</code></pre></div><div class="code-pane" data-pane="1" hidden><pre><code class="hljs language-typescript">
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">Injectable</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/common&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-keyword">of</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;rxjs&#x27;</span>;
+
+<span class="hljs-meta">@Injectable</span>()
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">CacheInterceptor</span> {
+  <span class="hljs-title function_">intercept</span>(<span class="hljs-params">context, next</span>) {
+    <span class="hljs-keyword">const</span> isCached = <span class="hljs-literal">true</span>;
+    <span class="hljs-keyword">if</span> (isCached) {
+      <span class="hljs-keyword">return</span> <span class="hljs-title function_">of</span>([]);
+    }
+    <span class="hljs-keyword">return</span> next.<span class="hljs-title function_">handle</span>();
+  }
+}</code></pre></div></figure>
+<p>Our <code>CacheInterceptor</code> has a hardcoded <code>isCached</code> variable and a hardcoded response <code>[]</code>. The key point is that it returns a new stream, created by RxJS&#39;s <code>of()</code> function, so the route handler <strong>won&#39;t be called</strong> at all. When someone calls an endpoint that uses <code>CacheInterceptor</code>, the response (a hardcoded, empty array) is returned immediately. To build a generic solution, use <code>Reflector</code> together with a custom decorator, as described in the <a href="#/doc/nestjs/guards">guards</a> chapter.</p>
+<h4 id="more-operators">More operators</h4>
+<p>Manipulating the stream with RxJS operators opens up many possibilities. Consider another common use case: handling <strong>timeouts</strong> on route requests. If an endpoint doesn&#39;t return anything within a given period, you want to terminate the request with an error response. The following construction enables this:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>timeout.interceptor</span></span><span class="code-head-r"><span class="code-tabs" role="tablist"><button type="button" role="tab" data-lang-tab="0" class="on">TypeScript</button><button type="button" role="tab" data-lang-tab="1" class="">JavaScript</button></span><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { <span class="hljs-title class_">Injectable</span>, <span class="hljs-title class_">NestInterceptor</span>, <span class="hljs-title class_">ExecutionContext</span>, <span class="hljs-title class_">CallHandler</span>, <span class="hljs-title class_">RequestTimeoutException</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/common&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">Observable</span>, throwError, <span class="hljs-title class_">TimeoutError</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;rxjs&#x27;</span>;
+<span class="hljs-keyword">import</span> { catchError, timeout } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;rxjs/operators&#x27;</span>;
+
+<span class="hljs-meta">@Injectable</span>()
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">TimeoutInterceptor</span> <span class="hljs-keyword">implements</span> <span class="hljs-title class_">NestInterceptor</span> {
+  <span class="hljs-title function_">intercept</span>(<span class="hljs-attr">context</span>: <span class="hljs-title class_">ExecutionContext</span>, <span class="hljs-attr">next</span>: <span class="hljs-title class_">CallHandler</span>): <span class="hljs-title class_">Observable</span>&lt;<span class="hljs-built_in">any</span>&gt; {
+    <span class="hljs-keyword">return</span> next.<span class="hljs-title function_">handle</span>().<span class="hljs-title function_">pipe</span>(
+      <span class="hljs-title function_">timeout</span>(<span class="hljs-number">5000</span>),
+      <span class="hljs-title function_">catchError</span>(<span class="hljs-function"><span class="hljs-params">err</span> =&gt;</span> {
+        <span class="hljs-keyword">if</span> (err <span class="hljs-keyword">instanceof</span> <span class="hljs-title class_">TimeoutError</span>) {
+          <span class="hljs-keyword">return</span> <span class="hljs-title function_">throwError</span>(<span class="hljs-function">() =&gt;</span> <span class="hljs-keyword">new</span> <span class="hljs-title class_">RequestTimeoutException</span>());
+        }
+        <span class="hljs-keyword">return</span> <span class="hljs-title function_">throwError</span>(<span class="hljs-function">() =&gt;</span> err);
+      }),
+    );
+  }
+}</code></pre></div><div class="code-pane" data-pane="1" hidden><pre><code class="hljs language-typescript">
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">Injectable</span>, <span class="hljs-title class_">RequestTimeoutException</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/common&#x27;</span>;
+<span class="hljs-keyword">import</span> { throwError, <span class="hljs-title class_">TimeoutError</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;rxjs&#x27;</span>;
+<span class="hljs-keyword">import</span> { catchError, timeout } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;rxjs/operators&#x27;</span>;
+
+<span class="hljs-meta">@Injectable</span>()
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">TimeoutInterceptor</span> {
+  <span class="hljs-title function_">intercept</span>(<span class="hljs-params">context, next</span>) {
+    <span class="hljs-keyword">return</span> next.<span class="hljs-title function_">handle</span>().<span class="hljs-title function_">pipe</span>(
+      <span class="hljs-title function_">timeout</span>(<span class="hljs-number">5000</span>),
+      <span class="hljs-title function_">catchError</span>(<span class="hljs-function"><span class="hljs-params">err</span> =&gt;</span> {
+        <span class="hljs-keyword">if</span> (err <span class="hljs-keyword">instanceof</span> <span class="hljs-title class_">TimeoutError</span>) {
+          <span class="hljs-keyword">return</span> <span class="hljs-title function_">throwError</span>(<span class="hljs-function">() =&gt;</span> <span class="hljs-keyword">new</span> <span class="hljs-title class_">RequestTimeoutException</span>());
+        }
+        <span class="hljs-keyword">return</span> <span class="hljs-title function_">throwError</span>(<span class="hljs-function">() =&gt;</span> err);
+      }),
+    );
+  }
+}</code></pre></div></figure>
+<p>If the route handler doesn&#39;t emit a result within 5 seconds, <code>timeout()</code> fails the stream with a <code>TimeoutError</code>, which the interceptor maps to a <code>RequestTimeoutException</code>. Unsubscribing from the handler&#39;s stream doesn&#39;t abort work the handler has already started (such as a pending database query), so add custom logic before throwing <code>RequestTimeoutException</code> if you need to release resources.</p>

@@ -1,0 +1,696 @@
+<p>Queues are a design pattern that helps you deal with common application scaling and performance challenges. Some examples of problems that queues can help you solve are:</p>
+<ul>
+<li>Smooth out processing peaks. For example, if users can initiate resource-intensive tasks at arbitrary times, you can add these tasks to a queue instead of performing them synchronously. Worker processes then pull tasks from the queue in a controlled manner. As the application grows, you can add queue consumers to scale up back-end task handling.</li>
+<li>Break up monolithic tasks that may otherwise block the Node.js event loop. For example, if a user request requires CPU-intensive work like audio transcoding, you can delegate this task to other processes, so user-facing processes remain responsive.</li>
+<li>Provide a reliable communication channel across services. For example, you can queue tasks (jobs) in one process or service and consume them in another. By listening for status events, any process or service can be notified of completion, errors, or other state changes in the job lifecycle. When queue producers or consumers fail, their state is preserved, and task handling can resume automatically when nodes restart.</li>
+</ul>
+<p>Nest provides the <code>@nestjs/bullmq</code> package for BullMQ integration and the <code>@nestjs/bull</code> package for Bull integration. Both packages wrap their respective libraries, which are developed by the same team. Bull is in maintenance mode (the team only fixes bugs), while BullMQ is actively developed and offers a modern TypeScript implementation with a different set of features. If Bull meets your requirements, it remains a reliable, battle-tested choice.</p>
+<p>Both BullMQ and Bull use <a target="_blank" rel="noopener" href="https://redis.io/">Redis</a> to persist job data, so you need a running Redis instance. Because they are Redis-backed, your queue architecture can be fully distributed and platform-independent. For example, you can run some queue <a href="application/queues#producers">producers</a>, <a href="application/queues#consumers">consumers</a>, and <a href="application/queues#event-listeners">listeners</a> in Nest on one or more nodes, and other producers, consumers, and listeners on other Node.js platforms on other network nodes.</p>
+<p>This chapter covers the <code>@nestjs/bullmq</code> and <code>@nestjs/bull</code> packages. For more background and implementation details, see the <a target="_blank" rel="noopener" href="https://docs.bullmq.io/">BullMQ documentation</a> and the <a target="_blank" rel="noopener" href="https://github.com/OptimalBits/bull/blob/master/REFERENCE.md">Bull reference</a>.</p>
+<h4 id="bullmq-installation">BullMQ installation</h4>
+<p>To begin using BullMQ, install the required dependencies.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Terminal</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-bash">$ npm install --save @nestjs/bullmq bullmq</code></pre></div></figure>
+<p>Once the installation process is complete, import the <code>BullModule</code> into the root <code>AppModule</code>.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app.module</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { <span class="hljs-title class_">Module</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/common&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">BullModule</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/bullmq&#x27;</span>;
+
+<span class="hljs-meta">@Module</span>({
+  <span class="hljs-attr">imports</span>: [
+    <span class="hljs-title class_">BullModule</span>.<span class="hljs-title function_">forRoot</span>({
+      <span class="hljs-attr">connection</span>: {
+        <span class="hljs-attr">host</span>: <span class="hljs-string">&#x27;localhost&#x27;</span>,
+        <span class="hljs-attr">port</span>: <span class="hljs-number">6379</span>,
+      },
+    }),
+  ],
+})
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">AppModule</span> {}</code></pre></div></figure>
+<p>The <code>forRoot()</code> method registers a <code>bullmq</code> configuration object that all queues registered in the application use (unless specified otherwise). The following are a few of the configuration properties:</p>
+<ul>
+<li><code>connection: ConnectionOptions</code> - Options to configure the Redis connection. See <a target="_blank" rel="noopener" href="https://docs.bullmq.io/guide/connections">Connections</a> for more information.</li>
+<li><code>backendFactory: BullMQBackendFactory</code> - Factory function for pluggable backends (e.g., PostgreSQL). See <a href="#/doc/nestjs/application/queues@pluggable-backends">Pluggable backends</a> for more information.</li>
+<li><code>prefix: string</code> - Prefix for all queue keys (defaults to <code>bull</code>).</li>
+<li><code>defaultJobOptions: DefaultJobOptions</code> - Default settings for new jobs. See <a target="_blank" rel="noopener" href="https://docs.bullmq.io/api/interfaces/v6.DefaultJobOptions.html">DefaultJobOptions</a> for more information. These don&#39;t take effect for jobs added through a <code>FlowProducer</code>; see <a target="_blank" rel="noopener" href="https://github.com/taskforcesh/bullmq/issues/1034">bullmq#1034</a> for an explanation.</li>
+<li><code>settings: AdvancedRepeatOptions</code> - Advanced settings for repeatable jobs. These should usually not be changed. See <a target="_blank" rel="noopener" href="https://docs.bullmq.io/api/interfaces/v6.AdvancedRepeatOptions.html">AdvancedRepeatOptions</a> for more information.</li>
+<li><code>extraOptions</code> - Extra options for module initialization. See <a href="#/doc/nestjs/application/queues@manual-registration">Manual registration</a>.</li>
+</ul>
+<p>All options are optional. Apart from <code>extraOptions</code>, they are passed directly to the BullMQ <code>Queue</code> constructor. See the <a target="_blank" rel="noopener" href="https://docs.bullmq.io/api/interfaces/v6.QueueOptions.html">QueueOptions API reference</a> for the complete list.</p>
+<p>To register a queue, import the <code>BullModule.registerQueue()</code> dynamic module, as follows:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-title class_">BullModule</span>.<span class="hljs-title function_">registerQueue</span>({
+  <span class="hljs-attr">name</span>: <span class="hljs-string">&#x27;audio&#x27;</span>,
+});</code></pre></div></figure>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Hint</p><p>Create multiple queues by passing multiple configuration objects (as separate arguments) to the <code>registerQueue()</code> method.</p>
+</div></aside>
+<p>The <code>registerQueue()</code> method instantiates and/or registers queues. Queues are shared across modules and processes that connect to the same underlying Redis database with the same credentials. Each queue is identified by its <code>name</code> property. The queue name serves both as an injection token (for injecting the queue into controllers and providers) and as an argument to decorators that associate consumer classes and listeners with queues.</p>
+<p>You can also override some of the preconfigured options for a specific queue, as follows:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-title class_">BullModule</span>.<span class="hljs-title function_">registerQueue</span>({
+  <span class="hljs-attr">name</span>: <span class="hljs-string">&#x27;audio&#x27;</span>,
+  <span class="hljs-attr">connection</span>: {
+    <span class="hljs-attr">port</span>: <span class="hljs-number">6380</span>,
+  },
+});</code></pre></div></figure>
+<p>BullMQ also supports parent-child relationships between jobs. This enables flows, where jobs are the nodes of trees of arbitrary depth. See <a target="_blank" rel="noopener" href="https://docs.bullmq.io/guide/flows">Flows</a> in the BullMQ documentation to learn more.</p>
+<p>To register a flow producer, use the <code>registerFlowProducer()</code> method:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-title class_">BullModule</span>.<span class="hljs-title function_">registerFlowProducer</span>({
+  <span class="hljs-attr">name</span>: <span class="hljs-string">&#x27;flowProducerName&#x27;</span>,
+});</code></pre></div></figure>
+<p>Because jobs are persisted in Redis, each time a named queue is instantiated (e.g., when an app starts or restarts), it attempts to process any old jobs left over from a previous unfinished session.</p>
+<p>Each queue can have one or many producers, consumers, and listeners. Consumers retrieve jobs from the queue in a specific order: FIFO (the default), LIFO, or according to priorities. The <a href="application/queues#job-options">job options</a> section explains how to control the processing order.</p>
+<h4 id="named-configurations">Named configurations</h4>
+<p>If your queues connect to multiple Redis instances, you can use a technique called <strong>named configurations</strong>. This feature lets you register several configurations under specified keys, which you can then refer to in the queue options.</p>
+<p>For example, assuming you have an additional Redis instance (apart from the default one) used by a few queues in your application, you can register its configuration as follows:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-title class_">BullModule</span>.<span class="hljs-title function_">forRoot</span>(<span class="hljs-string">&#x27;alternative-config&#x27;</span>, {
+  <span class="hljs-attr">connection</span>: {
+    <span class="hljs-attr">port</span>: <span class="hljs-number">6381</span>,
+  },
+});</code></pre></div></figure>
+<p>In the example above, <code>&#39;alternative-config&#39;</code> is a configuration key (it can be any string).</p>
+<p>You can now point to this configuration in the <code>registerQueue()</code> options object:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-title class_">BullModule</span>.<span class="hljs-title function_">registerQueue</span>({
+  <span class="hljs-attr">configKey</span>: <span class="hljs-string">&#x27;alternative-config&#x27;</span>,
+  <span class="hljs-attr">name</span>: <span class="hljs-string">&#x27;video&#x27;</span>,
+});</code></pre></div></figure>
+<h4 id="pluggable-backends-postgresql">Pluggable backends (PostgreSQL)</h4>
+<p>BullMQ supports pluggable storage backends (such as PostgreSQL) through custom backend factories. You can configure a <code>backendFactory</code> globally in <code>BullModule.forRoot()</code> or per-queue in <code>BullModule.registerQueue()</code>.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app.module</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { <span class="hljs-title class_">Module</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/common&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">BullModule</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/bullmq&#x27;</span>;
+<span class="hljs-keyword">import</span> { createPostgresBackend } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;bullmq&#x27;</span>;
+
+<span class="hljs-meta">@Module</span>({
+  <span class="hljs-attr">imports</span>: [
+    <span class="hljs-title class_">BullModule</span>.<span class="hljs-title function_">forRoot</span>({
+      <span class="hljs-attr">backendFactory</span>: createPostgresBackend,
+      <span class="hljs-attr">connection</span>: {
+        <span class="hljs-attr">host</span>: <span class="hljs-string">&#x27;localhost&#x27;</span>,
+        <span class="hljs-attr">port</span>: <span class="hljs-number">5432</span>,
+        <span class="hljs-attr">user</span>: <span class="hljs-string">&#x27;postgres&#x27;</span>,
+        <span class="hljs-attr">password</span>: <span class="hljs-string">&#x27;password&#x27;</span>,
+        <span class="hljs-attr">database</span>: <span class="hljs-string">&#x27;mydb&#x27;</span>,
+        <span class="hljs-attr">migrate</span>: <span class="hljs-literal">true</span>,
+      },
+    }),
+  ],
+})
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">AppModule</span> {}</code></pre></div></figure>
+<p><code>migrate: true</code> creates BullMQ&#39;s tables at startup, in a <code>bullmq</code> schema of their own. Without it, the application fails on a database that doesn&#39;t have them yet.</p>
+<p>The configured <code>backendFactory</code> is automatically propagated across all underlying BullMQ components (<code>Queue</code>, <code>Worker</code>, <code>QueueEvents</code>, and <code>FlowProducer</code>), including <code>@Processor()</code> and <code>@QueueEventsListener()</code> worker hosts.</p>
+<h4 id="producers">Producers</h4>
+<p>Job producers add jobs to queues. Producers are typically application services (Nest <a href="#/doc/nestjs/components">providers</a>). To add jobs to a queue, first inject the queue into the service:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { <span class="hljs-title class_">Injectable</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/common&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">Queue</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;bullmq&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">InjectQueue</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/bullmq&#x27;</span>;
+
+<span class="hljs-meta">@Injectable</span>()
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">AudioService</span> {
+  <span class="hljs-title function_">constructor</span>(<span class="hljs-params"><span class="hljs-meta">@InjectQueue</span>(<span class="hljs-string">&#x27;audio&#x27;</span>) <span class="hljs-keyword">private</span> <span class="hljs-attr">audioQueue</span>: <span class="hljs-title class_">Queue</span></span>) {}
+}</code></pre></div></figure>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Hint</p><p>The <code>@InjectQueue()</code> decorator identifies the queue by its name, as provided in the <code>registerQueue()</code> method call (e.g., <code>&#39;audio&#39;</code>).</p>
+</div></aside>
+<p>Now, add a job by calling the queue&#39;s <code>add()</code> method, passing a job name and a user-defined data object. Job data must be serializable, because jobs are stored in Redis. The shape of the data is arbitrary; use it to represent the semantics of your job. The name lets a <a href="application/queues#consumers">consumer</a> tell different kinds of jobs apart.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">const</span> job = <span class="hljs-keyword">await</span> <span class="hljs-variable language_">this</span>.<span class="hljs-property">audioQueue</span>.<span class="hljs-title function_">add</span>(<span class="hljs-string">&#x27;transcode&#x27;</span>, {
+  <span class="hljs-attr">foo</span>: <span class="hljs-string">&#x27;bar&#x27;</span>,
+});</code></pre></div></figure>
+<h4 id="job-options">Job options</h4>
+<p>Jobs can have additional options associated with them. Pass an options object as the third argument of the <code>Queue.add()</code> method, after the job data. Some of the job options are:</p>
+<ul>
+<li><code>priority</code>: <code>number</code> - Priority value, from 0 to 2,097,151. <code>0</code> (the default) means no explicit priority; jobs without a priority are processed before prioritized jobs, and among prioritized jobs, lower numbers are processed first. Using priorities has a slight impact on performance, so use them only when required.</li>
+<li><code>delay</code>: <code>number</code> - Time (in milliseconds) to wait until this job can be processed. For accurate delays, workers and producers should have their clocks synchronized.</li>
+<li><code>attempts</code>: <code>number</code> - The total number of attempts to try the job until it completes (defaults to 1).</li>
+<li><code>backoff</code>: <code>number | BackoffOptions</code> - Backoff setting for automatic retries if the job fails. See <a target="_blank" rel="noopener" href="https://docs.bullmq.io/api/interfaces/v6.BackoffOptions.html">BackoffOptions</a>.</li>
+<li><code>lifo</code>: <code>boolean</code> - If <code>true</code>, adds the job to the right end of the queue instead of the left (default <code>false</code>).</li>
+<li><code>jobId</code>: <code>string</code> - Overrides the job ID. By default, the job ID is a unique integer. If you use this option, it&#39;s up to you to ensure the ID is unique. A job with an ID that already exists is not added.</li>
+<li><code>removeOnComplete</code>: <code>boolean | number | KeepJobs</code> - If <code>true</code>, removes the job when it successfully completes. A number specifies how many jobs to keep, and a <code>KeepJobs</code> object specifies a maximum age and/or count. By default, the job is kept in the completed set.</li>
+<li><code>removeOnFail</code>: <code>boolean | number | KeepJobs</code> - If <code>true</code>, removes the job when it fails after all attempts. A number or <code>KeepJobs</code> object works as for <code>removeOnComplete</code>. By default, the job is kept in the failed set.</li>
+<li><code>stackTraceLimit</code>: <code>number</code> - Limits the number of stack trace lines recorded for a failed job.</li>
+</ul>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Hint</p><p>BullMQ no longer accepts a <code>repeat</code> option in <code>Queue.add()</code>. To run a job repeatedly (e.g., on a cron pattern), create a job scheduler with the <code>Queue#upsertJobScheduler()</code> method. See <a target="_blank" rel="noopener" href="https://docs.bullmq.io/guide/job-schedulers">Job Schedulers</a> in the BullMQ documentation.</p>
+</div></aside>
+<p>Here are a few examples of customizing jobs with job options.</p>
+<p>To delay the start of a job, use the <code>delay</code> property.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">const</span> job = <span class="hljs-keyword">await</span> <span class="hljs-variable language_">this</span>.<span class="hljs-property">audioQueue</span>.<span class="hljs-title function_">add</span>(
+  <span class="hljs-string">&#x27;transcode&#x27;</span>,
+  {
+    <span class="hljs-attr">foo</span>: <span class="hljs-string">&#x27;bar&#x27;</span>,
+  },
+  { <span class="hljs-attr">delay</span>: <span class="hljs-number">3000</span> }, <span class="hljs-comment">// 3 seconds delayed</span>
+);</code></pre></div></figure>
+<p>To add a job to the right end of the queue (i.e., process it as <strong>LIFO</strong>, Last In First Out), set the <code>lifo</code> property to <code>true</code>.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">const</span> job = <span class="hljs-keyword">await</span> <span class="hljs-variable language_">this</span>.<span class="hljs-property">audioQueue</span>.<span class="hljs-title function_">add</span>(
+  <span class="hljs-string">&#x27;transcode&#x27;</span>,
+  {
+    <span class="hljs-attr">foo</span>: <span class="hljs-string">&#x27;bar&#x27;</span>,
+  },
+  { <span class="hljs-attr">lifo</span>: <span class="hljs-literal">true</span> },
+);</code></pre></div></figure>
+<p>To prioritize a job, use the <code>priority</code> property.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">const</span> job = <span class="hljs-keyword">await</span> <span class="hljs-variable language_">this</span>.<span class="hljs-property">audioQueue</span>.<span class="hljs-title function_">add</span>(
+  <span class="hljs-string">&#x27;transcode&#x27;</span>,
+  {
+    <span class="hljs-attr">foo</span>: <span class="hljs-string">&#x27;bar&#x27;</span>,
+  },
+  { <span class="hljs-attr">priority</span>: <span class="hljs-number">2</span> },
+);</code></pre></div></figure>
+<p>For the full list of options, see the <a target="_blank" rel="noopener" href="https://docs.bullmq.io/api/types/v6.JobsOptions.html">JobsOptions</a> and <a target="_blank" rel="noopener" href="https://docs.bullmq.io/api/interfaces/v6.BaseJobOptions.html">BaseJobOptions</a> API references.</p>
+<h4 id="consumers">Consumers</h4>
+<p>A consumer is a <strong>class</strong> defining methods that process jobs added to the queue, listen for events on the queue, or both. Declare a consumer class using the <code>@Processor()</code> decorator as follows:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { <span class="hljs-title class_">Processor</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/bullmq&#x27;</span>;
+
+<span class="hljs-meta">@Processor</span>(<span class="hljs-string">&#x27;audio&#x27;</span>)
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">AudioConsumer</span> {}</code></pre></div></figure>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Hint</p><p>Consumers must be registered as <code>providers</code> so the <code>@nestjs/bullmq</code> package can pick them up.</p>
+</div></aside>
+<p>The decorator&#39;s string argument (e.g., <code>&#39;audio&#39;</code>) is the name of the queue to associate with the class. The consumer class must extend <code>WorkerHost</code> and implement its <code>process()</code> method:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { <span class="hljs-title class_">Processor</span>, <span class="hljs-title class_">WorkerHost</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/bullmq&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">Job</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;bullmq&#x27;</span>;
+
+<span class="hljs-meta">@Processor</span>(<span class="hljs-string">&#x27;audio&#x27;</span>)
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">AudioConsumer</span> <span class="hljs-keyword">extends</span> <span class="hljs-title class_ inherited__">WorkerHost</span> {
+  <span class="hljs-keyword">async</span> <span class="hljs-title function_">process</span>(<span class="hljs-attr">job</span>: <span class="hljs-title class_">Job</span>&lt;<span class="hljs-built_in">any</span>, <span class="hljs-built_in">any</span>, <span class="hljs-built_in">string</span>&gt;): <span class="hljs-title class_">Promise</span>&lt;<span class="hljs-built_in">any</span>&gt; {
+    <span class="hljs-keyword">let</span> progress = <span class="hljs-number">0</span>;
+    <span class="hljs-keyword">for</span> (<span class="hljs-keyword">let</span> i = <span class="hljs-number">0</span>; i &lt; <span class="hljs-number">100</span>; i++) {
+      <span class="hljs-keyword">await</span> <span class="hljs-title function_">doSomething</span>(job.<span class="hljs-property">data</span>);
+      progress += <span class="hljs-number">1</span>;
+      <span class="hljs-keyword">await</span> job.<span class="hljs-title function_">updateProgress</span>(progress);
+    }
+    <span class="hljs-keyword">return</span> {};
+  }
+}</code></pre></div></figure>
+<p>The <code>process()</code> method is called whenever the worker is idle and there are jobs to process in the queue. It receives the <code>job</code> object as its only argument. The value it returns is stored in the job object and can be accessed later, for example, in a listener for the <code>completed</code> event.</p>
+<p><code>Job</code> objects have multiple methods that allow you to interact with their state. For example, the code above uses the <code>updateProgress()</code> method to update the job&#39;s progress. See the <a target="_blank" rel="noopener" href="https://docs.bullmq.io/api/classes/v6.Job.html">Job API reference</a> for the complete list.</p>
+<p>In Bull, you could designate that a job handler method handles <strong>only</strong> jobs of a certain type (jobs with a specific <code>name</code>) by passing that <code>name</code> to the <code>@Process()</code> decorator, as shown below.</p>
+<aside class="callout callout-warning"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 4 2.8 20h18.4L12 4z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M12 10v4.4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="17" r="1.3" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Warning</p><p>This doesn&#39;t work with BullMQ. Read on for the BullMQ approach.</p>
+</div></aside>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-meta">@Process</span>(<span class="hljs-string">&#x27;transcode&#x27;</span>)
+<span class="hljs-keyword">async</span> <span class="hljs-title function_">transcode</span>(<span class="hljs-params"><span class="hljs-attr">job</span>: <span class="hljs-title class_">Job</span>&lt;<span class="hljs-built_in">unknown</span>&gt;</span>) { ... }</code></pre></div></figure>
+<p>BullMQ doesn&#39;t support this behavior, because it caused confusion. Instead, use a <code>switch</code> statement on the job name to call different services or logic for each kind of job:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { <span class="hljs-title class_">Processor</span>, <span class="hljs-title class_">WorkerHost</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/bullmq&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">Job</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;bullmq&#x27;</span>;
+
+<span class="hljs-meta">@Processor</span>(<span class="hljs-string">&#x27;audio&#x27;</span>)
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">AudioConsumer</span> <span class="hljs-keyword">extends</span> <span class="hljs-title class_ inherited__">WorkerHost</span> {
+  <span class="hljs-keyword">async</span> <span class="hljs-title function_">process</span>(<span class="hljs-attr">job</span>: <span class="hljs-title class_">Job</span>&lt;<span class="hljs-built_in">any</span>, <span class="hljs-built_in">any</span>, <span class="hljs-built_in">string</span>&gt;): <span class="hljs-title class_">Promise</span>&lt;<span class="hljs-built_in">any</span>&gt; {
+    <span class="hljs-keyword">switch</span> (job.<span class="hljs-property">name</span>) {
+      <span class="hljs-keyword">case</span> <span class="hljs-string">&#x27;transcode&#x27;</span>: {
+        <span class="hljs-keyword">let</span> progress = <span class="hljs-number">0</span>;
+        <span class="hljs-keyword">for</span> (<span class="hljs-keyword">let</span> i = <span class="hljs-number">0</span>; i &lt; <span class="hljs-number">100</span>; i++) {
+          <span class="hljs-keyword">await</span> <span class="hljs-title function_">doSomething</span>(job.<span class="hljs-property">data</span>);
+          progress += <span class="hljs-number">1</span>;
+          <span class="hljs-keyword">await</span> job.<span class="hljs-title function_">updateProgress</span>(progress);
+        }
+        <span class="hljs-keyword">return</span> {};
+      }
+      <span class="hljs-keyword">case</span> <span class="hljs-string">&#x27;concatenate&#x27;</span>: {
+        <span class="hljs-keyword">await</span> <span class="hljs-title function_">doSomeLogic2</span>();
+        <span class="hljs-keyword">break</span>;
+      }
+    }
+  }
+}</code></pre></div></figure>
+<p>This is covered in the <a target="_blank" rel="noopener" href="https://docs.bullmq.io/patterns/named-processor">named processor</a> section of the BullMQ documentation.</p>
+<h4 id="request-scoped-consumers">Request-scoped consumers</h4>
+<p>When a consumer is flagged as request-scoped (see <a href="#/doc/nestjs/fundamentals/provider-scopes@provider-scope">injection scopes</a>), a new instance of the class is created exclusively for each job. The instance is garbage-collected after the job completes.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-meta">@Processor</span>({
+  <span class="hljs-attr">name</span>: <span class="hljs-string">&#x27;audio&#x27;</span>,
+  <span class="hljs-attr">scope</span>: <span class="hljs-title class_">Scope</span>.<span class="hljs-property">REQUEST</span>,
+})</code></pre></div></figure>
+<p>Because request-scoped consumer classes are instantiated dynamically and scoped to a single job, you can inject the current job through the constructor using the <code>JOB_REF</code> token.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-title function_">constructor</span>(<span class="hljs-params"><span class="hljs-meta">@Inject</span>(JOB_REF) <span class="hljs-attr">jobRef</span>: <span class="hljs-title class_">Job</span></span>) {
+  <span class="hljs-variable language_">console</span>.<span class="hljs-title function_">log</span>(jobRef);
+}</code></pre></div></figure>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Hint</p><p>The <code>JOB_REF</code> token is imported from the <code>@nestjs/bullmq</code> package.</p>
+</div></aside>
+<h4 id="event-listeners">Event listeners</h4>
+<p>BullMQ emits a set of events when queue and/or job state changes occur. You can subscribe to these events at the worker level using the <code>@OnWorkerEvent(event)</code> decorator, or at the queue level with a dedicated listener class and the <code>@OnQueueEvent(event)</code> decorator.</p>
+<p>Worker events must be declared within a <a href="application/queues#consumers">consumer</a> class (i.e., within a class decorated with the <code>@Processor()</code> decorator). To listen for an event, use the <code>@OnWorkerEvent(event)</code> decorator with the event you want to handle. For example, to listen to the event emitted when a job enters the active state in the <code>audio</code> queue, use the following construct:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { <span class="hljs-title class_">Processor</span>, <span class="hljs-title class_">WorkerHost</span>, <span class="hljs-title class_">OnWorkerEvent</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/bullmq&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">Job</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;bullmq&#x27;</span>;
+
+<span class="hljs-meta">@Processor</span>(<span class="hljs-string">&#x27;audio&#x27;</span>)
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">AudioConsumer</span> <span class="hljs-keyword">extends</span> <span class="hljs-title class_ inherited__">WorkerHost</span> {
+  <span class="hljs-meta">@OnWorkerEvent</span>(<span class="hljs-string">&#x27;active&#x27;</span>)
+  <span class="hljs-title function_">onActive</span>(<span class="hljs-params"><span class="hljs-attr">job</span>: <span class="hljs-title class_">Job</span></span>) {
+    <span class="hljs-variable language_">console</span>.<span class="hljs-title function_">log</span>(
+      <span class="hljs-string">`Processing job <span class="hljs-subst">${job.id}</span> of type <span class="hljs-subst">${job.name}</span> with data <span class="hljs-subst">${job.data}</span>...`</span>,
+    );
+  }
+
+  <span class="hljs-comment">// ...</span>
+}</code></pre></div></figure>
+<p>The complete list of worker events and their arguments is available as the properties of the <a target="_blank" rel="noopener" href="https://docs.bullmq.io/api/interfaces/v6.WorkerListener.html">WorkerListener</a> interface.</p>
+<p>Queue event listeners must use the <code>@QueueEventsListener(queue)</code> decorator and extend the <code>QueueEventsHost</code> class provided by <code>@nestjs/bullmq</code>. To listen for an event, use the <code>@OnQueueEvent(event)</code> decorator with the event you want to handle. For example, to listen to the event emitted when a job enters the active state in the <code>audio</code> queue, use the following construct:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> {
+  <span class="hljs-title class_">QueueEventsHost</span>,
+  <span class="hljs-title class_">QueueEventsListener</span>,
+  <span class="hljs-title class_">OnQueueEvent</span>,
+} <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/bullmq&#x27;</span>;
+
+<span class="hljs-meta">@QueueEventsListener</span>(<span class="hljs-string">&#x27;audio&#x27;</span>)
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">AudioEventsListener</span> <span class="hljs-keyword">extends</span> <span class="hljs-title class_ inherited__">QueueEventsHost</span> {
+  <span class="hljs-meta">@OnQueueEvent</span>(<span class="hljs-string">&#x27;active&#x27;</span>)
+  <span class="hljs-title function_">onActive</span>(<span class="hljs-params"><span class="hljs-attr">job</span>: { jobId: <span class="hljs-built_in">string</span>; prev?: <span class="hljs-built_in">string</span> }</span>) {
+    <span class="hljs-variable language_">console</span>.<span class="hljs-title function_">log</span>(<span class="hljs-string">`Processing job <span class="hljs-subst">${job.jobId}</span>...`</span>);
+  }
+
+  <span class="hljs-comment">// ...</span>
+}</code></pre></div></figure>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Hint</p><p>Queue event listeners must be registered as <code>providers</code> so the <code>@nestjs/bullmq</code> package can pick them up.</p>
+</div></aside>
+<p>The complete list of queue events and their arguments is available as the properties of the <a target="_blank" rel="noopener" href="https://docs.bullmq.io/api/interfaces/v6.QueueEventsListener.html">QueueEventsListener</a> interface.</p>
+<h4 id="queue-management">Queue management</h4>
+<p>Queues have an API for management functions such as pausing and resuming, and retrieving the count of jobs in various states. See the <a target="_blank" rel="noopener" href="https://docs.bullmq.io/api/classes/v6.Queue.html">Queue API reference</a> for the full API. Invoke these methods directly on the <code>Queue</code> object, as shown in the pause and resume examples below.</p>
+<p>Pause a queue with the <code>pause()</code> method. A paused queue doesn&#39;t process new jobs until it&#39;s resumed, but jobs already being processed continue until they finish.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">await</span> audioQueue.<span class="hljs-title function_">pause</span>();</code></pre></div></figure>
+<p>To resume a paused queue, use the <code>resume()</code> method, as follows:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">await</span> audioQueue.<span class="hljs-title function_">resume</span>();</code></pre></div></figure>
+<h4 id="observing-queues-in-production">Observing queues in production</h4>
+<p>Queues fail in ways that HTTP endpoints don&#39;t. A job doesn&#39;t return a status code to an impatient user. It retries quietly, three times, with backoff, and the only symptom is that something downstream never happened. The two questions that matter are therefore <em>&quot;is this queue keeping up?&quot;</em> and <em>&quot;did that job run at all?&quot;</em>, and the consumer&#39;s own logs can&#39;t answer either of them.</p>
+<p><a target="_blank" rel="noopener" href="https://www.observe.nestjs.com/" title="NestJS Observe">NestJS Observe</a> instruments queue consumers automatically, the same way it instruments controllers: <code>@Processor()</code> classes and their handlers are recognized as jobs, so no manual span wiring is needed:</p>
+<ul>
+<li><strong>Queue wait time is measured separately from execution time.</strong> A job that takes 200 ms to run but sat in the queue for four minutes is a capacity problem, not a slow handler. The two numbers are reported side by side, so you can tell which one you have.</li>
+<li><strong>Attempts and failure reasons are recorded per run.</strong> You see that a job succeeded on attempt 3 rather than seeing only the success, which is usually the difference between &quot;fine&quot; and &quot;quietly degrading&quot;.</li>
+<li><strong>Silence is alertable.</strong> A <em>job silence</em> rule fires when a named job hasn&#39;t reported for longer than a tolerance you choose. That&#39;s how you find out that the nightly billing consumer stopped running on the night it stops, rather than at the end of the month.</li>
+</ul>
+<p>Failed jobs carry the same error card as failed requests: the resolved stack trace with source lines, the logs written during the run, and the waterfall of what the job did before it threw. See the <a href="#/doc/nestjs/observability/overview">Observability</a> chapter for setup.</p>
+<h4 id="separate-processes">Separate processes</h4>
+<p>Job handlers can also run in a separate (forked) process (see <a target="_blank" rel="noopener" href="https://docs.bullmq.io/guide/workers/sandboxed-processors">Sandboxed processors</a> in the BullMQ documentation). This has several advantages:</p>
+<ul>
+<li>The process is sandboxed, so if it crashes, the worker isn&#39;t affected.</li>
+<li>You can run blocking code without affecting the queue (jobs don&#39;t stall).</li>
+<li>Better utilization of multi-core CPUs.</li>
+<li>Fewer connections to Redis.</li>
+</ul>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app.module</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { <span class="hljs-title class_">Module</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/common&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">BullModule</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/bullmq&#x27;</span>;
+<span class="hljs-keyword">import</span> { join } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;node:path&#x27;</span>;
+
+<span class="hljs-meta">@Module</span>({
+  <span class="hljs-attr">imports</span>: [
+    <span class="hljs-title class_">BullModule</span>.<span class="hljs-title function_">registerQueue</span>({
+      <span class="hljs-attr">name</span>: <span class="hljs-string">&#x27;audio&#x27;</span>,
+      <span class="hljs-attr">processors</span>: [<span class="hljs-title function_">join</span>(<span class="hljs-keyword">import</span>.<span class="hljs-property">meta</span>.<span class="hljs-property">dirname</span>, <span class="hljs-string">&#x27;processor.js&#x27;</span>)],
+    }),
+  ],
+})
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">AppModule</span> {}</code></pre></div></figure>
+<aside class="callout callout-warning"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 4 2.8 20h18.4L12 4z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M12 10v4.4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="17" r="1.3" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Warning</p><p>Because your function runs in a forked process, dependency injection (and the IoC container) isn&#39;t available. Your processor function must contain (or create) all instances of the external dependencies it needs.</p>
+</div></aside>
+<h4 id="async-configuration">Async configuration</h4>
+<p>You may want to pass <code>bullmq</code> options asynchronously instead of statically. In this case, use the <code>forRootAsync()</code> method, which provides several ways to handle async configuration. Likewise, to pass queue options asynchronously, use the <code>registerQueueAsync()</code> method.</p>
+<p>One approach is to use a factory function:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-title class_">BullModule</span>.<span class="hljs-title function_">forRootAsync</span>({
+  <span class="hljs-attr">useFactory</span>: <span class="hljs-function">() =&gt;</span> ({
+    <span class="hljs-attr">connection</span>: {
+      <span class="hljs-attr">host</span>: <span class="hljs-string">&#x27;localhost&#x27;</span>,
+      <span class="hljs-attr">port</span>: <span class="hljs-number">6379</span>,
+    },
+  }),
+});</code></pre></div></figure>
+<p>The factory behaves like any other <a href="#/doc/nestjs/fundamentals/async-components">asynchronous provider</a> (e.g., it can be <code>async</code> and can inject dependencies through <code>inject</code>).</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-title class_">BullModule</span>.<span class="hljs-title function_">forRootAsync</span>({
+  <span class="hljs-attr">imports</span>: [<span class="hljs-title class_">ConfigModule</span>],
+  <span class="hljs-attr">useFactory</span>: <span class="hljs-title function_">async</span> (<span class="hljs-attr">configService</span>: <span class="hljs-title class_">ConfigService</span>) =&gt; ({
+    <span class="hljs-attr">connection</span>: {
+      <span class="hljs-attr">host</span>: configService.<span class="hljs-title function_">get</span>(<span class="hljs-string">&#x27;QUEUE_HOST&#x27;</span>),
+      <span class="hljs-attr">port</span>: configService.<span class="hljs-title function_">get</span>(<span class="hljs-string">&#x27;QUEUE_PORT&#x27;</span>),
+    },
+  }),
+  <span class="hljs-attr">inject</span>: [<span class="hljs-title class_">ConfigService</span>],
+});</code></pre></div></figure>
+<p>Alternatively, you can use the <code>useClass</code> syntax:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-title class_">BullModule</span>.<span class="hljs-title function_">forRootAsync</span>({
+  <span class="hljs-attr">useClass</span>: <span class="hljs-title class_">BullConfigService</span>,
+});</code></pre></div></figure>
+<p>The construction above instantiates <code>BullConfigService</code> inside <code>BullModule</code> and uses it to provide an options object by calling <code>createSharedConfiguration()</code>. This means <code>BullConfigService</code> has to implement the <code>SharedBullConfigurationFactory</code> interface, as shown below:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-meta">@Injectable</span>()
+<span class="hljs-keyword">class</span> <span class="hljs-title class_">BullConfigService</span> <span class="hljs-keyword">implements</span> <span class="hljs-title class_">SharedBullConfigurationFactory</span> {
+  <span class="hljs-title function_">createSharedConfiguration</span>(): <span class="hljs-title class_">BullRootModuleOptions</span> {
+    <span class="hljs-keyword">return</span> {
+      <span class="hljs-attr">connection</span>: {
+        <span class="hljs-attr">host</span>: <span class="hljs-string">&#x27;localhost&#x27;</span>,
+        <span class="hljs-attr">port</span>: <span class="hljs-number">6379</span>,
+      },
+    };
+  }
+}</code></pre></div></figure>
+<p>To reuse a provider imported from a different module instead of creating <code>BullConfigService</code> inside <code>BullModule</code>, use the <code>useExisting</code> syntax.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-title class_">BullModule</span>.<span class="hljs-title function_">forRootAsync</span>({
+  <span class="hljs-attr">imports</span>: [<span class="hljs-title class_">ConfigModule</span>],
+  <span class="hljs-attr">useExisting</span>: <span class="hljs-title class_">ConfigService</span>,
+});</code></pre></div></figure>
+<p>This construction works the same as <code>useClass</code> with one critical difference: <code>BullModule</code> looks up imported modules to reuse an existing <code>ConfigService</code> instead of instantiating a new one.</p>
+<p>Likewise, to pass queue options asynchronously, use the <code>registerQueueAsync()</code> method. Specify the <code>name</code> attribute outside the factory function.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-title class_">BullModule</span>.<span class="hljs-title function_">registerQueueAsync</span>({
+  <span class="hljs-attr">name</span>: <span class="hljs-string">&#x27;audio&#x27;</span>,
+  <span class="hljs-attr">useFactory</span>: <span class="hljs-function">() =&gt;</span> ({
+    <span class="hljs-attr">connection</span>: {
+      <span class="hljs-attr">host</span>: <span class="hljs-string">&#x27;localhost&#x27;</span>,
+      <span class="hljs-attr">port</span>: <span class="hljs-number">6379</span>,
+    },
+  }),
+});</code></pre></div></figure>
+<h4 id="manual-registration">Manual registration</h4>
+<p>By default, <code>BullModule</code> automatically registers BullMQ components (queues, processors, and event listener services) in the <code>onModuleInit</code> lifecycle hook. In some cases, this behavior isn&#39;t what you want. To prevent automatic registration, enable <code>manualRegistration</code> in <code>BullModule</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-title class_">BullModule</span>.<span class="hljs-title function_">forRoot</span>({
+  <span class="hljs-attr">extraOptions</span>: {
+    <span class="hljs-attr">manualRegistration</span>: <span class="hljs-literal">true</span>,
+  },
+});</code></pre></div></figure>
+<p>To register these components manually, inject <code>BullRegistrar</code> and call its <code>register()</code> method, ideally within the <code>onModuleInit()</code> or <code>onApplicationBootstrap()</code> lifecycle hook.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { <span class="hljs-title class_">Injectable</span>, <span class="hljs-title class_">OnModuleInit</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/common&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">BullRegistrar</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/bullmq&#x27;</span>;
+
+<span class="hljs-meta">@Injectable</span>()
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">AudioService</span> <span class="hljs-keyword">implements</span> <span class="hljs-title class_">OnModuleInit</span> {
+  <span class="hljs-title function_">constructor</span>(<span class="hljs-params"><span class="hljs-keyword">private</span> <span class="hljs-attr">bullRegistrar</span>: <span class="hljs-title class_">BullRegistrar</span></span>) {}
+
+  <span class="hljs-title function_">onModuleInit</span>(<span class="hljs-params"></span>) {
+    <span class="hljs-keyword">if</span> (yourConditionHere) {
+      <span class="hljs-variable language_">this</span>.<span class="hljs-property">bullRegistrar</span>.<span class="hljs-title function_">register</span>();
+    }
+  }
+}</code></pre></div></figure>
+<p>Until you call <code>BullRegistrar#register()</code>, no BullMQ components work, which means no jobs are processed.</p>
+<h4 id="bull-installation">Bull installation</h4>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>If you use BullMQ, skip this section and the ones that follow.</p>
+</div></aside>
+<p>To begin using Bull, install the required dependencies.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Terminal</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-bash">$ npm install --save @nestjs/bull bull</code></pre></div></figure>
+<p>Once the installation process is complete, import the <code>BullModule</code> into the root <code>AppModule</code>.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app.module</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { <span class="hljs-title class_">Module</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/common&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">BullModule</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/bull&#x27;</span>;
+
+<span class="hljs-meta">@Module</span>({
+  <span class="hljs-attr">imports</span>: [
+    <span class="hljs-title class_">BullModule</span>.<span class="hljs-title function_">forRoot</span>({
+      <span class="hljs-attr">redis</span>: {
+        <span class="hljs-attr">host</span>: <span class="hljs-string">&#x27;localhost&#x27;</span>,
+        <span class="hljs-attr">port</span>: <span class="hljs-number">6379</span>,
+      },
+    }),
+  ],
+})
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">AppModule</span> {}</code></pre></div></figure>
+<p>The <code>forRoot()</code> method registers a <code>bull</code> configuration object that all queues registered in the application use (unless specified otherwise). A configuration object consists of the following properties (all optional):</p>
+<ul>
+<li><code>limiter: RateLimiter</code> - Options to control the rate at which the queue&#39;s jobs are processed. See <a target="_blank" rel="noopener" href="https://github.com/OptimalBits/bull/blob/master/REFERENCE.md#queue">RateLimiter</a> for more information.</li>
+<li><code>redis: RedisOpts</code> - Options to configure the Redis connection. See <a target="_blank" rel="noopener" href="https://github.com/OptimalBits/bull/blob/master/REFERENCE.md#queue">RedisOpts</a> for more information.</li>
+<li><code>prefix: string</code> - Prefix for all queue keys.</li>
+<li><code>defaultJobOptions: JobOpts</code> - Options to control the default settings for new jobs. See <a target="_blank" rel="noopener" href="https://github.com/OptimalBits/bull/blob/master/REFERENCE.md#queueadd">JobOpts</a> for more information.</li>
+<li><code>settings: AdvancedSettings</code> - Advanced queue configuration settings. These should usually not be changed. See <a target="_blank" rel="noopener" href="https://github.com/OptimalBits/bull/blob/master/REFERENCE.md#queue">AdvancedSettings</a> for more information.</li>
+</ul>
+<p>These options are passed directly to the Bull <code>Queue</code> constructor. See the <a target="_blank" rel="noopener" href="https://github.com/OptimalBits/bull/blob/master/REFERENCE.md#queue">Queue section of the Bull reference</a> for details.</p>
+<p>To register a queue, import the <code>BullModule.registerQueue()</code> dynamic module, as follows:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-title class_">BullModule</span>.<span class="hljs-title function_">registerQueue</span>({
+  <span class="hljs-attr">name</span>: <span class="hljs-string">&#x27;audio&#x27;</span>,
+});</code></pre></div></figure>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Hint</p><p>Create multiple queues by passing multiple configuration objects (as separate arguments) to the <code>registerQueue()</code> method.</p>
+</div></aside>
+<p>The <code>registerQueue()</code> method instantiates and/or registers queues. Queues are shared across modules and processes that connect to the same underlying Redis database with the same credentials. Each queue is identified by its <code>name</code> property. The queue name serves both as an injection token (for injecting the queue into controllers and providers) and as an argument to decorators that associate consumer classes and listeners with queues.</p>
+<p>You can also override some of the preconfigured options for a specific queue, as follows:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-title class_">BullModule</span>.<span class="hljs-title function_">registerQueue</span>({
+  <span class="hljs-attr">name</span>: <span class="hljs-string">&#x27;audio&#x27;</span>,
+  <span class="hljs-attr">redis</span>: {
+    <span class="hljs-attr">port</span>: <span class="hljs-number">6380</span>,
+  },
+});</code></pre></div></figure>
+<p>Because jobs are persisted in Redis, each time a named queue is instantiated (e.g., when an app starts or restarts), it attempts to process any old jobs left over from a previous unfinished session.</p>
+<p>Each queue can have one or many producers, consumers, and listeners. Consumers retrieve jobs from the queue in a specific order: FIFO (the default), LIFO, or according to priorities. The <a href="application/queues#job-options">job options</a> section explains how to control the processing order.</p>
+<h4 id="named-configurations">Named configurations</h4>
+<p>If your queues connect to multiple Redis instances, you can use a technique called <strong>named configurations</strong>. This feature lets you register several configurations under specified keys, which you can then refer to in the queue options.</p>
+<p>For example, assuming you have an additional Redis instance (apart from the default one) used by a few queues in your application, you can register its configuration as follows:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-title class_">BullModule</span>.<span class="hljs-title function_">forRoot</span>(<span class="hljs-string">&#x27;alternative-config&#x27;</span>, {
+  <span class="hljs-attr">redis</span>: {
+    <span class="hljs-attr">port</span>: <span class="hljs-number">6381</span>,
+  },
+});</code></pre></div></figure>
+<p>In the example above, <code>&#39;alternative-config&#39;</code> is a configuration key (it can be any string).</p>
+<p>You can now point to this configuration in the <code>registerQueue()</code> options object:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-title class_">BullModule</span>.<span class="hljs-title function_">registerQueue</span>({
+  <span class="hljs-attr">configKey</span>: <span class="hljs-string">&#x27;alternative-config&#x27;</span>,
+  <span class="hljs-attr">name</span>: <span class="hljs-string">&#x27;video&#x27;</span>,
+});</code></pre></div></figure>
+<h4 id="producers">Producers</h4>
+<p>Job producers add jobs to queues. Producers are typically application services (Nest <a href="#/doc/nestjs/components">providers</a>). To add jobs to a queue, first inject the queue into the service:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { <span class="hljs-title class_">Injectable</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/common&#x27;</span>;
+<span class="hljs-keyword">import</span> <span class="hljs-keyword">type</span> { <span class="hljs-title class_">Queue</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;bull&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">InjectQueue</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/bull&#x27;</span>;
+
+<span class="hljs-meta">@Injectable</span>()
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">AudioService</span> {
+  <span class="hljs-title function_">constructor</span>(<span class="hljs-params"><span class="hljs-meta">@InjectQueue</span>(<span class="hljs-string">&#x27;audio&#x27;</span>) <span class="hljs-keyword">private</span> <span class="hljs-attr">audioQueue</span>: <span class="hljs-title class_">Queue</span></span>) {}
+}</code></pre></div></figure>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Hint</p><p>The <code>@InjectQueue()</code> decorator identifies the queue by its name, as provided in the <code>registerQueue()</code> method call (e.g., <code>&#39;audio&#39;</code>).</p>
+</div></aside>
+<p>Now, add a job by calling the queue&#39;s <code>add()</code> method, passing a user-defined data object. Job data must be serializable, because jobs are stored in Redis. The shape of the data is arbitrary; use it to represent the semantics of your job.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">const</span> job = <span class="hljs-keyword">await</span> <span class="hljs-variable language_">this</span>.<span class="hljs-property">audioQueue</span>.<span class="hljs-title function_">add</span>({
+  <span class="hljs-attr">foo</span>: <span class="hljs-string">&#x27;bar&#x27;</span>,
+});</code></pre></div></figure>
+<h4 id="named-jobs">Named jobs</h4>
+<p>Jobs can have names. This lets you create specialized <a href="application/queues#consumers">consumers</a> that only process jobs with a given name.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">const</span> job = <span class="hljs-keyword">await</span> <span class="hljs-variable language_">this</span>.<span class="hljs-property">audioQueue</span>.<span class="hljs-title function_">add</span>(<span class="hljs-string">&#x27;transcode&#x27;</span>, {
+  <span class="hljs-attr">foo</span>: <span class="hljs-string">&#x27;bar&#x27;</span>,
+});</code></pre></div></figure>
+<aside class="callout callout-warning"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 4 2.8 20h18.4L12 4z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M12 10v4.4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="17" r="1.3" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Warning</p><p>When using named jobs, you must create a processor for each unique name added to a queue, or the queue reports that a processor for the given job is missing. See <a href="application/queues#consumers">consumers</a> for more information on consuming named jobs.</p>
+</div></aside>
+<h4 id="job-options">Job options</h4>
+<p>Jobs can have additional options associated with them. Pass an options object after the job data in the <code>Queue.add()</code> method. The job options are:</p>
+<ul>
+<li><code>priority</code>: <code>number</code> - Optional priority value. Ranges from 1 (highest priority) to MAX_INT (lowest priority). Using priorities has a slight impact on performance, so use them with caution.</li>
+<li><code>delay</code>: <code>number</code> - Time (in milliseconds) to wait until this job can be processed. For accurate delays, both server and clients should have their clocks synchronized.</li>
+<li><code>attempts</code>: <code>number</code> - The total number of attempts to try the job until it completes.</li>
+<li><code>repeat</code>: <code>RepeatOpts</code> - Repeats the job according to a cron specification. See <a target="_blank" rel="noopener" href="https://github.com/OptimalBits/bull/blob/master/REFERENCE.md#queueadd">RepeatOpts</a>.</li>
+<li><code>backoff</code>: <code>number | BackoffOpts</code> - Backoff setting for automatic retries if the job fails. See <a target="_blank" rel="noopener" href="https://github.com/OptimalBits/bull/blob/master/REFERENCE.md#queueadd">BackoffOpts</a>.</li>
+<li><code>lifo</code>: <code>boolean</code> - If <code>true</code>, adds the job to the right end of the queue instead of the left (default <code>false</code>).</li>
+<li><code>timeout</code>: <code>number</code> - The number of milliseconds after which the job fails with a timeout error.</li>
+<li><code>jobId</code>: <code>number | string</code> - Overrides the job ID. By default, the job ID is a unique integer. If you use this option, it&#39;s up to you to ensure the ID is unique. A job with an ID that already exists is not added.</li>
+<li><code>removeOnComplete</code>: <code>boolean | number</code> - If <code>true</code>, removes the job when it successfully completes. A number specifies how many jobs to keep. By default, the job is kept in the completed set.</li>
+<li><code>removeOnFail</code>: <code>boolean | number</code> - If <code>true</code>, removes the job when it fails after all attempts. A number specifies how many jobs to keep. By default, the job is kept in the failed set.</li>
+<li><code>stackTraceLimit</code>: <code>number</code> - Limits the number of stack trace lines recorded for a failed job.</li>
+</ul>
+<p>Here are a few examples of customizing jobs with job options.</p>
+<p>To delay the start of a job, use the <code>delay</code> property.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">const</span> job = <span class="hljs-keyword">await</span> <span class="hljs-variable language_">this</span>.<span class="hljs-property">audioQueue</span>.<span class="hljs-title function_">add</span>(
+  {
+    <span class="hljs-attr">foo</span>: <span class="hljs-string">&#x27;bar&#x27;</span>,
+  },
+  { <span class="hljs-attr">delay</span>: <span class="hljs-number">3000</span> }, <span class="hljs-comment">// 3 seconds delayed</span>
+);</code></pre></div></figure>
+<p>To add a job to the right end of the queue (i.e., process it as <strong>LIFO</strong>, Last In First Out), set the <code>lifo</code> property to <code>true</code>.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">const</span> job = <span class="hljs-keyword">await</span> <span class="hljs-variable language_">this</span>.<span class="hljs-property">audioQueue</span>.<span class="hljs-title function_">add</span>(
+  {
+    <span class="hljs-attr">foo</span>: <span class="hljs-string">&#x27;bar&#x27;</span>,
+  },
+  { <span class="hljs-attr">lifo</span>: <span class="hljs-literal">true</span> },
+);</code></pre></div></figure>
+<p>To prioritize a job, use the <code>priority</code> property.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">const</span> job = <span class="hljs-keyword">await</span> <span class="hljs-variable language_">this</span>.<span class="hljs-property">audioQueue</span>.<span class="hljs-title function_">add</span>(
+  {
+    <span class="hljs-attr">foo</span>: <span class="hljs-string">&#x27;bar&#x27;</span>,
+  },
+  { <span class="hljs-attr">priority</span>: <span class="hljs-number">2</span> },
+);</code></pre></div></figure>
+<h4 id="consumers">Consumers</h4>
+<p>A consumer is a <strong>class</strong> defining methods that process jobs added to the queue, listen for events on the queue, or both. Declare a consumer class using the <code>@Processor()</code> decorator as follows:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { <span class="hljs-title class_">Processor</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/bull&#x27;</span>;
+
+<span class="hljs-meta">@Processor</span>(<span class="hljs-string">&#x27;audio&#x27;</span>)
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">AudioConsumer</span> {}</code></pre></div></figure>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Hint</p><p>Consumers must be registered as <code>providers</code> so the <code>@nestjs/bull</code> package can pick them up.</p>
+</div></aside>
+<p>The decorator&#39;s string argument (e.g., <code>&#39;audio&#39;</code>) is the name of the queue to associate with the class methods.</p>
+<p>Within a consumer class, declare job handlers by decorating handler methods with the <code>@Process()</code> decorator.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { <span class="hljs-title class_">Processor</span>, <span class="hljs-title class_">Process</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/bull&#x27;</span>;
+<span class="hljs-keyword">import</span> <span class="hljs-keyword">type</span> { <span class="hljs-title class_">Job</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;bull&#x27;</span>;
+
+<span class="hljs-meta">@Processor</span>(<span class="hljs-string">&#x27;audio&#x27;</span>)
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">AudioConsumer</span> {
+  <span class="hljs-meta">@Process</span>()
+  <span class="hljs-keyword">async</span> <span class="hljs-title function_">transcode</span>(<span class="hljs-params"><span class="hljs-attr">job</span>: <span class="hljs-title class_">Job</span>&lt;<span class="hljs-built_in">unknown</span>&gt;</span>) {
+    <span class="hljs-keyword">let</span> progress = <span class="hljs-number">0</span>;
+    <span class="hljs-keyword">for</span> (<span class="hljs-keyword">let</span> i = <span class="hljs-number">0</span>; i &lt; <span class="hljs-number">100</span>; i++) {
+      <span class="hljs-keyword">await</span> <span class="hljs-title function_">doSomething</span>(job.<span class="hljs-property">data</span>);
+      progress += <span class="hljs-number">1</span>;
+      <span class="hljs-keyword">await</span> job.<span class="hljs-title function_">progress</span>(progress);
+    }
+    <span class="hljs-keyword">return</span> {};
+  }
+}</code></pre></div></figure>
+<p>The decorated method (e.g., <code>transcode()</code>) is called whenever the worker is idle and there are jobs to process in the queue. It receives the <code>job</code> object as its only argument. The value it returns is stored in the job object and can be accessed later, for example, in a listener for the <code>completed</code> event.</p>
+<p><code>Job</code> objects have multiple methods that allow you to interact with their state. For example, the code above uses the <code>progress()</code> method to update the job&#39;s progress. See the <a target="_blank" rel="noopener" href="https://github.com/OptimalBits/bull/blob/master/REFERENCE.md#job">Job section of the Bull reference</a> for the complete <code>Job</code> API.</p>
+<p>You can designate that a job handler method handles <strong>only</strong> jobs of a certain type (jobs with a specific <code>name</code>) by passing that <code>name</code> to the <code>@Process()</code> decorator, as shown below. A consumer class can have multiple <code>@Process()</code> handlers, one for each job type (<code>name</code>). When you use named jobs, make sure there is a handler for each name.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-meta">@Process</span>(<span class="hljs-string">&#x27;transcode&#x27;</span>)
+<span class="hljs-keyword">async</span> <span class="hljs-title function_">transcode</span>(<span class="hljs-params"><span class="hljs-attr">job</span>: <span class="hljs-title class_">Job</span>&lt;<span class="hljs-built_in">unknown</span>&gt;</span>) { ... }</code></pre></div></figure>
+<aside class="callout callout-warning"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 4 2.8 20h18.4L12 4z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M12 10v4.4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="17" r="1.3" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Warning</p><p>When you define multiple consumers for the same queue, the <code>concurrency</code> option in <code>@Process({ concurrency: 1 })</code> doesn&#39;t take effect. The minimum <code>concurrency</code> matches the number of consumers defined. This applies even if the <code>@Process()</code> handlers use different names to handle named jobs.</p>
+</div></aside>
+<h4 id="request-scoped-consumers">Request-scoped consumers</h4>
+<p>When a consumer is flagged as request-scoped (see <a href="#/doc/nestjs/fundamentals/provider-scopes@provider-scope">injection scopes</a>), a new instance of the class is created exclusively for each job. The instance is garbage-collected after the job completes.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-meta">@Processor</span>({
+  <span class="hljs-attr">name</span>: <span class="hljs-string">&#x27;audio&#x27;</span>,
+  <span class="hljs-attr">scope</span>: <span class="hljs-title class_">Scope</span>.<span class="hljs-property">REQUEST</span>,
+})</code></pre></div></figure>
+<p>Because request-scoped consumer classes are instantiated dynamically and scoped to a single job, you can inject the current job through the constructor using the <code>JOB_REF</code> token.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-title function_">constructor</span>(<span class="hljs-params"><span class="hljs-meta">@Inject</span>(JOB_REF) <span class="hljs-attr">jobRef</span>: <span class="hljs-title class_">Job</span></span>) {
+  <span class="hljs-variable language_">console</span>.<span class="hljs-title function_">log</span>(jobRef);
+}</code></pre></div></figure>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Hint</p><p>The <code>JOB_REF</code> token is imported from the <code>@nestjs/bull</code> package.</p>
+</div></aside>
+<h4 id="event-listeners">Event listeners</h4>
+<p>Bull emits a set of events when queue and/or job state changes occur. The <code>@nestjs/bull</code> package exports a set of decorators that let you subscribe to a core set of standard events.</p>
+<p>Event listeners must be declared within a <a href="application/queues#consumers">consumer</a> class (i.e., within a class decorated with the <code>@Processor()</code> decorator). To listen for an event, use one of the decorators in the table below to declare a handler for the event. For example, to listen to the event emitted when a job enters the active state in the <code>audio</code> queue, use the following construct:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { <span class="hljs-title class_">Processor</span>, <span class="hljs-title class_">Process</span>, <span class="hljs-title class_">OnQueueActive</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/bull&#x27;</span>;
+<span class="hljs-keyword">import</span> <span class="hljs-keyword">type</span> { <span class="hljs-title class_">Job</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;bull&#x27;</span>;
+
+<span class="hljs-meta">@Processor</span>(<span class="hljs-string">&#x27;audio&#x27;</span>)
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">AudioConsumer</span> {
+
+  <span class="hljs-meta">@OnQueueActive</span>()
+  <span class="hljs-title function_">onActive</span>(<span class="hljs-params"><span class="hljs-attr">job</span>: <span class="hljs-title class_">Job</span></span>) {
+    <span class="hljs-variable language_">console</span>.<span class="hljs-title function_">log</span>(
+      <span class="hljs-string">`Processing job <span class="hljs-subst">${job.id}</span> of type <span class="hljs-subst">${job.name}</span> with data <span class="hljs-subst">${job.data}</span>...`</span>,
+    );
+  }
+  ...</code></pre></div></figure>
+<p>Because Bull operates in a distributed (multi-node) environment, it defines the concept of event locality. Events may be triggered either entirely within a single process, or on shared queues from different processes. A <strong>local</strong> event is produced when an action or state change is triggered on a queue in the local process. In other words, when your event producers and consumers are local to a single process, all events happening on queues are local.</p>
+<p>When a queue is shared across multiple processes, <strong>global</strong> events come into play. For a listener in one process to receive an event notification triggered by another process, it must register for a global event.</p>
+<p>Event handlers are invoked whenever their corresponding event is emitted. Each handler is called with the signature shown in the table below, which provides access to information relevant to the event. One key difference between local and global event handler signatures is discussed below the table.</p>
+<div class="table-wrap"><table>
+  <tr>
+    <th>Local event listeners</th>
+    <th>Global event listeners</th>
+    <th>Handler method signature / When fired</th>
+  </tr>
+  <tr>
+    <td><code>@OnQueueError()</code></td><td><code>@OnGlobalQueueError()</code></td><td><code>handler(error: Error)</code> - An error occurred. <code>error</code> contains the triggering error.</td>
+  </tr>
+  <tr>
+    <td><code>@OnQueueWaiting()</code></td><td><code>@OnGlobalQueueWaiting()</code></td><td><code>handler(jobId: number | string)</code> - A job is waiting to be processed as soon as a worker is idle. <code>jobId</code> contains the ID of the job that has entered this state.</td>
+  </tr>
+  <tr>
+    <td><code>@OnQueueActive()</code></td><td><code>@OnGlobalQueueActive()</code></td><td><code>handler(job: Job)</code> - Job <code>job</code> has started.</td>
+  </tr>
+  <tr>
+    <td><code>@OnQueueStalled()</code></td><td><code>@OnGlobalQueueStalled()</code></td><td><code>handler(job: Job)</code> - Job <code>job</code> has been marked as stalled. This is useful for debugging job workers that crash or pause the event loop.</td>
+  </tr>
+  <tr>
+    <td><code>@OnQueueProgress()</code></td><td><code>@OnGlobalQueueProgress()</code></td><td><code>handler(job: Job, progress: number)</code> - Job <code>job</code>'s progress was updated to value <code>progress</code>.</td>
+  </tr>
+  <tr>
+    <td><code>@OnQueueCompleted()</code></td><td><code>@OnGlobalQueueCompleted()</code></td><td><code>handler(job: Job, result: any)</code> - Job <code>job</code> successfully completed with a result <code>result</code>.</td>
+  </tr>
+  <tr>
+    <td><code>@OnQueueFailed()</code></td><td><code>@OnGlobalQueueFailed()</code></td><td><code>handler(job: Job, err: Error)</code> - Job <code>job</code> failed with reason <code>err</code>.</td>
+  </tr>
+  <tr>
+    <td><code>@OnQueuePaused()</code></td><td><code>@OnGlobalQueuePaused()</code></td><td><code>handler()</code> - The queue has been paused.</td>
+  </tr>
+  <tr>
+    <td><code>@OnQueueResumed()</code></td><td><code>@OnGlobalQueueResumed()</code></td><td><code>handler()</code> - The queue has been resumed.</td>
+  </tr>
+  <tr>
+    <td><code>@OnQueueCleaned()</code></td><td><code>@OnGlobalQueueCleaned()</code></td><td><code>handler(jobs: Job[], type: string)</code> - Old jobs have been cleaned from the queue. <code>jobs</code> is an array of cleaned jobs, and <code>type</code> is the type of jobs cleaned.</td>
+  </tr>
+  <tr>
+    <td><code>@OnQueueDrained()</code></td><td><code>@OnGlobalQueueDrained()</code></td><td><code>handler()</code> - Emitted whenever the queue has processed all the waiting jobs (even if some delayed jobs are not yet processed).</td>
+  </tr>
+  <tr>
+    <td><code>@OnQueueRemoved()</code></td><td><code>@OnGlobalQueueRemoved()</code></td><td><code>handler(job: Job)</code> - Job <code>job</code> was successfully removed.</td>
+  </tr>
+</table></div><p>When listening for global events, the method signatures can differ slightly from their local counterparts. Specifically, any handler that receives a <code>job</code> object in the local version receives a <code>jobId</code> (<code>number | string</code>) in the global version instead. To get a reference to the actual <code>job</code> object in such a case, use the <code>Queue#getJob()</code> method. This call returns a promise, so declare the handler <code>async</code> and await it. For example:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-meta">@OnGlobalQueueCompleted</span>()
+<span class="hljs-keyword">async</span> <span class="hljs-title function_">onGlobalCompleted</span>(<span class="hljs-params"><span class="hljs-attr">jobId</span>: <span class="hljs-built_in">number</span>, <span class="hljs-attr">result</span>: <span class="hljs-built_in">any</span></span>) {
+  <span class="hljs-keyword">const</span> job = <span class="hljs-keyword">await</span> <span class="hljs-variable language_">this</span>.<span class="hljs-property">immediateQueue</span>.<span class="hljs-title function_">getJob</span>(jobId);
+  <span class="hljs-variable language_">console</span>.<span class="hljs-title function_">log</span>(<span class="hljs-string">&#x27;(Global) on completed: job &#x27;</span>, job.<span class="hljs-property">id</span>, <span class="hljs-string">&#x27; -&gt; result: &#x27;</span>, result);
+}</code></pre></div></figure>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Hint</p><p>To access the <code>Queue</code> object (to make a <code>getJob()</code> call), you must inject it. The queue must also be registered in the module where you inject it.</p>
+</div></aside>
+<p>In addition to the specific event listener decorators, you can use the generic <code>@OnQueueEvent()</code> decorator in combination with either the <code>BullQueueEvents</code> or <code>BullQueueGlobalEvents</code> enum. See the <a target="_blank" rel="noopener" href="https://github.com/OptimalBits/bull/blob/master/REFERENCE.md#events">Events section of the Bull reference</a> to learn more about events.</p>
+<h4 id="queue-management">Queue management</h4>
+<p>Queues have an API for management functions such as pausing and resuming, and retrieving the count of jobs in various states. See the <a target="_blank" rel="noopener" href="https://github.com/OptimalBits/bull/blob/master/REFERENCE.md#queue">Queue section of the Bull reference</a> for the full API. Invoke these methods directly on the <code>Queue</code> object, as shown in the pause and resume examples below.</p>
+<p>Pause a queue with the <code>pause()</code> method. A paused queue doesn&#39;t process new jobs until it&#39;s resumed, but jobs already being processed continue until they finish.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">await</span> audioQueue.<span class="hljs-title function_">pause</span>();</code></pre></div></figure>
+<p>To resume a paused queue, use the <code>resume()</code> method, as follows:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">await</span> audioQueue.<span class="hljs-title function_">resume</span>();</code></pre></div></figure>
+<h4 id="separate-processes">Separate processes</h4>
+<p>Job handlers can also run in a separate (forked) process (see <a target="_blank" rel="noopener" href="https://github.com/OptimalBits/bull#separate-processes">Separate processes</a> in the Bull documentation). This has several advantages:</p>
+<ul>
+<li>The process is sandboxed, so if it crashes, the worker isn&#39;t affected.</li>
+<li>You can run blocking code without affecting the queue (jobs don&#39;t stall).</li>
+<li>Better utilization of multi-core CPUs.</li>
+<li>Fewer connections to Redis.</li>
+</ul>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app.module</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { <span class="hljs-title class_">Module</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/common&#x27;</span>;
+<span class="hljs-keyword">import</span> { <span class="hljs-title class_">BullModule</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;@nestjs/bull&#x27;</span>;
+<span class="hljs-keyword">import</span> { join } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;node:path&#x27;</span>;
+
+<span class="hljs-meta">@Module</span>({
+  <span class="hljs-attr">imports</span>: [
+    <span class="hljs-title class_">BullModule</span>.<span class="hljs-title function_">registerQueue</span>({
+      <span class="hljs-attr">name</span>: <span class="hljs-string">&#x27;audio&#x27;</span>,
+      <span class="hljs-attr">processors</span>: [<span class="hljs-title function_">join</span>(<span class="hljs-keyword">import</span>.<span class="hljs-property">meta</span>.<span class="hljs-property">dirname</span>, <span class="hljs-string">&#x27;processor.js&#x27;</span>)],
+    }),
+  ],
+})
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">AppModule</span> {}</code></pre></div></figure>
+<p>Because your function runs in a forked process, dependency injection (and the IoC container) isn&#39;t available. Your processor function must contain (or create) all instances of the external dependencies it needs.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>processor.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">import</span> { <span class="hljs-title class_">Job</span>, <span class="hljs-title class_">DoneCallback</span> } <span class="hljs-keyword">from</span> <span class="hljs-string">&#x27;bull&#x27;</span>;
+
+<span class="hljs-keyword">export</span> <span class="hljs-keyword">default</span> <span class="hljs-keyword">function</span> (<span class="hljs-params"><span class="hljs-attr">job</span>: <span class="hljs-title class_">Job</span>, <span class="hljs-attr">cb</span>: <span class="hljs-title class_">DoneCallback</span></span>) {
+  <span class="hljs-variable language_">console</span>.<span class="hljs-title function_">log</span>(<span class="hljs-string">`[<span class="hljs-subst">${process.pid}</span>] <span class="hljs-subst">${<span class="hljs-built_in">JSON</span>.stringify(job.data)}</span>`</span>);
+  <span class="hljs-title function_">cb</span>(<span class="hljs-literal">null</span>, <span class="hljs-string">&#x27;It works&#x27;</span>);
+}</code></pre></div></figure>
+<h4 id="async-configuration">Async configuration</h4>
+<p>You may want to pass <code>bull</code> options asynchronously instead of statically. In this case, use the <code>forRootAsync()</code> method, which provides several ways to handle async configuration.</p>
+<p>One approach is to use a factory function:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-title class_">BullModule</span>.<span class="hljs-title function_">forRootAsync</span>({
+  <span class="hljs-attr">useFactory</span>: <span class="hljs-function">() =&gt;</span> ({
+    <span class="hljs-attr">redis</span>: {
+      <span class="hljs-attr">host</span>: <span class="hljs-string">&#x27;localhost&#x27;</span>,
+      <span class="hljs-attr">port</span>: <span class="hljs-number">6379</span>,
+    },
+  }),
+});</code></pre></div></figure>
+<p>The factory behaves like any other <a href="#/doc/nestjs/fundamentals/async-components">asynchronous provider</a> (e.g., it can be <code>async</code> and can inject dependencies through <code>inject</code>).</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-title class_">BullModule</span>.<span class="hljs-title function_">forRootAsync</span>({
+  <span class="hljs-attr">imports</span>: [<span class="hljs-title class_">ConfigModule</span>],
+  <span class="hljs-attr">useFactory</span>: <span class="hljs-title function_">async</span> (<span class="hljs-attr">configService</span>: <span class="hljs-title class_">ConfigService</span>) =&gt; ({
+    <span class="hljs-attr">redis</span>: {
+      <span class="hljs-attr">host</span>: configService.<span class="hljs-title function_">get</span>(<span class="hljs-string">&#x27;QUEUE_HOST&#x27;</span>),
+      <span class="hljs-attr">port</span>: configService.<span class="hljs-title function_">get</span>(<span class="hljs-string">&#x27;QUEUE_PORT&#x27;</span>),
+    },
+  }),
+  <span class="hljs-attr">inject</span>: [<span class="hljs-title class_">ConfigService</span>],
+});</code></pre></div></figure>
+<p>Alternatively, you can use the <code>useClass</code> syntax:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-title class_">BullModule</span>.<span class="hljs-title function_">forRootAsync</span>({
+  <span class="hljs-attr">useClass</span>: <span class="hljs-title class_">BullConfigService</span>,
+});</code></pre></div></figure>
+<p>The construction above instantiates <code>BullConfigService</code> inside <code>BullModule</code> and uses it to provide an options object by calling <code>createSharedConfiguration()</code>. This means <code>BullConfigService</code> has to implement the <code>SharedBullConfigurationFactory</code> interface, as shown below:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-meta">@Injectable</span>()
+<span class="hljs-keyword">class</span> <span class="hljs-title class_">BullConfigService</span> <span class="hljs-keyword">implements</span> <span class="hljs-title class_">SharedBullConfigurationFactory</span> {
+  <span class="hljs-title function_">createSharedConfiguration</span>(): <span class="hljs-title class_">BullRootModuleOptions</span> {
+    <span class="hljs-keyword">return</span> {
+      <span class="hljs-attr">redis</span>: {
+        <span class="hljs-attr">host</span>: <span class="hljs-string">&#x27;localhost&#x27;</span>,
+        <span class="hljs-attr">port</span>: <span class="hljs-number">6379</span>,
+      },
+    };
+  }
+}</code></pre></div></figure>
+<p>To reuse a provider imported from a different module instead of creating <code>BullConfigService</code> inside <code>BullModule</code>, use the <code>useExisting</code> syntax.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-title class_">BullModule</span>.<span class="hljs-title function_">forRootAsync</span>({
+  <span class="hljs-attr">imports</span>: [<span class="hljs-title class_">ConfigModule</span>],
+  <span class="hljs-attr">useExisting</span>: <span class="hljs-title class_">ConfigService</span>,
+});</code></pre></div></figure>
+<p>This construction works the same as <code>useClass</code> with one critical difference: <code>BullModule</code> looks up imported modules to reuse an existing <code>ConfigService</code> instead of instantiating a new one.</p>
+<p>Likewise, to pass queue options asynchronously, use the <code>registerQueueAsync()</code> method. Specify the <code>name</code> attribute outside the factory function.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-title class_">BullModule</span>.<span class="hljs-title function_">registerQueueAsync</span>({
+  <span class="hljs-attr">name</span>: <span class="hljs-string">&#x27;audio&#x27;</span>,
+  <span class="hljs-attr">useFactory</span>: <span class="hljs-function">() =&gt;</span> ({
+    <span class="hljs-attr">redis</span>: {
+      <span class="hljs-attr">host</span>: <span class="hljs-string">&#x27;localhost&#x27;</span>,
+      <span class="hljs-attr">port</span>: <span class="hljs-number">6379</span>,
+    },
+  }),
+});</code></pre></div></figure>
+<h4 id="example">Example</h4>
+<p>A working example is available in the <a target="_blank" rel="noopener" href="https://github.com/nestjs/nest/tree/master/sample/26-queues">26-queues sample</a>.</p>
