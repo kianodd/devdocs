@@ -1,7 +1,7 @@
 // DevDocs service worker v2 — shell cache is versioned; offline downloads and
 // translations live in their own caches that survive app updates.
-const VERSION = 'devdocs-shell-v6';
-const RUNTIME = 'devdocs-runtime-v6';
+const VERSION = 'devdocs-shell-v7';
+const RUNTIME = 'devdocs-runtime-v7';
 const KEEP = [VERSION, RUNTIME, 'devdocs-offline-v1', 'devdocs-i18n-v1'];
 const SHELL = [
   './',
@@ -57,12 +57,28 @@ self.addEventListener('message', (e) => {
   }
 });
 
+// Shell files are network-first so a new release applies on the next load
+// even before this worker itself gets replaced; content stays cache-first.
+const NETWORK_FIRST = [/\/$/, /index\.html$/, /app\.js$/, /styles\.css$/, /manifest\.webmanifest$/, /data\/catalog\.json$/];
+
 self.addEventListener('fetch', (e) => {
   const { request } = e;
   if (request.method !== 'GET') return;
   const url = new URL(request.url);
   if (url.origin !== self.location.origin) return;
   if (url.pathname.endsWith('version.json')) return; // always network
+  if (NETWORK_FIRST.some((re) => re.test(url.pathname))) {
+    e.respondWith(
+      fetch(request).then((res) => {
+        if (res.ok) {
+          const copy = res.clone();
+          caches.open(VERSION).then((c) => c.put(request, copy));
+        }
+        return res;
+      }).catch(() => caches.match(request, { ignoreSearch: true }).then((hit) => hit || (request.mode === 'navigate' ? caches.match('index.html') : new Response('', { status: 504 }))))
+    );
+    return;
+  }
   e.respondWith(
     caches.match(request, { ignoreSearch: true }).then((hit) => {
       if (hit) return hit;

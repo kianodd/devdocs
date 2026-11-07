@@ -3,7 +3,7 @@
    Courses are built at build time (data/catalog.json). Progress, downloads,
    settings live locally in the browser. */
 
-const APP_VERSION = '2.0.2';
+const APP_VERSION = '2.0.3';
 const $ = (s, el) => (el || document).querySelector(s);
 const $$ = (s, el) => [...(el || document).querySelectorAll(s)];
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
