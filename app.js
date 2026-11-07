@@ -3,7 +3,7 @@
    Courses are built at build time (data/catalog.json). Progress, downloads,
    settings live locally in the browser. */
 
-const APP_VERSION = '2.0.3';
+const APP_VERSION = '2.1.0';
 const $ = (s, el) => (el || document).querySelector(s);
 const $$ = (s, el) => [...(el || document).querySelectorAll(s)];
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -14,7 +14,7 @@ const I = {
   homeFill: '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4.5 10.8 12 4l7.5 6.8V19a1.6 1.6 0 0 1-1.6 1.6H14v-6h-4v6H6.1A1.6 1.6 0 0 1 4.5 19v-8.2Z" fill="currentColor"/></svg>',
   books: '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M5 4.5A1.5 1.5 0 0 1 6.5 3H19v15H6.7A1.7 1.7 0 0 0 5 19.7v-15.2Z" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round"/><path d="M5 16.5A2.5 2.5 0 0 1 7.5 14H19v7H7.5A2.5 2.5 0 0 1 5 18.5v-2Z" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round" transform="translate(0 -1)"/></svg>',
   chart: '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 4v15.5A.5.5 0 0 0 4.5 20H20" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/><rect x="7.5" y="12" width="3" height="5.5" rx="1" fill="currentColor"/><rect x="12" y="8.5" width="3" height="9" rx="1" fill="currentColor"/><rect x="16.5" y="10.5" width="3" height="7" rx="1" fill="currentColor"/></svg>',
-  gear: '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="3.2" stroke="currentColor" stroke-width="1.9"/><path d="M12 2.8v3M12 18.2v3M2.8 12h3M18.2 12h3M5.5 5.5l2.1 2.1M16.4 16.4l2.1 2.1M18.5 5.5l-2.1 2.1M7.6 16.4l-2.1 2.1" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></svg>',
+  gear: '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><g fill="currentColor"><rect x="11" y="1.6" width="2" height="3.8" rx="1"/><rect x="11" y="1.6" width="2" height="3.8" rx="1" transform="rotate(45 12 12)"/><rect x="11" y="1.6" width="2" height="3.8" rx="1" transform="rotate(90 12 12)"/><rect x="11" y="1.6" width="2" height="3.8" rx="1" transform="rotate(135 12 12)"/><rect x="11" y="1.6" width="2" height="3.8" rx="1" transform="rotate(180 12 12)"/><rect x="11" y="1.6" width="2" height="3.8" rx="1" transform="rotate(225 12 12)"/><rect x="11" y="1.6" width="2" height="3.8" rx="1" transform="rotate(270 12 12)"/><rect x="11" y="1.6" width="2" height="3.8" rx="1" transform="rotate(315 12 12)"/><path fill-rule="evenodd" d="M12 5.6a6.4 6.4 0 1 0 0 12.8 6.4 6.4 0 0 0 0-12.8Zm0 3.3a3.1 3.1 0 1 1 0 6.2 3.1 3.1 0 0 1 0-6.2Z"/></g></svg',
   check: '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4.5 12.5 9.8 17.8 19.5 6.5" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg>',
   chev: '<svg viewBox="0 0 10 16" fill="none" aria-hidden="true"><path d="M1.5 1.5 8 8l-6.5 6.5" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>',
   back: '<svg class="flip" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M14.5 4.5 7 12l7.5 7.5" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"/></svg>',
@@ -30,6 +30,9 @@ const I = {
   refresh: '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.3-5.6M20 3.5V8h-4.5" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>',
   trash: '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 6.5h16M9.5 6V4.8A.8.8 0 0 1 10.3 4h3.4a.8.8 0 0 1 .8.8V6M6.5 6.5l.8 12.2a1.8 1.8 0 0 0 1.8 1.7h5.8a1.8 1.8 0 0 0 1.8-1.7l.8-12.2" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>',
   close: '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" stroke="currentColor" stroke-width="2.1" stroke-linecap="round"/></svg>',
+  upload: '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 15V4.5M7.5 8.5 12 4l4.5 4.5M4.5 16.5v1.6A1.9 1.9 0 0 0 6.4 20h11.2a1.9 1.9 0 0 0 1.9-1.9v-1.6" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  share: '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3.5v11M8 6.5 12 2.8l4 3.7M5 12.5v6A1.5 1.5 0 0 0 6.5 20h11A1.5 1.5 0 0 0 19 18.5v-6" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  list: '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M8.5 6h11M8.5 12h11M8.5 18h11" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/><circle cx="4.3" cy="6" r="1.5" fill="currentColor"/><circle cx="4.3" cy="12" r="1.5" fill="currentColor"/><circle cx="4.3" cy="18" r="1.5" fill="currentColor"/></svg>',
   book: '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 6.2C10.3 4.7 8 4 5.2 4c-.6 0-1 .1-1.2.2v14c.2-.1.6-.2 1.2-.2 2.8 0 5.1.7 6.8 2.2 1.7-1.5 4-2.2 6.8-2.2.6 0 1 .1 1.2.2v-14C19.8 4.1 19.4 4 18.8 4 16 4 13.7 4.7 12 6.2Zm0 0v14" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>',
 };
 
@@ -64,6 +67,15 @@ const STR = {
     lastRead: 'آخرین مطالعه', backToLibrary: 'کتابخانه', section: 'بخش',
     nothingYet: 'هنوز چیزی نخوانده‌ای.', startNow: 'از اولین فصل شروع کن.',
     listeningNow: 'در حال خواندن فصل', estTime: 'زمان مطالعه',
+    downloads: 'دانلودها', uiFontSize: 'اندازه فونت رابط کاربری', uiFsNames: ['ریز', 'معمولی', 'درشت'],
+    changelog: 'لیست تغییرات', swReset: 'حذف سرویس‌ورکر و بارگذاری مجدد',
+    swResetNote: 'اگر برنامه گیر کرد یا نسخه قدیم ماند، این دکمه سرویس‌ورکر و کش پوسته را پاک می‌کند و برنامه را از سرور تازه می‌گیرد. پیشرفت مطالعه و دانلودها پاک نمی‌شوند.',
+    exportZip: 'خروجی ZIP از دانلودها', importZip: 'وارد کردن ZIP دانلودها',
+    select: 'انتخاب', cancelSel: 'لغو انتخاب', deleteSelected: 'حذف انتخاب‌شده‌ها',
+    noDownloads: 'هنوز چیزی دانلود نکرده‌ای. از کتابخانه، فصل‌ها را برای مطالعه آفلاین دانلود کن.',
+    totalSize: 'حجم کل', items: 'مورد', exported: 'خروجی ZIP ساخته و دانلود شد',
+    imported: 'دانلودها وارد شدند', importError: 'این فایل ZIP معتبر نیست یا خراب است.',
+    recent: 'اخیرها', allCourses: 'دوره‌ها',
   },
   en: {
     home: 'Home', library: 'Library', progress: 'Progress', settings: 'Settings', search: 'Search',
@@ -94,6 +106,15 @@ const STR = {
     lastRead: 'Last read', backToLibrary: 'Library', section: 'Section',
     nothingYet: "You haven't read anything yet.", startNow: 'Start with the first chapter.',
     listeningNow: 'Reading chapter', estTime: 'Reading time',
+    downloads: 'Downloads', uiFontSize: 'Interface font size', uiFsNames: ['Small', 'Default', 'Large'],
+    changelog: 'Changelog', swReset: 'Remove service worker & reload',
+    swResetNote: 'If the app is stuck on an old version, this removes the service worker and shell cache and refetches the app. Study progress and downloads are kept.',
+    exportZip: 'Export downloads as ZIP', importZip: 'Import downloads ZIP',
+    select: 'Select', cancelSel: 'Cancel selection', deleteSelected: 'Delete selected',
+    noDownloads: 'Nothing downloaded yet. Download chapters from the Library for offline reading.',
+    totalSize: 'Total size', items: 'items', exported: 'ZIP exported and downloaded',
+    imported: 'Downloads imported', importError: 'This ZIP file is invalid or corrupted.',
+    recent: 'Recent', allCourses: 'Courses',
   },
 };
 const T = (k) => (STR[settings.lang] && STR[settings.lang][k]) || STR.fa[k] || k;
@@ -108,7 +129,7 @@ function loadJSON(k, fb) { try { return Object.assign({}, fb, JSON.parse(localSt
 let settings = loadJSON(SKEY2, null);
 if (!settings || settings.theme === undefined) {
   const v1 = loadJSON('devdocs.settings.v1', { theme: 'auto', fontSize: 'normal' });
-  settings = { theme: v1.theme || 'auto', fontSize: { small: 1, normal: 2, large: 3 }[v1.fontSize] ?? 2, density: 'comfortable', lang: 'fa' };
+  settings = { theme: v1.theme || 'auto', fontSize: { small: 1, normal: 2, large: 3 }[v1.fontSize] ?? 2, density: 'comfortable', lang: 'fa', uiSize: 1 };
   localStorage.setItem(SKEY2, JSON.stringify(settings));
 }
 let progress = loadJSON(PKEY2, null);
@@ -119,7 +140,16 @@ if (!progress || !progress.done) {
   if (v1.last && v1.last.slug) progress.last = { key: 'nestjs:' + v1.last.slug, frac: v1.last.frac || 0, at: v1.last.at || 0 };
   localStorage.setItem(PKEY2, JSON.stringify(progress));
 }
+if (settings.uiSize === undefined) { settings.uiSize = 1; localStorage.setItem(SKEY2, JSON.stringify(settings)); }
 let downloads = loadJSON(DKEY, { keys: {} });
+// normalize: values are {at, size}; older entries were plain timestamps
+for (const k of Object.keys(downloads.keys)) {
+  const v = downloads.keys[k];
+  if (typeof v === 'number') downloads.keys[k] = { at: v, size: 0 };
+}
+const dlInfo = (key) => downloads.keys[key] || null;
+const dlSize = (key) => (downloads.keys[key] && downloads.keys[key].size) || 0;
+const fmtSize = (b) => !b ? '—' : b < 1048576 ? num(Math.max(1, Math.round(b / 1024))) + ' KB' : (b / 1048576).toFixed(1) + ' MB';
 const saveSettings = () => localStorage.setItem(SKEY2, JSON.stringify(settings));
 const saveProgress = () => localStorage.setItem(PKEY2, JSON.stringify(progress));
 const saveDownloads = () => localStorage.setItem(DKEY, JSON.stringify(downloads));
@@ -151,6 +181,9 @@ function sectionStats(course, section) {
   const done = chs.filter((ch) => isDone(keyOf(course.id, ch.slug))).length;
   return { done, total: chs.length, chs, pct: chs.length ? (done / chs.length) * 100 : 0 };
 }
+const courseIcon = (course, big) => course.icon
+  ? `<span class="course-ico${big ? ' big' : ''}"><img src="${course.icon}" alt=""></span>`
+  : `<span class="mono" style="background:${course.hue}">${esc(initials(course.title))}</span>`;
 const initials = (title) => title.split(/\s+/).map((w) => w[0]).join('').slice(0, 2).toUpperCase();
 
 /* ---------------- theme & language ---------------- */
@@ -162,6 +195,7 @@ function applySettings() {
   el.dataset.themeMode = settings.theme;
   el.dataset.fontsize = String(settings.fontSize);
   el.dataset.density = settings.density;
+  el.dataset.uisize = String(settings.uiSize == null ? 1 : settings.uiSize);
   el.lang = settings.lang;
   el.dir = settings.lang === 'en' ? 'ltr' : 'rtl';
 }
@@ -194,6 +228,7 @@ const TABS = [
   { id: 'home', route: '#/', icon: 'home', iconOn: 'homeFill' },
   { id: 'library', route: '#/library', icon: 'books' },
   { id: 'progress', route: '#/progress', icon: 'chart' },
+  { id: 'downloads', route: '#/downloads', icon: 'download' },
   { id: 'settings', route: '#/settings', icon: 'gear' },
 ];
 let activeTab = 'home';
@@ -217,29 +252,26 @@ function headerHTML({ title, sub, back, latin }) {
       <div class="topbar-title ${latin ? 'lat' : ''}">${esc(title)}</div>
       <span class="spacer"></span>
     </div>
-    <div class="lt-wrap"><h1 class="large-title ${latin ? 'lat' : ''}">${esc(title)}</h1>${sub ? `<p class="large-sub">${esc(sub)}</p>` : ''}</div>
     <div class="topbar-rule"></div>
-  </header>`;
+  </header>
+  <div class="lt-wrap"><h1 class="large-title ${latin ? 'lat' : ''}">${esc(title)}</h1>${sub ? `<p class="large-sub">${esc(sub)}</p>` : ''}</div>`;
 }
+let ltObserver = null;
 function setupLargeTitle(backRoute) {
-  const bar = $('.topbar'); if (!bar) { ltState = null; return; }
-  const wrap = $('.lt-wrap', bar);
-  wrap.style.height = 'auto';
-  const h = wrap.offsetHeight;
-  ltState = { bar, wrap, h };
-  bar.style.setProperty('--ltp', '0');
-  wrap.style.height = h + 'px';
-  const backBtn = $('[data-back]', bar);
+  const bar = $('.topbar');
+  const backBtn = bar && $('[data-back]', bar);
   if (backBtn) backBtn.onclick = () => { location.hash = backRoute; };
-  onScrollLT();
+  if (ltObserver) { ltObserver.disconnect(); ltObserver = null; }
+  if (!bar) return;
+  const wrap = $('.lt-wrap');
+  if (!wrap) { bar.classList.add('collapsed'); return; }
+  bar.classList.remove('collapsed');
+  ltObserver = new IntersectionObserver((es) => {
+    for (const e of es) bar.classList.toggle('collapsed', !e.isIntersecting);
+  }, { rootMargin: '-54px 0px 0px 0px', threshold: 0 });
+  ltObserver.observe(wrap);
 }
-function onScrollLT() {
-  if (!ltState) return;
-  const { bar, wrap, h } = ltState;
-  const p = Math.min(1, Math.max(0, window.scrollY / Math.max(40, h * 0.85)));
-  bar.style.setProperty('--ltp', p.toFixed(3));
-  wrap.style.height = (h * (1 - p)).toFixed(1) + 'px';
-}
+function onScrollLT() {}
 
 /* ---------------- shared view pieces ---------------- */
 const ringSVG = (pct, size, width) => {
@@ -248,11 +280,11 @@ const ringSVG = (pct, size, width) => {
 };
 function courseRow(course) {
   const st = courseStats(course);
-  return `<a class="row" href="#/course/${course.id}">
-    <span class="mono" style="background:${course.hue}">${esc(initials(course.title))}</span>
+  return `<a class="row course-row" href="#/course/${course.id}">
+    ${courseIcon(course)}
     <span class="grow"><span class="ttl lat">${esc(course.title)}</span>
     <span class="sub">${num(course.sections.length)} ${T('sections')} · ${num(st.total)} ${T('chapters')} · ${num(st.mins)} ${T('min')}</span>
-    <span class="bar"><i style="width:${st.pct}%"></i></span></span>
+    <span class="bar"><i style="width:${st.pct}%;background:${course.hue}"></i></span></span>
     <span class="pct">${pctStr(st.pct)}</span><span class="chev">${I.chev}</span></a>`;
 }
 function dlBtnHTML(courseId, slug) {
@@ -277,8 +309,8 @@ function vHome() {
   if (last) {
     const { course, ch } = last;
     h += `<div class="section-label">${T('continueReading')}</div>
-    <a class="continue-card" href="#/doc/${course.id}/${esc(ch.slug)}">
-      <span class="mono" style="background:${course.hue}">${esc(initials(course.title))}</span>
+    <a class="continue-card" href="#/doc/${course.id}/${esc(ch.slug)}" style="border-inline-start:3px solid ${course.hue}">
+      ${courseIcon(course)}
       <span class="grow"><span class="ttl lat">${esc(ch.title)}</span>
       <span class="sub lat">${esc(course.title)} · ${esc(ch.section)}</span>
       <span class="bar"><i style="width:${Math.round((progress.last.frac || 0) * 100)}%"></i></span></span>
@@ -292,6 +324,16 @@ function vHome() {
     <span class="sub">${num(tot.done)} ${T('of')} ${num(tot.total)} ${T('chapters')} ${T('doneOf')}</span></span>
     <a class="chip" href="#/progress">${T('progress')}</a></div></div>`;
   h += `<div class="section-label">${T('courses')}</div><div class="group">${CAT.courses.map(courseRow).join('')}</div>`;
+  const dlKeys = Object.keys(downloads.keys);
+  if (dlKeys.length) {
+    const totSize = dlKeys.reduce((a, k) => a + dlSize(k), 0);
+    h += `<div class="section-label">${T('downloads')}</div>
+    <div class="group"><a class="row" href="#/downloads">
+      <span class="dl-summary-ic">${I.dlDone}</span>
+      <span class="grow"><span class="ttl">${num(dlKeys.length)} ${T('chapters')}</span>
+      <span class="sub">${T('totalSize')}: ${fmtSize(totSize)}</span></span>
+      <span class="chev">${I.chev}</span></a></div>`;
+  }
   view().innerHTML = h;
   setupLargeTitle();
 }
@@ -317,7 +359,7 @@ function vCourse(courseId) {
   </div>
   <div class="row">
     <span class="grow"><span class="ttl">${dlCount === st.total ? T('downloadedN') + ' ✓' : T('downloadAll')}</span>
-    <span class="sub">${num(dlCount)} ${T('of')} ${num(st.total)} ${T('chapters')}</span></span>
+    <span class="sub" data-dl-count="course:${course.id}">${num(dlCount)} ${T('of')} ${num(st.total)} ${T('chapters')}</span></span>
     ${dlCount ? `<button type="button" class="dl-btn" data-dl-remove-course="${course.id}" aria-label="Remove">${I.trash}</button>` : ''}
     <button type="button" class="dl-btn" data-dl-course="${course.id}" aria-label="Download">${I.download}</button>
   </div></div>
@@ -354,7 +396,7 @@ function vSection(courseId, idx) {
   view().innerHTML = headerHTML({ title: sec.title, sub: `${course.title} · ${num(ss.total)} ${T('chapters')}`, back: true, latin: true }) + `
   <div class="group" style="margin-top:12px"><div class="row">
     <span class="grow"><span class="ttl">${T('downloadAll')}</span>
-    <span class="sub">${num(dlCount)} ${T('of')} ${num(ss.total)} ${T('chapters')} ${T('downloadedN')}</span></span>
+    <span class="sub" data-dl-count="section:${course.id}:${idx}">${num(dlCount)} ${T('of')} ${num(ss.total)} ${T('chapters')} ${T('downloadedN')}</span></span>
     ${dlCount ? `<button type="button" class="dl-btn" data-dl-remove-sec aria-label="Remove">${I.trash}</button>` : ''}
     <button type="button" class="dl-btn" data-dl-sec aria-label="Download">${I.download}</button>
   </div></div>` +
@@ -386,7 +428,7 @@ function vProgress() {
     const st = courseStats(course);
     return `<div class="section-label lat">${esc(course.title)}</div>
     <div class="group"><div class="row">
-      <span class="mono" style="background:${course.hue}">${esc(initials(course.title))}</span>
+      ${courseIcon(course)}
       <span class="grow"><span class="ttl">${pctStr(st.pct)}</span><span class="bar"><i style="width:${st.pct}%"></i></span>
       <span class="sub">${num(st.done)} ${T('of')} ${num(st.total)} ${T('chapters')}</span></span>
     </div>${course.sections.map((sec) => { const ss = sectionStats(course, sec); return `<div class="row" style="min-height:44px">
@@ -397,8 +439,8 @@ function vProgress() {
   setupLargeTitle();
 }
 
-function segHTML(name, options, current) {
-  return `<span class="seg" data-seg="${name}">${options.map((o) => `<button type="button" data-val="${esc(o.v)}" class="${String(o.v) === String(current) ? 'on' : ''}">${esc(o.l)}</button>`).join('')}</span>`;
+function segHTML(name, options, current, cls) {
+  return `<span class="seg${cls ? ' ' + cls : ''}" data-seg="${name}">${options.map((o) => `<button type="button" data-val="${esc(o.v)}" class="${String(o.v) === String(current) ? 'on' : ''}">${esc(o.l)}</button>`).join('')}</span>`;
 }
 function vSettings() {
   activeTab = 'settings';
@@ -408,15 +450,16 @@ function vSettings() {
   <div class="group">
     <div class="set-row"><span class="lbl">${T('theme')}</span>${segHTML('theme', [{ v: 'auto', l: T('auto') }, { v: 'light', l: T('light') }, { v: 'dark', l: T('dark') }], settings.theme)}</div>
     <div class="set-row"><span class="lbl">${T('uiLang')}</span>${segHTML('lang', [{ v: 'fa', l: 'فارسی' }, { v: 'en', l: 'English' }], settings.lang)}</div>
+    <div class="set-row"><span class="lbl">${T('uiFontSize')}</span>${segHTML('uiSize', T('uiFsNames').map((l, i) => ({ v: i, l })), settings.uiSize == null ? 1 : settings.uiSize)}</div>
   </div>
   <div class="section-label">${T('reading')}</div>
   <div class="group">
-    <div class="set-row" style="flex-direction:column;align-items:stretch;gap:9px"><span class="lbl">${T('fontSize')}</span>${segHTML('fontSize', T('fsNames').map((l, i) => ({ v: i, l })), settings.fontSize)}</div>
+    <div class="set-row" style="flex-direction:column;align-items:stretch;gap:9px"><span class="lbl">${T('fontSize')}</span>${segHTML('fontSize', T('fsNames').map((l, i) => ({ v: i, l })), settings.fontSize, 'wrap')}</div>
     <div class="set-row"><span class="lbl">${T('density')}</span>${segHTML('density', [{ v: 'compact', l: T('compact') }, { v: 'comfortable', l: T('comfortable') }, { v: 'spacious', l: T('spacious') }], settings.density)}</div>
   </div>
   <div class="section-label">${T('offline')}</div>
   <div class="group">
-    <div class="set-row"><span class="lbl">${T('downloadedChapters')}</span><span class="pct" id="dl-count">${num(dlCount)}</span></div>
+    <div class="set-row"><span class="lbl">${T('downloadedChapters')}</span><span class="pct" id="dl-count" data-dl-count="all">${num(dlCount)}</span></div>
     <div class="set-row"><span class="lbl">${T('storageUsed')}</span><span class="pct" id="storage-est">…</span></div>
     <button type="button" class="row btn-danger" id="del-downloads" style="justify-content:center">${T('deleteAllDownloads')}</button>
   </div>
@@ -424,8 +467,11 @@ function vSettings() {
   <div class="group">
     <div class="set-row"><span class="lbl">${T('version')}</span><span class="pct lat">${APP_VERSION}</span></div>
     <button type="button" class="row" id="check-update"><span class="grow"><span class="ttl">${T('checkUpdate')}</span></span><span class="chev">${I.chev}</span></button>
+    <a class="row" href="#/changelog"><span class="grow"><span class="ttl">${T('changelog')}</span></span><span class="chev">${I.chev}</span></a>
+    <button type="button" class="row" id="sw-reset"><span class="grow"><span class="ttl">${T('swReset')}</span></span><span class="chev">${I.chev}</span></button>
     ${deferredInstall ? `<button type="button" class="row" id="install-app"><span class="grow"><span class="ttl">${T('installApp')}</span></span><span class="chev">${I.chev}</span></button>` : ''}
   </div>
+  <p class="set-note" style="margin-top:2px">${T('swResetNote')}</p>
   <div class="section-label">${T('dataSec')}</div>
   <div class="group">
     <button type="button" class="row btn-danger" id="reset-progress" style="justify-content:center">${T('resetProgress')}</button>
@@ -437,6 +483,7 @@ function vSettings() {
     if (name === 'theme') settings.theme = val;
     else if (name === 'lang') { settings.lang = val; saveSettings(); applySettings(); renderChrome(); vSettings(); window.scrollTo(0, 0); return; }
     else if (name === 'fontSize') settings.fontSize = Number(val);
+    else if (name === 'uiSize') settings.uiSize = Number(val);
     else if (name === 'density') settings.density = val;
     saveSettings(); applySettings();
     $$('button', seg).forEach((x) => x.classList.toggle('on', x === b));
@@ -447,6 +494,17 @@ function vSettings() {
   $('#del-downloads').onclick = () => confirmSheet({ title: T('deleteDlT'), body: T('deleteDlB'), confirmLabel: T('delete'), danger: true, onConfirm: async () => { await removeDownloads(Object.keys(downloads.keys)); vSettings(); } });
   $('#reset-progress').onclick = () => confirmSheet({ title: T('resetConfirmT'), body: T('resetConfirmB'), confirmLabel: T('reset'), danger: true, onConfirm: () => { progress = { done: {}, last: null }; saveProgress(); toast('✓'); vSettings(); } });
   $('#check-update').onclick = (e) => checkForUpdate(true, e.currentTarget);
+  $('#sw-reset').onclick = async () => {
+    try {
+      if ('serviceWorker' in navigator) {
+        const regs = await navigator.serviceWorker.getRegistrations();
+        await Promise.all(regs.map((r) => r.unregister()));
+      }
+      const names = await caches.keys();
+      await Promise.all(names.filter((n) => n !== OFFLINE_CACHE).map((n) => caches.delete(n)));
+    } catch {}
+    location.reload();
+  };
   const inst = $('#install-app');
   if (inst) inst.onclick = async () => { if (deferredInstall) { deferredInstall.prompt(); await deferredInstall.userChoice; deferredInstall = null; vSettings(); } };
 }
@@ -461,11 +519,34 @@ async function downloadChapter(key) {
   const res = await fetch(entry.ch.file);
   if (!res.ok) throw new Error('fetch failed');
   const text = await res.text();
+  let size = new Blob([text]).size;
   await cache.put(url, new Response(text, { headers: { 'Content-Type': 'text/html' } }));
   const imgs = [...text.matchAll(/src="((?:assets|fonts)\/[^"]+)"/g)].map((m) => m[1]);
   await Promise.all([...new Set(imgs)].map(async (src) => {
-    try { const r = await fetch(src); if (r.ok) await cache.put(new URL(src, location.href).href, r); } catch {}
+    try {
+      const r = await fetch(src); if (!r.ok) return;
+      const b = await r.blob(); size += b.size;
+      await cache.put(new URL(src, location.href).href, new Response(b, { headers: { 'Content-Type': r.headers.get('Content-Type') || 'application/octet-stream' } }));
+    } catch {}
   }));
+  return size;
+}
+function updateDlChrome() {
+  $$('[data-dl-count]').forEach((el) => {
+    const [kind, a, b] = el.dataset.dlCount.split(':');
+    if (kind === 'all') el.textContent = num(Object.keys(downloads.keys).length);
+    else if (kind === 'course') {
+      const c = courseById.get(a);
+      if (c) el.textContent = `${num(c.chapters.filter((ch) => isDownloaded(keyOf(c.id, ch.slug))).length)} ${T('of')} ${num(c.chapters.length)} ${T('chapters')}`;
+    } else if (kind === 'section') {
+      const c = courseById.get(a);
+      if (c && c.sections[+b]) {
+        const ss = sectionStats(c, c.sections[+b]);
+        el.textContent = `${num(ss.chs.filter((ch) => isDownloaded(keyOf(c.id, ch.slug))).length)} ${T('of')} ${num(ss.total)} ${T('chapters')} ${T('downloadedN')}`;
+      }
+    }
+  });
+  refreshDlButtons();
 }
 async function downloadScope(keys, btn) {
   const todo = keys.filter((k) => !isDownloaded(k));
@@ -475,7 +556,7 @@ async function downloadScope(keys, btn) {
   async function worker() {
     while (i < todo.length) {
       const k = todo[i++];
-      try { await downloadChapter(k); downloads.keys[k] = Date.now(); saveDownloads(); }
+      try { const size = await downloadChapter(k); downloads.keys[k] = { at: Date.now(), size }; saveDownloads(); updateDlChrome(); }
       catch { failed++; }
     }
   }
@@ -485,10 +566,21 @@ async function downloadScope(keys, btn) {
   const y = window.scrollY; router(); window.scrollTo(0, y);
 }
 async function removeDownloads(keys) {
-  const cache = await caches.open(OFFLINE_CACHE);
+  const cacheNames = await caches.keys();
   for (const k of keys) {
     const entry = chapByKey.get(k);
-    if (entry) { try { await cache.delete(new URL(entry.ch.file, location.href).href); } catch {} }
+    if (entry) {
+      const url = new URL(entry.ch.file, location.href).href;
+      let imgs = [];
+      try {
+        const oc = await caches.open(OFFLINE_CACHE);
+        const res = await oc.match(url);
+        if (res) { const t = await res.text(); imgs = [...t.matchAll(/src="((?:assets)\/[^"]+)"/g)].map((m) => new URL(m[1], location.href).href); }
+      } catch {}
+      for (const name of cacheNames) {
+        try { const c = await caches.open(name); await c.delete(url); for (const iu of imgs) await c.delete(iu); } catch {}
+      }
+    }
     delete downloads.keys[k];
   }
   if (!Object.keys(downloads.keys).length) { try { await caches.delete(OFFLINE_CACHE); } catch {} }
@@ -502,7 +594,7 @@ function bindDlButtons() {
     if (isDownloaded(key)) { await removeDownloads([key]); }
     else {
       b.classList.add('busy');
-      try { await downloadChapter(key); downloads.keys[key] = Date.now(); saveDownloads(); toast(T('dlDoneToast')); }
+      try { const size = await downloadChapter(key); downloads.keys[key] = { at: Date.now(), size }; saveDownloads(); toast(T('dlDoneToast')); }
       catch { toast(T('dlError')); }
       b.classList.remove('busy');
     }
@@ -533,9 +625,19 @@ function highlight(text, tokens) {
 }
 function vSearch() {
   activeTab = 'search';
+  const last = progress.last && chapByKey.get(progress.last.key);
+  const stories = [];
+  for (const c of CAT.courses) stories.push({ img: c.icon, label: c.title, hue: c.hue, href: '#/course/' + c.id });
+  if (last) stories.push({ label: last.ch.title, sub: T('lastRead'), initials: initials(last.ch.title), hue: last.course.hue, href: `#/doc/${last.course.id}/${esc(last.ch.slug)}` });
   view().innerHTML = headerHTML({ title: T('search'), back: true }) + `
   <div class="search-box">${I.search}<input id="search-input" type="search" placeholder="${esc(T('searchPh'))}" autocomplete="off"></div>
-  <div id="search-results" style="margin-top:14px"></div>`;
+  <div class="section-label">${T('allCourses')}</div>
+  <div class="story-row">${stories.map((st) => `
+    <a class="story" href="${st.href}">
+      <span class="story-ring"><span class="story-ava" style="background:${st.img ? '#fff' : st.hue}">${st.img ? `<img src="${st.img}" alt="">` : esc(st.initials || initials(st.label))}</span></span>
+      <span class="story-lbl lat">${esc(st.label)}</span>
+    </a>`).join('')}</div>
+  <div id="search-results" style="margin-top:6px"></div>`;
   setupLargeTitle('#/');
   const input = $('#search-input');
   input.focus();
@@ -544,6 +646,13 @@ function vSearch() {
     clearTimeout(timer);
     timer = setTimeout(() => doSearch(input.value.trim(), ++seq), 240);
   });
+  const tgRow = ({ course, ch }, titleHtml, snippetHtml) => `
+    <a class="tg-row" href="#/doc/${course.id}/${esc(ch.slug)}">
+      <span class="tg-ava" style="background:${course.hue}">${course.icon ? `<img src="${course.icon}" alt="">` : esc(initials(course.title))}</span>
+      <span class="grow"><span class="ttl lat">${titleHtml}</span>
+      ${snippetHtml ? `<span class="tg-snippet">${snippetHtml}</span>` : ''}
+      <span class="sub lat">${esc(course.title)} · ${esc(ch.section)} · ${num(ch.minutes)} ${T('min')}</span></span>
+      <span class="chev">${I.chev}</span></a>`;
   async function doSearch(q, mySeq) {
     const box = $('#search-results');
     if (!box) return;
@@ -573,14 +682,203 @@ function vSearch() {
     }
     if (!titleHits.length && !contentHits.length) { box.innerHTML = `<div class="empty">${T('noResults')}</div>`; return; }
     box.innerHTML =
-      (titleHits.length ? `<div class="section-label">${T('titleHits')} · ${num(titleHits.length)}</div><div class="group">${titleHits.map(({ course, ch }) => `
-        <a class="row" href="#/doc/${course.id}/${esc(ch.slug)}"><span class="mono" style="background:${course.hue}">${esc(initials(course.title))}</span>
-        <span class="grow"><span class="ttl lat">${highlight(ch.title, tokens)}</span><span class="sub lat">${esc(course.title)} · ${esc(ch.section)}</span></span><span class="chev">${I.chev}</span></a>`).join('')}</div>` : '') +
-      (contentHits.length ? `<div class="section-label">${T('contentHits')} · ${num(contentHits.length)}</div><div class="group">${contentHits.map(({ course, ch, snippet }) => `
-        <a class="row" href="#/doc/${course.id}/${esc(ch.slug)}"><span class="grow"><span class="ttl lat">${esc(ch.title)}</span>
-        <span class="search-snippet">${highlight(snippet, tokens)}</span>
-        <span class="sub lat">${esc(course.title)} · ${esc(ch.section)}</span></span><span class="chev">${I.chev}</span></a>`).join('')}</div>` : '');
+      (titleHits.length ? `<div class="section-label">${T('titleHits')} · ${num(titleHits.length)}</div><div class="tg-list">${titleHits.map((h) => tgRow(h, highlight(h.ch.title, tokens), '')).join('')}</div>` : '') +
+      (contentHits.length ? `<div class="section-label">${T('contentHits')} · ${num(contentHits.length)}</div><div class="tg-list">${contentHits.map((h) => tgRow(h, esc(h.ch.title), highlight(h.snippet, tokens))).join('')}</div>` : '');
   }
+}
+
+/* ---------------- ZIP (store + deflate-read) ---------------- */
+const CRC_TABLE = (() => { const t = new Int32Array(256); for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1; t[n] = c; } return t; })();
+function crc32(buf) { let c = 0xFFFFFFFF; for (let i = 0; i < buf.length; i++) c = CRC_TABLE[(c ^ buf[i]) & 0xFF] ^ (c >>> 8); return (c ^ 0xFFFFFFFF) >>> 0; }
+function makeZipBlob(files) {
+  const enc = new TextEncoder();
+  const chunks = [], central = [];
+  let offset = 0;
+  for (const f of files) {
+    const name = enc.encode(f.name);
+    const data = f.data instanceof Uint8Array ? f.data : new Uint8Array(f.data);
+    const crc = crc32(data);
+    const local = new DataView(new ArrayBuffer(30));
+    local.setUint32(0, 0x04034b50, true); local.setUint16(4, 20, true); local.setUint16(6, 0x0800, true);
+    local.setUint16(8, 0, true); local.setUint32(14, crc, true);
+    local.setUint32(18, data.length, true); local.setUint32(22, data.length, true); local.setUint16(26, name.length, true);
+    chunks.push(new Uint8Array(local.buffer), name, data);
+    const cen = new DataView(new ArrayBuffer(46));
+    cen.setUint32(0, 0x02014b50, true); cen.setUint16(4, 20, true); cen.setUint16(6, 20, true); cen.setUint16(8, 0x0800, true);
+    cen.setUint16(10, 0, true); cen.setUint32(16, crc, true);
+    cen.setUint32(20, data.length, true); cen.setUint32(24, data.length, true); cen.setUint16(28, name.length, true);
+    cen.setUint32(42, offset, true);
+    central.push(new Uint8Array(cen.buffer), name);
+    offset += 30 + name.length + data.length;
+  }
+  const cenSize = central.reduce((a, c) => a + c.length, 0);
+  const end = new DataView(new ArrayBuffer(22));
+  end.setUint32(0, 0x06054b50, true);
+  end.setUint16(8, files.length, true); end.setUint16(10, files.length, true);
+  end.setUint32(12, cenSize, true); end.setUint32(16, offset, true);
+  return new Blob([...chunks, ...central, new Uint8Array(end.buffer)], { type: 'application/zip' });
+}
+async function unzipToMap(buf) {
+  const u8 = new Uint8Array(buf);
+  const dv = new DataView(buf);
+  let eocd = -1;
+  for (let i = u8.length - 22; i >= Math.max(0, u8.length - 70000); i--) { if (dv.getUint32(i, true) === 0x06054b50) { eocd = i; break; } }
+  if (eocd < 0) throw new Error('eocd');
+  const count = dv.getUint16(eocd + 10, true);
+  let p = dv.getUint32(eocd + 16, true);
+  const out = new Map();
+  const dec = new TextDecoder();
+  for (let i = 0; i < count; i++) {
+    if (dv.getUint32(p, true) !== 0x02014b50) break;
+    const method = dv.getUint16(p + 10, true);
+    const csize = dv.getUint32(p + 20, true);
+    const nameLen = dv.getUint16(p + 28, true);
+    const extraLen = dv.getUint16(p + 30, true);
+    const commentLen = dv.getUint16(p + 32, true);
+    const lhofs = dv.getUint32(p + 42, true);
+    const name = dec.decode(u8.subarray(p + 46, p + 46 + nameLen));
+    const lnameLen = dv.getUint16(lhofs + 26, true);
+    const lextraLen = dv.getUint16(lhofs + 28, true);
+    const start = lhofs + 30 + lnameLen + lextraLen;
+    const comp = u8.subarray(start, start + csize);
+    if (method === 0) out.set(name, new Uint8Array(comp));
+    else if (method === 8 && 'DecompressionStream' in window) {
+      const stream = new Blob([comp]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
+      out.set(name, new Uint8Array(await new Response(stream).arrayBuffer()));
+    }
+    p += 46 + nameLen + extraLen + commentLen;
+  }
+  return out;
+}
+
+/* ---------------- downloads manager ---------------- */
+let dlSelectMode = false;
+const dlSelected = new Set();
+function vDownloads() {
+  activeTab = 'downloads';
+  const keys = Object.keys(downloads.keys).filter((k) => chapByKey.has(k));
+  const totSize = keys.reduce((a, k) => a + dlSize(k), 0);
+  const byCourse = CAT.courses.map((c) => ({ course: c, items: keys.filter((k) => k.startsWith(c.id + ':')).map((k) => ({ key: k, ch: chapByKey.get(k).ch })) })).filter((g) => g.items.length);
+  view().innerHTML = headerHTML({ title: T('downloads'), sub: `${num(keys.length)} ${T('chapters')} · ${fmtSize(totSize)}` }) + `
+  <div class="group" style="margin-top:12px">
+    <button type="button" class="row" id="dl-export"><span class="row-ic">${I.share}</span><span class="grow"><span class="ttl">${T('exportZip')}</span></span><span class="chev">${I.chev}</span></button>
+    <button type="button" class="row" id="dl-import"><span class="row-ic">${I.upload}</span><span class="grow"><span class="ttl">${T('importZip')}</span></span><span class="chev">${I.chev}</span></button>
+    <button type="button" class="row" id="dl-select"><span class="row-ic">${I.list}</span><span class="grow"><span class="ttl">${dlSelectMode ? T('cancelSel') : T('select')}</span></span><span class="chev">${I.chev}</span></button>
+    ${keys.length ? `<button type="button" class="row btn-danger" id="dl-delete-all" style="justify-content:center">${T('deleteAllDownloads')}</button>` : ''}
+  </div>
+  <input type="file" id="dl-file" accept=".zip,application/zip" hidden>
+  ${dlSelectMode && dlSelected.size ? `<button type="button" class="btn-primary" id="dl-delete-sel" style="margin-top:14px;background:var(--red)">${I.trash}<span>${T('deleteSelected')} · ${num(dlSelected.size)}</span></button>` : ''}
+  ${!keys.length ? `<div class="empty">${T('noDownloads')}</div>` : byCourse.map(({ course, items }) => `
+    <div class="section-label" style="display:flex;align-items:center;gap:8px">${courseIcon(course)}<span class="lat">${esc(course.title)}</span></div>
+    <div class="group">${items.map(({ key, ch }) => `
+      <div class="row dl-row" data-key="${esc(key)}">
+        ${dlSelectMode ? `<span class="sel-dot ${dlSelected.has(key) ? 'on' : ''}">${I.check}</span>` : ''}
+        <span class="grow"><span class="ttl lat">${esc(ch.title)}</span>
+        <span class="sub lat">${esc(ch.section)} · ${fmtSize(dlSize(key))}</span></span>
+        ${dlSelectMode ? '' : `<a class="dl-btn" href="#/doc/${course.id}/${esc(ch.slug)}" aria-label="Open">${I.chev}</a>
+        <button type="button" class="dl-btn danger" data-del-one="${esc(key)}" aria-label="Delete">${I.trash}</button>`}
+      </div>`).join('')}</div>`).join('')}`;
+  setupLargeTitle();
+  $('#dl-export').onclick = exportDownloadsZip;
+  const fileInput = $('#dl-file');
+  $('#dl-import').onclick = () => fileInput.click();
+  fileInput.onchange = async () => { if (fileInput.files[0]) { try { await importDownloadsZip(fileInput.files[0]); } catch { toast(T('importError')); } vDownloads(); } };
+  $('#dl-select').onclick = () => { dlSelectMode = !dlSelectMode; dlSelected.clear(); vDownloads(); };
+  const delAll = $('#dl-delete-all');
+  if (delAll) delAll.onclick = () => confirmSheet({ title: T('deleteDlT'), body: T('deleteDlB'), confirmLabel: T('delete'), danger: true, onConfirm: async () => { await removeDownloads(Object.keys(downloads.keys)); dlSelectMode = false; vDownloads(); } });
+  const delSel = $('#dl-delete-sel');
+  if (delSel) delSel.onclick = () => confirmSheet({ title: T('deleteDlT'), body: T('deleteDlB'), confirmLabel: T('delete'), danger: true, onConfirm: async () => { await removeDownloads([...dlSelected]); dlSelected.clear(); dlSelectMode = false; vDownloads(); } });
+  $$('[data-del-one]').forEach((b) => b.onclick = async () => { await removeDownloads([b.dataset.delOne]); vDownloads(); });
+  if (dlSelectMode) $$('.dl-row').forEach((r) => r.onclick = () => {
+    const k = r.dataset.key;
+    dlSelected.has(k) ? dlSelected.delete(k) : dlSelected.add(k);
+    vDownloads();
+  });
+  // backfill unknown sizes from the offline cache, then refresh quietly
+  const missing = keys.filter((k) => !dlSize(k));
+  if (missing.length) (async () => {
+    try {
+      const cache = await caches.open(OFFLINE_CACHE);
+      let changed = false;
+      for (const k of missing) {
+        const e = chapByKey.get(k); if (!e) continue;
+        const res = await cache.match(new URL(e.ch.file, location.href).href);
+        if (res) { const b = await res.blob(); downloads.keys[k].size = b.size; changed = true; }
+      }
+      if (changed) { saveDownloads(); if (location.hash === '#/downloads' && !dlSelectMode) vDownloads(); }
+    } catch {}
+  })();
+}
+async function exportDownloadsZip() {
+  const keys = Object.keys(downloads.keys).filter((k) => chapByKey.has(k));
+  if (!keys.length) { toast(T('noDownloads')); return; }
+  const cache = await caches.open(OFFLINE_CACHE);
+  const files = [], items = [];
+  for (const key of keys) {
+    const e = chapByKey.get(key);
+    const res = await cache.match(new URL(e.ch.file, location.href).href);
+    if (!res) continue;
+    const text = await res.text();
+    const zipPath = 'chapters/' + e.ch.file.split('/').pop();
+    files.push({ name: zipPath, data: new TextEncoder().encode(text) });
+    const imgs = [...new Set([...text.matchAll(/src="((?:assets)\/[^"]+)"/g)].map((m) => m[1]))];
+    const imgList = [];
+    for (const src of imgs) {
+      const ir = await cache.match(new URL(src, location.href).href);
+      if (ir) { files.push({ name: src, data: new Uint8Array(await ir.arrayBuffer()) }); imgList.push(src); }
+    }
+    items.push({ key, file: zipPath, images: imgList });
+  }
+  files.push({ name: 'manifest.json', data: new TextEncoder().encode(JSON.stringify({ app: 'devdocs', kind: 'downloads', version: 1, items })) });
+  const blob = makeZipBlob(files);
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'devdocs-downloads.zip';
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+  toast(T('exported'));
+}
+async function importDownloadsZip(file) {
+  const entries = await unzipToMap(await file.arrayBuffer());
+  const man = entries.get('manifest.json');
+  if (!man) throw new Error('manifest');
+  const items = JSON.parse(new TextDecoder().decode(man)).items || [];
+  const cache = await caches.open(OFFLINE_CACHE);
+  let n = 0;
+  for (const it of items) {
+    const e = chapByKey.get(it.key);
+    const data = entries.get(it.file);
+    if (!e || !data) continue;
+    await cache.put(new URL(e.ch.file, location.href).href, new Response(data.slice().buffer, { headers: { 'Content-Type': 'text/html' } }));
+    let size = data.byteLength;
+    for (const src of it.images || []) {
+      const d = entries.get(src);
+      if (d) { await cache.put(new URL(src, location.href).href, new Response(d.slice().buffer)); size += d.byteLength; }
+    }
+    downloads.keys[it.key] = { at: Date.now(), size };
+    n++;
+  }
+  saveDownloads();
+  toast(`${T('imported')} · ${num(n)}`);
+}
+
+/* ---------------- changelog ---------------- */
+const CHANGELOG = [
+  { v: '2.1.0', fa: ['دوره کامل TypeORM اضافه شد (۷۵ فصل)', 'صفحه «دانلودها» با حذف تکی، انتخابی و کلی + خروجی و ورودی ZIP', 'جستجو به سبک تلگرام: دوره‌ها دایره‌ای بالا، نتایج متنی پایین', 'آیکون واقعی هر دوره (NestJS، Prisma، TypeORM) نمایش داده می‌شود', 'خواندن صوتی (TTS) حذف شد', 'اندازه فونت رابط کاربری اضافه شد', 'صفحه «لیست تغییرات» در تنظیمات', 'دکمه حذف سرویس‌ورکر و بارگذاری مجدد در تنظیمات', 'بررسی به‌روزرسانی: وقتی برنامه به‌روز است دیگر مودال نمی‌آید', 'کدهای ترمینال رنگی شدند و تگ‌های اضافی در داک Prisma اصلاح شد', 'رفع مشکل کم‌نشدن حجم بعد از حذف دانلودها و سریع‌شدن شمارنده دانلود', 'ترنزیشن عنوان بزرگ نرم‌تر شد؛ توست تیره اصلاح شد؛ منوی بالای مطلب ثابت شد'], en: ['Complete TypeORM course added (75 chapters)', 'Downloads page with single, selective and delete-all, plus ZIP export/import', 'Telegram-style search: course stories on top, text results below', 'Real course logos (NestJS, Prisma, TypeORM)', 'Text-to-speech removed', 'Interface font size setting added', 'Changelog page in Settings', 'Remove-service-worker & reload button in Settings', 'Update check no longer shows the modal when up to date', 'Colored terminal code blocks; stray tags in Prisma docs fixed', 'Storage now actually frees up after deleting downloads; faster download counters', 'Smoother large-title transition; dark toast fixed; doc toolbar pinned'] },
+  { v: '2.0.3', fa: ['به‌روزرسانی‌ها فوری اعمال می‌شوند: پوسته اپ در هر بار اجرا از شبکه تازه می‌شود'], en: ['Updates apply instantly: the app shell refreshes from the network on every load'] },
+  { v: '2.0.2', fa: ['اعمال مطمئن‌تر به‌روزرسانی با دکمه آپدیت (رفرش پوسته)', 'رفع چند اشکال نمایشی نسخه قبل'], en: ['More reliable in-app updates (shell refresh)', 'Display fixes from the previous release'] },
+  { v: '2.0.1', fa: ['گروه‌بندی فصل‌ها داخل بخش‌ها نمایش داده می‌شود (Queries، Deployment و…)', 'عنوان فصل هنگام اسکرول در نوار بالا می‌ماند و نوار ابزار زیر آن قرار می‌گیرد'], en: ['Chapter groups are shown inside sections (Queries, Deployment, …)', 'The chapter title stays visible in the top bar while scrolling, with the toolbar below it'] },
+  { v: '2.0.0', fa: ['تبدیل به خواننده مستندات چنددوره‌ای: NestJS کامل + Prisma ORM 7 کامل (۳۱۸ فصل)', 'جستجوی متن کامل، کتابخانه درختی، دانلود آفلاین انتخابی', 'رابط دوزبانه فارسی/English، فونت Manrope، مودال به‌روزرسانی داخل اپ', 'ترجمه فارسی متن‌ها و خواندن صوتی انگلیسی'], en: ['Multi-course reader: full NestJS + full Prisma ORM 7 (318 chapters)', 'Full-text search, tree library, selective offline downloads', 'Bilingual FA/EN interface, Manrope font, in-app update modal', 'Persian translation of texts and English text-to-speech'] },
+  { v: '1.0.0', fa: ['انتشار اول: مستندات کامل NestJS (۱۷۰ فصل) با ردیاب پیشرفت مطالعه و حالت آفلاین'], en: ['First release: complete NestJS documentation (170 chapters) with study progress tracking and offline mode'] },
+];
+function vChangelog() {
+  activeTab = 'settings';
+  view().innerHTML = headerHTML({ title: T('changelog'), back: true }) +
+    CHANGELOG.map((rel) => `
+    <div class="section-label" style="margin-top:18px"><span class="ver-badge lat">v${rel.v}</span>${rel.v === APP_VERSION ? ` <span class="chip">${settings.lang === 'en' ? 'Current' : 'نسخه کنونی'}</span>` : ''}</div>
+    <div class="group"><ul class="changelog-list">${(settings.lang === 'en' ? rel.en : rel.fa).map((n) => `<li>${esc(n)}</li>`).join('')}</ul></div>`).join('') +
+    '<div style="height:16px"></div>';
+  setupLargeTitle('#/settings');
 }
 
 /* ---------------- app updates ---------------- */
@@ -592,13 +890,15 @@ async function fetchVersion() {
   return r.json();
 }
 async function checkForUpdate(manual) {
-  try {
-    const v = await fetchVersion();
-    if (v && v.version !== APP_VERSION) { promptUpdate(v.notes); return true; }
-    if (swReg) { await swReg.update(); if (swReg.waiting && navigator.serviceWorker.controller) { promptUpdate(v && v.notes); return true; } }
-    if (manual) toast(T('upToDate'));
-    return false;
-  } catch { if (manual) toast(T('dlError')); return false; }
+  let remote = null;
+  try { remote = await fetchVersion(); } catch { remote = null; }
+  if (remote && remote.version !== APP_VERSION) { promptUpdate(remote.notes); return true; }
+  if (swReg) { try { await swReg.update(); } catch {} }
+  // A waiting worker with no newer version.json is not an app update; the
+  // worker refreshes silently in the background instead of prompting.
+  if (manual) toast(T('upToDate'));
+  else if (!remote && swReg && swReg.waiting && navigator.serviceWorker.controller) promptUpdate(null);
+  return false;
 }
 function promptUpdate(notes) {
   if (updatePromptShown) return;
@@ -670,13 +970,12 @@ function vDoc(courseId, slugFrag) {
       <div class="topbar-title lat">${esc(ch.title)}</div>
       <span class="spacer"></span>
     </div>
-    <div class="lt-wrap"><h1 class="large-title lat" style="font-size:27px;line-height:1.28">${esc(ch.title)}</h1>
-    <p class="large-sub"><span class="lat">${esc(course.title)}</span> · <span class="lat">${esc(ch.section)}</span> · ${num(ch.minutes)} ${T('min')}</p></div>
     <div class="topbar-rule"></div>
   </header>
+  <div class="lt-wrap"><h1 class="large-title lat" style="font-size:27px;line-height:1.28">${esc(ch.title)}</h1>
+  <p class="large-sub"><span class="lat">${esc(course.title)}</span> · <span class="lat">${esc(ch.section)}</span> · ${num(ch.minutes)} ${T('min')}</p></div>
   <div class="doc-tools" role="toolbar">
     <button type="button" id="tool-mark">${I.check}<span>${T('markRead')}</span></button>
-    <button type="button" id="tool-tts">${I.speaker}<span>${T('listen')}</span></button>
     <button type="button" id="tool-tr">${I.globe}<span>${T('translateBtn')}</span></button>
     <button type="button" id="tool-dl">${I.download}<span>${T('downloadAll').split(' ')[0] === 'دانلود' ? 'آفلاین' : 'Offline'}</span></button>
   </div>
@@ -711,7 +1010,7 @@ function vDoc(courseId, slugFrag) {
     if (isDownloaded(key)) { await removeDownloads([key]); syncDl(); }
     else {
       toolDl.classList.add('busy');
-      try { await downloadChapter(key); downloads.keys[key] = Date.now(); saveDownloads(); toast(T('dlDoneToast')); }
+      try { const size = await downloadChapter(key); downloads.keys[key] = { at: Date.now(), size }; saveDownloads(); toast(T('dlDoneToast')); }
       catch { toast(T('dlError')); }
       toolDl.classList.remove('busy'); syncDl();
     }
@@ -728,70 +1027,6 @@ function vDoc(courseId, slugFrag) {
     const now = Date.now();
     if (now - saveTick > 350) { saveTick = now; progress.last = { key, frac: Math.round(frac * 1000) / 1000, at: now }; saveProgress(); }
   };
-
-  /* ---- TTS ---- */
-  const tts = { blocks: [], idx: 0, active: false, paused: false, supported: 'speechSynthesis' in window };
-  const ttsBar = $('#tts-bar');
-  function ttsCollect() {
-    const els = $$('#article p, #article li, #article h2, #article h3, #article h4, #article h5, #article blockquote, #article td, #article th')
-      .filter((el) => !el.closest('.code-card') && el.textContent.trim().length >= 2 && /[A-Za-z]{2,}/.test(el.textContent));
-    return els.filter((el) => !els.some((o) => o !== el && o.contains(el)));
-  }
-  function ttsHighlight(el) {
-    $$('#article .tts-on').forEach((x) => x.classList.remove('tts-on'));
-    if (el) {
-      el.classList.add('tts-on');
-      const r = el.getBoundingClientRect();
-      if (r.top < 90 || r.bottom > innerHeight - 130) el.scrollIntoView({ block: 'center', behavior: 'smooth' });
-    }
-  }
-  function ttsBarSync() {
-    if (!tts.active) { ttsBar.hidden = true; return; }
-    ttsBar.hidden = false;
-    ttsBar.classList.toggle('paused', tts.paused);
-    ttsBar.innerHTML = `<span class="wave"><i></i><i></i><i></i><i></i></span><span class="lbl lat">${esc(T('listeningNow'))}: ${esc(ch.title)}</span>
-      <button type="button" id="tts-toggle" aria-label="Play/Pause">${tts.paused ? I.play : I.pause}</button>
-      <button type="button" class="stop" id="tts-stop" aria-label="Stop">${I.stop}</button>`;
-    $('#tts-toggle').onclick = ttsToggle;
-    $('#tts-stop').onclick = ttsStop;
-    const tb = $('#tool-tts');
-    tb.classList.add('on');
-    tb.innerHTML = (tts.paused ? I.play : I.pause) + `<span>${T('listen')}</span>`;
-  }
-  function ttsSpeak() {
-    if (tts.idx >= tts.blocks.length) { ttsStop(); return; }
-    const el = tts.blocks[tts.idx];
-    ttsHighlight(el);
-    const u = new SpeechSynthesisUtterance(el.textContent.replace(/\s+/g, ' ').trim());
-    u.lang = 'en-US';
-    const v = speechSynthesis.getVoices().find((x) => /^en[-_]US/i.test(x.lang)) || speechSynthesis.getVoices().find((x) => /^en/i.test(x.lang));
-    if (v) u.voice = v;
-    u.onend = () => { if (tts.active && !tts.paused) { tts.idx++; ttsSpeak(); } };
-    u.onerror = (e) => { if (e.error !== 'interrupted' && e.error !== 'canceled' && tts.active) { tts.idx++; ttsSpeak(); } };
-    speechSynthesis.speak(u);
-  }
-  function ttsStart() {
-    if (!tts.supported) { toast(T('ttsNoText')); return; }
-    if (translate.active) translateRestore();
-    tts.blocks = ttsCollect();
-    if (!tts.blocks.length) { toast(T('ttsNoText')); return; }
-    speechSynthesis.cancel();
-    tts.idx = 0; tts.active = true; tts.paused = false;
-    ttsBarSync(); ttsSpeak();
-  }
-  function ttsToggle() {
-    if (!tts.active) { ttsStart(); return; }
-    if (tts.paused) { tts.paused = false; speechSynthesis.resume(); ttsBarSync(); }
-    else { tts.paused = true; speechSynthesis.pause(); ttsBarSync(); const tb = $('#tool-tts'); tb.innerHTML = I.play + `<span>${T('listen')}</span>`; }
-  }
-  function ttsStop() {
-    tts.active = false; tts.paused = false; tts.blocks = []; tts.idx = 0;
-    if (tts.supported) speechSynthesis.cancel();
-    ttsHighlight(null); ttsBar.hidden = true;
-    const tb = $('#tool-tts');
-    if (tb) { tb.classList.remove('on'); tb.innerHTML = I.speaker + `<span>${T('listen')}</span>`; }
-  }
-  $('#tool-tts').onclick = ttsToggle;
 
   /* ---- translate (Google Translate, free endpoint, text only) ---- */
   const translate = { active: false, busy: false, originals: new Map(), applied: null };
@@ -824,7 +1059,6 @@ function vDoc(courseId, slugFrag) {
   }
   async function translateRun() {
     if (translate.busy) return;
-    if (tts.active) ttsStop();
     const btn = $('#tool-tr');
     translate.busy = true; btn.classList.add('busy');
     btn.innerHTML = `<span class="spin" style="display:inline-flex;width:18px;height:18px">${I.refresh}</span><span>${T('translating')}</span>`;
@@ -875,7 +1109,7 @@ function vDoc(courseId, slugFrag) {
   $('#tool-tr').onclick = () => { if (translate.active) translateRestore(); else translateRun(); };
 
   /* ---- load chapter ---- */
-  docCleanup = () => { ttsStop(); docScrollFn = null; rp.style.opacity = '0'; };
+  docCleanup = () => { docScrollFn = null; rp.style.opacity = '0'; };
   fetch(ch.file).then((r) => { if (!r.ok) throw new Error('load'); return r.text(); }).then((html) => {
     article.innerHTML = html;
     requestAnimationFrame(() => {
@@ -926,6 +1160,8 @@ function router() {
   else if (parts[0] === 'library') vLibrary();
   else if (parts[0] === 'progress') vProgress();
   else if (parts[0] === 'settings') vSettings();
+  else if (parts[0] === 'downloads') vDownloads();
+  else if (parts[0] === 'changelog') vChangelog();
   else if (parts[0] === 'search') vSearch();
   else vHome();
   renderChrome();
