@@ -1,0 +1,128 @@
+<p>This release rebuilds the rendered-response path. <code>@Render()</code> used to decide six
+things in one interceptor — what a controller value meant, what request data was
+client-visible, whether a request wanted JSON (by substring match), how layouts
+resolved, and how to write an adapter-specific response. Those are now separate
+stages you can reason about one at a time.</p>
+<p><strong>Nothing in this release changes what a working application serves.</strong> There is
+no migration to perform. Everything below is new capability that applications
+may adopt independently.</p>
+<p>The defaults that <em>should</em> change — conservative caching and enforced payload
+limits — are deliberately held back. Existing controller shapes also retain
+their historical <code>Accept</code> behavior. The new explicit factories have no prior
+wire contract, so they use correct standards-aware ranking immediately.</p>
+<h2 id="what-you-get-without-changing-anything">What you get without changing anything</h2>
+<ul>
+<li><strong>Distinct HTML and JSON payloads</strong> are now expressible (below).</li>
+<li><strong><code>timeout</code> finally does something.</strong> It was accepted and effectively
+inert; a render now gets a real <code>AbortSignal</code>, and abort-aware work stops
+when the client disconnects or the deadline passes.</li>
+<li><strong>Client-side navigation validates segments</strong> before applying them — schema
+version, size, and whether the swap target exists in the current layout tree
+— and writes them through a single Trusted Types sink. A response that fails
+any check becomes a full navigation instead of a partly applied fragment.</li>
+<li><strong>Credential headers can no longer leak</strong> into the render context, even if
+<code>allowedHeaders</code> names one.</li>
+<li><strong>Express and Fastify actually behave identically</strong>, including a fixed bug
+where <code>Vary</code> lost its first field on Fastify.</li>
+<li><strong>Payload diagnostics.</strong> Values outside the configured serialization rules
+are logged with the property path and never the value.</li>
+</ul>
+<h2 id="distinct-payloads-per-representation">Distinct payloads per representation</h2>
+<p>Page props are a view model; an API body is a contract. When they should differ:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">
+
+<span class="hljs-meta">@Get</span>(<span class="hljs-string">&#x27;:slug&#x27;</span>)
+<span class="hljs-meta">@Render</span>(<span class="hljs-title class_">RecipeDetail</span>)
+<span class="hljs-title function_">getRecipe</span>(<span class="hljs-params"><span class="hljs-meta">@Param</span>(<span class="hljs-string">&#x27;slug&#x27;</span>) <span class="hljs-attr">slug</span>: <span class="hljs-built_in">string</span></span>) {
+  <span class="hljs-keyword">const</span> recipe = <span class="hljs-variable language_">this</span>.<span class="hljs-property">recipes</span>.<span class="hljs-title function_">findBySlug</span>(slug);
+  <span class="hljs-keyword">const</span> chef = <span class="hljs-variable language_">this</span>.<span class="hljs-property">chefs</span>.<span class="hljs-title function_">findById</span>(recipe.<span class="hljs-property">chefId</span>);
+
+  <span class="hljs-keyword">return</span> <span class="hljs-title function_">representations</span>({
+    <span class="hljs-attr">html</span>: <span class="hljs-title function_">page</span>({ <span class="hljs-attr">props</span>: { recipe, chef }, <span class="hljs-attr">head</span>: { <span class="hljs-attr">title</span>: recipe.<span class="hljs-property">name</span> } }),
+    <span class="hljs-attr">json</span>: <span class="hljs-title function_">api</span>(<span class="hljs-function">() =&gt;</span> ({ <span class="hljs-attr">slug</span>: recipe.<span class="hljs-property">slug</span>, <span class="hljs-attr">chef</span>: chef.<span class="hljs-property">name</span> })),
+  });
+}</code></pre></div></figure>
+<p><code>html</code> and <code>json</code> keep independent static types, and only the representation the
+request negotiates is built — passing a function defers the work entirely. The
+function receives the request&#39;s <code>AbortSignal</code>, allowing data work to stop on a
+deadline or disconnect.</p>
+<p>Plain props and <code>RenderResponse</code> keep working exactly as before.</p>
+<h2 id="narrowing-the-render-context">Narrowing the render context</h2>
+<p>Whatever your <code>context</code> factory returns is serialized into the page. If it hands
+over a domain object, this hook is where you narrow it — and it applies to HTML
+hydration, JSON, and segments alike:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-title class_">RenderModule</span>.<span class="hljs-title function_">forRoot</span>({
+  <span class="hljs-attr">context</span>: <span class="hljs-function">(<span class="hljs-params">{ req }</span>) =&gt;</span> ({ <span class="hljs-attr">user</span>: req.<span class="hljs-property">user</span> }),
+  <span class="hljs-attr">projectContext</span>: <span class="hljs-function">(<span class="hljs-params">{ context }</span>) =&gt;</span> ({
+    ...context,
+    <span class="hljs-attr">user</span>: context.<span class="hljs-property">user</span> &amp;&amp; { <span class="hljs-attr">id</span>: context.<span class="hljs-property">user</span>.<span class="hljs-property">id</span>, <span class="hljs-attr">name</span>: context.<span class="hljs-property">user</span>.<span class="hljs-property">name</span> },
+  }),
+});</code></pre></div></figure>
+<h2 id="request-header-bags">Request header bags</h2>
+<p>Allowed headers are available at <code>context.headers[&#39;x-tenant-id&#39;]</code> as well as
+the established <code>context[&#39;x-tenant-id&#39;]</code> alias. Reserved names such as <code>path</code>
+remain isolated in the bag and cannot shadow URL context.</p>
+<p>Both access forms remain supported. <code>useHeader()</code> and <code>useHeaders()</code> read the
+bag and fall back to the top-level shape.</p>
+<h2 id="payload-limits-warned-not-enforced">Payload limits: warned, not enforced</h2>
+<p>Client-visible payloads are checked against the same rules the serializers
+actually have. A payload is <em>reported</em> — never refused — when it contains a
+function, a symbol, an un-awaited promise, binary data, or a prototype-polluting
+key; when it exceeds 2 MiB or 64 levels of nesting; or, for JSON specifically,
+when it holds a <code>Map</code>, <code>Set</code>, <code>RegExp</code>, <code>bigint</code>, or a cycle that JSON cannot
+represent.</p>
+<p>The report names the property path and never its value:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">Cannot serialize props: functions cannot cross the response boundary at
+props.user.onClick. This is allowed through because representation.limits.mode
+is &#x27;warn&#x27;; it will be refused once the mode is &#x27;enforce&#x27;.</code></pre></div></figure>
+<p>Run on <code>warn</code> — the default — long enough to see whether anything real trips it.
+When your logs are quiet, turn it on:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-title class_">RenderModule</span>.<span class="hljs-title function_">forRoot</span>({
+  <span class="hljs-attr">representation</span>: { <span class="hljs-attr">limits</span>: { <span class="hljs-attr">mode</span>: <span class="hljs-string">&#x27;enforce&#x27;</span> } },
+});</code></pre></div></figure>
+<p>Per-route, and tightenable but never raisable above the module&#39;s limit:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-meta">@Render</span>(<span class="hljs-title class_">Widget</span>, {
+  <span class="hljs-attr">representation</span>: { <span class="hljs-attr">limits</span>: { <span class="hljs-attr">mode</span>: <span class="hljs-string">&#x27;enforce&#x27;</span>, <span class="hljs-attr">maxBytes</span>: <span class="hljs-number">32</span> * <span class="hljs-number">1024</span> } },
+})</code></pre></div></figure>
+<h2 id="response-headers-available-off-by-default">Response headers: available, off by default</h2>
+<p>The pipeline can apply a cache stance and security headers, and composes them
+with whatever your middleware already set — it never overwrites a header the
+application provided. It emits nothing at all until you ask:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-title class_">RenderModule</span>.<span class="hljs-title function_">forRoot</span>({
+  <span class="hljs-attr">representation</span>: {
+    <span class="hljs-attr">cache</span>: { <span class="hljs-attr">visibility</span>: <span class="hljs-string">&#x27;private&#x27;</span> }, <span class="hljs-comment">// Cache-Control: private, no-store</span>
+    <span class="hljs-attr">securityHeaders</span>: { <span class="hljs-attr">referrerPolicy</span>: <span class="hljs-string">&#x27;no-referrer&#x27;</span> },
+  },
+});</code></pre></div></figure>
+<p>Declaring either one turns the stage on for that scope. A route can opt into
+public caching, and its cache keys are combined with the headers negotiation
+already depends on:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-meta">@Render</span>(<span class="hljs-title class_">PublicPage</span>, {
+  <span class="hljs-attr">representation</span>: {
+    <span class="hljs-attr">cache</span>: { <span class="hljs-attr">visibility</span>: <span class="hljs-string">&#x27;public&#x27;</span>, <span class="hljs-attr">maxAge</span>: <span class="hljs-number">300</span>, <span class="hljs-attr">keys</span>: [<span class="hljs-string">&#x27;Accept-Language&#x27;</span>] },
+  },
+})</code></pre></div></figure>
+<p><code>Vary</code> itself is unchanged — <code>Accept</code> and <code>X-Current-Layouts</code> were always sent.</p>
+<h2 id="two-supported-json-configuration-styles">Two supported JSON configuration styles</h2>
+<p><code>jsonApi</code> remains supported and still serves page props as the JSON body.
+<code>representation.json</code> is an additive alternative for applications that also
+want limits, cache policy, security headers, or independent API DTOs.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-comment">// Existing style</span>
+<span class="hljs-title class_">RenderModule</span>.<span class="hljs-title function_">forRoot</span>({ <span class="hljs-attr">jsonApi</span>: <span class="hljs-literal">true</span> });
+<span class="hljs-meta">@Render</span>(<span class="hljs-title class_">Page</span>, { <span class="hljs-attr">jsonApi</span>: <span class="hljs-literal">false</span> })
+
+<span class="hljs-comment">// Policy style</span>
+<span class="hljs-title class_">RenderModule</span>.<span class="hljs-title function_">forRoot</span>({ <span class="hljs-attr">representation</span>: { <span class="hljs-attr">json</span>: <span class="hljs-literal">true</span> } });
+<span class="hljs-meta">@Render</span>(<span class="hljs-title class_">Page</span>, { <span class="hljs-attr">representation</span>: { <span class="hljs-attr">json</span>: <span class="hljs-literal">false</span> } })</code></pre></div></figure>
+<h2 id="raw-controller-strings">Raw controller strings</h2>
+<p>A <code>@Render()</code> route that returns a string preserves the existing passthrough
+contract. Because the string bypasses projection, payload limits, and response
+policy, applications should only use it for already-safe, deliberate output.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-meta">@Get</span>(<span class="hljs-string">&#x27;legacy&#x27;</span>)
+<span class="hljs-meta">@Render</span>(<span class="hljs-title class_">Page</span>)
+<span class="hljs-title function_">getLegacy</span>(<span class="hljs-params"></span>) { <span class="hljs-keyword">return</span> <span class="hljs-variable language_">this</span>.<span class="hljs-property">renderer</span>.<span class="hljs-title function_">toHtml</span>(); }
+
+<span class="hljs-comment">// A plain route is also available when @Render() adds no value.</span>
+<span class="hljs-meta">@Get</span>(<span class="hljs-string">&#x27;legacy&#x27;</span>)
+<span class="hljs-meta">@Header</span>(<span class="hljs-string">&#x27;Content-Type&#x27;</span>, <span class="hljs-string">&#x27;text/html&#x27;</span>)
+<span class="hljs-title function_">getLegacy</span>(<span class="hljs-params"></span>) { <span class="hljs-keyword">return</span> <span class="hljs-variable language_">this</span>.<span class="hljs-property">renderer</span>.<span class="hljs-title function_">toHtml</span>(); }</code></pre></div></figure>
