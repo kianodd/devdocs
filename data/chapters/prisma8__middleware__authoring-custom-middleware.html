@@ -1,0 +1,448 @@
+<h2 id="introduction">Introduction</h2>
+<p>A middleware you write yourself is a plain object: a <code>name</code>, plus the hook functions you want Prisma ORM to call around your statements and transactions. You do not extend a base class, and you do not call a function to install it. You put the object in the <code>middleware</code> array where you create your client, and Prisma ORM calls its hooks from then on. The examples here wrap that object in a function so the middleware can take options, but the object is the middleware, and an object literal typed as <code>SqlMiddleware</code> works just as well.</p>
+<p>If you used <code>$use</code> in Prisma ORM 7, the <code>middleware</code> array is its replacement. There is no <code>next()</code> to wrap the query in, so where you used to write one function that ran before the query, called it, and then ran after it, you now write one hook for the moment before and another for the moment after. Because the before-hook can no longer hold a variable open across the query, <a href="#keep-state-for-one-statement">keep state for one statement</a> shows how the later hook gets what the earlier one worked out. <a href="#/doc/prisma8/coming-from-prisma-orm-7@not-available-yet">Coming from Prisma ORM 7</a> has a table of what each Prisma ORM 7 feature became.</p>
+<p>The steps that follow build a query logger that prints every query with its row count and how long it took. You create one file, register it in one place, run a query, and see the output.</p>
+<h2 id="prerequisites">Prerequisites</h2>
+<ul>
+<li>A Prisma ORM project with a working <code>src/prisma/db.ts</code>, the file where the client is created, because that is where middleware is registered. If you already have a project, you can use the <code>db.ts</code> you have. You also need a PostgreSQL database to run against, because <code>db.ts</code> reads its connection string from the <code>DATABASE_URL</code> environment variable, which you export in the shell you run the commands from. <a href="#/doc/prisma8/prisma-orm/quickstart/postgresql">Create a new app with PostgreSQL</a> sets both up in a few minutes:</li>
+</ul>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Terminal</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-bash"><span class="tk-cmd">npm</span> create prisma@latest -- <span class="tk-flag">--provider</span> postgres <span class="tk-flag">--no-deploy</span>
+<span class="tk-cmd">cd</span> my-app
+<span class="tk-cmd">npm</span> run db:init</code></pre></div></figure>
+<h2 id="1-create-the-middleware">1. Create the middleware</h2>
+<p>Create a new file next to your database setup. The logger needs two hooks. <code>activityEnded</code> is the one Prisma ORM calls once at the end of every activity, which is every statement it sends, every transaction you open, and every ORM call. Its second argument, <code>result</code>, is where the numbers come from: <code>result.latencyMs</code> is how long the statement took in milliseconds, and <code>result.rowCount</code> is how many rows came back. The SQL text is not on the activity, so <code>beforeEncode</code>, which receives the statement after its SQL is written, keeps <code>plan.sql</code> in <code>ctx.state(...)</code>, an object that belongs to this one statement. The <code>familyId: &quot;sql&quot;</code> field says the middleware works with SQL databases only, and <a href="#5-know-which-family-to-declare">step 5</a> covers when to set it.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>src/prisma/query-logger.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">
+
+<span class="hljs-keyword">const</span> statementSql = <span class="hljs-title class_">Symbol</span>(<span class="hljs-string">&quot;query-logger.sql&quot;</span>);
+
+  <span class="hljs-keyword">return</span> {
+    <span class="hljs-attr">name</span>: <span class="hljs-string">&quot;query-logger&quot;</span>,
+    <span class="hljs-attr">familyId</span>: <span class="hljs-string">&quot;sql&quot;</span>,
+
+    <span class="hljs-keyword">async</span> <span class="hljs-title function_">beforeEncode</span>(<span class="hljs-params">plan, ctx</span>) {
+      ctx.<span class="hljs-title function_">state</span>(statementSql)[<span class="hljs-string">&quot;sql&quot;</span>] = plan.<span class="hljs-property">sql</span>;
+    },
+
+    <span class="hljs-keyword">async</span> <span class="hljs-title function_">activityEnded</span>(<span class="hljs-params">activity, result, ctx</span>) {
+      <span class="hljs-keyword">if</span> (result.<span class="hljs-property">kind</span> !== <span class="hljs-string">&quot;statement&quot;</span>) <span class="hljs-keyword">return</span>;
+      <span class="hljs-keyword">const</span> count =
+        result.<span class="hljs-property">returns</span> === <span class="hljs-string">&quot;rows&quot;</span>
+          ? <span class="hljs-string">`<span class="hljs-subst">${result.rowCount}</span> rows`</span>
+          : <span class="hljs-string">`<span class="hljs-subst">${result.stats?.affectedRows ?? <span class="hljs-number">0</span>}</span> affected`</span>;
+      <span class="hljs-variable language_">console</span>.<span class="hljs-title function_">log</span>(
+        <span class="hljs-string">`[query-logger] <span class="hljs-subst">${count}</span> in <span class="hljs-subst">${<span class="hljs-built_in">Math</span>.round(result.latencyMs)}</span>ms · <span class="hljs-subst">${ctx.state(statementSql)[<span class="hljs-string">&quot;sql&quot;</span>]}</span>`</span>,
+      );
+    },
+  };
+}</code></pre></div></figure>
+<p>The built-in middleware and the <code>SqlMiddleware</code> type are imported from <code>@prisma/orm-postgres/family-runtime</code>, which works with any SQL database. Typing the object you return as <code>SqlMiddleware</code> is what gives <code>plan</code> and <code>result</code> their types in your editor.</p>
+<p>The <code>name</code> is the label Prisma ORM uses when it talks about your middleware, so it turns up in messages such as <code>RUNTIME.MIDDLEWARE_FAMILY_MISMATCH</code> (&quot;Middleware &#39;query-logger&#39; requires family &#39;sql&#39; ...&quot;). Nothing checks that names are unique, so pick a name that will mean something to you when you read it in a message.</p>
+<p><code>activityEnded</code> also runs for a transaction and for an ORM call, which is why the hook returns early unless <code>result.kind</code> is <code>&#39;statement&#39;</code>. A statement either returns rows or reports how many rows it changed, and <code>result.returns</code> says which: <code>&#39;rows&#39;</code> with <code>result.rowCount</code>, or <code>&#39;stats&#39;</code> with <code>result.stats.affectedRows</code>. On the ORM API the calls that report a count are <code>createAndCount</code>, <code>updateAndCount</code>, and <code>deleteAndCount</code>; every other call returns rows, including <code>create</code>, <code>update</code>, <code>delete</code>, <code>updateAll</code>, and <code>deleteAll</code>. A write that failed has no <code>result.stats</code>, so the logger prints <code>0 affected</code> for it; check <code>result.outcome</code>, which is <code>&#39;succeeded&#39;</code>, <code>&#39;failed&#39;</code>, or <code>&#39;stopped&#39;</code>, when you need to tell the two apart.</p>
+<p>The SQL query builder is the other way to write a query on the same client, <code>db.sql.public.User...</code> in place of <code>db.orm.public.User...</code>. With it you build a query and run it in two steps: <code>.build()</code> gives you the query as a plain object, the plan, and a method on <code>db</code> runs it. <code>db.query(plan)</code> returns rows and <code>db.execute(plan)</code> reports how many rows the statement changed, and the same two hooks see both.</p>
+<h2 id="2-register-it">2. Register it</h2>
+<p>You register a middleware by adding it to the <code>middleware</code> array where you create your client. Two of the imports in the file below come from your contract, which is the Prisma ORM 8 name for your schema: <code>contract.prisma</code> in a generated project, in place of <code>schema.prisma</code>. <code>npx prisma contract emit</code> writes <code>contract.json</code> and <code>contract.d.ts</code> from it, and a project created with <code>npm create prisma@latest</code> already has all three in <code>src/prisma/</code>. This is the smallest <code>db.ts</code> that works, with the logger registered:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>src/prisma/db.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">
+  <span class="hljs-attr">contract</span>: <span class="hljs-title function_">contractFromJson</span>(contractJson),
+  <span class="hljs-attr">url</span>: process.<span class="hljs-property">env</span>[<span class="hljs-string">&#x27;DATABASE_URL&#x27;</span>]!,
+  <span class="hljs-attr">middleware</span>: [<span class="hljs-title function_">queryLogger</span>()],
+});</code></pre></div></figure>
+<p>The only line added here is the <code>middleware</code> option. Do not replace the <code>src/prisma/db.ts</code> that <code>npm create prisma@latest</code> generated with the file above, because the generated file has more in it, such as a <code>connectDatabase</code> export that the generated <code>seed.ts</code> imports. Instead, add the <code>middleware</code> option to each <code>postgres({ ... })</code> call in it.</p>
+<p>The generated project can start the app in two ways, and your middleware runs in only one of them. <code>npm run dev</code> starts the app with <code>DATABASE_URL</code> exported, so the <code>postgres({ ... })</code> calls in <code>db.ts</code> create the client and your middleware runs. <code>npm run dev:composer</code> runs the app with <a target="_blank" rel="noopener" href="https://www.prisma.io/docs/composer">Prisma Composer</a>, which describes your services and databases in TypeScript, and the app then gets its client from Composer instead, so the <code>middleware</code> option in <code>db.ts</code> is never read. Use <code>npm run dev</code> while you follow this guide.</p>
+<p>If you set your project up by hand, <a href="#/doc/prisma8/contract-authoring/the-data-contract">The data contract</a> covers where <code>contract.json</code> and <code>contract.d.ts</code> come from.</p>
+<p>That one line is all the setup there is, and every query on this client now passes through the logger, whether you wrote it with the ORM API (<code>db.orm.public.User...</code>) or with the SQL query builder.</p>
+<h2 id="3-run-a-query-and-see-the-output">3. Run a query and see the output</h2>
+<p>To see the logger work, put a small script in <code>src/index.ts</code> that writes a row and then reads some back:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>src/index.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">
+
+<span class="hljs-keyword">await</span> db.<span class="hljs-property">orm</span>.<span class="hljs-property">public</span>.<span class="hljs-property">User</span>.<span class="hljs-title function_">create</span>({
+  <span class="hljs-attr">email</span>: <span class="hljs-string">`mia+<span class="hljs-subst">${<span class="hljs-built_in">Date</span>.now()}</span>@prisma.io`</span>,
+  <span class="hljs-attr">name</span>: <span class="hljs-string">&quot;Mia&quot;</span>,
+});
+
+<span class="hljs-keyword">const</span> users = <span class="hljs-keyword">await</span> db.<span class="hljs-property">orm</span>.<span class="hljs-property">public</span>.<span class="hljs-property">User</span>.<span class="hljs-title function_">select</span>(<span class="hljs-string">&quot;id&quot;</span>, <span class="hljs-string">&quot;email&quot;</span>).<span class="hljs-title function_">limit</span>(<span class="hljs-number">5</span>).<span class="hljs-title function_">all</span>();
+<span class="hljs-variable language_">console</span>.<span class="hljs-title function_">log</span>(<span class="hljs-string">`fetched <span class="hljs-subst">${users.length}</span> users`</span>);
+
+<span class="hljs-keyword">await</span> db.<span class="hljs-title function_">close</span>();</code></pre></div></figure>
+<p>In a project from the quickstart, the <code>dev</code> script is <code>tsx watch src/index.ts</code>, so running it runs your script and then keeps watching the file:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Terminal</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-bash"><span class="tk-cmd">npm</span> run dev</code></pre></div></figure>
+<p>The logger reports both queries, and prints the SQL that actually ran:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">[query-logger] 1 rows in 18ms · INSERT INTO &quot;public&quot;.&quot;User&quot; (&quot;email&quot;, &quot;name&quot;, &quot;updatedAt&quot;) VALUES ($1, $2, $3) RETURNING &quot;User&quot;.&quot;createdAt&quot;, &quot;User&quot;.&quot;email&quot;, &quot;User&quot;.&quot;id&quot;, &quot;User&quot;.&quot;name&quot;, &quot;User&quot;.&quot;updatedAt&quot;, &quot;User&quot;.&quot;username&quot;
+[query-logger] 1 rows in 17ms · SELECT &quot;User&quot;.&quot;id&quot; AS &quot;id&quot;, &quot;User&quot;.&quot;email&quot; AS &quot;email&quot; FROM &quot;public&quot;.&quot;User&quot; LIMIT 5
+fetched 1 users</code></pre></div></figure>
+<p>Both lines report rows, the <code>create</code> included, because <code>create</code> gives you back the row it inserted rather than a count.</p>
+<p>The <code>dev</code> script keeps running after the output appears, so stop it with Ctrl+C when you are done. If you see the query result but no <code>[query-logger]</code> lines, then the query ran on a client that does not have the middleware registered, so check that your script imports <code>db</code> from the file you edited in step 2.</p>
+<h2 id="4-add-an-option">4. Add an option</h2>
+<p>Middleware you write for real work usually takes options, so give the logger a threshold in milliseconds and it reports only the statements that took longer than that:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>src/prisma/query-logger.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">
+
+<span class="hljs-keyword">const</span> statementSql = <span class="hljs-title class_">Symbol</span>(<span class="hljs-string">&quot;query-logger.sql&quot;</span>);
+
+  <span class="hljs-comment">/** Only log statements slower than this many milliseconds. Default: 0, log everything. */</span>
+  <span class="hljs-keyword">readonly</span> <span class="hljs-attr">thresholdMs</span>?: <span class="hljs-built_in">number</span>;
+}
+
+  <span class="hljs-keyword">const</span> thresholdMs = options?.<span class="hljs-property">thresholdMs</span> ?? <span class="hljs-number">0</span>;
+
+  <span class="hljs-keyword">return</span> {
+    <span class="hljs-attr">name</span>: <span class="hljs-string">&quot;query-logger&quot;</span>,
+    <span class="hljs-attr">familyId</span>: <span class="hljs-string">&quot;sql&quot;</span>,
+
+    <span class="hljs-keyword">async</span> <span class="hljs-title function_">beforeEncode</span>(<span class="hljs-params">plan, ctx</span>) {
+      ctx.<span class="hljs-title function_">state</span>(statementSql)[<span class="hljs-string">&quot;sql&quot;</span>] = plan.<span class="hljs-property">sql</span>;
+    },
+
+    <span class="hljs-keyword">async</span> <span class="hljs-title function_">activityEnded</span>(<span class="hljs-params">activity, result, ctx</span>) {
+      <span class="hljs-keyword">if</span> (result.<span class="hljs-property">kind</span> !== <span class="hljs-string">&quot;statement&quot;</span> || result.<span class="hljs-property">latencyMs</span> &lt; thresholdMs) <span class="hljs-keyword">return</span>;
+      <span class="hljs-keyword">const</span> count =
+        result.<span class="hljs-property">returns</span> === <span class="hljs-string">&quot;rows&quot;</span>
+          ? <span class="hljs-string">`<span class="hljs-subst">${result.rowCount}</span> rows`</span>
+          : <span class="hljs-string">`<span class="hljs-subst">${result.stats?.affectedRows ?? <span class="hljs-number">0</span>}</span> affected`</span>;
+      <span class="hljs-variable language_">console</span>.<span class="hljs-title function_">log</span>(
+        <span class="hljs-string">`[query-logger] <span class="hljs-subst">${count}</span> in <span class="hljs-subst">${<span class="hljs-built_in">Math</span>.round(result.latencyMs)}</span>ms · <span class="hljs-subst">${ctx.state(statementSql)[<span class="hljs-string">&quot;sql&quot;</span>]}</span>`</span>,
+      );
+    },
+  };
+}</code></pre></div></figure>
+<p>Pass the threshold where you register it, replacing the <code>middleware: [queryLogger()],</code> line of the <code>src/prisma/db.ts</code> from step 2:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>src/prisma/db.ts (excerpt).ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-attr">middleware</span>: [<span class="hljs-title function_">queryLogger</span>({ <span class="hljs-attr">thresholdMs</span>: <span class="hljs-number">250</span> })],</code></pre></div></figure>
+<p>Run the script again and the logger goes quiet, because both queries finish in under 250ms. To see the lines again, register it with no options: <code>middleware: [queryLogger()]</code>.</p>
+<p>Prisma ORM calls your hooks in the order you listed the middleware in the array, and that order decides what each middleware sees and whether it runs at all:</p>
+<ul>
+<li>Prisma ORM waits for each hook to finish before the statement moves on, so a slow <code>activityEnded</code> delays the <code>await</code> in your own code.</li>
+<li>If a middleware throws from <code>beforeEncode</code>, the ones listed after it do not run that hook, and the statement fails before it reaches the database. It still ends, so every middleware&#39;s <code>activityEnded</code> sees it with <code>result.outcome</code> <code>&#39;failed&#39;</code> and a <code>latencyMs</code> of <code>0</code>. A statement that <code>budgets</code> rejects, such as a <code>SELECT</code> with no <code>LIMIT</code>, reaches the logger that way wherever you list it. The logger has its SQL text only when it is listed before <code>budgets</code>, because only then has its own <code>beforeEncode</code> already run. A throw from a later middleware&#39;s <code>activityEnded</code>, as the <code>budgets</code> time check does, does not stop the logger&#39;s own <code>activityEnded</code> from running.</li>
+<li>When a middleware changes the query, the middleware listed after it sees the changed version.</li>
+</ul>
+<p>A built-in middleware goes into the same array, imported from the same package as <code>SqlMiddleware</code>. To run the logger ahead of <a href="#/doc/prisma8/middleware/built-in-budgets">budgets</a>, add the import to the top of <code>src/prisma/db.ts</code> and replace its <code>middleware:</code> line:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>src/prisma/db.ts (excerpt).ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">
+
+<span class="hljs-attr">middleware</span>: [<span class="hljs-title function_">queryLogger</span>({ <span class="hljs-attr">thresholdMs</span>: <span class="hljs-number">250</span> }), <span class="hljs-title function_">budgets</span>()],</code></pre></div></figure>
+<h2 id="5-know-which-family-to-declare">5. Know which family to declare</h2>
+<p>Prisma ORM sorts the databases it supports into two families, SQL and MongoDB, and a middleware can say which family it is written for. Set <code>familyId: &#39;sql&#39;</code> when your middleware reads or writes something only a SQL database has, such as <code>plan.sql</code> in the logger above.</p>
+<p>If a middleware that declares <code>familyId: &#39;sql&#39;</code> is registered on a MongoDB client, that client throws at its first query (or at <code>connect()</code>, if you call it), before anything reaches the database. The error&#39;s <code>code</code> is <code>RUNTIME.MIDDLEWARE_FAMILY_MISMATCH</code> and the message names the middleware, so you find out straight away rather than from a failure inside your hook much later.</p>
+<p>Leave <code>familyId</code> out when your middleware stays away from everything specific to one kind of database. It stays that way as long as you:</p>
+<ul>
+<li>Use any hook except <code>beforeCompile</code>, which only SQL databases have.</li>
+<li>Read what your hook is handed on <code>activity</code> and <code>result</code> rather than <code>plan.sql</code> or <code>plan.ast</code>, which a SQL query has and a MongoDB query does not. <code>result</code> gives you <code>outcome</code>, <code>latencyMs</code>, <code>rowCount</code> or <code>stats.affectedRows</code>, and <code>source</code>, which is <code>&#39;driver&#39;</code> when the database answered the statement and <code>&#39;middleware&#39;</code> when a middleware answered it instead.</li>
+</ul>
+<p>A middleware written that way runs on PostgreSQL and on MongoDB, which is how the built-in <a href="#/doc/prisma8/middleware/built-in-cache">cache</a> works.</p>
+<p>If the middleware only ever goes into a <code>postgres(...)</code> client, keep <code>SqlMiddleware</code>. If you want one object you can put in both a <code>postgres(...)</code> client and a <code>mongo(...)</code> client, type it as <code>CrossFamilyMiddleware</code> instead:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"></code></pre></div></figure>
+<p>On the MongoDB side, the client is <code>mongo(...)</code> from <code>@prisma/orm-mongo/runtime</code>, and it takes the same <code>middleware</code> array in the same place. A middleware written for MongoDB alone is typed as <code>MongoMiddleware</code> from <code>@prisma/orm-mongo/family-runtime</code>.</p>
+<h2 id="the-hooks">The hooks</h2>
+<p>Prisma ORM runs every statement, every transaction and, on SQL databases, every ORM call as an activity. Three lifecycle hooks run for every activity, <code>intercept.onActivity</code> runs for ORM calls, and the other interceptors run only for statements, while they run. Implement whichever hooks you need:</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Hook</th>
+<th>Runs for</th>
+<th>Runs</th>
+<th>Use it to</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>activityStarted(activity, ctx)</code></td>
+<td>every activity</td>
+<td>Before anything is compiled or sent</td>
+<td>Record that the activity began; throw to fail it</td>
+</tr>
+<tr>
+<td><code>beforeCompile(draft, ctx)</code></td>
+<td>statements</td>
+<td>Before Prisma ORM turns the query into SQL text</td>
+<td>Rewrite the query, for example add a tenant filter</td>
+</tr>
+<tr>
+<td><code>beforeEncode(plan, ctx, params?)</code></td>
+<td>statements</td>
+<td>After the SQL text has been built, before the values are encoded and the driver runs it</td>
+<td>Validate, throw to block, or change parameter values</td>
+</tr>
+<tr>
+<td><code>intercept.onQuery(plan, ctx)</code></td>
+<td>statements that return rows</td>
+<td>Instead of running the statement</td>
+<td>Return <code>{ rows }</code> to answer the query yourself</td>
+</tr>
+<tr>
+<td><code>intercept.onExecute(plan, ctx)</code></td>
+<td>statements that return a count</td>
+<td>Instead of running the statement</td>
+<td>Return <code>{ stats }</code> to answer the statement yourself</td>
+</tr>
+<tr>
+<td><code>intercept.onActivity(activity, ctx)</code></td>
+<td>ORM calls</td>
+<td>After the call&#39;s <code>activityStarted</code>, before it sends any statement</td>
+<td>Return <code>{ result }</code> to answer the whole call yourself</td>
+</tr>
+<tr>
+<td><code>onRow(row, plan, ctx)</code></td>
+<td>statements that return rows</td>
+<td>Once per row the database returns</td>
+<td>Count or sample rows, or throw to stop the query</td>
+</tr>
+<tr>
+<td><code>activityEnded(activity, result, ctx)</code></td>
+<td>every activity</td>
+<td>After the activity finishes, whether it succeeded or failed</td>
+<td>Log <code>result.outcome</code>, <code>result.latencyMs</code>, <code>result.rowCount</code> or <code>result.stats</code>, <code>result.source</code></td>
+</tr>
+<tr>
+<td><code>activityFinalized(activity, result, ctx)</code></td>
+<td>every activity</td>
+<td>Once its effects are final: after its transaction commits or rolls back, or right after it ends outside a transaction</td>
+<td>Act on <code>result.outcome</code>, which is <code>&#39;committed&#39;</code>, <code>&#39;rolled-back&#39;</code>, or <code>&#39;unknown&#39;</code>, for example publish an event only for a committed write</td>
+</tr>
+</tbody></table></div>
+<p>Every hook receives <code>ctx</code>, written last above, which a hook can leave out of its parameter list when it does not use it. <code>activity.kind</code> is <code>&#39;statement&#39;</code>, <code>&#39;transaction&#39;</code> or <code>&#39;orm-call&#39;</code>, so a lifecycle hook that only cares about statements checks it first. <a href="#/doc/prisma8/middleware/how-middleware-works@orm-calls">ORM calls</a> explains what an <code>orm-call</code> activity carries. For a statement, <code>activity.returns</code> is <code>&#39;rows&#39;</code> or <code>&#39;stats&#39;</code>, and <code>activity.plan</code> is the plan the caller sent. Throwing from <code>onRow</code> fails the call with your error. An awaited <code>.all()</code> or <code>.first()</code> gets no rows at all, not even the rows read before the throw.</p>
+<p><a href="#/doc/prisma8/middleware/how-middleware-works@the-two-lifecycles">How middleware works</a> walks through the order with an animation.</p>
+<h3 id="rewrite-queries-with-beforecompile">Rewrite queries with beforeCompile</h3>
+<p><code>beforeCompile</code> is where you change a query before it runs. It gives you the query as an AST, the abstract syntax tree, which is the query as a tree of typed objects rather than as text. A <code>SELECT</code> is one object whose <code>kind</code> is <code>&#39;select&#39;</code>, whose <code>from</code> is the table it reads, and whose <code>where</code> is its condition. The hook runs before Prisma ORM turns that tree into SQL text, so a changed tree changes the SQL that reaches the database.</p>
+<p>Its argument, the draft, is the query before Prisma ORM writes its SQL. A draft has <code>ast</code>, the tree you change, and <code>meta</code>, which you pass through unchanged. <code>meta.lane</code> says which API built the query: <code>&#39;orm-client&#39;</code> for the ORM API, and <code>&#39;dsl&#39;</code> for the SQL query builder. You return a copy of the draft with a new <code>ast</code>, or <code>undefined</code> when there is nothing to change.</p>
+<p>The middleware below adds a condition to every <code>SELECT</code> whose own <code>FROM</code> clause names the <code>User</code> table:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>src/prisma/scope-user-selects.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">
+  <span class="hljs-keyword">return</span> {
+    <span class="hljs-attr">name</span>: <span class="hljs-string">&#x27;scope-user-selects&#x27;</span>,
+    <span class="hljs-attr">familyId</span>: <span class="hljs-string">&#x27;sql&#x27;</span>,
+
+    <span class="hljs-keyword">async</span> <span class="hljs-title function_">beforeCompile</span>(<span class="hljs-params">draft</span>) {
+      <span class="hljs-keyword">if</span> (draft.<span class="hljs-property">ast</span>.<span class="hljs-property">kind</span> !== <span class="hljs-string">&#x27;select&#x27;</span>) <span class="hljs-keyword">return</span> <span class="hljs-literal">undefined</span>;
+      <span class="hljs-keyword">if</span> (draft.<span class="hljs-property">ast</span>.<span class="hljs-property">from</span>?.<span class="hljs-property">kind</span> !== <span class="hljs-string">&#x27;table-source&#x27;</span>) <span class="hljs-keyword">return</span> <span class="hljs-literal">undefined</span>;
+      <span class="hljs-keyword">if</span> (draft.<span class="hljs-property">ast</span>.<span class="hljs-property">from</span>.<span class="hljs-property">name</span> !== <span class="hljs-string">&#x27;User&#x27;</span>) <span class="hljs-keyword">return</span> <span class="hljs-literal">undefined</span>;
+      <span class="hljs-keyword">const</span> predicate = <span class="hljs-title function_">condition</span>();
+      <span class="hljs-keyword">if</span> (predicate === <span class="hljs-literal">undefined</span>) <span class="hljs-keyword">return</span> <span class="hljs-literal">undefined</span>;
+      <span class="hljs-keyword">const</span> where = draft.<span class="hljs-property">ast</span>.<span class="hljs-property">where</span> ? <span class="hljs-title class_">AndExpr</span>.<span class="hljs-title function_">of</span>([draft.<span class="hljs-property">ast</span>.<span class="hljs-property">where</span>, predicate]) : predicate;
+      <span class="hljs-keyword">return</span> { ...draft, <span class="hljs-attr">ast</span>: draft.<span class="hljs-property">ast</span>.<span class="hljs-title function_">withWhere</span>(where) };
+    },
+  };
+}</code></pre></div></figure>
+<p>The <code>kind</code> check on <code>from</code> keeps the middleware to plain tables: a <code>SELECT</code> that reads from a subquery has a <code>from</code> whose <code>kind</code> is <code>&#39;derived-table-source&#39;</code>, and one that reads from a function has <code>&#39;function-source&#39;</code>. The name it checks, <code>&#39;User&#39;</code>, is the table name in your database rather than the model name in your contract, because by this point the query is expressed in tables and columns. The two are the same unless the model sets <code>@@map</code>. <code>draft.ast.withWhere(where)</code> gives back a new tree with that <code>WHERE</code> and leaves the original alone.</p>
+<p>These checks read only the table in the query&#39;s own <code>FROM</code> clause, so <code>User</code> rows that a query reaches any other way do not get the condition. Users you load with <code>.include(...)</code> from another model, such as the author of each post, are not filtered, and neither is a SQL query builder query that joins <code>User</code> onto another table.</p>
+<p>The middleware calls <code>condition</code> for each <code>SELECT</code> whose <code>FROM</code> clause names <code>User</code>, after the checks above, so the condition can change from one request to the next. You build it from the same classes. Put values through <code>ParamRef.of</code> rather than <code>LiteralExpr.of</code>, because a <code>ParamRef</code> becomes a bound parameter such as <code>$1</code> while a literal is pasted into the SQL text itself, so a value that came from one of your users could inject SQL of its own. A <code>ParamRef</code> you build by hand has to name the PostgreSQL type of the value with <code>codec: { codecId: ... }</code>, and the ids start with <code>pg/</code> and end with <code>@1</code>, so the <code>text</code> column <code>name</code> takes <code>pg/text@1</code>. Leave that out and the query fails with an error whose <code>code</code> is <code>RUNTIME.PARAM_REF_MISSING_CODEC</code>.</p>
+<p>Prisma ORM does not know which request a query belongs to, so the value has to come from a place your condition function can read. The example below keeps it in an <code>AsyncLocalStorage</code> from Node.js, which holds one value per request while that request&#39;s code runs:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>src/prisma/db.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">
+
+  <span class="hljs-attr">contract</span>: <span class="hljs-title function_">contractFromJson</span>(contractJson),
+  <span class="hljs-attr">url</span>: process.<span class="hljs-property">env</span>[<span class="hljs-string">&#x27;DATABASE_URL&#x27;</span>]!,
+  <span class="hljs-attr">middleware</span>: [
+    <span class="hljs-title function_">scopeUserSelects</span>(<span class="hljs-function">() =&gt;</span> {
+      <span class="hljs-keyword">const</span> name = currentName.<span class="hljs-title function_">getStore</span>();
+      <span class="hljs-keyword">if</span> (name === <span class="hljs-literal">undefined</span>) <span class="hljs-keyword">return</span> <span class="hljs-literal">undefined</span>;
+      <span class="hljs-keyword">return</span> <span class="hljs-title class_">BinaryExpr</span>.<span class="hljs-title function_">eq</span>(
+        <span class="hljs-title class_">ColumnRef</span>.<span class="hljs-title function_">of</span>(<span class="hljs-string">&#x27;User&#x27;</span>, <span class="hljs-string">&#x27;name&#x27;</span>),
+        <span class="hljs-title class_">ParamRef</span>.<span class="hljs-title function_">of</span>(name, { <span class="hljs-attr">codec</span>: { <span class="hljs-attr">codecId</span>: <span class="hljs-string">&#x27;pg/text@1&#x27;</span> } }),
+      );
+    }),
+  ],
+});</code></pre></div></figure>
+<p>This file imports <code>BinaryExpr</code> without <code>type</code>, because it calls <code>BinaryExpr.eq(...)</code>. Keep the <code>type</code> on the <code>BinaryExpr</code> import in <code>scope-user-selects.ts</code>.</p>
+<p>Run each request&#39;s queries inside <code>currentName.run(...)</code>, and <code>await</code> them inside its callback. In a web server, that means wrapping the code of each request handler:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>src/routes/users.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">
+
+<span class="hljs-keyword">const</span> users = <span class="hljs-keyword">await</span> currentName.<span class="hljs-title function_">run</span>(<span class="hljs-string">&#x27;Mia&#x27;</span>, <span class="hljs-title function_">async</span> () =&gt; {
+  <span class="hljs-keyword">return</span> <span class="hljs-keyword">await</span> db.<span class="hljs-property">orm</span>.<span class="hljs-property">public</span>.<span class="hljs-property">User</span>.<span class="hljs-title function_">select</span>(<span class="hljs-string">&#x27;id&#x27;</span>, <span class="hljs-string">&#x27;name&#x27;</span>).<span class="hljs-title function_">all</span>();
+});</code></pre></div></figure>
+<p>Every <code>SELECT</code> whose <code>FROM</code> clause names <code>User</code> then runs with <code>WHERE &quot;User&quot;.&quot;name&quot; = $1</code> added, and a query that already had a <code>WHERE</code> clause keeps it, joined to yours with <code>AND</code>. The <code>await</code> inside the callback matters: <code>.all()</code> returns the query without running it, and the query runs when you <code>await</code> it. With <code>currentName.run(&#39;Mia&#39;, () =&gt; db.orm.public.User.select(&#39;id&#39;, &#39;name&#39;).all())</code>, the <code>await</code> is outside the callback, so the query runs after <code>run(...)</code> has returned, <code>getStore()</code> gives <code>undefined</code>, and the query gets no condition. The same goes for any query that runs outside <code>currentName.run(...)</code>. If every query must have one, throw in the function instead of returning <code>undefined</code>.</p>
+<aside class="callout callout-warning"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 4 2.8 20h18.4L12 4z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M12 10v4.4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="17" r="1.3" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Warning</p><p>Do not rely on this middleware alone to keep one tenant&#39;s rows away from another. If you swap <code>name</code> for a tenant column, a query that reads <code>User</code> in its own <code>FROM</code> clause returns only that tenant&#39;s rows, but <code>User</code> rows loaded with <code>.include(...)</code> or joined onto another table are not filtered, so they can belong to any tenant.</p>
+</div></aside>
+<p>The <code>codecId</code> depends on the field&#39;s type in your contract:</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Type in your contract</th>
+<th><code>codecId</code></th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>String</code></td>
+<td><code>pg/text@1</code></td>
+</tr>
+<tr>
+<td><code>Int</code></td>
+<td><code>pg/int4@1</code></td>
+</tr>
+<tr>
+<td><code>BigInt</code></td>
+<td><code>pg/int8@1</code></td>
+</tr>
+<tr>
+<td><code>Float</code></td>
+<td><code>pg/float8@1</code></td>
+</tr>
+<tr>
+<td><code>Boolean</code></td>
+<td><code>pg/bool@1</code></td>
+</tr>
+<tr>
+<td><code>DateTime</code></td>
+<td><code>pg/timestamptz-date@1</code></td>
+</tr>
+<tr>
+<td><code>Uuid</code></td>
+<td><code>pg/uuid@1</code></td>
+</tr>
+</tbody></table></div>
+<p>The <code>date</code> in the <code>DateTime</code> id means the value reaches your code as a JavaScript <code>Date</code>. A field written <code>DateTime(as: temporal)</code> has the id <code>pg/timestamptz-temporal@1</code> and reaches your code as a <code>Temporal.Instant</code>.</p>
+<p>For a field whose type is not in the table, read the <code>codecId</code> off your own client: <code>db.sql.public.User.columns.name.codecId</code> is the id for the <code>name</code> column of the <code>User</code> table, so print it from any script that imports <code>db</code>. The SQL query builder reference lists every id, in its section on <a href="#/doc/prisma8/reference/sql-query-builder@fnsraw-and-returns"><code>fns.raw</code> and <code>.returns()</code></a>.</p>
+<p><code>BinaryExpr</code> has one method per comparison (<code>eq</code>, <code>neq</code>, <code>gt</code>, <code>gte</code>, <code>lt</code>, <code>lte</code>, <code>like</code>, <code>in</code>, <code>notIn</code>), and <code>AndExpr.of</code> and <code>OrExpr.of</code> combine conditions. They all come from <code>@prisma/orm-postgres/relational-core/ast</code>, so your editor lists them once you import from there.</p>
+<h3 id="answer-queries-with-interceptonquery">Answer queries with intercept.onQuery</h3>
+<p><code>intercept.onQuery</code> lets your middleware answer a query itself: return <code>{ rows }</code> from it and the database driver never runs. Caches, test fixtures, and circuit breakers all work this way.</p>
+<p>The rows you return are raw row objects, keyed by the column aliases in the SQL, holding the values as they come off the wire. On PostgreSQL every value that is not SQL <code>NULL</code> is the text PostgreSQL prints for it, and a <code>NULL</code> is <code>null</code>, so an integer arrives as a string such as <code>&#39;1&#39;</code>, and so do timestamps. To see a real one, add <code>onRow</code> to the object <code>queryLogger()</code> returns in <code>src/prisma/query-logger.ts</code>, run your script once, and take it out again, because <code>onRow</code> gets rows in exactly the shape <code>intercept.onQuery</code> has to return:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>src/prisma/query-logger.ts (excerpt).ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">async</span> <span class="hljs-title function_">onRow</span>(<span class="hljs-params">row</span>) {
+  <span class="hljs-variable language_">console</span>.<span class="hljs-title function_">log</span>(row);
+},</code></pre></div></figure>
+<p>For the <code>SELECT</code> in step 3, whose SQL is <code>SELECT &quot;User&quot;.&quot;id&quot; AS &quot;id&quot;, &quot;User&quot;.&quot;email&quot; AS &quot;email&quot; FROM &quot;public&quot;.&quot;User&quot; LIMIT 5</code>, a row object has an <code>id</code> key and an <code>email</code> key, each holding a string. The middleware below is a test fixture: it returns one made-up row of that shape in place of the database&#39;s answer, so a test can run that query without data in the table. Add it to the same <code>middleware</code> array as the logger, either on its own as <code>middleware: [userFixture()]</code> or next to the logger as <code>middleware: [queryLogger(), userFixture()]</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>src/prisma/user-fixture.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">
+  <span class="hljs-keyword">return</span> {
+    <span class="hljs-attr">name</span>: <span class="hljs-string">&#x27;user-fixture&#x27;</span>,
+    <span class="hljs-attr">familyId</span>: <span class="hljs-string">&#x27;sql&#x27;</span>,
+
+    <span class="hljs-attr">intercept</span>: {
+      <span class="hljs-keyword">async</span> <span class="hljs-title function_">onQuery</span>(<span class="hljs-params">plan, ctx</span>) {
+        <span class="hljs-keyword">if</span> (ctx.<span class="hljs-property">scope</span> !== <span class="hljs-string">&#x27;runtime&#x27;</span>) <span class="hljs-keyword">return</span> <span class="hljs-literal">undefined</span>;
+        <span class="hljs-keyword">if</span> (plan.<span class="hljs-property">ast</span>.<span class="hljs-property">kind</span> !== <span class="hljs-string">&#x27;select&#x27;</span>) <span class="hljs-keyword">return</span> <span class="hljs-literal">undefined</span>;
+        <span class="hljs-keyword">if</span> (plan.<span class="hljs-property">ast</span>.<span class="hljs-property">from</span>?.<span class="hljs-property">kind</span> !== <span class="hljs-string">&#x27;table-source&#x27;</span>) <span class="hljs-keyword">return</span> <span class="hljs-literal">undefined</span>;
+        <span class="hljs-keyword">if</span> (plan.<span class="hljs-property">ast</span>.<span class="hljs-property">from</span>.<span class="hljs-property">name</span> !== <span class="hljs-string">&#x27;User&#x27;</span>) <span class="hljs-keyword">return</span> <span class="hljs-literal">undefined</span>;
+        <span class="hljs-keyword">return</span> { <span class="hljs-attr">rows</span>: [{ <span class="hljs-attr">id</span>: <span class="hljs-string">&#x27;1&#x27;</span>, <span class="hljs-attr">email</span>: <span class="hljs-string">&#x27;mia@prisma.io&#x27;</span> }] };
+      },
+    },
+  };
+}</code></pre></div></figure>
+<p>Prisma ORM decodes the rows you return the same way it decodes rows that came from the database, so your caller gets the types the contract gives those columns, even though you handed back plain driver values.</p>
+<p>The last three checks make the fixture answer only a <code>SELECT</code> that reads the <code>User</code> table directly, in the same way the <code>beforeCompile</code> example picks its queries. Matching on the SQL text instead, such as <code>plan.sql.includes(&#39;FROM &quot;public&quot;.&quot;User&quot;&#39;)</code>, also catches <code>DELETE FROM &quot;public&quot;.&quot;User&quot;</code>, so an ORM <code>.deleteAll()</code> would get a made-up row back and delete nothing. On an <code>UPDATE</code> or a <code>DELETE</code> the table name is at <code>plan.ast.table.name</code>.</p>
+<p><code>plan.meta.lane</code> tells you which API built a query, but nothing on the plan says which model or which ORM call it came from, so the table name in the tree is the only thing you have to match on.</p>
+<p>The first check, on <code>ctx.scope</code>, lets every query inside a transaction, or on a connection you took from the pool, go on to the database, so the fixture answers only queries sent on <code>db</code> directly. Keep it, because an ORM <code>.update()</code> or <code>.delete()</code> reads its row inside a transaction before it writes, and a made-up row there would send the write to the wrong row.</p>
+<p>Return <code>undefined</code> and the query carries on to the database as usual. When several middleware implement <code>intercept.onQuery</code>, the first one in the array that returns rows answers the query and the rest are not called at all. <code>activityEnded</code> still runs either way, with <code>result.source</code> set to <code>&#39;middleware&#39;</code>, so your logging can tell which statements were answered without a trip to the database. For a call that returns a count, <code>intercept.onExecute</code> does the same job and returns <code>{ stats }</code>, which only ever holds <code>affectedRows</code>, as in <code>{ stats: { affectedRows: 0 } }</code>. The <a href="#/doc/prisma8/middleware/built-in-cache">cache middleware</a> is the implementation to copy from.</p>
+<h3 id="answer-orm-calls-with-interceptonactivity">Answer ORM calls with intercept.onActivity</h3>
+<p><code>intercept.onActivity</code> answers a whole <a href="#/doc/prisma8/middleware/how-middleware-works@orm-calls">ORM call</a>, such as one <code>.first()</code>, instead of one statement. Return <code>{ result }</code> and the method returns <code>result</code> without sending any statement. Return <code>undefined</code> and the call runs as usual.</p>
+<p>An ORM call carries no plan, so a middleware picks the calls it answers by their annotations. The fixture below defines an annotation with <code>defineAnnotation</code>. The annotation&#39;s value is a name, such as <code>&#39;current-user&#39;</code>, and the fixture answers each call that carries it with the result you registered under that name. Note the two calls: <code>defineAnnotation&lt;string&gt;()({ ... })</code>.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>src/prisma/orm-call-fixtures.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">
+  <span class="hljs-attr">namespace</span>: <span class="hljs-string">&#x27;fixture&#x27;</span>,
+  <span class="hljs-attr">applicableTo</span>: [<span class="hljs-string">&#x27;read&#x27;</span>],
+});
+
+  <span class="hljs-keyword">return</span> {
+    <span class="hljs-attr">name</span>: <span class="hljs-string">&#x27;orm-call-fixtures&#x27;</span>,
+    <span class="hljs-attr">familyId</span>: <span class="hljs-string">&#x27;sql&#x27;</span>,
+
+    <span class="hljs-attr">intercept</span>: {
+      <span class="hljs-keyword">async</span> <span class="hljs-title function_">onActivity</span>(<span class="hljs-params">activity</span>) {
+        <span class="hljs-keyword">if</span> (activity.<span class="hljs-property">kind</span> !== <span class="hljs-string">&#x27;orm-call&#x27;</span>) <span class="hljs-keyword">return</span> <span class="hljs-literal">undefined</span>;
+        <span class="hljs-keyword">const</span> name = fixture.<span class="hljs-title function_">read</span>(activity);
+        <span class="hljs-keyword">if</span> (name === <span class="hljs-literal">undefined</span> || !<span class="hljs-title class_">Object</span>.<span class="hljs-title function_">hasOwn</span>(results, name)) <span class="hljs-keyword">return</span> <span class="hljs-literal">undefined</span>;
+        <span class="hljs-keyword">return</span> { <span class="hljs-attr">result</span>: results[name] };
+      },
+    },
+  };
+}</code></pre></div></figure>
+<p><code>applicableTo: [&#39;read&#39;]</code> lets the annotation go on reads only, so TypeScript rejects it on a <code>create</code> or an <code>update</code>. Attach it to a read the same way as <code>cacheAnnotation</code>, and register the fixture in your tests with <code>middleware: [ormCallFixtures({ &#39;current-user&#39;: { id: 1, email: &#39;mia@prisma.io&#39; } })]</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>src/users.ts (excerpt).ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">const</span> user = <span class="hljs-keyword">await</span> db.<span class="hljs-property">orm</span>.<span class="hljs-property">public</span>.<span class="hljs-property">User</span>.<span class="hljs-title function_">first</span>({ id }, <span class="hljs-function">(<span class="hljs-params">meta</span>) =&gt;</span>
+  meta.<span class="hljs-title function_">annotate</span>(<span class="hljs-title function_">fixture</span>(<span class="hljs-string">&#x27;current-user&#x27;</span>)),
+);</code></pre></div></figure>
+<p>The value you return is what the method returns, so give it the shape the method returns, with the types your code expects, such as a <code>Date</code> for a <code>DateTime</code> field. Prisma ORM does not decode it, as it decodes the rows <code>intercept.onQuery</code> returns. It checks only the kind of value: <code>.all()</code> needs an array, <code>.first()</code> an object or <code>null</code>, <code>.firstOrThrow()</code> an object, and the <code>...AndCount</code> methods a number. A value of the wrong kind rejects the call with an error whose <code>code</code> is <code>ORM.INTERCEPTED_RESULT_INVALID</code>.</p>
+<p>The first middleware in the array whose <code>onActivity</code> returns a result answers the call. <code>activityEnded</code> still runs for the call, with <code>result.source</code> set to <code>&#39;middleware&#39;</code>. <code>intercept.onActivity</code> also runs for ORM calls inside a transaction, so check <code>ctx.scope</code> or <code>ctx.inTransaction()</code> if your middleware should leave those alone, as the cache does.</p>
+<h2 id="the-context-object">The context object</h2>
+<p>Every hook receives a context object called <code>ctx</code>. All the hooks of one activity receive the same object, holding the following:</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Field</th>
+<th>What it gives you</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>ctx.state(key)</code></td>
+<td>An object that belongs to this one activity, created empty the first time you ask for it under <code>key</code>. See <a href="#keep-state-for-one-statement">Keep state for one statement</a></td>
+</tr>
+<tr>
+<td><code>ctx.parent</code></td>
+<td>The context of the activity directly above this one: the ORM call that sent a statement, or the transaction it runs in. <code>undefined</code> when there is none</td>
+</tr>
+<tr>
+<td><code>ctx.inTransaction()</code></td>
+<td><code>true</code> when the activity runs inside a transaction</td>
+</tr>
+<tr>
+<td><code>ctx.now()</code></td>
+<td>The current time in milliseconds, the same value <code>Date.now()</code> gives</td>
+</tr>
+<tr>
+<td><code>ctx.scope</code></td>
+<td>Where the statement is running: <code>&#39;runtime&#39;</code>, <code>&#39;connection&#39;</code>, or <code>&#39;transaction&#39;</code></td>
+</tr>
+<tr>
+<td><code>ctx.mode</code></td>
+<td>The <a href="#/doc/prisma8/reference/transactions-and-runtime@mode"><code>mode</code> option</a> of <code>postgres(...)</code>: <code>&#39;strict&#39;</code>, the default, or <code>&#39;permissive&#39;</code>. The budgets middleware reads it to decide whether a statement over budget throws or is only logged</td>
+</tr>
+<tr>
+<td><code>ctx.contentHash(plan)</code></td>
+<td>A promise of a string that is the same for the same statement and parameters, so <code>await</code> it</td>
+</tr>
+<tr>
+<td><code>ctx.contract</code></td>
+<td>Your contract, for when a hook needs to know what your database looks like</td>
+</tr>
+<tr>
+<td><code>ctx.signal</code></td>
+<td>The <code>AbortSignal</code> the caller passed, if any</td>
+</tr>
+<tr>
+<td><code>ctx.log</code></td>
+<td>The <a href="#/doc/prisma8/reference/transactions-and-runtime@postgresoptions"><code>log</code> option</a> of <code>postgres(...)</code>, such as <code>console</code>, with <code>info</code>, <code>warn</code>, and <code>error</code> methods. Without that option, what you pass to it is not printed</td>
+</tr>
+</tbody></table></div>
+<p><code>ctx.scope</code> is <code>&#39;runtime&#39;</code> for a statement you sent on <code>db</code> directly, <code>&#39;transaction&#39;</code> inside <code>db.transaction(...)</code>, and <code>&#39;connection&#39;</code> for a statement you sent on a connection you took out of the pool yourself with <code>db.runtime().connection()</code>. The cache reads it to leave statements inside a transaction alone.</p>
+<p><code>activity.id</code> is a fresh id for each activity, the same in every hook of that activity, so it is the value to put in a log line when you want to match lines from two hooks.</p>
+<p><code>beforeEncode</code> takes one more argument after <code>ctx</code>, called <code>params</code>, which lets you read and replace the values that will be sent as <code>$1</code>, <code>$2</code>, and so on. <code>params.entries()</code> gives you one entry per value, each with the <code>value</code> itself, the <code>codecId</code> naming its PostgreSQL type, and a <code>ref</code> that identifies which value it is, and you change one by handing that <code>ref</code> back to <code>params.replaceValue</code>. The hook below goes inside the object your middleware returns, next to <code>name</code> and <code>familyId</code>, and it opens with <code>if (!params) return;</code> because the argument is typed as optional even though Prisma ORM always passes it:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>src/prisma/redact-params.ts (excerpt).ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">async</span> <span class="hljs-title function_">beforeEncode</span>(<span class="hljs-params">plan, ctx, params</span>) {
+  <span class="hljs-keyword">if</span> (!params) <span class="hljs-keyword">return</span>;
+  <span class="hljs-keyword">for</span> (<span class="hljs-keyword">const</span> entry <span class="hljs-keyword">of</span> params.<span class="hljs-title function_">entries</span>()) {
+    <span class="hljs-keyword">if</span> (entry.<span class="hljs-property">codecId</span> === <span class="hljs-string">&#x27;pg/text@1&#x27;</span> &amp;&amp; entry.<span class="hljs-property">value</span> === <span class="hljs-string">&#x27;secret&#x27;</span>) {
+      params.<span class="hljs-title function_">replaceValue</span>(entry.<span class="hljs-property">ref</span>, <span class="hljs-string">&#x27;redacted&#x27;</span>);
+    }
+  }
+},</code></pre></div></figure>
+<p>You cannot add or remove values this way, only replace the ones the query already has.</p>
+<h3 id="keep-state-for-one-statement-keep-state-for-one-statement">Keep state for one statement [#keep-state-for-one-statement]</h3>
+<p>A middleware that has to remember something between two hooks of one statement keeps it in <code>ctx.state(key)</code>. This is what replaces wrapping a query in <code>next()</code>. Each activity has its own state object, which Prisma ORM drops once the activity is finalized, so nothing is left behind when a statement fails. Use a <code>Symbol</code> of your own as the key, because middleware that pass the same key share the object. The values are typed <code>unknown</code>, so check them when you read them back:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>src/prisma/sql-on-failure.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">
+
+<span class="hljs-keyword">const</span> sqlKey = <span class="hljs-title class_">Symbol</span>(<span class="hljs-string">&#x27;sql-on-failure&#x27;</span>);
+
+  <span class="hljs-keyword">return</span> {
+    <span class="hljs-attr">name</span>: <span class="hljs-string">&#x27;sql-on-failure&#x27;</span>,
+    <span class="hljs-attr">familyId</span>: <span class="hljs-string">&#x27;sql&#x27;</span>,
+
+    <span class="hljs-keyword">async</span> <span class="hljs-title function_">beforeEncode</span>(<span class="hljs-params">plan, ctx</span>) {
+      ctx.<span class="hljs-title function_">state</span>(sqlKey)[<span class="hljs-string">&#x27;sql&#x27;</span>] = plan.<span class="hljs-property">sql</span>;
+    },
+
+    <span class="hljs-keyword">async</span> <span class="hljs-title function_">activityEnded</span>(<span class="hljs-params">activity, result, ctx</span>) {
+      <span class="hljs-keyword">if</span> (result.<span class="hljs-property">kind</span> !== <span class="hljs-string">&#x27;statement&#x27;</span> || result.<span class="hljs-property">outcome</span> !== <span class="hljs-string">&#x27;failed&#x27;</span>) <span class="hljs-keyword">return</span>;
+      <span class="hljs-keyword">const</span> sql = ctx.<span class="hljs-title function_">state</span>(sqlKey)[<span class="hljs-string">&#x27;sql&#x27;</span>];
+      <span class="hljs-variable language_">console</span>.<span class="hljs-title function_">error</span>(<span class="hljs-string">`failed after <span class="hljs-subst">${<span class="hljs-built_in">Math</span>.round(result.latencyMs)}</span>ms · <span class="hljs-subst">${<span class="hljs-keyword">typeof</span> sql === <span class="hljs-string">&#x27;string&#x27;</span> ? sql : <span class="hljs-string">&#x27;(not compiled)&#x27;</span>}</span>`</span>);
+    },
+  };
+}</code></pre></div></figure>
+<p>A statement that failed before <code>beforeEncode</code> ran, for example because another middleware&#39;s <code>beforeCompile</code> threw, has nothing in its state, which is what the <code>typeof</code> check covers.</p>
+<h2 id="common-gotchas">Common gotchas</h2>
+<aside class="callout callout-warning"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 4 2.8 20h18.4L12 4z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M12 10v4.4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="17" r="1.3" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Warning</p><ul>
+<li>If you throw from <code>activityEnded</code> after a statement has succeeded, the call fails even though the database has already done the work, so keep that for cases where failing loudly is the point, the way the <a href="#/doc/prisma8/middleware/built-in-budgets">budgets</a> latency check does.</li>
+<li><code>activityEnded</code> also runs when the database driver fails, when a statement fails before it reaches the database, and when your code stops reading rows part way through, with <code>result.outcome</code> set to <code>&#39;failed&#39;</code> or <code>&#39;stopped&#39;</code>. A middleware that counts statements or measures latency checks <code>result.outcome</code>. A failed write has no <code>result.stats</code>.</li>
+<li>If your hook throws while it is handling a failure like that, Prisma ORM passes your error to the client&#39;s log and your caller still sees the failure the driver reported.</li>
+<li><code>activityEnded</code> and <code>activityFinalized</code> run for transactions and ORM calls too. Check <code>activity.kind</code> or <code>result.kind</code> when you only care about statements.</li>
+<li>Inside a transaction, <code>activityFinalized</code> runs while the transaction still holds its connection. Do not await a query through the same client from it: when the pool has no free connection, that query waits forever. <a href="#/doc/prisma8/middleware/how-middleware-works@activityfinalized-act-once-the-effects-are-final">How middleware works</a> has the details.</li>
+</ul>
+</div></aside>
+<h2 id="prompt-your-coding-agent">Prompt your coding agent</h2>
+<p>Projects created with <code>npm create prisma@latest</code> install <a target="_blank" rel="noopener" href="https://www.prisma.io/docs/ai/tools/skills">Prisma ORM skills</a> for your coding agent, so you can ask it for the middleware built in the steps above:</p>
+<ul>
+<li>&quot;Write a Prisma ORM middleware that logs every query slower than 250ms, and register it before budgets.&quot;</li>
+<li>&quot;Add a beforeCompile middleware that adds an <code>orgId</code> condition, read per request from an AsyncLocalStorage, to every SELECT that reads the User table in its FROM clause.&quot;</li>
+<li>&quot;Write a middleware whose intercept.onQuery returns fixture rows for the products table in tests.&quot;</li>
+</ul>
+<h2 id="next-steps">Next steps</h2>
+<ul>
+<li><a href="#/doc/prisma8/middleware/how-middleware-works">How middleware works</a>: the order Prisma ORM runs your hooks in</li>
+<li><a href="#/doc/prisma8/middleware/built-in-budgets">Built-in: budgets</a>, <a href="#/doc/prisma8/middleware/built-in-lints">Built-in: lints</a>, and <a href="#/doc/prisma8/middleware/built-in-cache">Built-in: cache</a>: middleware Prisma ORM ships, as production examples of these hooks</li>
+</ul>

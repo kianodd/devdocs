@@ -1,0 +1,1107 @@
+<p>Create, connect, and close the client, run transactions, prepare statements, and set per-query execution options, on PostgreSQL and MongoDB. For a task-oriented walkthrough, see the Fundamentals guide to <a href="#/doc/prisma8/fundamentals/transactions">Transactions</a>. For the ways to query inside a transaction, see the <a href="#/doc/prisma8/reference/orm-client">ORM client reference</a>, the <a href="#/doc/prisma8/reference/sql-query-builder">SQL query builder reference</a>, and the <a href="#/doc/prisma8/reference/raw-queries">raw queries reference</a>.</p>
+<p>If you are coming from Prisma ORM 7, your <code>schema.prisma</code> is now called <code>contract.prisma</code>. Running <code>npx prisma contract emit</code> writes two files next to it: <code>contract.json</code>, which your app imports, and <code>contract.d.ts</code>, which gives you the TypeScript types. A new project keeps all three files in <code>src/prisma/</code>. Every client you create needs the contract from <code>contract.json</code>, turned into a value with <code>contractFromJson</code>. A query such as <code>prisma.user.findMany({ where })</code> is now <code>db.orm.public.User.where(...).all()</code>. <a href="#/doc/prisma8/coming-from-prisma-orm-7">Coming from Prisma ORM 7</a> lists the packages to install, the commands to run, and the rest of the renamed calls.</p>
+<p><code>db</code> is the client that <code>postgres(...)</code> or <code>mongo(...)</code> returns. <code>db.runtime()</code> gives you the object that actually runs queries, and that object is called the runtime.</p>
+<p>Transactions are not available on MongoDB. To run one there, pass your own <code>MongoClient</code> with the <code>mongoClient</code> option and use the driver&#39;s <code>session.withTransaction(...)</code>, which <a href="#/doc/prisma8/fundamentals/transactions@transactions-on-mongodb">Transactions on MongoDB</a> shows in code.</p>
+<h2 id="client-lifecycle-on-postgresql">Client lifecycle on PostgreSQL</h2>
+<p>Create a PostgreSQL client with <code>postgres(...)</code>, connect it to get a runtime, run queries, and close it when you are done.</p>
+<h3 id="postgresoptions"><code>postgres(options)</code></h3>
+<p>Create a PostgreSQL client.</p>
+<h4 id="remarks">Remarks</h4>
+<ul>
+<li><p>Pass the contract as a value with the <code>contract</code> option. Turn <code>contract.json</code> into that value once with <code>contractFromJson(contractJson)</code> from <code>@prisma/orm-postgres/static</code>, as every example below does. <code>Contract</code> is the type that <code>contract.d.ts</code> exports; you name it here because TypeScript cannot read a type out of a JSON file. The client takes its types for <code>db.orm</code> and <code>db.sql</code> from the value, so <code>postgres(...)</code> takes no type argument. If you write your contract in TypeScript with <a href="#/doc/prisma8/contract-authoring/typescript-schema-builder"><code>defineContract</code></a> instead of in <code>contract.prisma</code>, what <code>defineContract</code> returns is already a contract value, so pass it as <code>contract</code> directly.</p>
+</li>
+<li><p><code>contractFromJson</code> checks the contract once. Build every client from the same value, and export it from the module that creates the client so that tests and other modules can import it.</p>
+</li>
+<li><p>Tell the client which database to use in one of three ways: <code>url</code>, <code>pg</code>, or <code>binding</code>. A <code>binding</code> wraps any of the three choices in one object, with a <code>kind</code> field saying which it is: <code>{ kind: &#39;url&#39;, url }</code>, <code>{ kind: &#39;pgPool&#39;, pool }</code>, or <code>{ kind: &#39;pgClient&#39;, client }</code>. Use it when your code picks the source at run time. Pass exactly one of <code>url</code>, <code>pg</code>, and <code>binding</code>, or leave all three out and pass one to <a href="#connect"><code>connect()</code></a>.</p>
+</li>
+<li><p><code>postgres(...)</code> checks the database input when you call it, and a wrong one throws an error whose <code>code</code> is <code>RUNTIME.BINDING_INVALID</code> at once, not on the first query. The message names the option. A <code>url</code>, top-level or in a <code>binding</code>, must be a non-empty string that starts with <code>postgres://</code> or <code>postgresql://</code>; an empty one does not fall back to the <code>PG*</code> environment variables or to localhost. A <code>pg</code> value must be a <code>pg.Pool</code> or a <code>pg.Client</code>. A <code>binding</code> must have the <code>kind</code> <code>&#39;url&#39;</code>, <code>&#39;pgPool&#39;</code> or <code>&#39;pgClient&#39;</code>, and its <code>pool</code> or <code>client</code> must be an object. <code>null</code> as <code>url</code>, <code>pg</code> or <code>binding</code> fails too, even beside another input, so leave out an option that has no value instead of passing <code>null</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">const</span> url = process.<span class="hljs-property">env</span>[<span class="hljs-string">&#x27;DATABASE_URL&#x27;</span>];
+<span class="hljs-keyword">const</span> db = <span class="hljs-title function_">postgres</span>({ contract, ...(url === <span class="hljs-literal">undefined</span> ? {} : { url }) });</code></pre></div></figure>
+</li>
+<li><p><code>supabase(...)</code> from <code>@prisma/orm-extension-supabase/runtime</code> checks its database input the same way, but takes no <code>pg.Client</code>, because each role-bound query needs a connection of its own. A <code>pg.Client</code>, as <code>pg</code> or as a <code>binding</code> with <code>kind: &#39;pgClient&#39;</code>, fails with an error whose <code>code</code> is <code>SUPABASE.CONFIG_INVALID</code>. <code>supabase(...)</code> checks only that the <code>pool</code> of a <code>{ kind: &#39;pgPool&#39;, pool }</code> binding is an object, so make sure it is a <code>pg.Pool</code>.</p>
+</li>
+<li><p>When you pass a <code>pg</code> pool or client, directly or as a <code>binding</code> with <code>kind: &#39;pgPool&#39;</code> or <code>kind: &#39;pgClient&#39;</code>, you own it: call <code>db.close()</code> first, then close it yourself with <code>pool.end()</code> for a pool or <code>client.end()</code> for a client. <code>db.close()</code> closes the client&#39;s runtime but leaves your pool or client open. The driver sets <code>DateStyle</code> to <code>ISO</code> on each connection of a pool or client you pass, before first use, so do not change <code>DateStyle</code> on those connections: a date or time read under another style fails with <code>RUNTIME.DATE_STYLE_NOT_ISO</code>. When you pass a <code>url</code>, the client creates the pool and closes it. Set that pool&#39;s timeouts with <code>poolOptions</code>, which has no effect on a pool you supply yourself.</p>
+</li>
+<li><p>Some types come from a PostgreSQL extension, such as a <code>pgvector.Vector(1536)</code> type in your <code>contract.prisma</code>. Run <code>npm install @prisma/orm-extension-pgvector</code> first. Then <code>import pgvector from &#39;@prisma/orm-extension-pgvector/runtime&#39;</code> and pass <code>extensions: [pgvector]</code>.</p>
+</li>
+<li><p>A middleware is an object with a name and one or more hooks, such as <code>{ name: &#39;no-big-deletes&#39;, beforeEncode: (plan) =&gt; { if (plan.sql.includes(&#39;DELETE&#39;)) throw new Error(&#39;blocked&#39;) } }</code>. Throw from a hook to block the statement. Prisma ORM runs every statement and transaction as an activity: the lifecycle hooks are <code>activityStarted</code>, <code>activityEnded</code>, and <code>activityFinalized</code>, and the hooks that change or stop a statement are <code>beforeCompile</code>, <code>beforeEncode</code>, <code>intercept.onQuery</code>, <code>intercept.onExecute</code>, and <code>onRow</code>. See <a href="#/doc/prisma8/middleware/how-middleware-works">How middleware works</a>.</p>
+</li>
+<li><p>Migrations record in your database which contract it matches. With <code>verifyMarker: &#39;onFirstUse&#39;</code>, the default, the first query checks that record and logs a warning on a mismatch, then runs anyway. If you see the warning, run <code>npx prisma db update</code>. <code>verifyMarker: false</code> skips the check.</p>
+</li>
+<li><p><code>postgres(options)</code> does not open a connection. The client opens one on first use, so <a href="#connect"><code>connect()</code></a> is optional: call it to open the connection up front and fail early.</p>
+</li>
+<li><p>Without <code>cursor</code>, a read loads its whole result before it gives you the first row. With <code>cursor: { batchSize: 100 }</code>, reads go through a server-side cursor and fetch the rows in batches of that size, so a <code>for await</code> loop gets the first rows before the rest arrive. <code>cursor: {}</code> uses batches of 100. A <code>batchSize</code> that is not a positive integer makes <code>postgres(...)</code> throw an error whose <code>code</code> is <code>RUNTIME.ARGUMENT_INVALID</code>.</p>
+</li>
+<li><p>While a <code>for await</code> loop reads through a cursor, the cursor holds its database connection until the loop ends. A query inside the loop that needs the same connection waits forever. That happens when you loop over a query on a transaction&#39;s <code>tx</code> and query <code>tx</code> inside the loop, and on a client you created with one <code>pg</code> <code>Client</code>.</p>
+</li>
+</ul>
+<h4 id="options">Options</h4>
+<p>Pass exactly one of <code>url</code>, <code>pg</code>, and <code>binding</code>.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Name</th>
+<th>Type</th>
+<th>Required</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>contract</code></td>
+<td>Contract value</td>
+<td>Yes</td>
+<td>The contract, from <code>contractFromJson(contractJson)</code> or <code>defineContract</code>.</td>
+</tr>
+<tr>
+<td><code>url</code></td>
+<td><code>string</code></td>
+<td>See note</td>
+<td>A PostgreSQL connection string.</td>
+</tr>
+<tr>
+<td><code>pg</code></td>
+<td><code>Pool</code> or <code>Client</code> from the <code>pg</code> package</td>
+<td>See note</td>
+<td>An existing <code>pg</code> instance to use. You close it yourself.</td>
+</tr>
+<tr>
+<td><code>binding</code></td>
+<td><code>{ kind: &#39;url&#39; | &#39;pgPool&#39; | &#39;pgClient&#39;, ... }</code></td>
+<td>See note</td>
+<td>The same three choices in one object.</td>
+</tr>
+<tr>
+<td><code>poolOptions</code></td>
+<td><code>{ connectionTimeoutMillis?: number; idleTimeoutMillis?: number }</code></td>
+<td>No</td>
+<td>Timeouts for the pool the client creates from <code>url</code> (defaults <code>20000</code> / <code>30000</code>).</td>
+</tr>
+<tr>
+<td><code>extensions</code></td>
+<td>Array of extension runtimes, the default export of each package&#39;s <code>/runtime</code> subpath</td>
+<td>No</td>
+<td>The PostgreSQL extensions your contract&#39;s types need. Install each package, then import its <code>/runtime</code> subpath and put the default export in this array.</td>
+</tr>
+<tr>
+<td><code>middleware</code></td>
+<td>Array of middleware</td>
+<td>No</td>
+<td>Code that runs around every query. See <a href="#/doc/prisma8/middleware/how-middleware-works">How middleware works</a>.</td>
+</tr>
+<tr>
+<td><code>verifyMarker</code></td>
+<td><code>&#39;onFirstUse&#39;</code> or <code>false</code></td>
+<td>No</td>
+<td>Whether the first query checks that the database was set up for this contract. Defaults to <code>&#39;onFirstUse&#39;</code>.</td>
+</tr>
+<tr>
+<td><code>log</code></td>
+<td>An object with <code>info</code>, <code>warn</code>, and <code>error</code> methods, such as <code>console</code></td>
+<td>No</td>
+<td>Where the client reports what it does not throw: a <code>&#39;warn&#39;</code> result from the lints or budgets middleware, the <code>verifyMarker</code> warning about a missing or mismatched contract marker, such as <code>CONTRACT.MARKER_MISSING</code>, and errors from middleware hooks it cannot pass to your code. Without <code>log</code>, these are not printed. <code>postgresServerless()</code>, <code>sqlite()</code> and <code>supabase()</code> take it too.</td>
+</tr>
+<tr>
+<td><code>cursor</code></td>
+<td><code>PostgresCursorOptions</code>, which is <code>{ batchSize?: number }</code></td>
+<td>No</td>
+<td>Read through a server-side cursor in batches of <code>batchSize</code> rows, 100 when you leave <code>batchSize</code> out. Without <code>cursor</code>, reads are not batched.</td>
+</tr>
+<tr>
+<td><code>mode</code></td>
+<td><code>&#39;strict&#39;</code> or <code>&#39;permissive&#39;</code></td>
+<td>No</td>
+<td>How middleware treats a rule violation. Defaults to <code>&#39;strict&#39;</code>. See <a href="#mode"><code>mode</code></a>.</td>
+</tr>
+<tr>
+<td><code>collections</code></td>
+<td>Object mapping model name to a collection class</td>
+<td>No</td>
+<td>Your own collection classes, used on <code>db.orm</code> and on every transaction&#39;s <code>tx.orm</code>. See <a href="#/doc/prisma8/reference/orm-client@custom-collection-subclass">Custom collections</a>.</td>
+</tr>
+</tbody></table></div>
+<p>The type of the options object is <code>PostgresOptions</code>, exported from <code>@prisma/orm-postgres/runtime</code>.</p>
+<h4 id="return-type">Return type</h4>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Return type</th>
+<th>Example</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>PostgresClient</code></td>
+<td><code>postgres({ contract, url })</code></td>
+<td>A client that has not connected yet. Its members are listed below.</td>
+</tr>
+</tbody></table></div>
+<ul>
+<li><code>.orm</code> holds your models by model name. See the <a href="#/doc/prisma8/reference/orm-client">ORM client reference</a>.</li>
+<li><code>.sql</code> is the SQL query builder, keyed by PostgreSQL schema, then by table name: <code>db.sql.public.tag</code>. The table name is the model&#39;s <code>@@map</code> value, or the model name exactly as written when the model sets no <code>@@map</code>. See the <a href="#/doc/prisma8/reference/sql-query-builder">SQL query builder reference</a>. Write raw SQL with <code>db.raw.sql`...` </code>, as the <a href="#/doc/prisma8/reference/raw-queries">raw queries reference</a> shows.</li>
+<li><code>.enums</code> holds the enum values from your contract, by PostgreSQL schema: <code>db.enums.public.Role</code>. Each member is the value a query returns, such as a <code>bigint</code> for a member of a 64-bit integer enum, so <code>has()</code>, <code>nameOf()</code>, and <code>ordinalOf()</code> find a value read from the database that equals a member. <code>.nativeEnums</code> holds only the values of enum types that exist in PostgreSQL itself, created with <code>CREATE TYPE</code> from a <code>native_enum</code> block or <code>nativeEnum()</code>, also by schema. An <code>enum</code> block or <code>enumType()</code> is not listed there; read it through <code>.enums</code>. Look the type up by name in brackets: <code>db.nativeEnums.auth[&#39;AalLevel&#39;].values</code> is <code>[&#39;aal1&#39;, &#39;aal2&#39;, &#39;aal3&#39;]</code>.</li>
+<li><code>.contract</code> is the contract as an object. <a href="#connect"><code>connect()</code></a>, <a href="#runtime"><code>runtime()</code></a>, <a href="#run-a-plan"><code>query()</code> and <code>execute()</code></a>, <a href="#dbtosqlplan"><code>toSql()</code></a>, <a href="#dbtransactioncallback"><code>transaction()</code></a>, <a href="#dbpreparedeclaration-callback"><code>prepare()</code></a>, and <a href="#close"><code>close()</code></a> are documented on this page.</li>
+</ul>
+<h4 id="examples">Examples</h4>
+<h5 id="create-a-client-from-a-connection-string">Create a client from a connection string</h5>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"></code></pre></div></figure>
+<p>These examples assume the file is beside <code>contract.json</code> in <code>src/prisma/</code>, so from anywhere else, change the relative paths. Write <code>./contract.d</code> exactly like that, with no extension. It resolves under <code>preserve</code> or <code>esnext</code> with <code>bundler</code>, the settings <code>prisma orm init</code> writes, and under <code>nodenext</code> as CommonJS; under <code>nodenext</code>, <code>node18</code>, or <code>node20</code> as ES modules it does not, and the upgrade guide covers that case. The line <code>import contractJson from &#39;./contract.json&#39; with { type: &#39;json&#39; }</code> needs Node.js 22.18 or newer and TypeScript 5.9 or newer. In <code>tsconfig.json</code> it needs <code>resolveJsonModule: true</code> and one of these <code>module</code> settings, each with its <code>moduleResolution</code>: <code>preserve</code> with <code>bundler</code>, <code>esnext</code> with <code>bundler</code>, or <code>nodenext</code> with <code>nodenext</code>. <code>node18</code> and <code>node20</code> also work, with <code>moduleResolution</code> left unset. <code>prisma orm init</code> writes <code>preserve</code> and <code>bundler</code> into new projects. When <code>module</code> is <code>nodenext</code> and <code>package.json</code> has no <code>&quot;type&quot;: &quot;module&quot;</code>, TypeScript treats the file as CommonJS, and there the import is <code>import contractJson from &#39;./contract.json&#39;;</code> with no <code>with</code> part. The <a target="_blank" rel="noopener" href="https://www.prisma.io/docs/guides/upgrade-prisma-orm/postgresql">Prisma ORM 7 to 8 upgrade guide</a> walks through which setting fits which kind of project. TypeScript types every <code>process.env</code> value as possibly undefined, so the examples write <code>!</code> after it, the same way <code>prisma orm init</code> does.</p>
+<h5 id="bind-to-an-existing-pg-pool">Bind to an existing <code>pg</code> pool</h5>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">
+
+
+
+
+
+<span class="hljs-keyword">const</span> contract = <span class="hljs-title function_">contractFromJson</span>(contractJson);
+<span class="hljs-keyword">const</span> pool = <span class="hljs-keyword">new</span> <span class="hljs-title class_">Pool</span>({ <span class="hljs-attr">connectionString</span>: process.<span class="hljs-property">env</span>.<span class="hljs-property">DATABASE_URL</span>! });
+<span class="hljs-keyword">const</span> db = <span class="hljs-title function_">postgres</span>({ contract, <span class="hljs-attr">pg</span>: pool });</code></pre></div></figure>
+<h3 id="connect"><code>connect()</code></h3>
+<p>Open a connection and return a runtime.</p>
+<h4 id="remarks">Remarks</h4>
+<ul>
+<li>Returns a <code>Promise</code>. The runtime is the connected object that runs queries. It has these calls:<ul>
+<li><code>runtime.query(built)</code> runs a built query and returns its rows. A built query is the object you get from <code>.build()</code> at the end of a builder or raw chain. See <a href="#/doc/prisma8/reference/sql-query-builder@executing-a-plan">Running a built query</a>.</li>
+<li><code>runtime.execute(built)</code> runs a built query that returns no rows, such as an insert, and returns <code>{ affectedRows }</code>. See <a href="#/doc/prisma8/reference/sql-query-builder@executing-a-plan">Running a built query</a>.</li>
+<li><code>runtime.connection()</code> takes one connection out of the pool so that several queries run on the same connection. It returns a promise, and you put the connection back with <code>connection.release()</code>: <code>const connection = await runtime.connection(); try { await connection.query(built) } finally { await connection.release() }</code>. See <a href="#manual-connection-and-transaction-control">Manual connection and transaction control</a>.</li>
+<li><code>runtime.prepare(declaration, callback)</code> prepares a statement you run many times with different values. The client has a <code>prepare()</code> too, and the two do the same thing. See <a href="#prepared-statements-postgresql">Prepared statements (PostgreSQL)</a>.</li>
+<li><code>runtime.telemetry()</code> reports how the most recent query went. See <a href="#runtimetelemetry"><code>runtime.telemetry()</code></a>.</li>
+</ul>
+</li>
+<li><code>connect()</code> takes the same database options as <code>postgres(...)</code>, so a client you created without one can be given its database here: <code>await db.connect({ url: process.env.DATABASE_URL! })</code>, or <code>await db.connect({ binding: { kind: &#39;url&#39;, url } })</code>.</li>
+<li>Every error has a <code>code</code> property, and the <a href="#/doc/prisma8/reference/error-reference">error reference</a> lists them all. Catch the error and compare <code>error.code</code> with the value shown here, for example <code>if (error.code === &#39;DRIVER.NOT_CONNECTED&#39;)</code>.</li>
+<li>You rarely need <code>connect()</code>: running a query connects the client. <code>connect()</code> without options is safe to call at any time, also after a query or a second time: it waits for a connection in progress, or resolves with the runtime the client&#39;s queries already use. <code>connect(options)</code> on a client that is already connected rejects with an error whose <code>code</code> is <code>DRIVER.ALREADY_CONNECTED</code> and whose message is <code>Postgres client is already bound</code>. A <code>connect()</code> still waiting when you call <code>close()</code> rejects with <code>DRIVER.NOT_CONNECTED</code>.</li>
+</ul>
+<h4 id="return-type">Return type</h4>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Return type</th>
+<th>Example</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>Promise</code></td>
+<td><code>const runtime = await db.connect()</code></td>
+<td>The connected runtime.</td>
+</tr>
+</tbody></table></div>
+<h4 id="examples">Examples</h4>
+<h5 id="connect-and-run-a-query">Connect and run a query</h5>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">const</span> runtime = <span class="hljs-keyword">await</span> db.<span class="hljs-title function_">connect</span>();
+<span class="hljs-keyword">const</span> tags = <span class="hljs-keyword">await</span> runtime.<span class="hljs-title function_">query</span>(db.<span class="hljs-property">sql</span>.<span class="hljs-property">public</span>.<span class="hljs-property">tag</span>.<span class="hljs-title function_">select</span>(<span class="hljs-string">&#x27;id&#x27;</span>, <span class="hljs-string">&#x27;label&#x27;</span>).<span class="hljs-title function_">build</span>());</code></pre></div></figure>
+<h3 id="runtime"><code>runtime()</code></h3>
+<p>Get the current runtime synchronously.</p>
+<h4 id="remarks">Remarks</h4>
+<ul>
+<li>On PostgreSQL, <code>runtime()</code> is <strong>synchronous</strong>: it returns the <code>Runtime</code> directly, not a promise. You can call it before connecting, because the client connects on first use.</li>
+</ul>
+<h4 id="return-type">Return type</h4>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Return type</th>
+<th>Example</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>Runtime</code></td>
+<td><code>const runtime = db.runtime()</code></td>
+<td>The runtime, returned synchronously.</td>
+</tr>
+</tbody></table></div>
+<h3 id="dbqueryplan-and-dbexecuteplan-run-a-plan"><code>db.query(plan)</code> and <code>db.execute(plan)</code> [#run-a-plan]</h3>
+<p>Run a built query on the client.</p>
+<h4 id="remarks">Remarks</h4>
+<ul>
+<li><code>db.query(plan)</code> runs a built query and returns its rows as an <a href="#asynciterableresult"><code>AsyncIterableResult</code></a>. <code>db.execute(plan)</code> runs a built query that returns no rows and resolves to <code>{ affectedRows }</code>. They do what <code>db.runtime().query(plan)</code> and <code>db.runtime().execute(plan)</code> do, so you do not need the runtime to run a query.</li>
+<li>Both take <a href="#runtimeexecuteoptions"><code>RuntimeExecuteOptions</code></a> as a second argument.</li>
+<li>A transaction&#39;s <code>tx</code>, a serverless connection, and SQLite&#39;s <code>sqlite(...)</code> client have the same two members.</li>
+<li>Keep <code>db.runtime()</code> for <code>connection()</code> and <code>telemetry()</code>.</li>
+</ul>
+<h4 id="examples">Examples</h4>
+<h5 id="run-a-sql-builder-query-and-a-raw-write">Run a SQL builder query and a raw write</h5>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">const</span> posts = <span class="hljs-keyword">await</span> db.<span class="hljs-title function_">query</span>(db.<span class="hljs-property">sql</span>.<span class="hljs-property">public</span>.<span class="hljs-property">post</span>.<span class="hljs-title function_">select</span>(<span class="hljs-string">&#x27;id&#x27;</span>, <span class="hljs-string">&#x27;title&#x27;</span>).<span class="hljs-title function_">limit</span>(<span class="hljs-number">10</span>).<span class="hljs-title function_">build</span>());
+<span class="hljs-keyword">const</span> { affectedRows } = <span class="hljs-keyword">await</span> db.<span class="hljs-title function_">execute</span>(
+  db.<span class="hljs-property">raw</span>.<span class="hljs-property">sql</span><span class="hljs-string">`UPDATE post SET pinned = false`</span>.<span class="hljs-title function_">affectedCount</span>().<span class="hljs-title function_">build</span>(),
+);</code></pre></div></figure>
+<h3 id="dbtosqlplan"><code>db.toSql(plan)</code></h3>
+<p>Render a built query as the SQL it would send, without running it.</p>
+<h4 id="remarks">Remarks</h4>
+<ul>
+<li>Returns <code>{ sql, params }</code>. <code>params</code> holds the query&#39;s values before Prisma ORM converts them for the database.</li>
+<li><code>toSql()</code> needs no database. It works on a client created with no <code>url</code>, <code>pg</code>, or <code>binding</code>, on the serverless client, on a transaction&#39;s <code>tx</code>, and on the static context from <code>@prisma/orm-postgres/static</code>.</li>
+<li>It takes a query from <code>db.sql</code>, <code>db.raw</code>, or the ORM. Middleware does not run, so changes a <code>beforeCompile</code> hook would make are not in the result.</li>
+<li>A query built for <a href="#dbpreparedeclaration-callback"><code>prepare()</code></a>, with parameters in it, throws an error whose <code>code</code> is <code>RUNTIME.PREPARE_BIND_ON_ADHOC</code>. A query built from another contract throws <code>PLAN.HASH_MISMATCH</code>. Running either query throws the same errors.</li>
+</ul>
+<h4 id="return-type">Return type</h4>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Return type</th>
+<th>Example</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>{ sql: string; params: readonly unknown[] }</code></td>
+<td><code>db.toSql(plan)</code></td>
+<td>The SQL text and its parameter values.</td>
+</tr>
+</tbody></table></div>
+<h4 id="examples">Examples</h4>
+<h5 id="print-the-sql-of-a-query">Print the SQL of a query</h5>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">const</span> db = <span class="hljs-title function_">postgres</span>({ contract }); <span class="hljs-comment">// no database needed</span>
+<span class="hljs-keyword">const</span> { sql, params } = db.<span class="hljs-title function_">toSql</span>(db.<span class="hljs-property">sql</span>.<span class="hljs-property">public</span>.<span class="hljs-property">post</span>.<span class="hljs-title function_">select</span>(<span class="hljs-string">&#x27;id&#x27;</span>, <span class="hljs-string">&#x27;title&#x27;</span>).<span class="hljs-title function_">limit</span>(<span class="hljs-number">10</span>).<span class="hljs-title function_">build</span>());
+<span class="hljs-comment">// sql is &#x27;SELECT … LIMIT 10&#x27;</span></code></pre></div></figure>
+<h3 id="mode"><code>mode</code></h3>
+<p>The <code>mode</code> option says how middleware treats a rule violation.</p>
+<h4 id="remarks">Remarks</h4>
+<ul>
+<li>Of the built-in middleware, only <a href="#/doc/prisma8/middleware/built-in-budgets">budgets</a> reads <code>mode</code>. The <a href="#/doc/prisma8/middleware/built-in-lints">lints middleware</a> sends a rule set to <code>&#39;warn&#39;</code> to <code>log.warn</code> in either mode.</li>
+<li><code>&#39;strict&#39;</code>, the default, makes the budgets middleware throw on every violation.</li>
+<li>With <code>&#39;permissive&#39;</code>, a budgets violation whose severity is <code>&#39;warn&#39;</code> is passed to <code>log.warn</code>, where <code>log</code> is the <code>log</code> option you pass to the client, such as <code>log: console</code>, and the query runs. Without a <code>log</code> option, the warning goes nowhere. Set the severity with the budgets <code>severities</code> option. A violation whose severity is <code>&#39;error&#39;</code> still throws.</li>
+<li><code>postgres(...)</code>, <code>postgresServerless(...)</code>, <code>sqlite(...)</code>, and <code>supabase(...)</code> take <code>mode</code>. Its type is <code>RuntimeMode</code>.</li>
+</ul>
+<h4 id="examples">Examples</h4>
+<h5 id="log-budget-warnings-instead-of-throwing">Log budget warnings instead of throwing</h5>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">
+
+<span class="hljs-keyword">const</span> db = <span class="hljs-title function_">postgres</span>({
+  contract,
+  <span class="hljs-attr">url</span>: process.<span class="hljs-property">env</span>.<span class="hljs-property">DATABASE_URL</span>!,
+  <span class="hljs-attr">middleware</span>: [<span class="hljs-title function_">budgets</span>({ <span class="hljs-attr">maxRows</span>: <span class="hljs-number">1000</span>, <span class="hljs-attr">severities</span>: { <span class="hljs-attr">rowCount</span>: <span class="hljs-string">&#x27;warn&#x27;</span> } })],
+  <span class="hljs-attr">mode</span>: <span class="hljs-string">&#x27;permissive&#x27;</span>,
+  <span class="hljs-attr">log</span>: <span class="hljs-variable language_">console</span>,
+});</code></pre></div></figure>
+<h3 id="close"><code>close()</code></h3>
+<p>Close the client and release its pool.</p>
+<h4 id="remarks">Remarks</h4>
+<ul>
+<li>Returns a <code>Promise&lt;void&gt;</code>. <code>close()</code> replaces <code>$disconnect()</code> from Prisma ORM 7. You can call it more than once; calls after the first do nothing.</li>
+<li>A closed client cannot be used again. After <code>close()</code>, <code>connect()</code> rejects and <code>runtime()</code> throws an error whose <code>code</code> is <code>DRIVER.NOT_CONNECTED</code> (<code>Postgres client is closed</code>). <code>db.query(...)</code>, <code>db.execute(...)</code>, <code>db.transaction(...)</code>, <code>db.prepare(...)</code>, and ORM calls such as <code>db.orm.public.User.all()</code> report the same error through what they return: the promise rejects, or the result rejects when you await or read it. They do not throw at the call, so a <code>try</code>/<code>catch</code> catches the error only when you <code>await</code> the call. Create a new client with <a href="#postgresoptions"><code>postgres(options)</code></a> if you need one. Queries already running when you call <code>close()</code> finish first.</li>
+<li><code>close()</code> also closes the client&#39;s runtime, so a runtime you got from <code>db.runtime()</code> before <code>close()</code> refuses new work with <code>DRIVER.NOT_CONNECTED</code> (<code>Runtime is closed</code>). When you created the client from your own <code>pg</code> pool or client, <code>close()</code> leaves that pool or client open; call <code>await pool.end()</code> after it.</li>
+<li>In a server, call <code>close()</code> when the process receives <code>SIGTERM</code> or <code>SIGINT</code>, and never in a request handler, because every request shares the pool. Stop the server first, so that no new query starts, then close the client. <code>app</code> is your Express app and <code>db</code> is the client from <code>src/prisma/db.ts</code>. Once both are closed, Node.js exits by itself; if it does not, something else, such as another database client or a timer, is still open:</li>
+</ul>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">const</span> server = app.<span class="hljs-title function_">listen</span>(<span class="hljs-number">3000</span>);
+
+<span class="hljs-keyword">function</span> <span class="hljs-title function_">shutdown</span>(<span class="hljs-params"></span>) {
+  server.<span class="hljs-title function_">close</span>(<span class="hljs-title function_">async</span> () =&gt; {
+    <span class="hljs-keyword">await</span> db.<span class="hljs-title function_">close</span>();
+  });
+}
+process.<span class="hljs-title function_">on</span>(<span class="hljs-string">&quot;SIGTERM&quot;</span>, shutdown);
+process.<span class="hljs-title function_">on</span>(<span class="hljs-string">&quot;SIGINT&quot;</span>, shutdown);</code></pre></div></figure>
+<ul>
+<li>A script that runs once, such as a seed, calls <code>await db.close()</code> at the end. Without it, the open pool keeps the process running until its idle connections time out, 30 seconds by default (<code>poolOptions.idleTimeoutMillis</code>).</li>
+</ul>
+<h4 id="return-type">Return type</h4>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Return type</th>
+<th>Example</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>Promise&lt;void&gt;</code></td>
+<td><code>await db.close()</code></td>
+<td>Resolves when the client is closed.</td>
+</tr>
+</tbody></table></div>
+<h4 id="examples">Examples</h4>
+<h5 id="close-when-finished">Close when finished</h5>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">const</span> db = <span class="hljs-title function_">postgres</span>({ contract, <span class="hljs-attr">url</span>: process.<span class="hljs-property">env</span>.<span class="hljs-property">DATABASE_URL</span>! });
+<span class="hljs-keyword">const</span> admins = <span class="hljs-keyword">await</span> db.<span class="hljs-property">orm</span>.<span class="hljs-property">public</span>.<span class="hljs-property">User</span>.<span class="hljs-title function_">where</span>(<span class="hljs-function">(<span class="hljs-params">u</span>) =&gt;</span> u.<span class="hljs-property">kind</span>.<span class="hljs-title function_">eq</span>(<span class="hljs-string">&#x27;admin&#x27;</span>)).<span class="hljs-title function_">all</span>();
+<span class="hljs-keyword">await</span> db.<span class="hljs-title function_">close</span>();</code></pre></div></figure>
+<h3 id="await-using-automatic-disposal"><code>await using</code> (automatic disposal)</h3>
+<p>The client implements <code>Symbol.asyncDispose</code>, so <code>await using</code> closes it automatically at the end of its block.</p>
+<h4 id="remarks">Remarks</h4>
+<ul>
+<li>Disposal fires at the end of the <strong>block</strong> the <code>await using</code> declaration lives in, not on the next line. Scope the client to the block where you need it. After the block exits, the client is closed the same way <code>close()</code> closes it: a later <code>connect()</code> rejects with an error whose <code>code</code> is <code>DRIVER.NOT_CONNECTED</code>.</li>
+<li><code>await using</code> needs <code>@types/node</code> installed, or <code>&quot;esnext.disposable&quot;</code> added to the <code>lib</code> array in your <code>tsconfig.json</code>.</li>
+</ul>
+<h4 id="examples">Examples</h4>
+<h5 id="close-automatically-with-await-using">Close automatically with <code>await using</code></h5>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">{
+  <span class="hljs-keyword">await</span> <span class="hljs-keyword">using</span> db = <span class="hljs-title function_">postgres</span>({ contract, <span class="hljs-attr">url</span>: process.<span class="hljs-property">env</span>.<span class="hljs-property">DATABASE_URL</span>! });
+  <span class="hljs-keyword">const</span> tags = <span class="hljs-keyword">await</span> db.<span class="hljs-title function_">query</span>(db.<span class="hljs-property">sql</span>.<span class="hljs-property">public</span>.<span class="hljs-property">tag</span>.<span class="hljs-title function_">select</span>(<span class="hljs-string">&#x27;id&#x27;</span>, <span class="hljs-string">&#x27;label&#x27;</span>).<span class="hljs-title function_">build</span>());
+} <span class="hljs-comment">// db is closed here</span></code></pre></div></figure>
+<h2 id="serverless-client-on-postgresql">Serverless client on PostgreSQL</h2>
+<p><code>@prisma/orm-postgres/serverless</code> exports <code>postgresServerless</code>, a client for serverless and edge runtimes such as Cloudflare Workers, AWS Lambda, and Vercel. It holds no database connection, so you create it once, outside your request handler. Each request opens its own connection with <code>connect({ url })</code>.</p>
+<h3 id="postgresserverlessoptions"><code>postgresServerless(options)</code></h3>
+<p>Create a serverless client.</p>
+<h4 id="remarks">Remarks</h4>
+<ul>
+<li>It takes the options of <code>postgres(...)</code> that say how queries run: <code>contract</code>, <code>extensions</code>, <code>middleware</code>, <code>log</code>, <code>verifyMarker</code>, <code>cursor</code>, <code>mode</code>, and <code>collections</code>. The type of its options object is <code>PostgresServerlessOptions</code>. It takes no database options. You pass the connection string to <code>connect()</code> instead.</li>
+<li>It has <code>sql</code>, <code>raw</code>, <code>enums</code>, <code>nativeEnums</code>, <code>contract</code>, and <a href="#dbtosqlplan"><code>toSql()</code></a>, which need no connection, and <code>connect()</code>. It has no <code>orm</code>, <code>runtime()</code>, or <code>transaction()</code>. Those are on the connection.</li>
+<li>As on <code>postgres(...)</code>, reads load the whole result unless you pass <code>cursor</code>. Behind Cloudflare Hyperdrive, reads through a cursor hang, so leave <code>cursor</code> out there.</li>
+</ul>
+<h3 id="connect-url-on-the-serverless-client"><code>connect({ url })</code> on the serverless client</h3>
+<p>Open a database connection and return it.</p>
+<h4 id="remarks">Remarks</h4>
+<ul>
+<li>Returns a <code>Promise</code>. The connection has the members of a <code>postgres(...)</code> client except <code>connect()</code>: <code>orm</code>, <code>sql</code>, <code>raw</code>, <code>enums</code>, <code>nativeEnums</code>, <code>contract</code>, <a href="#runtime"><code>runtime()</code></a>, <a href="#run-a-plan"><code>query()</code>, <code>execute()</code></a>, <a href="#dbtosqlplan"><code>toSql()</code></a>, <a href="#dbtransactioncallback"><code>transaction()</code></a>, <a href="#dbpreparedeclaration-callback"><code>prepare()</code></a>, and <a href="#close"><code>close()</code></a>. The collection classes you passed as <code>collections</code> are on its <code>orm</code>. Code written for a <code>postgres(...)</code> client works on it. Import the type <code>PostgresServerlessConnection</code> from <code>@prisma/orm-postgres/serverless</code>.</li>
+<li><code>connect()</code> opens the connection before it returns. It rejects with an error whose <code>code</code> is <code>DRIVER.CONNECTION_FAILED</code> when the database refuses the connection, rejects the credentials, or does not answer within 20 seconds, and it leaves nothing open. A URL that does not start with <code>postgres://</code> or <code>postgresql://</code> makes it reject with <code>RUNTIME.BINDING_INVALID</code>.</li>
+<li>Close the connection with <code>await using</code>, as the example below does, or with <code>close()</code>. Await every query before the connection closes. A query whose rows you read after that fails.</li>
+<li>Each connection that <code>connect()</code> returns uses one database connection. While a <code>for await</code> loop reads through a cursor, a query on the same connection inside the loop waits forever.</li>
+</ul>
+<h4 id="examples">Examples</h4>
+<h5 id="query-from-a-cloudflare-worker">Query from a Cloudflare Worker</h5>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>src/index.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">
+
+
+
+
+<span class="hljs-keyword">const</span> postgres = <span class="hljs-title function_">postgresServerless</span>({ <span class="hljs-attr">contract</span>: <span class="hljs-title function_">contractFromJson</span>(contractJson) });
+
+  <span class="hljs-keyword">async</span> <span class="hljs-title function_">fetch</span>(<span class="hljs-attr">_request</span>: <span class="hljs-title class_">Request</span>, <span class="hljs-attr">env</span>: <span class="hljs-title class_">Env</span>): <span class="hljs-title class_">Promise</span> {
+    <span class="hljs-keyword">await</span> <span class="hljs-keyword">using</span> db = <span class="hljs-keyword">await</span> postgres.<span class="hljs-title function_">connect</span>({ <span class="hljs-attr">url</span>: env.<span class="hljs-property">HYPERDRIVE</span>.<span class="hljs-property">connectionString</span> });
+    <span class="hljs-keyword">const</span> users = <span class="hljs-keyword">await</span> db.<span class="hljs-property">orm</span>.<span class="hljs-property">public</span>.<span class="hljs-property">User</span>.<span class="hljs-title function_">all</span>();
+    <span class="hljs-keyword">return</span> <span class="hljs-title class_">Response</span>.<span class="hljs-title function_">json</span>(users);
+  },
+};</code></pre></div></figure>
+<h2 id="client-lifecycle-on-mongodb">Client lifecycle on MongoDB</h2>
+<p>Create a MongoDB client with <code>mongo(...)</code>. The entry point and several lifecycle details differ from PostgreSQL, most notably that <code>runtime()</code> is asynchronous.</p>
+<h3 id="mongooptions"><code>mongo(options)</code></h3>
+<p>Create a MongoDB client.</p>
+<h4 id="remarks">Remarks</h4>
+<ul>
+<li>Pass the contract as a value with the <code>contract</code> option, the same way as on PostgreSQL. Import <code>contractFromJson</code> from <code>@prisma/orm-mongo/static</code> and build the value with <code>contractFromJson(contractJson)</code>. The type of the options object is <code>MongoOptions</code>.</li>
+<li>Tell the client which database to use in one of four ways: <code>url</code>, <code>uri</code>, <code>mongoClient</code>, or <code>binding</code>. A <code>binding</code> wraps the choices in one object, with a <code>kind</code> field saying which it is: <code>{ kind: &#39;url&#39;, url, dbName }</code> or <code>{ kind: &#39;mongoClient&#39;, client, dbName }</code>. Use it when your code picks the source at run time, and use the <code>url</code> kind for a <code>uri</code>. Pass exactly one of the four, or leave all four out and pass one to <a href="#connect-1">MongoDB <code>connect()</code></a>. <code>dbName</code> is separate and does not count as one of the four, so <code>{ url, dbName }</code> is allowed.</li>
+<li>With <code>url</code>, the database name comes from the path of the connection string, as in <code>mongodb://host:27017/app</code>. Add <code>dbName</code> to override that name, or when the string has no name in its path. <code>uri</code> takes the same kind of string, and always needs <code>dbName</code>.</li>
+<li><strong>Client ownership</strong>: with <code>url</code> or <code>uri</code>, Prisma ORM creates the underlying <code>MongoClient</code> and closes it on <code>close()</code>. With <code>mongoClient</code>, you supplied the client, so Prisma ORM does <strong>not</strong> close it. Because <code>close()</code> leaves your client open, you can use one <code>MongoClient</code> both through Prisma ORM and in code you write against the <code>mongodb</code> package directly. You close that client yourself.</li>
+<li><code>mongo(options)</code> does not open a connection. The runtime is built on first use, or explicitly via <a href="#connect-1">MongoDB <code>connect()</code></a>.</li>
+<li>A contract built with extension packs records them under <code>extensions</code> in <code>contract.json</code>, so pass the runtime of each pack the contract records to the <code>extensions</code> option, as on PostgreSQL: <code>mongo({ contract, url, extensions: [myPack] })</code>, with <code>myPack</code> imported from the pack&#39;s <code>/runtime</code> subpath. When a pack the contract needs is missing, <code>mongo(...)</code> throws an error whose <code>code</code> is <code>RUNTIME.MISSING_EXTENSION_PACK</code>.</li>
+</ul>
+<h4 id="options">Options</h4>
+<p>Pass exactly one of <code>url</code>, <code>uri</code>, <code>mongoClient</code>, and <code>binding</code>. <code>dbName</code> is separate, and <code>uri</code> and <code>mongoClient</code> both require it.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Name</th>
+<th>Type</th>
+<th>Required</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>contract</code></td>
+<td>Contract value</td>
+<td>Yes</td>
+<td>The contract, from <code>contractFromJson(contractJson)</code> or <code>defineContract</code>.</td>
+</tr>
+<tr>
+<td><code>url</code></td>
+<td><code>string</code></td>
+<td>See note</td>
+<td>A <code>mongodb://</code> or <code>mongodb+srv://</code> string, with the database name in its path.</td>
+</tr>
+<tr>
+<td><code>uri</code> + <code>dbName</code></td>
+<td><code>string</code> + <code>string</code></td>
+<td>See note</td>
+<td>The same kind of string, plus the database name, which is required here.</td>
+</tr>
+<tr>
+<td><code>mongoClient</code> + <code>dbName</code></td>
+<td><code>MongoClient</code> + <code>string</code></td>
+<td>See note</td>
+<td>An existing <code>MongoClient</code> you own, plus the database name.</td>
+</tr>
+<tr>
+<td><code>binding</code></td>
+<td><code>{ kind: &#39;url&#39; | &#39;mongoClient&#39;, ... }</code></td>
+<td>See note</td>
+<td>The same choices in one object.</td>
+</tr>
+<tr>
+<td><code>extensions</code></td>
+<td>Array of extension runtimes, the default export of each pack&#39;s <code>/runtime</code> subpath</td>
+<td>When the contract records extension packs</td>
+<td>The extension packs your contract was built with. Without one of them, <code>mongo(...)</code> throws <code>RUNTIME.MISSING_EXTENSION_PACK</code>.</td>
+</tr>
+<tr>
+<td><code>middleware</code></td>
+<td>Array of middleware</td>
+<td>No</td>
+<td>Code that runs around every query. See <a href="#/doc/prisma8/middleware/how-middleware-works">How middleware works</a>.</td>
+</tr>
+<tr>
+<td><code>mode</code></td>
+<td><code>&#39;strict&#39;</code> or <code>&#39;permissive&#39;</code></td>
+<td>No</td>
+<td>Defaults to <code>&#39;strict&#39;</code>. Prisma ORM ignores this value. It is passed through to your middleware so your own code can branch on it.</td>
+</tr>
+</tbody></table></div>
+<h4 id="return-type">Return type</h4>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Return type</th>
+<th>Example</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>MongoClient</code></td>
+<td><code>mongo({ contract, url, dbName })</code></td>
+<td>A client that has not connected yet.</td>
+</tr>
+</tbody></table></div>
+<p><code>MongoClient</code> here is Prisma ORM&#39;s own type, exported from <code>@prisma/orm-mongo/runtime</code>. The <code>mongodb</code> driver has a class with the same name, so in a file that imports both, rename one of them in its import: <code>import type { MongoClient as PrismaMongoClient } from &#39;@prisma/orm-mongo/runtime&#39;</code>.</p>
+<ul>
+<li><code>.orm</code> holds your models by collection name, with no <code>.public</code> in the path: <code>db.orm.users</code>. The collection name is the model&#39;s <code>@@map</code> value, or the model name exactly as written when the model sets no <code>@@map</code>. The <a href="#/doc/prisma8/reference/orm-client@example-schema">example schema</a> sets <code>@@map(&quot;users&quot;)</code> on <code>User</code>, which is why the key here is <code>users</code>. See the <a href="#/doc/prisma8/reference/orm-client">ORM client reference</a>.</li>
+<li><code>.query</code> is the pipeline builder, which builds MongoDB aggregation pipelines. See the <a href="#/doc/prisma8/reference/pipeline-builder">pipeline builder reference</a>. <code>.raw</code> sends raw MongoDB commands. See the <a href="#/doc/prisma8/reference/raw-queries">raw queries reference</a>.</li>
+<li><code>.enums</code> holds the enum values from your contract, and <code>.contract</code> is the contract as an object. <a href="#connect-1">MongoDB <code>connect()</code></a>, <a href="#runtime-1">MongoDB <code>runtime()</code></a>, and <a href="#close-1">MongoDB <code>close()</code></a> are documented below.</li>
+</ul>
+<h4 id="examples">Examples</h4>
+<h5 id="create-a-client-from-a-connection-string">Create a client from a connection string</h5>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"></code></pre></div></figure>
+<h5 id="share-an-existing-mongoclient">Share an existing <code>MongoClient</code></h5>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">
+
+
+
+
+
+<span class="hljs-comment">// `MongoClient` here is the driver&#x27;s class; the `db` below is Prisma ORM&#x27;s own MongoClient type</span>
+<span class="hljs-keyword">const</span> client = <span class="hljs-keyword">new</span> <span class="hljs-title class_">MongoClient</span>(process.<span class="hljs-property">env</span>.<span class="hljs-property">MONGODB_URL</span>!);
+<span class="hljs-keyword">const</span> db = <span class="hljs-title function_">mongo</span>({ <span class="hljs-attr">contract</span>: <span class="hljs-title function_">contractFromJson</span>(contractJson), <span class="hljs-attr">mongoClient</span>: client, <span class="hljs-attr">dbName</span>: <span class="hljs-string">&#x27;app&#x27;</span> });</code></pre></div></figure>
+<h3 id="connect"><code>connect()</code></h3>
+<p>Open a connection and return a runtime.</p>
+<h4 id="remarks">Remarks</h4>
+<ul>
+<li>Returns a <code>Promise</code>. You rarely need <code>connect()</code>: running a query connects the client. <code>connect()</code> without options is safe to call at any time, also after a query or a second time: it waits for a connection in progress, or resolves with the runtime the client&#39;s queries already use. <code>connect(options)</code> on a client that is already connected rejects with an error whose <code>code</code> is <code>DRIVER.ALREADY_CONNECTED</code> and whose message is <code>Mongo client is already bound</code>. A <code>connect()</code> still waiting when you call <code>close()</code> rejects with <code>DRIVER.NOT_CONNECTED</code>.</li>
+<li><code>connect()</code> takes the same database options as <code>mongo(...)</code>, so a client you created without one can be given its database here: <code>await db.connect({ url: process.env.MONGODB_URL!, dbName: &#39;app&#39; })</code>.</li>
+</ul>
+<h4 id="return-type">Return type</h4>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Return type</th>
+<th>Example</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>Promise</code></td>
+<td><code>const runtime = await db.connect()</code></td>
+<td>The connected runtime (<code>query</code>, <code>execute</code>, and <code>close</code> only).</td>
+</tr>
+</tbody></table></div>
+<h3 id="runtime"><code>runtime()</code></h3>
+<p>Get the runtime.</p>
+<h4 id="remarks">Remarks</h4>
+<ul>
+<li>On MongoDB, <code>runtime()</code> returns a <strong><code>Promise</code></strong>: you must <code>await</code> it. PostgreSQL&#39;s <code>runtime()</code> is synchronous, so write <code>await db.runtime()</code> on MongoDB and <code>db.runtime()</code> on PostgreSQL.</li>
+<li><code>MongoRuntime</code> has <code>query</code>, <code>execute</code>, and <code>close</code> only. It has no <code>connection()</code>, <code>prepare()</code>, or <code>telemetry()</code>. See <a href="#transactions-mongodb">Transactions (MongoDB)</a> and <a href="#execution-options-and-results">Execution options and results</a>.</li>
+</ul>
+<h4 id="return-type">Return type</h4>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Return type</th>
+<th>Example</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>Promise</code></td>
+<td><code>const runtime = await db.runtime()</code></td>
+<td>The runtime, resolved asynchronously.</td>
+</tr>
+</tbody></table></div>
+<h3 id="runtimequery"><code>runtime.query()</code></h3>
+<p>Run a built query through the runtime.</p>
+<h4 id="remarks">Remarks</h4>
+<ul>
+<li><code>(await db.runtime()).query(built)</code> runs any built MongoDB query, including one built by the <a href="#/doc/prisma8/reference/pipeline-builder">pipeline builder</a> (<code>db.query</code>).</li>
+<li>Returns an <a href="#asynciterableresult"><code>AsyncIterableResult</code></a>, which holds the rows the query returns: <code>await</code> it for an array, or <code>for await</code> to read the rows one at a time as they arrive.</li>
+<li>For an update or delete command, use <code>runtime.execute(built)</code>, which returns <code>{ affectedRows }</code>. Other commands throw an error whose <code>code</code> is <code>RUNTIME.MONGO_STATISTICS_UNSUPPORTED</code>. There is no <code>execute()</code> on the client itself.</li>
+</ul>
+<h4 id="return-type">Return type</h4>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Return type</th>
+<th>Example</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>AsyncIterableResult</code></td>
+<td><code>await (await db.runtime()).query(built)</code></td>
+<td>The built query&#39;s rows.</td>
+</tr>
+</tbody></table></div>
+<h4 id="examples">Examples</h4>
+<h5 id="run-a-query-built-by-the-pipeline-builder-run-a-pipeline-builder-plan">Run a query built by the pipeline builder [#run-a-pipeline-builder-plan]</h5>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-comment">// &#x27;posts&#x27; is the collection name, the same key you use on `db.orm`</span>
+<span class="hljs-keyword">const</span> built = db.<span class="hljs-property">query</span>.<span class="hljs-title function_">from</span>(<span class="hljs-string">&#x27;posts&#x27;</span>).<span class="hljs-title function_">build</span>();
+<span class="hljs-keyword">const</span> posts = <span class="hljs-keyword">await</span> (<span class="hljs-keyword">await</span> db.<span class="hljs-title function_">runtime</span>()).<span class="hljs-title function_">query</span>(built);</code></pre></div></figure>
+<h3 id="close"><code>close()</code></h3>
+<p>Close the client.</p>
+<h4 id="remarks">Remarks</h4>
+<ul>
+<li>Always call <code>db.close()</code>. <code>runtime.close()</code> leaves the client looking open, and later calls fail.</li>
+<li>Returns a <code>Promise&lt;void&gt;</code>. After <code>close()</code>, any further use rejects with an error whose <code>code</code> is <code>DRIVER.NOT_CONNECTED</code> (<code>Mongo client is closed</code>). That covers <code>db.runtime()</code> and ORM access such as <code>db.orm.users.first()</code>, since both go through the same runtime. When you supplied a <code>mongoClient</code>, <code>close()</code> does not close your client (see <a href="#mongooptions"><code>mongo(options)</code></a>).</li>
+</ul>
+<h4 id="return-type">Return type</h4>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Return type</th>
+<th>Example</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>Promise&lt;void&gt;</code></td>
+<td><code>await db.close()</code></td>
+<td>Resolves when the client is closed.</td>
+</tr>
+</tbody></table></div>
+<h4 id="examples">Examples</h4>
+<h5 id="use-after-close-throws">Use after close throws</h5>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">await</span> db.<span class="hljs-title function_">close</span>();
+<span class="hljs-keyword">await</span> db.<span class="hljs-title function_">runtime</span>(); <span class="hljs-comment">// rejects with DRIVER.NOT_CONNECTED</span></code></pre></div></figure>
+<h3 id="await-using-automatic-disposal"><code>await using</code> (automatic disposal)</h3>
+<p>The MongoDB client implements <code>Symbol.asyncDispose</code> too, so <code>await using</code> closes it at the end of its block.</p>
+<h4 id="remarks">Remarks</h4>
+<ul>
+<li>Disposal fires at the end of the block, exactly as on PostgreSQL. After the block exits, a later <code>connect()</code> rejects with an error whose <code>code</code> is <code>DRIVER.NOT_CONNECTED</code>.</li>
+</ul>
+<h4 id="examples">Examples</h4>
+<h5 id="close-automatically-with-await-using">Close automatically with <code>await using</code></h5>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">{
+  <span class="hljs-keyword">await</span> <span class="hljs-keyword">using</span> db = <span class="hljs-title function_">mongo</span>({ contract, <span class="hljs-attr">url</span>: process.<span class="hljs-property">env</span>.<span class="hljs-property">MONGODB_URL</span>!, <span class="hljs-attr">dbName</span>: <span class="hljs-string">&#x27;app&#x27;</span> });
+  <span class="hljs-keyword">await</span> db.<span class="hljs-title function_">connect</span>();
+  <span class="hljs-comment">// ... run queries ...</span>
+} <span class="hljs-comment">// db is closed here</span></code></pre></div></figure>
+<h2 id="transactions-postgresql">Transactions (PostgreSQL)</h2>
+<p>A transaction groups several writes into one unit: they all commit together, or they all roll back. Use <code>db.transaction(...)</code> in application code. If you are writing a function that takes a runtime as a parameter instead of the client, use <code>withTransaction(...)</code>. If you need to run several statements on one connection, get a connection with <code>runtime.connection()</code> and call <code>commit()</code> or <code>rollback()</code> yourself.</p>
+<h3 id="dbtransactioncallback"><code>db.transaction(callback)</code></h3>
+<p>Run a callback inside a transaction. The transaction commits when the callback returns and rolls back when it throws.</p>
+<h4 id="remarks">Remarks</h4>
+<ul>
+<li>Query through <code>tx</code>, not <code>db</code>. <code>tx</code> has the client&#39;s query members: <code>orm</code>, <code>sql</code>, <code>raw</code>, <code>prepare</code>, <code>query</code>, <code>execute</code>, and <code>toSql</code>. <code>tx.orm</code> holds your models, with your <a href="#/doc/prisma8/reference/orm-client@custom-collection-subclass">custom collection classes</a> if you passed any. Build queries with <code>tx.sql</code> or <code>tx.raw</code>, then run them with <code>tx.query(...)</code> to get rows back, or <code>tx.execute(...)</code> when the write returns no rows. <code>tx.execute(...)</code> resolves to <code>{ affectedRows }</code>, the number of rows the statement changed. Every call on <code>tx</code> uses the same transaction connection, and queries on <code>db</code> run outside the transaction.</li>
+<li><code>db.transaction(...)</code> takes the callback and nothing else. There are no <code>isolationLevel</code>, <code>timeout</code>, or <code>maxWait</code> options, and Prisma ORM offers no way to set the isolation level. Nothing retries a failed transaction for you. Write the retry loop yourself. A transaction has no time limit. PostgreSQL&#39;s <code>idle_in_transaction_session_timeout</code> ends one that sits idle between statements, and on PostgreSQL 17 and later <code>transaction_timeout</code> caps its total length. Set either in your connection string or server configuration. See the <a href="#/doc/prisma8/fundamentals/transactions@options-and-isolation-level">fundamentals transactions guide</a>.</li>
+<li>To put a time limit on the queries inside a transaction, pass a <code>signal</code> to each <code>tx.query(...)</code> and <code>tx.execute(...)</code> call, as the example below does. See <a href="#runtimeexecuteoptions"><code>RuntimeExecuteOptions</code></a>.</li>
+<li><code>tx</code> has no <code>transaction()</code> method, so transactions do not nest. If a helper you call starts its own transaction, change it to take <code>tx</code> as a parameter instead. Type the helper&#39;s parameter as <code>PostgresTransactionContext</code>, imported from <code>@prisma/orm-postgres/runtime</code>: <code>async function addTag(tx: PostgresTransactionContext) { ... }</code>. <code>TransactionContext</code>, imported from <code>@prisma/orm-postgres/family-runtime</code>, has <code>query</code> and <code>execute</code> only, so a helper typed with it cannot use <code>tx.orm</code> or <code>tx.sql</code>.</li>
+<li><code>tx.sql</code> is a full SQL builder, keyed the same way as <code>db.sql</code>: use <code>tx.sql.public.&lt;table&gt;</code>, where <code>public</code> is the PostgreSQL schema.</li>
+<li>Reads inside the transaction see the transaction&#39;s own uncommitted writes.</li>
+<li><code>tx.enums</code> and <code>tx.nativeEnums</code> are the same enum accessors the client has, and <code>.values</code> is the list of an enum&#39;s members.</li>
+<li>The callback&#39;s return value passes through as the result of <code>db.transaction(...)</code>.</li>
+<li><code>tx.query(...)</code> returns an <a href="#asynciterableresult"><code>AsyncIterableResult</code></a> that works only while the transaction is open. Read it inside the callback. A result you return and then read after the transaction has ended rejects with an error whose <code>code</code> is <code>RUNTIME.TRANSACTION_CLOSED</code>. Calling a member of <code>tx</code> after the transaction has ended, such as <code>tx.query(...)</code>, <code>tx.execute(...)</code>, or an ORM call on <code>tx.orm</code>, rejects with the same error instead of throwing at the call. To act on a code, catch the error and compare <code>error.code</code> with the string. Every code is listed in the <a href="#/doc/prisma8/reference/error-reference">error reference</a>.</li>
+</ul>
+<h4 id="options">Options</h4>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Name</th>
+<th>Type</th>
+<th>Required</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>callback</code></td>
+<td><code>(tx) =&gt; Promise</code></td>
+<td>Yes</td>
+<td>The transactional work. <code>tx</code> exposes <code>orm</code>, <code>sql</code>, <code>raw</code>, <code>prepare</code>, <code>query</code>, <code>execute</code>, <code>toSql</code>, <code>enums</code>, and <code>nativeEnums</code>.</td>
+</tr>
+</tbody></table></div>
+<h4 id="return-type">Return type</h4>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Return type</th>
+<th>Example</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>Promise</code></td>
+<td><code>await db.transaction(async (tx) =&gt; ...)</code></td>
+<td>Whatever the callback returns, so <code>R</code> is your callback&#39;s own return type.</td>
+</tr>
+</tbody></table></div>
+<h4 id="examples">Examples</h4>
+<h5 id="commit-several-writes-atomically">Commit several writes atomically</h5>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">await</span> db.<span class="hljs-title function_">transaction</span>(<span class="hljs-title function_">async</span> (tx) =&gt; {
+  <span class="hljs-keyword">await</span> tx.<span class="hljs-property">orm</span>.<span class="hljs-property">public</span>.<span class="hljs-property">Tag</span>.<span class="hljs-title function_">create</span>({ <span class="hljs-attr">label</span>: <span class="hljs-string">&#x27;tx-commit-a&#x27;</span> });
+  <span class="hljs-keyword">await</span> tx.<span class="hljs-property">orm</span>.<span class="hljs-property">public</span>.<span class="hljs-property">Tag</span>.<span class="hljs-title function_">create</span>({ <span class="hljs-attr">label</span>: <span class="hljs-string">&#x27;tx-commit-b&#x27;</span> });
+});
+<span class="hljs-comment">// both tags exist now</span></code></pre></div></figure>
+<h5 id="roll-back-when-the-callback-throws">Roll back when the callback throws</h5>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">try</span> {
+  <span class="hljs-keyword">await</span> db.<span class="hljs-title function_">transaction</span>(<span class="hljs-title function_">async</span> (tx) =&gt; {
+    <span class="hljs-keyword">await</span> tx.<span class="hljs-property">orm</span>.<span class="hljs-property">public</span>.<span class="hljs-property">Tag</span>.<span class="hljs-title function_">create</span>({ <span class="hljs-attr">label</span>: <span class="hljs-string">&#x27;tx-rollback&#x27;</span> });
+    <span class="hljs-keyword">throw</span> <span class="hljs-keyword">new</span> <span class="hljs-title class_">Error</span>(<span class="hljs-string">&#x27;deliberate rollback&#x27;</span>);
+  });
+} <span class="hljs-keyword">catch</span> {
+  <span class="hljs-comment">// the tag was rolled back and does not exist</span>
+}</code></pre></div></figure>
+<h5 id="read-your-own-uncommitted-writes">Read your own uncommitted writes</h5>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">const</span> { createdId, found } = <span class="hljs-keyword">await</span> db.<span class="hljs-title function_">transaction</span>(<span class="hljs-title function_">async</span> (tx) =&gt; {
+  <span class="hljs-keyword">const</span> created = <span class="hljs-keyword">await</span> tx.<span class="hljs-property">orm</span>.<span class="hljs-property">public</span>.<span class="hljs-property">Tag</span>.<span class="hljs-title function_">create</span>({ <span class="hljs-attr">label</span>: <span class="hljs-string">&#x27;tx-ryow&#x27;</span> });
+  <span class="hljs-keyword">const</span> found = <span class="hljs-keyword">await</span> tx.<span class="hljs-property">orm</span>.<span class="hljs-property">public</span>.<span class="hljs-property">Tag</span>.<span class="hljs-title function_">where</span>({ <span class="hljs-attr">label</span>: <span class="hljs-string">&#x27;tx-ryow&#x27;</span> }).<span class="hljs-title function_">first</span>();
+  <span class="hljs-keyword">return</span> { <span class="hljs-attr">createdId</span>: created.<span class="hljs-property">id</span>, found };
+});
+<span class="hljs-comment">// found.id === createdId</span></code></pre></div></figure>
+<h5 id="run-a-sql-builder-query-with-txsql-and-txexecute-run-a-sql-builder-plan-with-txsql-and-txexecute">Run a SQL builder query with <code>tx.sql</code> and <code>tx.execute</code> [#run-a-sql-builder-plan-with-txsql-and-txexecute]</h5>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">await</span> db.<span class="hljs-title function_">transaction</span>(<span class="hljs-title function_">async</span> (tx) =&gt; {
+  <span class="hljs-keyword">const</span> signal = <span class="hljs-title class_">AbortSignal</span>.<span class="hljs-title function_">timeout</span>(<span class="hljs-number">5000</span>); <span class="hljs-comment">// give this statement five seconds</span>
+  <span class="hljs-keyword">await</span> tx.<span class="hljs-title function_">execute</span>(
+    tx.<span class="hljs-property">sql</span>.<span class="hljs-property">public</span>.<span class="hljs-property">tag</span>.<span class="hljs-title function_">insert</span>([{ <span class="hljs-attr">id</span>: crypto.<span class="hljs-title function_">randomUUID</span>(), <span class="hljs-attr">label</span>: <span class="hljs-string">&#x27;tx-sql-insert&#x27;</span> }]).<span class="hljs-title function_">build</span>(),
+    { signal },
+  );
+});</code></pre></div></figure>
+<aside class="callout callout-warning"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 4 2.8 20h18.4L12 4z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M12 10v4.4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="17" r="1.3" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">[An escaped `AsyncIterableResult` throws after the transaction ends]</p><p>Collect the rows inside the callback by awaiting the result there, and return the array instead. A result is tied to the transaction connection, so if you return one from the callback and read it after the transaction has committed, it rejects with an error whose <code>code</code> is <code>RUNTIME.TRANSACTION_CLOSED</code>, before yielding any row.</p>
+<p><figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">const</span> escaped = <span class="hljs-keyword">await</span> db.<span class="hljs-title function_">transaction</span>(<span class="hljs-title function_">async</span> (tx) =&gt; {
+  <span class="hljs-keyword">await</span> tx.<span class="hljs-property">orm</span>.<span class="hljs-property">public</span>.<span class="hljs-property">Tag</span>.<span class="hljs-title function_">create</span>({ <span class="hljs-attr">label</span>: <span class="hljs-string">&#x27;tx-escape&#x27;</span> });
+  <span class="hljs-keyword">return</span> { <span class="hljs-attr">rows</span>: tx.<span class="hljs-title function_">query</span>(tx.<span class="hljs-property">sql</span>.<span class="hljs-property">public</span>.<span class="hljs-property">tag</span>.<span class="hljs-title function_">select</span>(<span class="hljs-string">&#x27;label&#x27;</span>).<span class="hljs-title function_">build</span>()) };
+});
+
+<span class="hljs-keyword">await</span> escaped.<span class="hljs-property">rows</span>.<span class="hljs-title function_">toArray</span>(); <span class="hljs-comment">// rejects with RUNTIME.TRANSACTION_CLOSED</span></code></pre></div></figure></p>
+</div></aside>
+<p>For Prisma ORM 7 users, an array of queries becomes a callback:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Diff</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-diff"><span class="hljs-deletion">- const [user, post] = await prisma.$transaction([</span>
+<span class="hljs-deletion">-   prisma.user.create({ data: { email, displayName } }),</span>
+<span class="hljs-deletion">-   prisma.post.create({ data: { title, userId } }),</span>
+<span class="hljs-deletion">- ]);</span>
+<span class="hljs-addition">+ const { user, post } = await db.transaction(async (tx) =&gt; {</span>
+<span class="hljs-addition">+   const user = await tx.orm.public.User.create({ email, displayName, kind: &#x27;user&#x27; });</span>
+<span class="hljs-addition">+   const post = await tx.orm.public.Post.create({ title, userId: user.id });</span>
+<span class="hljs-addition">+   return { user, post };</span>
+<span class="hljs-addition">+ });</span></code></pre></div></figure>
+<p>The callback form does something the array form never could: one query&#39;s result (here <code>user.id</code>) can feed the next query in the same transaction.</p>
+<h3 id="withtransactionruntime-callback"><code>withTransaction(runtime, callback)</code></h3>
+<p>A transaction helper you import directly. Use it when you are writing a function that takes a runtime as a parameter instead of the client.</p>
+<h4 id="remarks">Remarks</h4>
+<ul>
+<li>Imported from <code>@prisma/orm-postgres/family-runtime</code>, along with the <code>Runtime</code> type.</li>
+<li>The callback receives a transaction handle whose only methods are <code>query</code> and <code>execute</code>. Unlike <code>db.transaction(...)</code>&#39;s <code>tx</code>, it has no <code>.orm</code> or <code>.sql</code>. Pass a SQL builder into your function as well, such as the client&#39;s <code>db.sql</code>, and build your queries with that.</li>
+<li>Commits on return, rolls back on throw, the same as <code>db.transaction(...)</code>.</li>
+</ul>
+<h4 id="options">Options</h4>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Name</th>
+<th>Type</th>
+<th>Required</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>runtime</code></td>
+<td><code>Runtime</code></td>
+<td>Yes</td>
+<td>The runtime to open the transaction on.</td>
+</tr>
+<tr>
+<td><code>callback</code></td>
+<td><code>(tx) =&gt; Promise</code></td>
+<td>Yes</td>
+<td>The transactional work. <code>tx</code> exposes <code>query</code> and <code>execute</code>.</td>
+</tr>
+</tbody></table></div>
+<h4 id="return-type">Return type</h4>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Return type</th>
+<th>Example</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>Promise</code></td>
+<td><code>await withTransaction(runtime, async (tx) =&gt; ...)</code></td>
+<td>Whatever the callback returns.</td>
+</tr>
+</tbody></table></div>
+<h4 id="examples">Examples</h4>
+<h5 id="commit-two-writes-with-withtransaction">Commit two writes with <code>withTransaction</code></h5>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">
+
+<span class="hljs-keyword">async</span> <span class="hljs-keyword">function</span> <span class="hljs-title function_">addTags</span>(<span class="hljs-params"><span class="hljs-attr">runtime</span>: <span class="hljs-title class_">Runtime</span>, <span class="hljs-attr">sql</span>: <span class="hljs-keyword">typeof</span> db.sql</span>) {
+  <span class="hljs-keyword">return</span> <span class="hljs-title function_">withTransaction</span>(runtime, <span class="hljs-title function_">async</span> (tx) =&gt; {
+    <span class="hljs-keyword">await</span> tx.<span class="hljs-title function_">execute</span>(sql.<span class="hljs-property">public</span>.<span class="hljs-property">tag</span>.<span class="hljs-title function_">insert</span>([{ <span class="hljs-attr">id</span>: crypto.<span class="hljs-title function_">randomUUID</span>(), <span class="hljs-attr">label</span>: <span class="hljs-string">&#x27;wt-commit-1&#x27;</span> }]).<span class="hljs-title function_">build</span>());
+    <span class="hljs-keyword">await</span> tx.<span class="hljs-title function_">execute</span>(sql.<span class="hljs-property">public</span>.<span class="hljs-property">tag</span>.<span class="hljs-title function_">insert</span>([{ <span class="hljs-attr">id</span>: crypto.<span class="hljs-title function_">randomUUID</span>(), <span class="hljs-attr">label</span>: <span class="hljs-string">&#x27;wt-commit-2&#x27;</span> }]).<span class="hljs-title function_">build</span>());
+  });
+}
+
+<span class="hljs-keyword">await</span> <span class="hljs-title function_">addTags</span>(db.<span class="hljs-title function_">runtime</span>(), db.<span class="hljs-property">sql</span>);</code></pre></div></figure>
+<h3 id="manual-connection-and-transaction-control">Manual connection and transaction control</h3>
+<p>The lowest level: acquire a connection, open a transaction on it, commit or roll back yourself, and return the connection to the pool. Use it when you need several statements on one connection, such as a read and then a write with no transaction around them.</p>
+<h4 id="remarks">Remarks</h4>
+<ul>
+<li><code>runtime.connection()</code> returns a dedicated connection. <code>connection.transaction()</code> opens a transaction on it. Run built queries with <code>transaction.query(...)</code> for rows or <code>transaction.execute(...)</code> for writes that return no rows, then call <code>transaction.commit()</code> or <code>transaction.rollback()</code>. Always <code>release()</code> the connection when done, to return it to the pool. Commit or roll back on every path first, then release: the examples nest a <code>try</code> for the transaction inside the <code>try</code> whose <code>finally</code> releases the connection, so a statement that throws neither leaves the transaction open nor leaks the connection.</li>
+<li><code>connection.destroy()</code> throws that connection away instead of returning it to the pool. Use <code>destroy()</code> only for a connection you no longer trust.</li>
+</ul>
+<h4 id="options">Options</h4>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>runtime.connection()</code></td>
+<td>none</td>
+<td>Returns a <code>Promise</code> of a dedicated connection.</td>
+</tr>
+<tr>
+<td><code>connection.transaction()</code></td>
+<td>none</td>
+<td>Returns a <code>Promise</code> of a transaction on that connection.</td>
+</tr>
+<tr>
+<td><code>transaction.commit()</code> / <code>transaction.rollback()</code></td>
+<td>none</td>
+<td>Commit or discard the transaction.</td>
+</tr>
+<tr>
+<td><code>connection.release()</code></td>
+<td>none</td>
+<td>Return the connection to the pool.</td>
+</tr>
+<tr>
+<td><code>connection.destroy()</code></td>
+<td>none</td>
+<td>Throw this connection away instead of returning it to the pool.</td>
+</tr>
+</tbody></table></div>
+<h4 id="examples">Examples</h4>
+<h5 id="commit-manually-then-release">Commit manually, then release</h5>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">const</span> runtime = db.<span class="hljs-title function_">runtime</span>();
+<span class="hljs-keyword">const</span> connection = <span class="hljs-keyword">await</span> runtime.<span class="hljs-title function_">connection</span>();
+<span class="hljs-keyword">try</span> {
+  <span class="hljs-keyword">await</span> connection.<span class="hljs-title function_">query</span>(db.<span class="hljs-property">sql</span>.<span class="hljs-property">public</span>.<span class="hljs-property">tag</span>.<span class="hljs-title function_">select</span>(<span class="hljs-string">&#x27;id&#x27;</span>).<span class="hljs-title function_">limit</span>(<span class="hljs-number">1</span>).<span class="hljs-title function_">build</span>()); <span class="hljs-comment">// a read on this connection</span>
+  <span class="hljs-keyword">const</span> transaction = <span class="hljs-keyword">await</span> connection.<span class="hljs-title function_">transaction</span>();
+  <span class="hljs-keyword">try</span> {
+    <span class="hljs-keyword">await</span> transaction.<span class="hljs-title function_">execute</span>(
+      db.<span class="hljs-property">sql</span>.<span class="hljs-property">public</span>.<span class="hljs-property">tag</span>.<span class="hljs-title function_">insert</span>([{ <span class="hljs-attr">id</span>: crypto.<span class="hljs-title function_">randomUUID</span>(), <span class="hljs-attr">label</span>: <span class="hljs-string">&#x27;manual-commit&#x27;</span> }]).<span class="hljs-title function_">build</span>(),
+    );
+    <span class="hljs-keyword">await</span> transaction.<span class="hljs-title function_">commit</span>();
+  } <span class="hljs-keyword">catch</span> (error) {
+    <span class="hljs-keyword">await</span> transaction.<span class="hljs-title function_">rollback</span>();
+    <span class="hljs-keyword">throw</span> error;
+  }
+} <span class="hljs-keyword">finally</span> {
+  <span class="hljs-keyword">await</span> connection.<span class="hljs-title function_">release</span>();
+}</code></pre></div></figure>
+<h5 id="roll-back-manually-then-release">Roll back manually, then release</h5>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">const</span> connection = <span class="hljs-keyword">await</span> runtime.<span class="hljs-title function_">connection</span>();
+<span class="hljs-keyword">try</span> {
+  <span class="hljs-keyword">const</span> transaction = <span class="hljs-keyword">await</span> connection.<span class="hljs-title function_">transaction</span>();
+  <span class="hljs-keyword">try</span> {
+    <span class="hljs-keyword">await</span> transaction.<span class="hljs-title function_">execute</span>(
+      db.<span class="hljs-property">sql</span>.<span class="hljs-property">public</span>.<span class="hljs-property">tag</span>.<span class="hljs-title function_">insert</span>([{ <span class="hljs-attr">id</span>: crypto.<span class="hljs-title function_">randomUUID</span>(), <span class="hljs-attr">label</span>: <span class="hljs-string">&#x27;manual-rollback&#x27;</span> }]).<span class="hljs-title function_">build</span>(),
+    );
+  } <span class="hljs-keyword">finally</span> {
+    <span class="hljs-keyword">await</span> transaction.<span class="hljs-title function_">rollback</span>();
+  }
+} <span class="hljs-keyword">finally</span> {
+  <span class="hljs-keyword">await</span> connection.<span class="hljs-title function_">release</span>();
+}</code></pre></div></figure>
+<h5 id="throw-a-connection-away-with-destroy">Throw a connection away with <code>destroy()</code></h5>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">const</span> connection = <span class="hljs-keyword">await</span> runtime.<span class="hljs-title function_">connection</span>();
+<span class="hljs-keyword">await</span> connection.<span class="hljs-title function_">destroy</span>();
+<span class="hljs-comment">// the runtime stays healthy and opens a replacement connection on the next query</span></code></pre></div></figure>
+<h2 id="transactions-mongodb">Transactions (MongoDB)</h2>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">[MongoDB transactions are not available in Prisma ORM yet]</p><p>There is no <code>db.transaction(...)</code> on the MongoDB client, and the MongoDB runtime has no <code>connection()</code>, <code>prepare()</code>, or <code>telemetry()</code>: it has <code>query</code>, <code>execute</code>, and <code>close</code> and nothing else. Single-document write operations are atomic on their own, while multi-document transactions through Prisma ORM are planned, not shipped. To run one today, create your own <code>MongoClient</code>, pass it as the <code>mongoClient</code> option when you create the client, and group the writes in <code>session.withTransaction(...)</code>, as the <a href="#/doc/prisma8/fundamentals/transactions@transactions-on-mongodb">Fundamentals transactions guide</a> shows. The reading rules under <a href="#asynciterableresult"><code>AsyncIterableResult</code></a> apply to MongoDB too.</p>
+</div></aside>
+<h2 id="prepared-statements-postgresql">Prepared statements (PostgreSQL)</h2>
+<p>A prepared statement compiles a query once against a declaration of its parameters, then runs it repeatedly with different values. Prepared statements are not available on MongoDB.</p>
+<h3 id="runtimepreparedeclaration-callback"><code>runtime.prepare(declaration, callback)</code></h3>
+<p>Prepare a statement from a runtime.</p>
+<h4 id="remarks">Remarks</h4>
+<ul>
+<li>The declaration maps each parameter name to a type id, for example <code>{ label: &#39;pg/text@1&#39; }</code>. Use <code>db.sql.public.&lt;table&gt;.columns.&lt;column&gt;.codecId</code> to get any column&#39;s id. The <a href="#/doc/prisma8/reference/raw-queries@binding-a-bare-value-with-param">table on the raw queries page</a> lists the common ones.</li>
+<li>The callback takes one argument, the declared <code>params</code>, and returns the built query, which is what <code>.build()</code> gives you. <code>SqlQueryPlan</code> in the tables below is the type of a built query. Build it with a SQL builder you already hold, such as <code>db.sql</code>. In the <code>where((f, fns) =&gt; ...)</code> calls below, <code>f</code> holds the table&#39;s columns and <code>fns</code> holds the comparison functions.</li>
+<li>A declared parameter that the callback never uses is rejected at prepare time with an error whose <code>code</code> is <code>RUNTIME.PREPARE_UNUSED_PARAM</code>, with <code>details.unused</code> listing the parameter names you declared but did not use. The rejection happens at <code>prepare()</code>, before any execution.</li>
+<li>The resulting <code>PreparedStatement</code> runs via <code>ps.query(target, params)</code>; see <a href="#preparedstatementquerytarget-params"><code>PreparedStatement.query</code></a>.</li>
+</ul>
+<h4 id="options">Options</h4>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Name</th>
+<th>Type</th>
+<th>Required</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>declaration</code></td>
+<td>Object mapping param name to type id</td>
+<td>Yes</td>
+<td>The statement&#39;s parameters.</td>
+</tr>
+<tr>
+<td><code>callback</code></td>
+<td><code>(params) =&gt; SqlQueryPlan</code></td>
+<td>Yes</td>
+<td>Builds the query from the declared params.</td>
+</tr>
+</tbody></table></div>
+<h4 id="return-type">Return type</h4>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Return type</th>
+<th>Example</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>Promise</code></td>
+<td><code>await runtime.prepare({ label: &#39;pg/text@1&#39; }, (params) =&gt; ...)</code></td>
+<td>A reusable prepared statement.</td>
+</tr>
+</tbody></table></div>
+<h4 id="examples">Examples</h4>
+<h5 id="prepare-and-run-a-statement">Prepare and run a statement</h5>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">const</span> runtime = db.<span class="hljs-title function_">runtime</span>();
+<span class="hljs-keyword">const</span> ps = <span class="hljs-keyword">await</span> runtime.<span class="hljs-title function_">prepare</span>({ <span class="hljs-attr">label</span>: <span class="hljs-string">&#x27;pg/text@1&#x27;</span> }, <span class="hljs-function">(<span class="hljs-params">params</span>) =&gt;</span>
+  db.<span class="hljs-property">sql</span>.<span class="hljs-property">public</span>.<span class="hljs-property">tag</span>.<span class="hljs-title function_">select</span>(<span class="hljs-string">&#x27;id&#x27;</span>, <span class="hljs-string">&#x27;label&#x27;</span>).<span class="hljs-title function_">where</span>(<span class="hljs-function">(<span class="hljs-params">f, fns</span>) =&gt;</span> fns.<span class="hljs-title function_">eq</span>(f.<span class="hljs-property">label</span>, params.<span class="hljs-property">label</span>)).<span class="hljs-title function_">limit</span>(<span class="hljs-number">1</span>).<span class="hljs-title function_">build</span>(),
+);
+
+<span class="hljs-keyword">const</span> typescript = <span class="hljs-keyword">await</span> ps.<span class="hljs-title function_">query</span>(runtime, { <span class="hljs-attr">label</span>: <span class="hljs-string">&#x27;typescript&#x27;</span> });
+<span class="hljs-keyword">const</span> missing = <span class="hljs-keyword">await</span> ps.<span class="hljs-title function_">query</span>(runtime, { <span class="hljs-attr">label</span>: <span class="hljs-string">&#x27;does-not-exist&#x27;</span> });
+<span class="hljs-comment">// typescript has one row; missing has none</span></code></pre></div></figure>
+<h5 id="an-unused-declared-parameter-is-rejected-at-prepare-time">An unused declared parameter is rejected at prepare time</h5>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">await</span> runtime.<span class="hljs-title function_">prepare</span>({ <span class="hljs-attr">label</span>: <span class="hljs-string">&#x27;pg/text@1&#x27;</span>, <span class="hljs-attr">unused</span>: <span class="hljs-string">&#x27;pg/int4@1&#x27;</span> }, <span class="hljs-function">(<span class="hljs-params">params</span>) =&gt;</span>
+  db.<span class="hljs-property">sql</span>.<span class="hljs-property">public</span>.<span class="hljs-property">tag</span>.<span class="hljs-title function_">select</span>(<span class="hljs-string">&#x27;id&#x27;</span>, <span class="hljs-string">&#x27;label&#x27;</span>).<span class="hljs-title function_">where</span>(<span class="hljs-function">(<span class="hljs-params">f, fns</span>) =&gt;</span> fns.<span class="hljs-title function_">eq</span>(f.<span class="hljs-property">label</span>, params.<span class="hljs-property">label</span>)).<span class="hljs-title function_">limit</span>(<span class="hljs-number">1</span>).<span class="hljs-title function_">build</span>(),
+);
+<span class="hljs-comment">// rejects with RUNTIME.PREPARE_UNUSED_PARAM, details: { unused: [&#x27;unused&#x27;] }</span></code></pre></div></figure>
+<h3 id="dbpreparedeclaration-callback"><code>db.prepare(declaration, callback)</code></h3>
+<p>Prepare a statement on the client itself.</p>
+<h4 id="remarks">Remarks</h4>
+<ul>
+<li>The callback takes one argument, the declared <code>params</code>, as it does on <code>runtime.prepare(...)</code>. Build the query with the client&#39;s own <code>db.sql</code> or <code>db.orm</code>.</li>
+<li>The callback can return a built SQL query, or an ORM query that ends in <code>.prepared.all()</code>, <code>.prepared.first()</code>, or <code>.prepared.aggregate(...)</code>. <code>.prepared</code> always goes right before that last call, so a grouped aggregate is written <code>db.orm.public.Post.groupBy(&#39;userId&#39;).prepared.aggregate((agg) =&gt; ({ posts: agg.count() }))</code>.</li>
+<li>The ORM query is built once. <code>db.prepare(...)</code> resolves to a prepared query, here called <code>ps</code>, and you run it with <code>ps.query(db.runtime(), values)</code>, where <code>values</code> holds a value for each declared parameter. A connection or a transaction also works in place of <code>db.runtime()</code>. Each run uses the new values and returns what the same call without <code>.prepared</code> returns:<ul>
+<li><code>all()</code> returns the rows, as an <a href="#asynciterableresult"><code>AsyncIterableResult</code></a> that you <code>await</code> for an array.</li>
+<li><code>first()</code> returns a promise of one row, or of <code>null</code> when no row matches.</li>
+<li><code>aggregate(...)</code> returns a promise of the aggregate object.</li>
+<li><code>groupBy(...)</code> followed by <code>aggregate(...)</code> returns a promise of an array with one object per group.</li>
+</ul>
+</li>
+<li><code>prepare()</code> starts the connection itself. Call <code>db.runtime()</code> for the runtime. <code>db.connect()</code> resolves with the same runtime.</li>
+</ul>
+<h4 id="options">Options</h4>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Name</th>
+<th>Type</th>
+<th>Required</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>declaration</code></td>
+<td>Object mapping param name to type id</td>
+<td>Yes</td>
+<td>The statement&#39;s parameters.</td>
+</tr>
+<tr>
+<td><code>callback</code></td>
+<td><code>(params) =&gt; SqlQueryPlan</code> or a prepared ORM query</td>
+<td>Yes</td>
+<td>Builds the query from the declared params, with <code>db.sql</code> or <code>db.orm</code>.</td>
+</tr>
+</tbody></table></div>
+<h4 id="return-type">Return type</h4>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Return type</th>
+<th>Example</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>Promise</code></td>
+<td><code>await db.prepare({ label: &#39;pg/text@1&#39; }, (params) =&gt; ...)</code></td>
+<td>A reusable prepared statement.</td>
+</tr>
+</tbody></table></div>
+<h4 id="examples">Examples</h4>
+<h5 id="prepare-a-sql-builder-query-off-the-client">Prepare a SQL builder query off the client</h5>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">const</span> ps = <span class="hljs-keyword">await</span> db.<span class="hljs-title function_">prepare</span>({ <span class="hljs-attr">label</span>: <span class="hljs-string">&#x27;pg/text@1&#x27;</span> }, <span class="hljs-function">(<span class="hljs-params">params</span>) =&gt;</span>
+  db.<span class="hljs-property">sql</span>.<span class="hljs-property">public</span>.<span class="hljs-property">tag</span>.<span class="hljs-title function_">select</span>(<span class="hljs-string">&#x27;id&#x27;</span>, <span class="hljs-string">&#x27;label&#x27;</span>).<span class="hljs-title function_">where</span>(<span class="hljs-function">(<span class="hljs-params">f, fns</span>) =&gt;</span> fns.<span class="hljs-title function_">eq</span>(f.<span class="hljs-property">label</span>, params.<span class="hljs-property">label</span>)).<span class="hljs-title function_">limit</span>(<span class="hljs-number">1</span>).<span class="hljs-title function_">build</span>(),
+);
+
+<span class="hljs-keyword">const</span> rows = <span class="hljs-keyword">await</span> ps.<span class="hljs-title function_">query</span>(db.<span class="hljs-title function_">runtime</span>(), { <span class="hljs-attr">label</span>: <span class="hljs-string">&#x27;typescript&#x27;</span> });</code></pre></div></figure>
+<h5 id="prepare-an-orm-read-and-an-aggregate">Prepare an ORM read and an aggregate</h5>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>src/prepared-reads.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">const</span> byLabel = <span class="hljs-keyword">await</span> db.<span class="hljs-title function_">prepare</span>({ <span class="hljs-attr">label</span>: <span class="hljs-string">&#x27;pg/text@1&#x27;</span> }, <span class="hljs-function">(<span class="hljs-params">params</span>) =&gt;</span>
+  db.<span class="hljs-property">orm</span>.<span class="hljs-property">public</span>.<span class="hljs-property">Tag</span>.<span class="hljs-title function_">select</span>(<span class="hljs-string">&#x27;id&#x27;</span>, <span class="hljs-string">&#x27;label&#x27;</span>).<span class="hljs-property">prepared</span>.<span class="hljs-title function_">first</span>({ <span class="hljs-attr">label</span>: params.<span class="hljs-property">label</span> }),
+);
+<span class="hljs-keyword">const</span> tag = <span class="hljs-keyword">await</span> byLabel.<span class="hljs-title function_">query</span>(db.<span class="hljs-title function_">runtime</span>(), { <span class="hljs-attr">label</span>: <span class="hljs-string">&#x27;typescript&#x27;</span> });
+<span class="hljs-comment">// { id: &#x27;...&#x27;, label: &#x27;typescript&#x27; }, or null</span>
+
+<span class="hljs-keyword">const</span> countTags = <span class="hljs-keyword">await</span> db.<span class="hljs-title function_">prepare</span>({}, <span class="hljs-function">() =&gt;</span>
+  db.<span class="hljs-property">orm</span>.<span class="hljs-property">public</span>.<span class="hljs-property">Tag</span>.<span class="hljs-property">prepared</span>.<span class="hljs-title function_">aggregate</span>(<span class="hljs-function">(<span class="hljs-params">agg</span>) =&gt;</span> ({ <span class="hljs-attr">total</span>: agg.<span class="hljs-title function_">count</span>() })),
+);
+<span class="hljs-keyword">const</span> { total } = <span class="hljs-keyword">await</span> countTags.<span class="hljs-title function_">query</span>(db.<span class="hljs-title function_">runtime</span>(), {});</code></pre></div></figure>
+<p>In an ORM query, a prepared parameter works in <code>where(...)</code> filters, in the callback you pass to <code>include(...)</code>, and in <code>.limit(...)</code> and <code>.offset(...)</code>, so the same statement can page through results. Declare a page size or offset as <code>&#39;pg/int4@1&#39;</code>, as in <code>{ take: &#39;pg/int4@1&#39; }</code>, and pass <code>params.take</code> to <code>.limit(...)</code>. A text type id such as <code>&#39;pg/text@1&#39;</code>, or a nullable one such as <code>{ codecId: &#39;pg/int4@1&#39;, nullable: true }</code>, is a type error there.</p>
+<h3 id="preparedstatementquerytarget-params"><code>PreparedStatement.query(target, params)</code></h3>
+<p>Run a prepared statement against a target, with the parameter values.</p>
+<h4 id="remarks">Remarks</h4>
+<ul>
+<li><p>A query that returns rows prepares into a <code>PreparedStatement</code>, which you run with <code>query(...)</code>. Some queries return a row count instead of rows. End the query with <code>.affectedCount()</code>. Preparing one gives you a <code>PreparedExecution</code>, which you run with <code>execute(target, params)</code>. It resolves to <code>{ affectedRows }</code>. See the <a href="#/doc/prisma8/reference/raw-queries">raw queries reference</a>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">const</span> archive = <span class="hljs-keyword">await</span> runtime.<span class="hljs-title function_">prepare</span>({ <span class="hljs-attr">label</span>: <span class="hljs-string">&#x27;pg/text@1&#x27;</span> }, <span class="hljs-function">(<span class="hljs-params">params</span>) =&gt;</span>
+  db.<span class="hljs-property">raw</span>.<span class="hljs-property">sql</span><span class="hljs-string">`UPDATE &quot;tag&quot; SET label = &#x27;archived&#x27; WHERE label = <span class="hljs-subst">${params.label}</span>`</span>.<span class="hljs-title function_">affectedCount</span>().<span class="hljs-title function_">build</span>(),
+);
+
+<span class="hljs-keyword">const</span> { affectedRows } = <span class="hljs-keyword">await</span> archive.<span class="hljs-title function_">execute</span>(runtime, { <span class="hljs-attr">label</span>: <span class="hljs-string">&#x27;stale&#x27;</span> });</code></pre></div></figure>
+</li>
+<li><p>You must pass <code>target</code>. It is the runtime, connection, or transaction the statement runs on. One prepared statement runs against any of them.</p>
+</li>
+<li><p>A prepared statement has no <code>close()</code> method and nothing to dispose. Hold one for as long as you like and reuse it.</p>
+</li>
+</ul>
+<h4 id="options">Options</h4>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Name</th>
+<th>Type</th>
+<th>Required</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>target</code></td>
+<td><code>Runtime</code>, connection, or transaction</td>
+<td>Yes</td>
+<td>Where to run the statement.</td>
+</tr>
+<tr>
+<td><code>params</code></td>
+<td>Object of the declared parameter values</td>
+<td>Yes</td>
+<td>The values for this execution.</td>
+</tr>
+</tbody></table></div>
+<h4 id="return-type">Return type</h4>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Return type</th>
+<th>Example</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>AsyncIterableResult</code></td>
+<td><code>await ps.query(runtime, { label })</code></td>
+<td>The statement&#39;s rows. <code>await</code> the result for an array.</td>
+</tr>
+</tbody></table></div>
+<p>A prepared ORM query from <a href="#dbpreparedeclaration-callback"><code>db.prepare(...)</code></a> is different: its <code>query(...)</code> returns what the same ORM call returns, so a prepared <code>first()</code> gives a promise of one row or <code>null</code>.</p>
+<h4 id="examples">Examples</h4>
+<h5 id="run-one-prepared-statement-against-a-transaction-and-the-runtime">Run one prepared statement against a transaction and the runtime</h5>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">
+
+<span class="hljs-keyword">const</span> ps = <span class="hljs-keyword">await</span> runtime.<span class="hljs-title function_">prepare</span>({ <span class="hljs-attr">label</span>: <span class="hljs-string">&#x27;pg/text@1&#x27;</span> }, <span class="hljs-function">(<span class="hljs-params">params</span>) =&gt;</span>
+  db.<span class="hljs-property">sql</span>.<span class="hljs-property">public</span>.<span class="hljs-property">tag</span>.<span class="hljs-title function_">select</span>(<span class="hljs-string">&#x27;id&#x27;</span>, <span class="hljs-string">&#x27;label&#x27;</span>).<span class="hljs-title function_">where</span>(<span class="hljs-function">(<span class="hljs-params">f, fns</span>) =&gt;</span> fns.<span class="hljs-title function_">eq</span>(f.<span class="hljs-property">label</span>, params.<span class="hljs-property">label</span>)).<span class="hljs-title function_">limit</span>(<span class="hljs-number">1</span>).<span class="hljs-title function_">build</span>(),
+);
+
+<span class="hljs-keyword">const</span> insertedId = <span class="hljs-keyword">await</span> <span class="hljs-title function_">withTransaction</span>(runtime, <span class="hljs-title function_">async</span> (tx) =&gt; {
+  <span class="hljs-keyword">await</span> tx.<span class="hljs-title function_">execute</span>(db.<span class="hljs-property">sql</span>.<span class="hljs-property">public</span>.<span class="hljs-property">tag</span>.<span class="hljs-title function_">insert</span>([{ <span class="hljs-attr">id</span>: crypto.<span class="hljs-title function_">randomUUID</span>(), <span class="hljs-attr">label</span>: <span class="hljs-string">&#x27;ps-both-targets&#x27;</span> }]).<span class="hljs-title function_">build</span>());
+  <span class="hljs-keyword">const</span> inTx = <span class="hljs-keyword">await</span> ps.<span class="hljs-title function_">query</span>(tx, { <span class="hljs-attr">label</span>: <span class="hljs-string">&#x27;ps-both-targets&#x27;</span> }); <span class="hljs-comment">// runs against the transaction</span>
+  <span class="hljs-keyword">return</span> inTx[<span class="hljs-number">0</span>]!.<span class="hljs-property">id</span>;
+});
+
+<span class="hljs-keyword">const</span> committed = <span class="hljs-keyword">await</span> ps.<span class="hljs-title function_">query</span>(runtime, { <span class="hljs-attr">label</span>: <span class="hljs-string">&#x27;ps-both-targets&#x27;</span> }); <span class="hljs-comment">// runs against the runtime</span>
+<span class="hljs-comment">// committed[0].id === insertedId</span></code></pre></div></figure>
+<h2 id="execution-options-and-results">Execution options and results</h2>
+<p><code>runtime.query(...)</code>, <code>runtime.execute(...)</code>, <code>tx.query(...)</code>, <code>tx.execute(...)</code>, <code>connection.query(...)</code>, and <code>connection.execute(...)</code> all take a <code>RuntimeExecuteOptions</code> object as their second argument. A prepared statement takes it as a third argument, after <code>target</code> and <code>params</code>.</p>
+<h3 id="runtimeexecuteoptions"><code>RuntimeExecuteOptions</code></h3>
+<p>Per-query options for cancellation.</p>
+<h4 id="remarks">Remarks</h4>
+<ul>
+<li><code>signal</code> is an <code>AbortSignal</code> for per-query cancellation. A signal that is <strong>already aborted</strong> when you call <code>query(...)</code> rejects before any row is fetched, with an error whose <code>code</code> is <code>RUNTIME.ABORTED</code>. The error&#39;s <code>cause</code> is the signal&#39;s reason, exactly as you passed it to <code>controller.abort(...)</code>.</li>
+<li>An abort that lands after rows have started arriving ends the stream with the same <code>RUNTIME.ABORTED</code> error. <code>details.phase</code> says where the abort landed.</li>
+<li>Inside <code>db.transaction(...)</code> the aborted statement throws, so your callback throws and the transaction rolls back.</li>
+</ul>
+<h4 id="options">Options</h4>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Name</th>
+<th>Type</th>
+<th>Required</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>signal</code></td>
+<td><code>AbortSignal</code></td>
+<td>No</td>
+<td>Per-query cancellation signal.</td>
+</tr>
+<tr>
+<td><code>scope</code></td>
+<td><code>&#39;runtime&#39; | &#39;connection&#39; | &#39;transaction&#39;</code></td>
+<td>No</td>
+<td>A label middleware reads. The runtime sets it; setting it yourself changes only the label, not where the query runs.</td>
+</tr>
+</tbody></table></div>
+<h4 id="examples">Examples</h4>
+<h5 id="a-pre-aborted-signal-short-circuits">A pre-aborted signal short-circuits</h5>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">const</span> controller = <span class="hljs-keyword">new</span> <span class="hljs-title class_">AbortController</span>();
+controller.<span class="hljs-title function_">abort</span>(<span class="hljs-keyword">new</span> <span class="hljs-title class_">Error</span>(<span class="hljs-string">&#x27;cancelled&#x27;</span>));
+
+<span class="hljs-keyword">await</span> runtime.<span class="hljs-title function_">query</span>(db.<span class="hljs-property">sql</span>.<span class="hljs-property">public</span>.<span class="hljs-property">tag</span>.<span class="hljs-title function_">select</span>(<span class="hljs-string">&#x27;id&#x27;</span>).<span class="hljs-title function_">limit</span>(<span class="hljs-number">1</span>).<span class="hljs-title function_">build</span>(), {
+  <span class="hljs-attr">signal</span>: controller.<span class="hljs-property">signal</span>,
+});
+<span class="hljs-comment">// rejects with RUNTIME.ABORTED</span></code></pre></div></figure>
+<h3 id="runtimetelemetry"><code>runtime.telemetry()</code></h3>
+<p>Read telemetry about the most recent query.</p>
+<h4 id="remarks">Remarks</h4>
+<ul>
+<li>PostgreSQL only. <code>telemetry()</code> does not exist on the MongoDB runtime. Read it after a query to log how long that query took and whether it succeeded.</li>
+<li><code>telemetry()</code> returns <code>null</code> on a freshly-connected runtime, before any query has run. After a query, it returns an object of the shape <code>{ lane, target: &#39;postgres&#39;, fingerprint, outcome, durationMs? }</code>. The object reflects only the <strong>most recent</strong> query, not a running history.</li>
+<li><code>lane</code> says which API built the query, such as <code>orm-client</code> for <code>db.orm</code> or <code>raw</code> for <code>db.raw.sql</code>.</li>
+<li>Every run of the same query text shares one <code>fingerprint</code>, whatever values you pass, so you can group runs of one query together.</li>
+<li><code>outcome</code> is <code>&#39;success&#39;</code> or <code>&#39;runtime-error&#39;</code>. <code>durationMs</code> is how long the query took. It is optional in the type, and it is set for every query the runtime ran.</li>
+</ul>
+<h4 id="return-type">Return type</h4>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Return type</th>
+<th>Example</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Telemetry object or <code>null</code></td>
+<td><code>runtime.telemetry()</code></td>
+<td>The most recent query&#39;s telemetry, or <code>null</code> before any query.</td>
+</tr>
+</tbody></table></div>
+<h4 id="examples">Examples</h4>
+<h5 id="read-telemetry-before-and-after-a-query">Read telemetry before and after a query</h5>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">const</span> before = runtime.<span class="hljs-title function_">telemetry</span>(); <span class="hljs-comment">// null</span>
+
+<span class="hljs-keyword">await</span> runtime.<span class="hljs-title function_">query</span>(db.<span class="hljs-property">sql</span>.<span class="hljs-property">public</span>.<span class="hljs-property">tag</span>.<span class="hljs-title function_">select</span>(<span class="hljs-string">&#x27;id&#x27;</span>).<span class="hljs-title function_">limit</span>(<span class="hljs-number">1</span>).<span class="hljs-title function_">build</span>());
+
+<span class="hljs-keyword">const</span> after = runtime.<span class="hljs-title function_">telemetry</span>();
+<span class="hljs-comment">// { lane, target: &#x27;postgres&#x27;, fingerprint, outcome: &#x27;success&#x27;, durationMs? }</span></code></pre></div></figure>
+<h3 id="asynciterableresult"><code>AsyncIterableResult</code></h3>
+<p><a href="#/doc/prisma8/reference/orm-client@all"><code>all()</code></a>, <a href="#/doc/prisma8/reference/orm-client@createall"><code>createAll()</code></a>, and the runtime&#39;s <code>query(...)</code> return an <code>AsyncIterableResult</code>. <code>all()</code> and <code>query(...)</code> read rows, and <code>createAll()</code> writes rows and returns the ones it wrote. <code>await</code> the result to collect an array, or <code>for await</code> it to take rows one at a time.</p>
+<p>Use <code>await</code>, and use <code>for await</code> only to handle rows as they arrive. On PostgreSQL it does not reduce memory unless the client was created with the <a href="#postgresoptions"><code>cursor</code> option</a>, because without it every row is loaded first.</p>
+<p>Pick <code>await</code> or <code>for await</code> for a given result and do not mix the two. Calling <code>.toArray()</code> does the same thing as <code>await</code>. Re-<code>await</code>ing a result you already awaited is safe and returns the same array, but switching between <code>await</code> and <code>for await</code>, or looping a second time with <code>for await</code>, throws an error whose <code>code</code> is <code>RUNTIME.ITERATOR_CONSUMED</code>. For the full rules on reading a result, shared identically by PostgreSQL and MongoDB, see <a href="#/doc/prisma8/reference/orm-client@asynciterableresult"><code>AsyncIterableResult</code></a> in the ORM client reference.</p>

@@ -1,0 +1,131 @@
+<p>An amount of money must come out of the database exactly as it went in, and adding a thousand of them must not drift by a cent. A JavaScript <code>number</code> cannot promise either: <code>0.1 + 0.2</code> is <code>0.30000000000000004</code>. This page shows the three PostgreSQL types that can, which one to pick, and how to read, write, add, and multiply their values in Prisma ORM 8.</p>
+<p>Prisma ORM 8 calls the schema file the contract. It is <code>src/prisma/contract.prisma</code>, and it replaces <code>schema.prisma</code>. The examples on this page use the model below. After you add it, run <code>npx prisma contract emit</code> to update the files your code imports, then <code>npx prisma migration plan --name add-order</code> and <code>npx prisma db migrate --advance-ref db</code> to create the table in your development database; <a href="#/doc/prisma8/migrations/generating-a-migration">Generating a migration</a> explains both. In the code, <code>db</code> is the client that <code>src/prisma/db.ts</code> exports, a file <code>npm create prisma</code> and <code>npx prisma orm init</code> write for you.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>src/prisma/contract.prisma</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-prisma"><span class="hljs-keyword">model</span> <span class="hljs-type">Order</span> {
+  id         <span class="hljs-type">Int</span>                              <span class="hljs-attr">@id</span> <span class="hljs-attr">@default</span>(autoincrement())
+  totalCents <span class="hljs-type">Int</span>
+  total      <span class="hljs-type">Decimal</span>(precision: <span class="hljs-number">10</span>, scale: <span class="hljs-number">2</span>)
+  taxRate    <span class="hljs-type">Decimal</span>
+}</code></pre></div></figure>
+<p>The model shows the three types side by side. A real model stores each amount in only one of them.</p>
+<h2 id="pick-a-type">Pick a type</h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Type in the contract</th>
+<th>PostgreSQL column</th>
+<th>Use it for</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>Int</code>, holding cents</td>
+<td><code>integer</code></td>
+<td>Prices and totals, as long as the largest amount in cents fits in 2,147,483,647, about 21 million dollars. Use <code>BigInt</code> above that.</td>
+</tr>
+<tr>
+<td><code>Decimal(precision: 10, scale: 2)</code></td>
+<td><code>numeric(10,2)</code></td>
+<td>Amounts that arrive with a decimal point and must keep a fixed number of decimal places, such as figures from an accounting system</td>
+</tr>
+<tr>
+<td><code>Decimal</code></td>
+<td><code>numeric</code></td>
+<td>Values that need more decimal places than money does, such as a tax rate or an exchange rate</td>
+</tr>
+</tbody></table></div>
+<p>For ordinary product prices, use integer cents unless you have a reason not to. Your code then works with whole numbers, which JavaScript adds exactly. Store an amount in the currency&#39;s smallest unit, such as cents for US dollars. A currency with no smaller unit, such as the Japanese yen, is stored as is. If you sell in several currencies, store the currency code in a field beside the amount, because the same number of cents means a different amount in each currency.</p>
+<p>In <code>Decimal(precision: 10, scale: 2)</code>, <code>scale</code> is the number of decimal places every value keeps, and <code>precision</code> is how many digits a value has in total, so the largest value is 99,999,999.99. Pick both numbers to fit your own amounts.</p>
+<p>Do not store money in a <code>Float</code>. It is a floating-point column, so it rounds in the same way JavaScript numbers do.</p>
+<h2 id="read-and-write-amounts">Read and write amounts</h2>
+<p>An <code>Int</code> field is a JavaScript <code>number</code>, and a <code>BigInt</code> field a JavaScript <code>bigint</code>. A <code>Decimal</code> field is a string, with or without a precision and scale, both when you read it and when you write it:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">const</span> order = <span class="hljs-keyword">await</span> db.<span class="hljs-property">orm</span>.<span class="hljs-property">public</span>.<span class="hljs-property">Order</span>.<span class="hljs-title function_">create</span>({
+  <span class="hljs-attr">totalCents</span>: <span class="hljs-number">1999</span>,
+  <span class="hljs-attr">total</span>: <span class="hljs-string">&quot;19.99&quot;</span>,
+  <span class="hljs-attr">taxRate</span>: <span class="hljs-string">&quot;0.0725&quot;</span>,
+});
+
+order.<span class="hljs-property">total</span>; <span class="hljs-comment">// &quot;19.99&quot;</span></code></pre></div></figure>
+<p>You can use the value anywhere a string goes. An optional field, such as <code>total Decimal(precision: 10, scale: 2)?</code>, reads as <code>null</code> when it has no value. TypeScript refuses a JavaScript number for a decimal field. Keep an amount as a string from the moment it enters your app: read form fields as strings, and ask API clients to send amounts as strings, because parsing <code>&quot;0.123456789012345678&quot;</code> as a JSON number already drops digits before your code sees it. If your code calculated an amount, calculate in cents or with a decimal library, as <a href="#multiply-and-round">Multiply and round</a> shows, and pass the library&#39;s string.</p>
+<p>TypeScript accepts any string for a decimal field, including one that is not a number, so validate input before you write it. PostgreSQL refuses a value such as <code>&quot;abc&quot;</code> with <code>invalid input syntax for type numeric</code>.</p>
+<p>Filters and sorting compare decimal values as numbers, not as text, so <code>&quot;9.50&quot;</code> sorts before <code>&quot;10.00&quot;</code>. Pass the value to compare as a string:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">const</span> large = <span class="hljs-keyword">await</span> db.<span class="hljs-property">orm</span>.<span class="hljs-property">public</span>.<span class="hljs-property">Order</span>.<span class="hljs-title function_">where</span>(<span class="hljs-function">(<span class="hljs-params">o</span>) =&gt;</span> o.<span class="hljs-property">total</span>.<span class="hljs-title function_">gt</span>(<span class="hljs-string">&quot;10.00&quot;</span>))
+  .<span class="hljs-title function_">orderBy</span>(<span class="hljs-function">(<span class="hljs-params">o</span>) =&gt;</span> o.<span class="hljs-property">total</span>.<span class="hljs-title function_">asc</span>())
+  .<span class="hljs-title function_">all</span>();</code></pre></div></figure>
+<p>To show an amount to a user, format it with <code>Intl.NumberFormat</code>. Converting to a JavaScript number for this step only is safe for any price up to 15 digits long:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">const</span> usd = <span class="hljs-keyword">new</span> <span class="hljs-title class_">Intl</span>.<span class="hljs-title class_">NumberFormat</span>(<span class="hljs-string">&quot;en-US&quot;</span>, { <span class="hljs-attr">style</span>: <span class="hljs-string">&quot;currency&quot;</span>, <span class="hljs-attr">currency</span>: <span class="hljs-string">&quot;USD&quot;</span> });
+usd.<span class="hljs-title function_">format</span>(<span class="hljs-title class_">Number</span>(order.<span class="hljs-property">total</span>)); <span class="hljs-comment">// &quot;$19.99&quot;</span>
+usd.<span class="hljs-title function_">format</span>(order.<span class="hljs-property">totalCents</span> / <span class="hljs-number">100</span>); <span class="hljs-comment">// &quot;$19.99&quot;</span></code></pre></div></figure>
+<p>A <code>BigInt</code> field of cents is a <code>bigint</code>, which cannot be divided into a fraction, and <code>Number(cents) / 100</code> can be off by a cent for very large amounts. Convert a non-negative amount to a decimal string with <code>bigint</code> arithmetic instead, which is exact at any size: <code>${cents / 100n}.${String(cents % 100n).padStart(2, &quot;0&quot;)}</code>.</p>
+<h2 id="how-the-column-rounds">How the column rounds</h2>
+<p>A string keeps JavaScript from changing your value, but the database still rounds it to the column&#39;s number of decimal places when it stores it. A <code>Decimal(precision: 10, scale: 2)</code> column keeps two decimal places. When a value is exactly halfway, such as <code>1.005</code>, it rounds away from zero, to <code>1.01</code>. A bare <code>Decimal</code> column keeps what you wrote.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>You write</th>
+<th><code>Decimal(precision: 10, scale: 2)</code> stores</th>
+<th>bare <code>Decimal</code> stores</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>&quot;19.99&quot;</code></td>
+<td><code>19.99</code></td>
+<td><code>19.99</code></td>
+</tr>
+<tr>
+<td><code>&quot;1.005&quot;</code></td>
+<td><code>1.01</code></td>
+<td><code>1.005</code></td>
+</tr>
+<tr>
+<td><code>&quot;2.675&quot;</code></td>
+<td><code>2.68</code></td>
+<td><code>2.675</code></td>
+</tr>
+<tr>
+<td><code>String(0.1 + 0.2)</code></td>
+<td><code>0.30</code></td>
+<td><code>0.30000000000000004</code></td>
+</tr>
+</tbody></table></div>
+<p>The last row shows why the string must hold the amount you mean. A bare <code>Decimal</code> column stores whatever the string says, including the noise a JavaScript calculation left in it.</p>
+<p>A value with more digits before the decimal point than the column allows is refused, not rounded. Writing <code>&quot;123456789.00&quot;</code> to a <code>Decimal(precision: 10, scale: 2)</code> column throws an error whose message is <code>numeric field overflow</code>. To handle it, check the error&#39;s <code>sqlState</code>, PostgreSQL&#39;s code for the error:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">try</span> {
+  <span class="hljs-keyword">await</span> db.<span class="hljs-property">orm</span>.<span class="hljs-property">public</span>.<span class="hljs-property">Order</span>.<span class="hljs-title function_">create</span>({ <span class="hljs-attr">totalCents</span>: <span class="hljs-number">0</span>, <span class="hljs-attr">total</span>: amount, <span class="hljs-attr">taxRate</span>: <span class="hljs-string">&quot;0&quot;</span> });
+} <span class="hljs-keyword">catch</span> (error) {
+  <span class="hljs-keyword">if</span> (error <span class="hljs-keyword">instanceof</span> <span class="hljs-title class_">Error</span> &amp;&amp; <span class="hljs-string">&quot;sqlState&quot;</span> <span class="hljs-keyword">in</span> error &amp;&amp; error.<span class="hljs-property">sqlState</span> === <span class="hljs-string">&quot;22003&quot;</span>) {
+    <span class="hljs-comment">// the amount is too large for the column</span>
+  } <span class="hljs-keyword">else</span> {
+    <span class="hljs-keyword">throw</span> error;
+  }
+}</code></pre></div></figure>
+<h2 id="defaults">Defaults</h2>
+<p>A default must have no more decimal places than its column. In the contract, it is a bare number:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Prisma schema</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-prisma">fee <span class="hljs-type">Decimal</span>(precision: <span class="hljs-number">10</span>, scale: <span class="hljs-number">2</span>) <span class="hljs-attr">@default</span>(<span class="hljs-number">1.50</span>)</code></pre></div></figure>
+<p><code>@default(1.505)</code> on the same field is an error, which <code>npx prisma contract emit</code> reports as <code>PSL_INVALID_DEFAULT_LITERAL</code>. <a href="#/doc/prisma8/contract-authoring/psl-syntax@default-values">Default values</a> lists what each type accepts.</p>
+<h2 id="totals-and-averages">Totals and averages</h2>
+<p>Let the database add amounts up, because it does so exactly. <code>aggregate</code> runs a sum or an average over a model&#39;s rows:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">const</span> totals = <span class="hljs-keyword">await</span> db.<span class="hljs-property">orm</span>.<span class="hljs-property">public</span>.<span class="hljs-property">Order</span>.<span class="hljs-title function_">aggregate</span>(<span class="hljs-function">(<span class="hljs-params">a</span>) =&gt;</span> ({
+  <span class="hljs-attr">total</span>: a.<span class="hljs-title function_">sum</span>(<span class="hljs-string">&quot;total&quot;</span>), <span class="hljs-comment">// &quot;43.97&quot;</span>
+  <span class="hljs-attr">totalCents</span>: a.<span class="hljs-title function_">sum</span>(<span class="hljs-string">&quot;totalCents&quot;</span>), <span class="hljs-comment">// 4397</span>
+  <span class="hljs-attr">averageCents</span>: a.<span class="hljs-title function_">avgDecimal</span>(<span class="hljs-string">&quot;totalCents&quot;</span>), <span class="hljs-comment">// &quot;879.4000000000000000&quot;</span>
+}));</code></pre></div></figure>
+<p>To total only some rows, put a filter first, as in <code>db.orm.public.Order.where((o) =&gt; o.total.gt(&quot;10.00&quot;)).aggregate(...)</code>. <code>sum</code> returns a string for a decimal column and a <code>number</code> for an <code>Int</code> column. When no rows match, every sum and average is <code>null</code>. If an <code>Int</code> total can pass <code>Number.MAX_SAFE_INTEGER</code>, about 9 quadrillion, use <code>sumBigInt</code>, which returns a <code>bigint</code>.</p>
+<p>For an average of integer cents, use <code>avgDecimal</code>. <code>avg(&quot;totalCents&quot;)</code> returns a JavaScript <code>number</code>, and an average such as a third of a cent has no exact JavaScript number. <code>avgDecimal</code> returns the average as a string instead, which PostgreSQL rounds to at least 16 significant digits, far more than money needs. On a decimal column, <code>avg</code> and <code>avgDecimal</code> return the same string. An average usually has more decimal places than you want to show; round it with a decimal library, as the next section shows. <a href="#/doc/prisma8/reference/orm-client@aggregate"><code>aggregate()</code></a> lists every function and its result type.</p>
+<h2 id="multiply-and-round">Multiply and round</h2>
+<p>A line total or a tax amount is a multiplication, and its result can have more decimal places than money has, so you must decide where to round. Do that with a decimal library, such as <a target="_blank" rel="noopener" href="https://mikemcl.github.io/decimal.js/">Decimal.js</a>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Terminal</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-bash"><span class="tk-cmd">npm</span> install decimal.js</code></pre></div></figure>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">
+
+<span class="hljs-keyword">const</span> netCents = <span class="hljs-number">1999</span> * <span class="hljs-number">3</span>; <span class="hljs-comment">// 5997, exact</span>
+<span class="hljs-keyword">const</span> taxCents = <span class="hljs-keyword">new</span> <span class="hljs-title class_">Decimal</span>(netCents)
+  .<span class="hljs-title function_">mul</span>(order.<span class="hljs-property">taxRate</span>) <span class="hljs-comment">// 434.7825</span>
+  .<span class="hljs-title function_">toDecimalPlaces</span>(<span class="hljs-number">0</span>, <span class="hljs-title class_">Decimal</span>.<span class="hljs-property">ROUND_HALF_UP</span>)
+  .<span class="hljs-title function_">toNumber</span>(); <span class="hljs-comment">// 435</span></code></pre></div></figure>
+<p>Multiplying whole cents by a whole quantity is exact in JavaScript while the result is no larger than <code>Number.MAX_SAFE_INTEGER</code>, about 90 trillion dollars in cents. Only the step with a rate needs the library. To get a decimal string back for a decimal field, use <code>toFixed</code>, as in <code>new Decimal(order.total).plus(&quot;0.01&quot;).toFixed(2)</code>.</p>
+<h2 id="coming-from-prisma-orm-7">Coming from Prisma ORM 7</h2>
+<ul>
+<li><code>Decimal @db.Decimal(10, 2)</code> is now <code>Decimal(precision: 10, scale: 2)</code>. Change the line in your contract by hand and run <code>npx prisma contract emit</code>. The column stays <code>numeric(10,2)</code>, so you need no migration for it. <code>Decimal</code> on its own is still a <code>numeric</code> column with no fixed number of decimal places.</li>
+<li><code>Prisma.Decimal</code> is gone. A decimal field reads as a string, not a Decimal.js object, and you write it as a string. <code>Prisma.Decimal</code> was Decimal.js, so install it yourself with <code>npm install decimal.js</code>, and wrap a field value before calling <code>.plus()</code> or <code>.toFixed()</code> on it, as in <code>new Decimal(order.total).plus(&quot;1.00&quot;)</code>.</li>
+<li><a href="#/doc/prisma8/coming-from-prisma-orm-7">Coming from Prisma ORM 7</a> lists the other type changes.</li>
+</ul>
+<h2 id="mongodb">MongoDB</h2>
+<p>On MongoDB, an exact decimal is a field of type <code>Decimal128</code>, and it also reaches your code as a string, so no digit is lost. Integer cents in an <code>Int32</code> or <code>Int64</code> field work as they do on PostgreSQL. <a href="#/doc/prisma8/data-modeling/mongodb@field-types">MongoDB data modeling</a> lists the field types.</p>

@@ -1,0 +1,200 @@
+<p>The <code>lints</code> middleware catches queries that are almost certainly a mistake before they reach your database. A <code>DELETE</code> with no <code>WHERE</code> clause removes every row in the table, which is rarely what anyone meant to write, so <code>lints</code> looks at the structure of each query first and either blocks it or logs a warning.</p>
+<p>You turn it on by adding it to the <code>middleware</code> list when you create your <code>db</code> client. The default rules are useful as they are, so there is nothing to configure to get started:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>src/prisma/db.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">
+  <span class="hljs-attr">contract</span>: <span class="hljs-title function_">contractFromJson</span>(contractJson),
+  <span class="hljs-attr">url</span>: process.<span class="hljs-property">env</span>[<span class="hljs-string">&#x27;DATABASE_URL&#x27;</span>]!,
+  <span class="hljs-attr">middleware</span>: [<span class="hljs-title function_">lints</span>()],
+});</code></pre></div></figure>
+<p>The built-in middleware is imported from <code>@prisma/orm-postgres/family-runtime</code>, which works with any SQL database. There is nothing extra to install, because it is part of the <code>@prisma/orm-postgres</code> package you already have.</p>
+<p>This is the smallest <code>src/prisma/db.ts</code> that works, and the <code>middleware</code> option is the only part specific to <code>lints</code>. The <code>db.ts</code> that <code>create-prisma</code> generates has more in it, including a <code>connectDatabase</code> export that the generated <code>seed.ts</code> imports, so add the <code>middleware</code> option to that file rather than replacing it. Its <code>postgres(...)</code> calls only run when the app is started with <code>DATABASE_URL</code> exported, as <code>npm run dev</code> does. With <code>npm run dev:composer</code>, the generated file takes its client from Composer through <code>service.load()</code> instead, and the <code>middleware</code> option in <code>db.ts</code> is never used, so <code>lints</code> is not on. <code>contract.json</code> and <code>contract.d.ts</code> are the two files <code>npx prisma contract emit</code> writes from your contract, which is the Prisma ORM 8 name for your schema. If you set your project up by hand, <a href="#/doc/prisma8/contract-authoring/the-data-contract">The data contract</a> covers where those two files come from.</p>
+<p>You register <code>lints</code> on a client you created with <code>postgres(...)</code>. Putting <code>lints()</code> in the <code>middleware</code> array of a MongoDB client is a TypeScript error. If you register other middleware alongside it, Prisma ORM runs them in the order you list them in the array, which <a href="#/doc/prisma8/middleware/how-middleware-works">How middleware works</a> covers.</p>
+<h2 id="the-rules">The rules</h2>
+<p>Every query you make is checked, reads and writes alike, and a query that a rule blocks never reaches your database. The rules work on queries you build with the ORM API or the SQL query builder. Raw SQL that you wrote yourself is checked a different way, described under <a href="#raw-sql">Raw SQL</a>.</p>
+<p>Every rule has a severity, which is <code>warn</code> or <code>error</code> and nothing else. A rule set to <code>error</code> throws, and the query is blocked before it reaches the database. A rule set to <code>warn</code> logs a warning and lets the query run. There is no third value that switches a rule off, so the quietest you can make a rule is <code>warn</code>.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Rule</th>
+<th>Code</th>
+<th><code>severities</code> key</th>
+<th>Default severity</th>
+<th>Fires when</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>DELETE without WHERE</td>
+<td><code>LINT.DELETE_WITHOUT_WHERE</code></td>
+<td><code>deleteWithoutWhere</code></td>
+<td><code>error</code></td>
+<td>A <code>DELETE</code> has no <code>WHERE</code> clause</td>
+</tr>
+<tr>
+<td>UPDATE without WHERE</td>
+<td><code>LINT.UPDATE_WITHOUT_WHERE</code></td>
+<td><code>updateWithoutWhere</code></td>
+<td><code>error</code></td>
+<td>An <code>UPDATE</code> has no <code>WHERE</code> clause</td>
+</tr>
+<tr>
+<td>No LIMIT</td>
+<td><code>LINT.NO_LIMIT</code></td>
+<td><code>noLimit</code></td>
+<td><code>warn</code></td>
+<td>A <code>SELECT</code> has no <code>LIMIT</code> clause</td>
+</tr>
+<tr>
+<td>SELECT star</td>
+<td><code>LINT.SELECT_STAR</code></td>
+<td><code>selectStar</code></td>
+<td><code>warn</code></td>
+<td>A query selects all columns instead of naming them</td>
+</tr>
+</tbody></table></div>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>A rule set to <code>warn</code> sends its warning to the <a href="#/doc/prisma8/reference/transactions-and-runtime@postgresoptions"><code>log</code> option</a> of <code>postgres(...)</code>. Pass <code>log: console</code> to print the warnings. If you create the client without a <code>log</code> option, a rule set to <code>warn</code> has no effect you can see. The client&#39;s <code>mode</code> option makes no difference to <code>lints</code>: a <code>warn</code> rule logs in either mode.</p>
+</div></aside>
+<p>The rules are named after the SQL they are about, and you write your queries in the ORM API, so here is which of your own calls sets off which rule.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Your call</th>
+<th>Rule it sets off</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>.all()</code> with no <code>.limit(...)</code> before it</td>
+<td><code>LINT.NO_LIMIT</code></td>
+</tr>
+<tr>
+<td><code>.first(...)</code></td>
+<td>none, because it adds <code>LIMIT 1</code> for you</td>
+</tr>
+<tr>
+<td>a query where you never called <code>.select(...)</code></td>
+<td><code>LINT.SELECT_STAR</code></td>
+</tr>
+<tr>
+<td><code>deleteAll()</code>, <code>deleteAndCount()</code>, <code>updateAll()</code>, or <code>updateAndCount()</code> after a <code>.where(...)</code> with a condition in it</td>
+<td>none</td>
+</tr>
+<tr>
+<td><code>deleteAll()</code>, <code>deleteAndCount()</code>, <code>updateAll()</code>, or <code>updateAndCount()</code> after <code>.where({})</code></td>
+<td><code>LINT.DELETE_WITHOUT_WHERE</code> or <code>LINT.UPDATE_WITHOUT_WHERE</code></td>
+</tr>
+<tr>
+<td>the query builder&#39;s <code>delete()</code> or <code>update()</code> with no <code>where()</code></td>
+<td><code>LINT.DELETE_WITHOUT_WHERE</code> or <code>LINT.UPDATE_WITHOUT_WHERE</code></td>
+</tr>
+</tbody></table></div>
+<p>So <code>await db.orm.public.User.limit(50).all()</code> sets off <code>LINT.SELECT_STAR</code>, while <code>await db.orm.public.User.select(&#39;id&#39;, &#39;email&#39;).limit(50).all()</code> does not. In <code>db.orm.public.User</code>, <code>public</code> is the PostgreSQL schema and <code>User</code> is your model name. The SQL query builder reaches the same table by its name in the database, as <code>db.sql.public.User</code>. These examples assume a <code>User</code> model with no <code>@@map</code>, so the table has the same name as the model.</p>
+<p>When a <code>warn</code> rule fires, <code>lints</code> calls <code>log.warn</code> with a record that holds the code of the rule, a message, and the table the query touched. With <code>log: console</code>, Node.js prints it like this:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Lint warning.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">{
+  code: &#x27;LINT.NO_LIMIT&#x27;,
+  message: &#x27;Unbounded SELECT may return large result sets&#x27;,
+  details: { table: &#x27;User&#x27; }
+}</code></pre></div></figure>
+<h2 id="what-a-blocked-query-looks-like">What a blocked query looks like</h2>
+<p>A rule set to <code>error</code> throws before the database sees anything, so the call you were awaiting rejects. It throws an ordinary <code>Error</code> with four extra properties beside its <code>message</code>: <code>code</code>, <code>category</code>, <code>severity</code>, and <code>details</code>. Use the <code>isRuntimeError</code> type guard, exported from <code>@prisma/orm-postgres/components/runtime</code>, so that TypeScript knows those properties are there and you can read <code>code</code> off the error.</p>
+<p>The blocked <code>DELETE</code> below comes from the SQL query builder, where you build the query yourself, call <code>.build()</code>, and run the result with <code>db.query(...)</code> for rows or <code>db.execute(...)</code> for a count:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">
+
+<span class="hljs-keyword">try</span> {
+  <span class="hljs-keyword">const</span> plan = db.<span class="hljs-property">sql</span>.<span class="hljs-property">public</span>.<span class="hljs-property">User</span>.<span class="hljs-title function_">delete</span>().<span class="hljs-title function_">build</span>();
+  <span class="hljs-keyword">await</span> db.<span class="hljs-title function_">execute</span>(plan);
+} <span class="hljs-keyword">catch</span> (error) {
+  <span class="hljs-keyword">if</span> (<span class="hljs-title function_">isRuntimeError</span>(error) &amp;&amp; error.<span class="hljs-property">code</span> === <span class="hljs-string">&#x27;LINT.DELETE_WITHOUT_WHERE&#x27;</span>) {
+    <span class="hljs-comment">// add a where() clause, or use a client with the rule set to warn</span>
+  }
+  <span class="hljs-keyword">throw</span> error;
+}</code></pre></div></figure>
+<p>Those properties hold this for a <code>DELETE</code> with no <code>WHERE</code> on the <code>User</code> table:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Blocked DELETE.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">{
+  code: &#x27;LINT.DELETE_WITHOUT_WHERE&#x27;,
+  category: &#x27;LINT&#x27;,
+  severity: &#x27;error&#x27;,
+  message: &#x27;DELETE without WHERE clause blocks execution to prevent accidental full-table deletion&#x27;,
+  details: { table: &#x27;User&#x27; }
+}</code></pre></div></figure>
+<h2 id="configure-severities">Configure severities</h2>
+<p>When a default does not suit your project, <code>severities</code> lets you make any rule stricter or gentler. You name only the rules you want to change, using the key from the table of rules, and every rule you leave out keeps its default. Each key takes <code>&#39;warn&#39;</code> or <code>&#39;error&#39;</code>. In a service where every list endpoint has to paginate, for example, you can make a <code>SELECT</code> without a <code>LIMIT</code> fail rather than warn, and fail a query that names no columns as well. This is the <code>middleware</code> line of the <code>db.ts</code> above, with the bare <code>lints()</code> replaced:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>src/prisma/db.ts (excerpt).ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-attr">middleware</span>: [
+  <span class="hljs-title function_">lints</span>({
+    <span class="hljs-attr">severities</span>: {
+      <span class="hljs-attr">noLimit</span>: <span class="hljs-string">&#x27;error&#x27;</span>,
+      <span class="hljs-attr">selectStar</span>: <span class="hljs-string">&#x27;error&#x27;</span>,
+    },
+  }),
+],</code></pre></div></figure>
+<p>With <code>selectStar</code> set to <code>error</code>, a plain <code>.all()</code> in the ORM API throws, and you catch it the same way you catch a blocked <code>DELETE</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">
+
+<span class="hljs-keyword">try</span> {
+  <span class="hljs-keyword">await</span> db.<span class="hljs-property">orm</span>.<span class="hljs-property">public</span>.<span class="hljs-property">User</span>.<span class="hljs-title function_">limit</span>(<span class="hljs-number">50</span>).<span class="hljs-title function_">all</span>();
+} <span class="hljs-keyword">catch</span> (error) {
+  <span class="hljs-keyword">if</span> (<span class="hljs-title function_">isRuntimeError</span>(error) &amp;&amp; error.<span class="hljs-property">code</span> === <span class="hljs-string">&#x27;LINT.SELECT_STAR&#x27;</span>) {
+    <span class="hljs-comment">// name the columns you want with .select(...)</span>
+  }
+  <span class="hljs-keyword">throw</span> error;
+}</code></pre></div></figure>
+<h2 id="raw-sql">Raw SQL</h2>
+<p>A whole statement you wrote yourself with <a href="#/doc/prisma8/reference/raw-queries"><code>db.raw.sql</code></a> is SQL text rather than a query Prisma ORM assembled, so the four rules above are skipped for it. <code>lints</code> searches the SQL text instead, every time a raw statement runs, and it starts from its own defaults, which are not the defaults in the table of rules:</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>What it searches the text for</th>
+<th>Code</th>
+<th>Default severity in raw SQL</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>a <code>select</code> statement containing <code>select *</code></td>
+<td><code>LINT.SELECT_STAR</code></td>
+<td><code>error</code></td>
+</tr>
+<tr>
+<td>a <code>select</code> statement with no <code>limit</code> anywhere in it</td>
+<td><code>LINT.NO_LIMIT</code></td>
+<td><code>warn</code></td>
+</tr>
+<tr>
+<td>a statement that changes data in a query marked read-only</td>
+<td><code>LINT.READ_ONLY_MUTATION</code></td>
+<td><code>error</code></td>
+</tr>
+</tbody></table></div>
+<p>So a <code>select *</code> you wrote by hand is blocked:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">const</span> plan = db.<span class="hljs-property">raw</span>.<span class="hljs-property">sql</span><span class="hljs-string">`select * from &quot;User&quot;`</span>
+  .<span class="hljs-title function_">returnsRow</span>({ <span class="hljs-attr">id</span>: <span class="hljs-string">&#x27;pg/int4@1&#x27;</span> })
+  .<span class="hljs-title function_">build</span>();
+<span class="hljs-keyword">await</span> db.<span class="hljs-title function_">query</span>(plan);</code></pre></div></figure>
+<p>It throws an error whose <code>code</code> is <code>LINT.SELECT_STAR</code> and whose <code>message</code> is <code>Raw SQL plan selects all columns via *</code>. <code>returnsRow</code> tells Prisma ORM the type of each column the statement gives back, written as <code>pg/</code> plus the PostgreSQL type name plus <code>@1</code>, and <a href="#/doc/prisma8/reference/sql-query-builder@fnsraw-and-returns"><code>fns.raw</code> and <code>.returns()</code></a> lists the ids you can use. The <code>severities</code> key for the last rule is <code>readOnlyMutation</code>, and there is no documented way to mark a query read-only, so you are unlikely to see that one.</p>
+<p>Because these are searches through the text rather than checks on the structure of the query, they can be wrong in both directions. The word <code>limit</code> anywhere in the statement counts as a <code>LIMIT</code>, including inside a string or a column name, and a <code>select *</code> inside a subquery counts for the whole statement. So when a raw statement sets off one of these checks, go and read the query yourself before you change anything.</p>
+<aside class="callout callout-warning"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 4 2.8 20h18.4L12 4z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M12 10v4.4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="17" r="1.3" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Warning</p><p>One <code>severities</code> key sets both the rule for the ORM API and the SQL query builder and the raw SQL check that has the same code, so it changes the raw defaults as well. <code>selectStar</code> is <code>warn</code> by default for the ORM API and the SQL query builder, but <code>error</code> for raw SQL. So setting <code>selectStar: &#39;warn&#39;</code> changes nothing for the ORM API, which is already at <code>warn</code>: its only effect is that raw SQL&#39;s <code>select *</code> drops from <code>error</code> to <code>warn</code>, and <code>select * from &quot;User&quot;</code> starts running instead of being blocked. Setting <code>selectStar: &#39;error&#39;</code>, as under <a href="#configure-severities">Configure severities</a>, keeps a raw <code>select *</code> blocked. No setting makes the ORM-API rule <code>error</code> and lets a raw <code>select *</code> run, so if you need both, give the code that runs the raw <code>select *</code> a <code>db</code> client of its own, in the way <a href="#common-gotchas">Common gotchas</a> does for a backfill script.</p>
+</div></aside>
+<p>You will not need <code>fallbackWhenAstMissing</code>, because every query from the ORM API, the SQL query builder, and <code>db.raw.sql</code> already has the structure the rules read. Leave it at its default of <code>&#39;raw&#39;</code>. The only other value it takes turns the checks off for a query that arrives without that structure:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>src/prisma/db.ts (excerpt).ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-attr">middleware</span>: [<span class="hljs-title function_">lints</span>({ <span class="hljs-attr">fallbackWhenAstMissing</span>: <span class="hljs-string">&#x27;skip&#x27;</span> })],</code></pre></div></figure>
+<h2 id="common-gotchas">Common gotchas</h2>
+<aside class="callout callout-warning"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 4 2.8 20h18.4L12 4z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M12 10v4.4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="17" r="1.3" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Warning</p><p>Sometimes you do mean to change every row, in a backfill script for example. <code>LINT.DELETE_WITHOUT_WHERE</code> and <code>LINT.UPDATE_WITHOUT_WHERE</code> are <code>error</code> by default, so <code>lints</code> blocks that write, and a script like that needs one of the two ways through.</p>
+</div></aside>
+<p>The first way is to write a <code>WHERE</code> clause that is true for every row, which states the intent in the query itself. On a table whose primary key is <code>id</code>, <code>id IS NOT NULL</code> is true for every row, and in the ORM API you write it with <code>isNotNull()</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>scripts/backfill/delete-users.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">await</span> db.<span class="hljs-property">orm</span>.<span class="hljs-property">public</span>.<span class="hljs-property">User</span>.<span class="hljs-title function_">where</span>(<span class="hljs-function">(<span class="hljs-params">u</span>) =&gt;</span> u.<span class="hljs-property">id</span>.<span class="hljs-title function_">isNotNull</span>()).<span class="hljs-title function_">deleteAndCount</span>();</code></pre></div></figure>
+<p>An empty filter does not work for this. <code>.where({})</code> adds no condition, so <code>db.orm.public.User.where({}).deleteAll()</code> sends a <code>DELETE</code> with no <code>WHERE</code>, and <code>lints</code> blocks it with <code>LINT.DELETE_WITHOUT_WHERE</code>.</p>
+<p>With the SQL query builder, the callback&#39;s first argument, <code>f</code>, has one property for each column, and the second, <code>fns</code>, holds the comparison helpers. Comparing a column to <code>null</code> gives you a null check rather than a comparison, so <code>fns.ne(f.id, null)</code> gives <code>id IS NOT NULL</code> and <code>fns.eq(f.id, null)</code> gives <code>id IS NULL</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">const</span> plan = db.<span class="hljs-property">sql</span>.<span class="hljs-property">public</span>.<span class="hljs-property">User</span>
+  .<span class="hljs-title function_">delete</span>()
+  .<span class="hljs-title function_">where</span>(<span class="hljs-function">(<span class="hljs-params">f, fns</span>) =&gt;</span> fns.<span class="hljs-title function_">ne</span>(f.<span class="hljs-property">id</span>, <span class="hljs-literal">null</span>))
+  .<span class="hljs-title function_">build</span>();
+<span class="hljs-keyword">await</span> db.<span class="hljs-title function_">execute</span>(plan);</code></pre></div></figure>
+<p>Both deletes pass the rule and run, because each query has a <code>WHERE</code> clause and that is all <code>LINT.DELETE_WITHOUT_WHERE</code> looks for, so you can leave <code>lints</code> on its defaults in the script that runs them. An <code>UPDATE</code> takes the same shape, as in <code>db.orm.public.User.where((u) =&gt; u.id.isNotNull()).updateAndCount({ name: &#39;x&#39; })</code> or <code>db.sql.public.User.update({ name: &#39;x&#39; }).where((f, fns) =&gt; fns.ne(f.id, null)).build()</code>.</p>
+<p>The second way is to build that script its own <code>db</code> client with the rule set to <code>warn</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>scripts/backfill/db.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">
+  <span class="hljs-attr">contract</span>: <span class="hljs-title function_">contractFromJson</span>(contractJson),
+  <span class="hljs-attr">url</span>: process.<span class="hljs-property">env</span>[<span class="hljs-string">&#x27;DATABASE_URL&#x27;</span>]!,
+  <span class="hljs-attr">middleware</span>: [<span class="hljs-title function_">lints</span>({ <span class="hljs-attr">severities</span>: { <span class="hljs-attr">deleteWithoutWhere</span>: <span class="hljs-string">&#x27;warn&#x27;</span> } })],
+});</code></pre></div></figure>
+<p>Keep that client inside the script and import your usual <code>db</code> everywhere else, because setting the rule to <code>warn</code> for your whole application gives up the protection everywhere.</p>
+<h2 id="see-also">See also</h2>
+<ul>
+<li><a href="#/doc/prisma8/middleware/how-middleware-works">How middleware works</a></li>
+<li><a href="#/doc/prisma8/middleware/built-in-budgets">Built-in: budgets</a> for row-count and latency ceilings</li>
+<li><a href="#/doc/prisma8/middleware/authoring-custom-middleware">Authoring custom middleware</a></li>
+</ul>

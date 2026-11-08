@@ -1,0 +1,1507 @@
+<p>The pipeline builder gives you a typed way to build MongoDB aggregation pipelines. You reach it through <code>db.query</code>, chain aggregation stages onto a starting collection, and finish the chain with the call that builds the query. It is the MongoDB counterpart to the <a href="#/doc/prisma8/reference/sql-query-builder">SQL query builder</a>: a lower-level API for the queries the <a href="#/doc/prisma8/reference/orm-client">ORM client</a> doesn&#39;t express.</p>
+<p>Everything the builder produces becomes a MongoDB aggregation pipeline. There is no <code>find()</code> or <code>distinct()</code> here, so use <code>db.orm</code> or <a href="#rawcommand"><code>rawCommand()</code></a> for those. To fetch a single document, filter and then <code>limit(1)</code>. Use the ORM client (<code>db.orm</code>) for everyday reads and writes across models and relations. Reach for the pipeline builder when you need to group documents, to join another collection and keep transforming the result, or to write the result into a collection (<code>$out</code> and <code>$merge</code>). This page documents every stage, accumulator, expression helper, and write method.</p>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">[This is the MongoDB pipeline builder]</p><p>The pipeline builder targets MongoDB only. PostgreSQL has no pipeline builder: use the <a href="#/doc/prisma8/reference/sql-query-builder">SQL query builder</a> for PostgreSQL joins and aggregates, and the <a href="#/doc/prisma8/reference/orm-client">ORM client</a> for everyday queries on either database.</p>
+</div></aside>
+<h2 id="example-schema">Example schema</h2>
+<p>The examples run against the schema below, the same MongoDB schema as the <a href="#/doc/prisma8/reference/orm-client">ORM client</a> page. <code>Article</code> and <code>Tutorial</code> are two kinds of <code>Post</code>, stored in one <code>posts</code> collection and told apart by the value of the <code>kind</code> field. <code>@@base(Post, &quot;article&quot;)</code> and <code>@@discriminator(kind)</code> set that up. See <a href="#/doc/prisma8/reference/orm-client@variant"><code>@@base</code></a> on the ORM client page. <code>@@type(&quot;mongo/string@1&quot;)</code> says the enum is stored as a MongoDB string, and <code>@1</code> is the version of that type id, always <code>@1</code> today. None of that matters to a pipeline: <code>kind</code> is an ordinary field you can filter and group on.</p>
+<details><summary>Expand for the example schema</summary><figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Prisma schema</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-prisma"><span class="hljs-keyword">enum</span> <span class="hljs-type">UserRole</span> {
+  <span class="hljs-attr">@@type</span>(<span class="hljs-string">&quot;mongo/string@1&quot;</span>)
+  <span class="hljs-type">Admin</span>  = <span class="hljs-string">&quot;admin&quot;</span>
+  <span class="hljs-type">Author</span> = <span class="hljs-string">&quot;author&quot;</span>
+  <span class="hljs-type">Reader</span> = <span class="hljs-string">&quot;reader&quot;</span>
+}
+
+<span class="hljs-keyword">type</span> <span class="hljs-type">Address</span> {
+  street  <span class="hljs-type">String</span>
+  city    <span class="hljs-type">String</span>
+  zip     <span class="hljs-type">String</span>?
+  country <span class="hljs-type">String</span>
+}
+
+<span class="hljs-keyword">model</span> <span class="hljs-type">User</span> {
+  id      <span class="hljs-type">ObjectId</span> <span class="hljs-attr">@id</span> <span class="hljs-attr">@map</span>(<span class="hljs-string">&quot;_id&quot;</span>)
+  name    <span class="hljs-type">String</span>
+  email   <span class="hljs-type">String</span>
+  bio     <span class="hljs-type">String</span>?
+  role    <span class="hljs-type">UserRole</span>
+  address <span class="hljs-type">Address</span>?
+  posts   <span class="hljs-type">Post</span>[]
+  <span class="hljs-attr">@@map</span>(<span class="hljs-string">&quot;users&quot;</span>)
+}
+
+<span class="hljs-keyword">model</span> <span class="hljs-type">Post</span> {
+  id        <span class="hljs-type">ObjectId</span> <span class="hljs-attr">@id</span> <span class="hljs-attr">@map</span>(<span class="hljs-string">&quot;_id&quot;</span>)
+  title     <span class="hljs-type">String</span>
+  content   <span class="hljs-type">String</span>
+  kind      <span class="hljs-type">String</span>
+  authorId  <span class="hljs-type">ObjectId</span>
+  createdAt <span class="hljs-type">Date</span>
+  author    <span class="hljs-type">User</span> <span class="hljs-attr">@relation</span>(fields: [authorId], references: [id])
+  <span class="hljs-attr">@@discriminator</span>(kind)
+  <span class="hljs-attr">@@index</span>([authorId])
+  <span class="hljs-attr">@@index</span>([sort(createdAt, <span class="hljs-type">Desc</span>), authorId])
+  <span class="hljs-attr">@@map</span>(<span class="hljs-string">&quot;posts&quot;</span>)
+}
+
+<span class="hljs-keyword">model</span> <span class="hljs-type">Article</span> {
+  summary   <span class="hljs-type">String</span>
+  <span class="hljs-attr">@@base</span>(<span class="hljs-type">Post</span>, <span class="hljs-string">&quot;article&quot;</span>)
+  <span class="hljs-attr">@@unique</span>([summary])
+}
+
+<span class="hljs-keyword">model</span> <span class="hljs-type">Tutorial</span> {
+  difficulty <span class="hljs-type">String</span>
+  duration   <span class="hljs-type">Int32</span>
+  <span class="hljs-attr">@@base</span>(<span class="hljs-type">Post</span>, <span class="hljs-string">&quot;tutorial&quot;</span>)
+}</code></pre></div></figure>
+</details><h2 id="entry-points">Entry points</h2>
+<p>Every pipeline starts with <code>db.query.from(&#39;posts&#39;)</code>, naming the collection to aggregate over. It ends with a call that turns the chain into a query you can run, and between them you chain stages.</p>
+<p><code>db</code> is the client you create with <code>mongo(...)</code>, whose <code>dbName</code> option is the name of the MongoDB database to use. See <a href="#/doc/prisma8/reference/transactions-and-runtime@mongooptions">Transactions and runtime</a> for every option and for how to create the client. Three Prisma ORM import paths appear on this page: <code>@prisma/orm-mongo/runtime</code> holds the <code>mongo()</code> client, <code>@prisma/orm-mongo/query-builder</code> holds <code>mongoQuery</code>, <code>fn</code>, <code>acc</code>, and <code>expr</code>, and <code>@prisma/orm-mongo/query-ast/execution</code> holds the <code>Mongo*Stage</code> classes, <code>MongoAggFieldRef</code>, and <code>MongoFieldFilter</code>. Every example holds the built query in a variable named <code>plan</code>.</p>
+<p>Prisma ORM 8 renames <code>schema.prisma</code> to <code>contract.prisma</code>. Run <code>npx prisma contract emit</code> before any code on this page compiles: it writes <code>contract.json</code>, used at run time, and <code>contract.d.ts</code>, used for types. The example below imports <code>contract.json</code> with <code>with { type: &#39;json&#39; }</code>, which works with the TypeScript settings <code>prisma orm init</code> writes for you. <a href="#/doc/prisma8/coming-from-prisma-orm-7">Coming from Prisma ORM 7</a> has the setup steps.</p>
+<h3 id="from"><code>from()</code></h3>
+<p>Enter the pipeline builder on a collection.</p>
+<h4 id="remarks">Remarks</h4>
+<ul>
+<li><code>from()</code> takes the collection name, the same name you use on <code>db.orm</code> (<code>&#39;posts&#39;</code>, <code>&#39;users&#39;</code>), not the model name <code>Post</code>. The collection name is the model&#39;s <code>@@map</code> value, or the model name exactly as written when there is no <code>@@map</code>.</li>
+<li>Passing an unknown collection name throws right away, with an error whose <code>code</code> is <code>ORM.MODEL_UNKNOWN</code> and whose message is <code>Unknown root: &quot;&lt;name&gt;&quot;. Valid roots: ...</code> (the message says root; it means the collection name).</li>
+<li><code>from()</code> returns a builder you chain stages onto. Call <code>insertOne()</code> and <code>insertMany()</code> on <code>from()</code> directly, before any stage.</li>
+<li>You can build the same pipelines without a client. <code>import mongoStatic from &#39;@prisma/orm-mongo/static&#39;</code>, then <code>mongoStatic({ contract }).query.from(&#39;posts&#39;)</code>, where <code>contract</code> is the value the example below builds with <code>contractFromJson</code>. <code>mongoStatic</code> validates the contract once and also gives you <code>raw</code>, for raw commands. Its <code>query</code> only builds queries. It never runs one, so you still need a client&#39;s <code>runtime</code> to get results. Use it in tests, or to build a query once and run it through any client you like.</li>
+</ul>
+<h4 id="options">Options</h4>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Name</th>
+<th>Type</th>
+<th>Required</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>collection</code></td>
+<td>Collection name (<code>string</code> literal)</td>
+<td>Yes</td>
+<td>The collection to aggregate over.</td>
+</tr>
+</tbody></table></div>
+<h4 id="return-type">Return type</h4>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Return type</th>
+<th>Example</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Pipeline builder</td>
+<td><code>db.query.from(&#39;posts&#39;)</code></td>
+<td>A builder you chain stages onto, then finish with <code>build()</code>.</td>
+</tr>
+</tbody></table></div>
+<h4 id="examples">Examples</h4>
+<h5 id="enter-the-builder-on-a-collection">Enter the builder on a collection</h5>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">
+
+
+
+
+<span class="hljs-keyword">const</span> contract = <span class="hljs-title function_">contractFromJson</span>(contractJson);
+<span class="hljs-keyword">const</span> db = <span class="hljs-title function_">mongo</span>({ contract, <span class="hljs-attr">url</span>: process.<span class="hljs-property">env</span>.<span class="hljs-property">MONGODB_URL</span>!, <span class="hljs-attr">dbName</span>: <span class="hljs-string">&#x27;app&#x27;</span> });
+<span class="hljs-keyword">const</span> runtime = <span class="hljs-keyword">await</span> db.<span class="hljs-title function_">runtime</span>();
+
+<span class="hljs-keyword">const</span> plan = db.<span class="hljs-property">query</span>.<span class="hljs-title function_">from</span>(<span class="hljs-string">&#x27;posts&#x27;</span>).<span class="hljs-title function_">build</span>();
+<span class="hljs-keyword">const</span> posts = <span class="hljs-keyword">await</span> runtime.<span class="hljs-title function_">query</span>(plan);</code></pre></div></figure>
+<h3 id="building-and-executing-a-pipeline">Building and executing a pipeline</h3>
+<p><code>build()</code> returns the built query, which the examples hold in a variable named <code>plan</code>. Nothing runs until you pass it to <code>runtime.query(...)</code>. Every later example reuses the <code>db</code> and <code>runtime</code> from the example above.</p>
+<h4 id="remarks">Remarks</h4>
+<ul>
+<li>On MongoDB, <code>db.runtime()</code> returns a promise, so you must await it: <code>const runtime = await db.runtime()</code>. Hold it in a variable and reuse it.</li>
+<li><code>await</code> that call for an array of documents, or write <code>for await (const doc of runtime.query(plan)) { ... }</code> to take one document at a time.</li>
+<li>There is no <code>db.execute</code> on the MongoDB client.</li>
+<li>The pipeline builder works on documents as they are stored, so it names fields by their stored names. A field declared <code>id ObjectId @id @map(&quot;_id&quot;)</code> is <code>f._id</code> in a stage and <code>_id</code> in the rows, while the <a href="#/doc/prisma8/reference/orm-client">ORM client</a> calls the same field <code>id</code>. To pass a pipeline row to code that expects an ORM row, rename the field: <code>({ _id, ...rest }) =&gt; ({ ...rest, id: _id })</code>.</li>
+<li><strong>Read results are decoded.</strong> If every stage in your pipeline is one of <code>match()</code>, <code>sort()</code>, <code>limit()</code>, <code>skip()</code>, <code>sample()</code>, <code>project()</code>, <code>addFields()</code>, and <code>vectorSearch()</code>, <code>_id</code> comes back as a hex string. If any stage is not in that list, including <code>lookup()</code> and <code>group()</code>, every document comes back raw, with each value as MongoDB stores it. An <code>_id</code> that MongoDB generated is then an <code>ObjectId</code> object from the <code>mongodb</code> package, the MongoDB driver Prisma ORM uses. Compare those ids as strings, as <a href="#lookup"><code>lookup()</code></a> shows. A <code>DateTime</code> field comes back as a JavaScript <code>Date</code> either way.</li>
+</ul>
+<h4 id="examples">Examples</h4>
+<h5 id="execute-through-the-client">Execute through the client</h5>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">const</span> plan = db.<span class="hljs-property">query</span>.<span class="hljs-title function_">from</span>(<span class="hljs-string">&#x27;posts&#x27;</span>).<span class="hljs-title function_">sort</span>({ <span class="hljs-attr">createdAt</span>: <span class="hljs-number">1</span> }).<span class="hljs-title function_">build</span>();
+<span class="hljs-keyword">const</span> posts = <span class="hljs-keyword">await</span> runtime.<span class="hljs-title function_">query</span>(plan);</code></pre></div></figure>
+<h2 id="pipeline-stages">Pipeline stages</h2>
+<p>Stages transform the documents flowing through the pipeline. Chain them in order; each stage&#39;s output feeds the next. The <code>(f) =&gt; ...</code> callbacks reference the current document&#39;s fields, one property per field.</p>
+<h3 id="match"><code>match()</code></h3>
+<p>Filter documents by a predicate.</p>
+<h4 id="remarks">Remarks</h4>
+<ul>
+<li><code>match()</code> takes a callback whose <code>f</code> argument has one property per field, and returns a filter expression (<code>(f) =&gt; f.kind.eq(&#39;tutorial&#39;)</code>).</li>
+<li>Scalar fields expose these filter operators: <code>eq</code>, <code>ne</code>, <code>gt</code>, <code>gte</code>, <code>lt</code>, <code>lte</code>, <code>in</code>, <code>nin</code>, <code>exists</code>, and <code>type</code>. They work like the MongoDB query operators of the same name (<code>$ne</code>, <code>$gt</code>, <code>$in</code>, <code>$exists</code>, <code>$type</code>, and so on).</li>
+<li>To compare two computed values rather than a field against a constant, wrap the comparison in <code>expr(...)</code>: <code>match((f) =&gt; expr(fn.gt(fn.year(f.createdAt), fn.literal(2023))))</code>. <code>fn</code> holds the helpers that build expressions, one per MongoDB operator. <code>expr()</code> wraps one of those values so <code>match()</code> accepts it. The <code>fn.*</code> helpers take expressions, not plain values, so wrap every constant in <code>fn.literal()</code>. See <a href="#expression-helpers">Expression helpers</a>.</li>
+</ul>
+<p>Where each form goes. <code>.node</code> is the raw MongoDB expression inside an <code>fn.*</code> value:</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Call site</th>
+<th>What you pass</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>project()</code>, <code>addFields()</code>, <code>redact()</code>, and the arguments of an accumulator</td>
+<td>The <code>fn.*</code> value itself.</td>
+</tr>
+<tr>
+<td>The condition argument of <code>fn.cond()</code>, and the stages that take an options object</td>
+<td>The <code>.node</code> property of the <code>fn.*</code> value.</td>
+</tr>
+<tr>
+<td><code>match()</code></td>
+<td>The <code>fn.*</code> value wrapped in <code>expr(...)</code>.</td>
+</tr>
+</tbody></table></div>
+<h4 id="options">Options</h4>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Name</th>
+<th>Type</th>
+<th>Required</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>predicate</code></td>
+<td>Callback <code>(f) =&gt; FilterExpression</code></td>
+<td>Yes</td>
+<td>The condition documents must satisfy.</td>
+</tr>
+</tbody></table></div>
+<h4 id="return-type">Return type</h4>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Return type</th>
+<th>Example</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Filtered builder</td>
+<td><code>db.query.from(&#39;posts&#39;).match(...)</code></td>
+<td>A builder narrowed by the filter, chainable into more stages, write methods, or <code>build()</code>.</td>
+</tr>
+</tbody></table></div>
+<h4 id="examples">Examples</h4>
+<h5 id="filter-by-a-field">Filter by a field</h5>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">const</span> plan = db.<span class="hljs-property">query</span>
+  .<span class="hljs-title function_">from</span>(<span class="hljs-string">&#x27;posts&#x27;</span>)
+  .<span class="hljs-title function_">match</span>(<span class="hljs-function">(<span class="hljs-params">f</span>) =&gt;</span> f.<span class="hljs-property">kind</span>.<span class="hljs-title function_">eq</span>(<span class="hljs-string">&#x27;tutorial&#x27;</span>))
+  .<span class="hljs-title function_">build</span>();
+<span class="hljs-keyword">const</span> tutorials = <span class="hljs-keyword">await</span> runtime.<span class="hljs-title function_">query</span>(plan);</code></pre></div></figure>
+<h5 id="aggregation-expression-predicate">Aggregation-expression predicate</h5>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">
+
+<span class="hljs-keyword">const</span> plan = db.<span class="hljs-property">query</span>
+  .<span class="hljs-title function_">from</span>(<span class="hljs-string">&#x27;posts&#x27;</span>)
+  .<span class="hljs-title function_">match</span>(<span class="hljs-function">(<span class="hljs-params">f</span>) =&gt;</span> <span class="hljs-title function_">expr</span>(fn.<span class="hljs-title function_">gt</span>(fn.<span class="hljs-title function_">year</span>(f.<span class="hljs-property">createdAt</span>), fn.<span class="hljs-title function_">literal</span>(<span class="hljs-number">2023</span>))))
+  .<span class="hljs-title function_">build</span>();
+<span class="hljs-keyword">const</span> recent = <span class="hljs-keyword">await</span> runtime.<span class="hljs-title function_">query</span>(plan);</code></pre></div></figure>
+<aside class="callout callout-warning"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 4 2.8 20h18.4L12 4z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M12 10v4.4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="17" r="1.3" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">[`match()` does not convert a hex string to an `ObjectId`]</p><p><code>match()</code> sends each value as you give it. A hex string never matches an <code>_id</code>, or another field stored as an <code>ObjectId</code>, so <code>f._id.eq(&#39;507f...&#39;)</code> <strong>matches no document</strong>. Pass an <code>ObjectId</code> from the <code>mongodb</code> package instead, wrapped in a <code>MongoParamRef</code> from <code>@prisma/orm-mongo/value</code> so that the call type-checks:</p>
+<p><figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">
+
+
+<span class="hljs-keyword">const</span> postId = <span class="hljs-string">&#x27;6650f1c2a1b2c3d4e5f60003&#x27;</span>;
+<span class="hljs-keyword">const</span> plan = db.<span class="hljs-property">query</span>
+  .<span class="hljs-title function_">from</span>(<span class="hljs-string">&#x27;posts&#x27;</span>)
+  .<span class="hljs-title function_">match</span>(<span class="hljs-function">(<span class="hljs-params">f</span>) =&gt;</span> f.<span class="hljs-property">_id</span>.<span class="hljs-title function_">eq</span>(<span class="hljs-keyword">new</span> <span class="hljs-title class_">MongoParamRef</span>(<span class="hljs-keyword">new</span> <span class="hljs-title class_">ObjectId</span>(postId))))
+  .<span class="hljs-title function_">build</span>();
+<span class="hljs-keyword">const</span> [post] = <span class="hljs-keyword">await</span> runtime.<span class="hljs-title function_">query</span>(plan);</code></pre></div></figure></p>
+<p>To fetch one document by its id, the <a href="#/doc/prisma8/reference/orm-client">ORM client</a> is shorter, because it converts the hex string for you:</p>
+<p><figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">const</span> post = <span class="hljs-keyword">await</span> db.<span class="hljs-property">orm</span>.<span class="hljs-property">posts</span>.<span class="hljs-title function_">where</span>({ <span class="hljs-attr">id</span>: postId }).<span class="hljs-title function_">first</span>();</code></pre></div></figure></p>
+</div></aside>
+<h3 id="sort"><code>sort()</code></h3>
+<p>Order documents by a field spec.</p>
+<h4 id="remarks">Remarks</h4>
+<ul>
+<li><code>sort()</code> takes a plain object spec: <code>{ field: 1 }</code> ascending, <code>{ field: -1 }</code> descending. Multiple keys sort in the order they appear.</li>
+</ul>
+<h4 id="options">Options</h4>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Name</th>
+<th>Type</th>
+<th>Required</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>spec</code></td>
+<td><code>{ [field]: 1 | -1 }</code></td>
+<td>Yes</td>
+<td>The sort key(s) and direction(s).</td>
+</tr>
+</tbody></table></div>
+<h4 id="return-type">Return type</h4>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Return type</th>
+<th>Example</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Pipeline builder</td>
+<td><code>db.query.from(&#39;posts&#39;).sort({ createdAt: -1 })</code></td>
+<td>A builder with an ordering applied.</td>
+</tr>
+</tbody></table></div>
+<h4 id="examples">Examples</h4>
+<h5 id="sort-descending">Sort descending</h5>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">const</span> plan = db.<span class="hljs-property">query</span>.<span class="hljs-title function_">from</span>(<span class="hljs-string">&#x27;posts&#x27;</span>).<span class="hljs-title function_">sort</span>({ <span class="hljs-attr">createdAt</span>: -<span class="hljs-number">1</span> }).<span class="hljs-title function_">build</span>();
+<span class="hljs-keyword">const</span> newestFirst = <span class="hljs-keyword">await</span> runtime.<span class="hljs-title function_">query</span>(plan);</code></pre></div></figure>
+<h3 id="limit"><code>limit()</code></h3>
+<p>Cap the number of documents.</p>
+<h4 id="remarks">Remarks</h4>
+<ul>
+<li>Combine <code>sort()</code> then <code>limit(1)</code> to fetch a single document: the pipeline builder has no <code>first()</code>.</li>
+</ul>
+<h4 id="options">Options</h4>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Name</th>
+<th>Type</th>
+<th>Required</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>count</code></td>
+<td><code>number</code></td>
+<td>Yes</td>
+<td>Maximum number of documents to return.</td>
+</tr>
+</tbody></table></div>
+<h4 id="return-type">Return type</h4>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Return type</th>
+<th>Example</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Pipeline builder</td>
+<td><code>db.query.from(&#39;posts&#39;).limit(1)</code></td>
+<td>A builder limited to <code>count</code> documents.</td>
+</tr>
+</tbody></table></div>
+<h4 id="examples">Examples</h4>
+<h5 id="fetch-a-single-document">Fetch a single document</h5>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">const</span> plan = db.<span class="hljs-property">query</span>.<span class="hljs-title function_">from</span>(<span class="hljs-string">&#x27;posts&#x27;</span>).<span class="hljs-title function_">sort</span>({ <span class="hljs-attr">createdAt</span>: <span class="hljs-number">1</span> }).<span class="hljs-title function_">limit</span>(<span class="hljs-number">1</span>).<span class="hljs-title function_">build</span>();
+<span class="hljs-keyword">const</span> [oldest] = <span class="hljs-keyword">await</span> runtime.<span class="hljs-title function_">query</span>(plan);</code></pre></div></figure>
+<h3 id="skip"><code>skip()</code></h3>
+<p>Offset into the sorted result set.</p>
+<h4 id="options">Options</h4>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Name</th>
+<th>Type</th>
+<th>Required</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>count</code></td>
+<td><code>number</code></td>
+<td>Yes</td>
+<td>Number of documents to skip.</td>
+</tr>
+</tbody></table></div>
+<h4 id="return-type">Return type</h4>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Return type</th>
+<th>Example</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Pipeline builder</td>
+<td><code>db.query.from(&#39;posts&#39;).skip(1)</code></td>
+<td>A builder offset by <code>count</code> documents.</td>
+</tr>
+</tbody></table></div>
+<h4 id="examples">Examples</h4>
+<h5 id="paginate">Paginate</h5>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">const</span> plan = db.<span class="hljs-property">query</span>.<span class="hljs-title function_">from</span>(<span class="hljs-string">&#x27;posts&#x27;</span>).<span class="hljs-title function_">sort</span>({ <span class="hljs-attr">createdAt</span>: <span class="hljs-number">1</span> }).<span class="hljs-title function_">skip</span>(<span class="hljs-number">1</span>).<span class="hljs-title function_">build</span>();
+<span class="hljs-keyword">const</span> afterFirst = <span class="hljs-keyword">await</span> runtime.<span class="hljs-title function_">query</span>(plan);</code></pre></div></figure>
+<h3 id="sample"><code>sample()</code></h3>
+<p>Draw a random subset of documents.</p>
+<h4 id="options">Options</h4>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Name</th>
+<th>Type</th>
+<th>Required</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>size</code></td>
+<td><code>number</code></td>
+<td>Yes</td>
+<td>Number of documents to sample.</td>
+</tr>
+</tbody></table></div>
+<h4 id="return-type">Return type</h4>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Return type</th>
+<th>Example</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Pipeline builder</td>
+<td><code>db.query.from(&#39;posts&#39;).sample(1)</code></td>
+<td>A builder emitting a random subset.</td>
+</tr>
+</tbody></table></div>
+<h4 id="examples">Examples</h4>
+<h5 id="random-subset">Random subset</h5>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">const</span> plan = db.<span class="hljs-property">query</span>.<span class="hljs-title function_">from</span>(<span class="hljs-string">&#x27;posts&#x27;</span>).<span class="hljs-title function_">sample</span>(<span class="hljs-number">1</span>).<span class="hljs-title function_">build</span>();
+<span class="hljs-keyword">const</span> oneRandom = <span class="hljs-keyword">await</span> runtime.<span class="hljs-title function_">query</span>(plan);</code></pre></div></figure>
+<h3 id="addfields"><code>addFields()</code></h3>
+<p>Compute new fields and attach them to each document.</p>
+<h4 id="remarks">Remarks</h4>
+<ul>
+<li><code>addFields()</code> takes a callback returning an object of new field names to computed <a href="#expression-helpers">expression-helper</a> values. Existing fields are preserved.</li>
+</ul>
+<h4 id="options">Options</h4>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Name</th>
+<th>Type</th>
+<th>Required</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>spec</code></td>
+<td>Callback <code>(f) =&gt; ({ [field]: Expression })</code></td>
+<td>Yes</td>
+<td>The new fields to compute.</td>
+</tr>
+</tbody></table></div>
+<h4 id="return-type">Return type</h4>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Return type</th>
+<th>Example</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Pipeline builder</td>
+<td><code>db.query.from(&#39;posts&#39;).addFields(...)</code></td>
+<td>A builder whose documents carry the new fields.</td>
+</tr>
+</tbody></table></div>
+<h4 id="examples">Examples</h4>
+<h5 id="attach-a-computed-field">Attach a computed field</h5>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">
+
+<span class="hljs-keyword">const</span> plan = db.<span class="hljs-property">query</span>
+  .<span class="hljs-title function_">from</span>(<span class="hljs-string">&#x27;posts&#x27;</span>)
+  .<span class="hljs-title function_">addFields</span>(<span class="hljs-function">(<span class="hljs-params">f</span>) =&gt;</span> ({ <span class="hljs-attr">shoutTitle</span>: fn.<span class="hljs-title function_">toUpper</span>(f.<span class="hljs-property">title</span>) }))
+  .<span class="hljs-title function_">build</span>();
+<span class="hljs-keyword">const</span> withShout = <span class="hljs-keyword">await</span> runtime.<span class="hljs-title function_">query</span>(plan);</code></pre></div></figure>
+<h3 id="lookup"><code>lookup()</code></h3>
+<p>Join documents from another collection (<code>$lookup</code>).</p>
+<h4 id="remarks">Remarks</h4>
+<ul>
+<li><code>lookup()</code> takes a callback that builds the join with <code>from(collection).on((local, foreign) =&gt; ({ local, foreign })).as(name)</code>: the other collection, the two fields to match on, and the name of the output array field.</li>
+<li>The object returned by <code>on()</code> has two fixed keys, <code>local</code> and <code>foreign</code>. Write <code>({ local: local.authorId, foreign: foreign._id })</code>.</li>
+<li>The joined documents arrive in an array under the <code>as</code> name. When nothing matches, that array is empty.</li>
+<li>A joined document&#39;s <code>_id</code> and the <code>_id</code> of the document it was joined to are both <code>ObjectId</code> objects, and two <code>ObjectId</code> objects are never <code>===</code> even when they hold the same id. Compare them as strings: <code>String(post.author[0]._id) === String(post.authorId)</code>.</li>
+</ul>
+<h4 id="options">Options</h4>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Name</th>
+<th>Type</th>
+<th>Required</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>builder</code></td>
+<td>Callback <code>(from) =&gt; from(collection).on(...).as(name)</code></td>
+<td>Yes</td>
+<td>The join specification.</td>
+</tr>
+</tbody></table></div>
+<h4 id="return-type">Return type</h4>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Return type</th>
+<th>Example</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Pipeline builder</td>
+<td><code>db.query.from(&#39;posts&#39;).lookup(...)</code></td>
+<td>A builder whose documents carry the joined array.</td>
+</tr>
+</tbody></table></div>
+<h4 id="examples">Examples</h4>
+<h5 id="join-a-foreign-collection">Join a foreign collection</h5>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">const</span> plan = db.<span class="hljs-property">query</span>
+  .<span class="hljs-title function_">from</span>(<span class="hljs-string">&#x27;posts&#x27;</span>)
+  .<span class="hljs-title function_">match</span>(<span class="hljs-function">(<span class="hljs-params">f</span>) =&gt;</span> f.<span class="hljs-property">title</span>.<span class="hljs-title function_">eq</span>(<span class="hljs-string">&#x27;Hello world&#x27;</span>))
+  .<span class="hljs-title function_">lookup</span>(<span class="hljs-function">(<span class="hljs-params"><span class="hljs-keyword">from</span></span>) =&gt;</span>
+    <span class="hljs-title function_">from</span>(<span class="hljs-string">&#x27;users&#x27;</span>)
+      .<span class="hljs-title function_">on</span>(<span class="hljs-function">(<span class="hljs-params">local, foreign</span>) =&gt;</span> ({ <span class="hljs-attr">local</span>: local.<span class="hljs-property">authorId</span>, <span class="hljs-attr">foreign</span>: foreign.<span class="hljs-property">_id</span> }))
+      .<span class="hljs-title function_">as</span>(<span class="hljs-string">&#x27;author&#x27;</span>),
+  )
+  .<span class="hljs-title function_">build</span>();
+<span class="hljs-keyword">const</span> withAuthor = <span class="hljs-keyword">await</span> runtime.<span class="hljs-title function_">query</span>(plan);</code></pre></div></figure>
+<h3 id="project"><code>project()</code></h3>
+<p>Reshape each document.</p>
+<h4 id="remarks">Remarks</h4>
+<ul>
+<li><code>project()</code> has two forms. A <strong>key-list</strong> form narrows to the named fields (<code>project(&#39;title&#39;, &#39;kind&#39;)</code>); <code>_id</code> is retained implicitly even when not listed.</li>
+<li>A <strong>callback</strong> form computes a projection spec (<code>project((f) =&gt; ({ title: 1, shout: fn.toUpper(f.title) }))</code>). Write <code>1</code> to keep a field, or an expression to compute it. There is no <code>0</code> form here: the callback form cannot drop a field.</li>
+</ul>
+<h4 id="options">Options</h4>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Name</th>
+<th>Type</th>
+<th>Required</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>...fields</code></td>
+<td>Field names (<code>string</code>)</td>
+<td>Key-list form</td>
+<td>The fields to keep.</td>
+</tr>
+<tr>
+<td><code>spec</code></td>
+<td>Callback <code>(f) =&gt; ({ [field]: 1 | Expression })</code></td>
+<td>Callback form</td>
+<td>The projection specification.</td>
+</tr>
+</tbody></table></div>
+<h4 id="return-type">Return type</h4>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Return type</th>
+<th>Example</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Pipeline builder</td>
+<td><code>db.query.from(&#39;posts&#39;).project(&#39;title&#39;, &#39;kind&#39;)</code></td>
+<td>A builder projected to the given shape.</td>
+</tr>
+</tbody></table></div>
+<h4 id="examples">Examples</h4>
+<h5 id="key-list-form">Key-list form</h5>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">const</span> plan = db.<span class="hljs-property">query</span>.<span class="hljs-title function_">from</span>(<span class="hljs-string">&#x27;posts&#x27;</span>).<span class="hljs-title function_">project</span>(<span class="hljs-string">&#x27;title&#x27;</span>, <span class="hljs-string">&#x27;kind&#x27;</span>).<span class="hljs-title function_">build</span>();
+<span class="hljs-keyword">const</span> trimmed = <span class="hljs-keyword">await</span> runtime.<span class="hljs-title function_">query</span>(plan);</code></pre></div></figure>
+<h5 id="callback-form">Callback form</h5>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">
+
+<span class="hljs-keyword">const</span> plan = db.<span class="hljs-property">query</span>
+  .<span class="hljs-title function_">from</span>(<span class="hljs-string">&#x27;posts&#x27;</span>)
+  .<span class="hljs-title function_">project</span>(<span class="hljs-function">(<span class="hljs-params">f</span>) =&gt;</span> ({ <span class="hljs-attr">title</span>: <span class="hljs-number">1</span>, <span class="hljs-attr">shout</span>: fn.<span class="hljs-title function_">toUpper</span>(f.<span class="hljs-property">title</span>) }))
+  .<span class="hljs-title function_">build</span>();
+<span class="hljs-keyword">const</span> projected = <span class="hljs-keyword">await</span> runtime.<span class="hljs-title function_">query</span>(plan);</code></pre></div></figure>
+<h3 id="unwind"><code>unwind()</code></h3>
+<p>Unroll an array field into one document per element.</p>
+<h4 id="remarks">Remarks</h4>
+<ul>
+<li><code>unwind(field, { preserveNullAndEmptyArrays? })</code> maps to MongoDB&#39;s <code>$unwind</code>. Name the field holding the array. TypeScript accepts any field of the document; nothing checks that it holds an array.</li>
+</ul>
+<h4 id="options">Options</h4>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Name</th>
+<th>Type</th>
+<th>Required</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>field</code></td>
+<td>Field name (<code>string</code>)</td>
+<td>Yes</td>
+<td>The array field to unroll.</td>
+</tr>
+<tr>
+<td><code>options.preserveNullAndEmptyArrays</code></td>
+<td><code>boolean</code></td>
+<td>No</td>
+<td>Keep documents whose array is null, missing, or empty. Defaults to <code>false</code>.</td>
+</tr>
+</tbody></table></div>
+<h4 id="return-type">Return type</h4>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Return type</th>
+<th>Example</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Pipeline builder</td>
+<td><code>db.query.from(&#39;posts&#39;).unwind(&#39;tags&#39;)</code></td>
+<td>A builder emitting one document per array element.</td>
+</tr>
+</tbody></table></div>
+<h4 id="examples">Examples</h4>
+<h5 id="unroll-an-array-field">Unroll an array field</h5>
+<p>This example needs a <code>tags String[]</code> field on <code>Post</code>, which the example schema does not have.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">const</span> plan = db.<span class="hljs-property">query</span>
+  .<span class="hljs-title function_">from</span>(<span class="hljs-string">&#x27;posts&#x27;</span>)
+  .<span class="hljs-title function_">match</span>(<span class="hljs-function">(<span class="hljs-params">f</span>) =&gt;</span> f.<span class="hljs-property">title</span>.<span class="hljs-title function_">eq</span>(<span class="hljs-string">&#x27;Hello world&#x27;</span>))
+  .<span class="hljs-title function_">unwind</span>(<span class="hljs-string">&#x27;tags&#x27;</span>)
+  .<span class="hljs-title function_">sort</span>({ <span class="hljs-attr">tags</span>: <span class="hljs-number">1</span> })
+  .<span class="hljs-title function_">build</span>();
+<span class="hljs-keyword">const</span> perTag = <span class="hljs-keyword">await</span> runtime.<span class="hljs-title function_">query</span>(plan);</code></pre></div></figure>
+<h3 id="group"><code>group()</code></h3>
+<p>Group documents by a key and compute per-group aggregates.</p>
+<h4 id="remarks">Remarks</h4>
+<ul>
+<li><code>group()</code> takes a callback that receives <strong>only</strong> the <code>f</code> argument, one property per field (<code>(f) =&gt; ...</code>), and returns a spec object. The spec&#39;s <code>_id</code> sets the grouping key; every other key must be an <strong>accumulator</strong>.</li>
+<li><code>acc</code> holds the accumulators <code>group()</code> accepts, such as a count or a sum, documented under <a href="#accumulators">Accumulators</a>. Import it and use it inside the callback, <strong>not</strong> as a second callback argument: <code>import { acc } from &#39;@prisma/orm-mongo/query-builder&#39;</code>, then <code>acc.count()</code>, <code>acc.push(f.title)</code>. The callback takes one argument; there is no <code>(f, acc) =&gt; ...</code> form.</li>
+<li>A <code>_id: null</code> key groups the whole collection into a single bucket.</li>
+<li>A non-accumulator value for a non-<code>_id</code> key throws as soon as you call <code>group()</code>, with an error whose <code>code</code> is <code>ORM.ARGUMENT_INVALID</code>: <code>group() field &quot;&lt;name&gt;&quot; must use an accumulator (e.g. acc.sum(), acc.count()). Got &quot;&lt;kind&gt;&quot; expression.</code> A <code>null</code> value for a key other than <code>_id</code> throws with the same code and the message <code>group() field &quot;&lt;name&gt;&quot; must not be null. Only _id can be null.</code></li>
+</ul>
+<h4 id="options">Options</h4>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Name</th>
+<th>Type</th>
+<th>Required</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>spec</code></td>
+<td>Callback <code>(f) =&gt; ({ _id: keyExpression | null, [alias]: acc.* })</code></td>
+<td>Yes</td>
+<td>The grouping key and per-group accumulators.</td>
+</tr>
+</tbody></table></div>
+<h4 id="return-type">Return type</h4>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Return type</th>
+<th>Example</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Pipeline builder</td>
+<td><code>db.query.from(&#39;posts&#39;).group(...)</code></td>
+<td>A builder emitting one document per group.</td>
+</tr>
+</tbody></table></div>
+<h4 id="examples">Examples</h4>
+<h5 id="group-by-a-field">Group by a field</h5>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">
+
+<span class="hljs-keyword">const</span> plan = db.<span class="hljs-property">query</span>
+  .<span class="hljs-title function_">from</span>(<span class="hljs-string">&#x27;posts&#x27;</span>)
+  .<span class="hljs-title function_">group</span>(<span class="hljs-function">(<span class="hljs-params">f</span>) =&gt;</span> ({
+    <span class="hljs-attr">_id</span>: f.<span class="hljs-property">authorId</span>,
+    <span class="hljs-attr">postCount</span>: acc.<span class="hljs-title function_">count</span>(),
+    <span class="hljs-attr">titles</span>: acc.<span class="hljs-title function_">push</span>(f.<span class="hljs-property">title</span>),
+  }))
+  .<span class="hljs-title function_">build</span>();
+<span class="hljs-keyword">const</span> perAuthor = <span class="hljs-keyword">await</span> runtime.<span class="hljs-title function_">query</span>(plan);</code></pre></div></figure>
+<h5 id="group-the-whole-collection">Group the whole collection</h5>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">
+
+<span class="hljs-keyword">const</span> plan = db.<span class="hljs-property">query</span>
+  .<span class="hljs-title function_">from</span>(<span class="hljs-string">&#x27;posts&#x27;</span>)
+  .<span class="hljs-title function_">group</span>(<span class="hljs-function">(<span class="hljs-params">f</span>) =&gt;</span> ({ <span class="hljs-attr">_id</span>: <span class="hljs-literal">null</span>, <span class="hljs-attr">total</span>: acc.<span class="hljs-title function_">count</span>(), <span class="hljs-attr">latest</span>: acc.<span class="hljs-title function_">max</span>(f.<span class="hljs-property">createdAt</span>) }))
+  .<span class="hljs-title function_">build</span>();
+<span class="hljs-keyword">const</span> [summary] = <span class="hljs-keyword">await</span> runtime.<span class="hljs-title function_">query</span>(plan);</code></pre></div></figure>
+<p>For Prisma ORM 7 users, <code>groupBy</code> becomes a <code>group()</code> stage on the pipeline builder:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Diff</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-diff"><span class="hljs-deletion">- const perAuthor = await prisma.post.groupBy({ by: [&#x27;authorId&#x27;], _count: true });</span>
+<span class="hljs-addition">+ const perAuthor = await runtime.query(</span>
+<span class="hljs-addition">+   db.query.from(&#x27;posts&#x27;).group((f) =&gt; ({ _id: f.authorId, postCount: acc.count() })).build(),</span>
+<span class="hljs-addition">+ );</span></code></pre></div></figure>
+<h3 id="replaceroot"><code>replaceRoot()</code></h3>
+<p>Promote a computed sub-document to the top level.</p>
+<h4 id="remarks">Remarks</h4>
+<ul>
+<li><code>replaceRoot()</code> takes a callback returning an expression that evaluates to an object. A bare scalar is rejected by MongoDB at runtime (<code>&#39;newRoot&#39; expression must evaluate to an object</code>).</li>
+<li>A common pattern is to promote the first element of a <code>lookup()</code> array with <code>fn.arrayElemAt(f.author, fn.literal(0))</code>.</li>
+</ul>
+<h4 id="options">Options</h4>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Name</th>
+<th>Type</th>
+<th>Required</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>spec</code></td>
+<td>Callback <code>(f) =&gt; documentExpression</code></td>
+<td>Yes</td>
+<td>The document to promote to the root.</td>
+</tr>
+</tbody></table></div>
+<h4 id="return-type">Return type</h4>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Return type</th>
+<th>Example</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Pipeline builder</td>
+<td><code>db.query.from(&#39;posts&#39;).replaceRoot(...)</code></td>
+<td>A builder whose documents are the promoted sub-document.</td>
+</tr>
+</tbody></table></div>
+<h4 id="examples">Examples</h4>
+<h5 id="promote-a-looked-up-document">Promote a looked-up document</h5>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">
+
+<span class="hljs-keyword">const</span> plan = db.<span class="hljs-property">query</span>
+  .<span class="hljs-title function_">from</span>(<span class="hljs-string">&#x27;posts&#x27;</span>)
+  .<span class="hljs-title function_">match</span>(<span class="hljs-function">(<span class="hljs-params">f</span>) =&gt;</span> f.<span class="hljs-property">title</span>.<span class="hljs-title function_">eq</span>(<span class="hljs-string">&#x27;Hello world&#x27;</span>))
+  .<span class="hljs-title function_">lookup</span>(<span class="hljs-function">(<span class="hljs-params"><span class="hljs-keyword">from</span></span>) =&gt;</span>
+    <span class="hljs-title function_">from</span>(<span class="hljs-string">&#x27;users&#x27;</span>)
+      .<span class="hljs-title function_">on</span>(<span class="hljs-function">(<span class="hljs-params">local, foreign</span>) =&gt;</span> ({ <span class="hljs-attr">local</span>: local.<span class="hljs-property">authorId</span>, <span class="hljs-attr">foreign</span>: foreign.<span class="hljs-property">_id</span> }))
+      .<span class="hljs-title function_">as</span>(<span class="hljs-string">&#x27;author&#x27;</span>),
+  )
+  .<span class="hljs-title function_">replaceRoot</span>(<span class="hljs-function">(<span class="hljs-params">f</span>) =&gt;</span> fn.<span class="hljs-title function_">arrayElemAt</span>(f.<span class="hljs-property">author</span>, fn.<span class="hljs-title function_">literal</span>(<span class="hljs-number">0</span>)))
+  .<span class="hljs-title function_">build</span>();
+<span class="hljs-keyword">const</span> authors = <span class="hljs-keyword">await</span> runtime.<span class="hljs-title function_">query</span>(plan);</code></pre></div></figure>
+<h3 id="count"><code>count()</code></h3>
+<p>Reduce the pipeline to a single document holding the count. It is not <code>acc.count()</code>, which counts the documents in one group inside <code>group()</code>.</p>
+<h4 id="options">Options</h4>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Name</th>
+<th>Type</th>
+<th>Required</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>field</code></td>
+<td><code>string</code></td>
+<td>Yes</td>
+<td>The output field name for the count.</td>
+</tr>
+</tbody></table></div>
+<h4 id="return-type">Return type</h4>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Return type</th>
+<th>Example</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Pipeline builder</td>
+<td><code>db.query.from(&#39;posts&#39;).count(&#39;total&#39;)</code></td>
+<td>A builder emitting one <code>{ [field]: n }</code> document.</td>
+</tr>
+</tbody></table></div>
+<h4 id="examples">Examples</h4>
+<h5 id="count-documents">Count documents</h5>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">const</span> plan = db.<span class="hljs-property">query</span>.<span class="hljs-title function_">from</span>(<span class="hljs-string">&#x27;posts&#x27;</span>).<span class="hljs-title function_">count</span>(<span class="hljs-string">&#x27;total&#x27;</span>).<span class="hljs-title function_">build</span>();
+<span class="hljs-keyword">const</span> [{ total }] = <span class="hljs-keyword">await</span> runtime.<span class="hljs-title function_">query</span>(plan);</code></pre></div></figure>
+<h3 id="sortbycount"><code>sortByCount()</code></h3>
+<p>Group by an expression and sort descending by group size.</p>
+<h4 id="remarks">Remarks</h4>
+<ul>
+<li><code>sortByCount()</code> takes a callback returning the grouping expression. It emits one document per distinct value, each <code>{ _id, count }</code>, sorted by <code>count</code> descending.</li>
+</ul>
+<h4 id="options">Options</h4>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Name</th>
+<th>Type</th>
+<th>Required</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>expression</code></td>
+<td>Callback <code>(f) =&gt; expression</code></td>
+<td>Yes</td>
+<td>The value to group and count by.</td>
+</tr>
+</tbody></table></div>
+<h4 id="return-type">Return type</h4>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Return type</th>
+<th>Example</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Pipeline builder</td>
+<td><code>db.query.from(&#39;posts&#39;).sortByCount((f) =&gt; f.kind)</code></td>
+<td>A builder emitting <code>{ _id, count }</code> documents.</td>
+</tr>
+</tbody></table></div>
+<h4 id="examples">Examples</h4>
+<h5 id="count-occurrences-of-a-field-value">Count occurrences of a field value</h5>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">const</span> plan = db.<span class="hljs-property">query</span>
+  .<span class="hljs-title function_">from</span>(<span class="hljs-string">&#x27;posts&#x27;</span>)
+  .<span class="hljs-title function_">sortByCount</span>(<span class="hljs-function">(<span class="hljs-params">f</span>) =&gt;</span> f.<span class="hljs-property">kind</span>)
+  .<span class="hljs-title function_">build</span>();
+<span class="hljs-keyword">const</span> byKind = <span class="hljs-keyword">await</span> runtime.<span class="hljs-title function_">query</span>(plan);</code></pre></div></figure>
+<h3 id="redact"><code>redact()</code></h3>
+<p>Keep or prune documents (and sub-documents) based on an expression.</p>
+<h4 id="remarks">Remarks</h4>
+<ul>
+<li><code>redact()</code> maps to MongoDB&#39;s <code>$redact</code>, whose expression must evaluate to one of MongoDB&#39;s <code>$$</code> variables: <code>$$KEEP</code>, <code>$$DESCEND</code>, or <code>$$PRUNE</code>.</li>
+<li>Write those variables with <code>f.rawPath(&#39;$KEEP&#39;)</code> and <code>f.rawPath(&#39;$PRUNE&#39;)</code>. <code>f.rawPath(path)</code> names a field or a MongoDB <code>$$</code> variable by its raw string, with no checking against your model, and it prefixes <code>$</code> to the string you give it. There is no expression helper for a <code>$$</code> variable, and <code>fn.literal(...)</code> cannot stand in: the server rejects both <code>fn.literal(&#39;KEEP&#39;)</code> and <code>fn.literal(&#39;$$KEEP&#39;)</code>.</li>
+<li>For which <code>fn.*</code> values need their <code>.node</code> property here, see the table under <a href="#match"><code>match()</code></a>. For anything more involved, use <a href="#rawcommand"><code>rawCommand()</code></a>, where you write the <code>$redact</code> stage with <code>$$KEEP</code> and <code>$$PRUNE</code> directly.</li>
+</ul>
+<h4 id="options">Options</h4>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Name</th>
+<th>Type</th>
+<th>Required</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>spec</code></td>
+<td>Callback <code>(f) =&gt; expression</code></td>
+<td>Yes</td>
+<td>An expression evaluating to <code>$$KEEP</code>, <code>$$DESCEND</code>, or <code>$$PRUNE</code>.</td>
+</tr>
+</tbody></table></div>
+<h4 id="return-type">Return type</h4>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Return type</th>
+<th>Example</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Pipeline builder</td>
+<td><code>db.query.from(&#39;posts&#39;).redact(...)</code></td>
+<td>A builder that keeps or prunes each document.</td>
+</tr>
+</tbody></table></div>
+<h4 id="examples">Examples</h4>
+<h5 id="keep-tutorials-and-prune-everything-else">Keep tutorials and prune everything else</h5>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">
+
+<span class="hljs-keyword">const</span> plan = db.<span class="hljs-property">query</span>
+  .<span class="hljs-title function_">from</span>(<span class="hljs-string">&#x27;posts&#x27;</span>)
+  .<span class="hljs-title function_">redact</span>(<span class="hljs-function">(<span class="hljs-params">f</span>) =&gt;</span>
+    fn.<span class="hljs-title function_">cond</span>(fn.<span class="hljs-title function_">eq</span>(f.<span class="hljs-property">kind</span>, fn.<span class="hljs-title function_">literal</span>(<span class="hljs-string">&#x27;tutorial&#x27;</span>)).<span class="hljs-property">node</span>, f.<span class="hljs-title function_">rawPath</span>(<span class="hljs-string">&#x27;$KEEP&#x27;</span>), f.<span class="hljs-title function_">rawPath</span>(<span class="hljs-string">&#x27;$PRUNE&#x27;</span>)),
+  )
+  .<span class="hljs-title function_">build</span>();
+<span class="hljs-keyword">const</span> tutorials = <span class="hljs-keyword">await</span> runtime.<span class="hljs-title function_">query</span>(plan);</code></pre></div></figure>
+<h3 id="option-object-stages">Option-object stages</h3>
+<p>Several stages take a single MongoDB stage options object rather than a typed <code>(f) =&gt; ...</code> callback. Each one carries the same meaning it has in MongoDB. Where an option below is called a raw expression, it wants a MongoDB expression object rather than a typed builder value: build one with the <code>fn.*</code> helpers and pass its <code>.node</code> property, or name a field with <code>MongoAggFieldRef.of(&#39;duration&#39;)</code>, which is already a raw expression and takes no <code>.node</code>.</p>
+<h4 id="remarks">Remarks</h4>
+<ul>
+<li><code>bucket({ groupBy, boundaries, default_?, output? })</code> sorts documents into the ranges you name. <code>default</code> is a reserved word in JavaScript, so the key is <code>default_</code>. <code>groupBy</code> is a raw expression.</li>
+<li><code>bucketAuto({ groupBy, buckets, output?, granularity? })</code> sorts them into a given number of ranges, chosen so each holds about the same number of documents. <code>groupBy</code> is a raw expression. <code>granularity</code> is a string that MongoDB reads as the series it rounds the bucket boundaries to. Prisma ORM passes it through unchanged, accepts any string, and MongoDB rejects the ones it does not know.</li>
+<li><code>geoNear({ near, distanceField, spherical?, maxDistance?, minDistance?, query?, key?, distanceMultiplier?, includeLocs? })</code> sorts documents by their distance from a point and writes that distance into <code>distanceField</code>. <code>near</code> is the point to measure from, and Prisma ORM passes it through to MongoDB unchanged.</li>
+<li><code>graphLookup({ from, startWith, connectFromField, connectToField, as, maxDepth?, depthField?, restrictSearchWithMatch? })</code> follows links from document to document through one collection and collects what it reaches into <code>as</code>. <code>startWith</code> is a raw expression.</li>
+<li><code>setWindowFields({ partitionBy?, sortBy?, output })</code> computes a value for each document from the documents around it, such as a running total. <code>partitionBy</code> is a raw expression. <code>output</code> is an object mapping each new field name to <code>{ operator, window? }</code>, where <code>operator</code> is a raw expression, usually an accumulator: <code>{ runningTotal: { operator: MongoAggAccumulator.sum(MongoAggFieldRef.of(&#39;duration&#39;)), window: { documents: [&#39;unbounded&#39;, 0] } } }</code>.</li>
+<li><code>densify({ field, partitionByFields?, range })</code> adds documents to fill the gaps in a sequence of numbers or dates. <code>range</code> is <code>{ step, unit?, bounds }</code>, where <code>bounds</code> is <code>&#39;full&#39;</code>, <code>&#39;partition&#39;</code>, or a pair of start and end values.</li>
+<li><code>fill({ partitionBy?, partitionByFields?, sortBy?, output })</code> replaces missing or null values with a value you choose. <code>partitionBy</code> is a raw expression. <code>output</code> is an object mapping each field name to <code>{ method }</code> or <code>{ value }</code>, where <code>value</code> is an expression and <code>method</code> is a string that Prisma ORM passes through to MongoDB unchanged.</li>
+<li><code>facet(facets)</code> takes an object mapping each output field name to an array of stages.</li>
+<li><code>unionWith(collection, pipeline?)</code> takes a collection name and an optional array of stages.</li>
+<li>The stages you pass to <code>facet</code> and <code>unionWith</code> are classes, one class per MongoDB stage, named <code>MongoStage</code>. Import them, along with <code>MongoAggFieldRef</code> and <code>MongoAggAccumulator</code>, from <code>@prisma/orm-mongo/query-ast/execution</code>. Each class takes the same arguments as the MongoDB stage it builds. The three used below are <code>MongoCountStage(field)</code>, <code>MongoSortStage(spec)</code>, and <code>MongoLimitStage(n)</code>.</li>
+</ul>
+<h4 id="examples">Examples</h4>
+<h5 id="concatenate-another-collection-with-unionwith">Concatenate another collection with <code>unionWith()</code></h5>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">const</span> plan = db.<span class="hljs-property">query</span>.<span class="hljs-title function_">from</span>(<span class="hljs-string">&#x27;posts&#x27;</span>).<span class="hljs-title function_">unionWith</span>(<span class="hljs-string">&#x27;users&#x27;</span>).<span class="hljs-title function_">build</span>();
+<span class="hljs-keyword">const</span> combined = <span class="hljs-keyword">await</span> runtime.<span class="hljs-title function_">query</span>(plan);</code></pre></div></figure>
+<h5 id="run-several-sub-pipelines-with-facet">Run several sub-pipelines with <code>facet()</code></h5>
+<p><code>MongoFieldFilter</code> is the filter class from <code>@prisma/orm-mongo/query-ast/execution</code>. See <a href="#/doc/prisma8/reference/orm-client@mongofieldfilter">MongoFieldFilter</a> on the ORM client page for its methods, such as <code>gt</code> and <code>in</code>.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">
+
+<span class="hljs-keyword">const</span> plan = db.<span class="hljs-property">query</span>
+  .<span class="hljs-title function_">from</span>(<span class="hljs-string">&#x27;posts&#x27;</span>)
+  .<span class="hljs-title function_">facet</span>({
+    <span class="hljs-attr">totalCount</span>: [<span class="hljs-keyword">new</span> <span class="hljs-title class_">MongoCountStage</span>(<span class="hljs-string">&#x27;count&#x27;</span>)],
+    <span class="hljs-attr">newest</span>: [<span class="hljs-keyword">new</span> <span class="hljs-title class_">MongoSortStage</span>({ <span class="hljs-attr">createdAt</span>: -<span class="hljs-number">1</span> }), <span class="hljs-keyword">new</span> <span class="hljs-title class_">MongoLimitStage</span>(<span class="hljs-number">2</span>)],
+    <span class="hljs-attr">tutorials</span>: [
+      <span class="hljs-keyword">new</span> <span class="hljs-title class_">MongoMatchStage</span>(<span class="hljs-title class_">MongoFieldFilter</span>.<span class="hljs-title function_">eq</span>(<span class="hljs-string">&#x27;kind&#x27;</span>, <span class="hljs-string">&#x27;tutorial&#x27;</span>)),
+      <span class="hljs-keyword">new</span> <span class="hljs-title class_">MongoCountStage</span>(<span class="hljs-string">&#x27;count&#x27;</span>),
+    ],
+  })
+  .<span class="hljs-title function_">build</span>();
+<span class="hljs-keyword">const</span> [facets] = <span class="hljs-keyword">await</span> runtime.<span class="hljs-title function_">query</span>(plan);
+<span class="hljs-comment">// facets.totalCount is [{ count: &lt;number of posts&gt; }]; facets.newest is the two newest posts</span></code></pre></div></figure>
+<h5 id="sort-into-ranges-with-bucket">Sort into ranges with <code>bucket()</code></h5>
+<p><code>MongoAggFieldRef.of()</code> takes any field path as a string and does not check it against your models. <code>duration</code> is a field on <code>Tutorial</code>, so posts without it fall into the <code>Other</code> bucket.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">
+
+<span class="hljs-keyword">const</span> plan = db.<span class="hljs-property">query</span>
+  .<span class="hljs-title function_">from</span>(<span class="hljs-string">&#x27;posts&#x27;</span>)
+  .<span class="hljs-title function_">bucket</span>({
+    <span class="hljs-attr">groupBy</span>: <span class="hljs-title class_">MongoAggFieldRef</span>.<span class="hljs-title function_">of</span>(<span class="hljs-string">&#x27;duration&#x27;</span>),
+    <span class="hljs-attr">boundaries</span>: [<span class="hljs-number">0</span>, <span class="hljs-number">15</span>, <span class="hljs-number">60</span>],
+    <span class="hljs-attr">default_</span>: <span class="hljs-string">&#x27;Other&#x27;</span>,
+  })
+  .<span class="hljs-title function_">build</span>();
+<span class="hljs-keyword">const</span> buckets = <span class="hljs-keyword">await</span> runtime.<span class="hljs-title function_">query</span>(plan);
+<span class="hljs-comment">// one document per bucket, each { _id: &lt;lower boundary&gt;, count: n }</span></code></pre></div></figure>
+<h3 id="atlas-only-stages">Atlas-only stages</h3>
+<p><code>search()</code>, <code>searchMeta()</code>, and <code>vectorSearch()</code> build MongoDB Atlas Search stages (<code>$search</code>, <code>$searchMeta</code>, <code>$vectorSearch</code>).</p>
+<h4 id="remarks">Remarks</h4>
+<ul>
+<li>These stages need MongoDB Atlas. Nothing stops you from building them against a database that is not on Atlas. The error only appears when you run the query.</li>
+<li><code>search(config, index?)</code> takes an Atlas Search operator object, for example <code>{ text: { query: &#39;hello&#39;, path: &#39;title&#39; } }</code>, and an optional <code>index</code>, which names the Atlas Search index to use.</li>
+<li><code>searchMeta(config, index?)</code> takes the same two arguments and returns counts and facets instead of documents.</li>
+<li><code>vectorSearch({ index, path, queryVector, numCandidates, limit, filter? })</code> takes the index name, the field holding the vectors, the vector to search for as an array of numbers, how many candidates to consider, how many documents to return, and an optional filter object.</li>
+</ul>
+<h4 id="return-type">Return type</h4>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Return type</th>
+<th>Example</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Pipeline builder</td>
+<td><code>db.query.from(&#39;posts&#39;).search({ text: { query: &#39;hello&#39;, path: &#39;title&#39; } })</code></td>
+<td>A builder with an Atlas Search stage. Executes only on MongoDB Atlas.</td>
+</tr>
+</tbody></table></div>
+<h2 id="accumulators">Accumulators</h2>
+<p>Accumulators compute per-group values inside a <a href="#group"><code>group()</code></a> stage. <code>_id: null</code> in the examples below means one group holding every document. Import them from <code>@prisma/orm-mongo/query-builder</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"></code></pre></div></figure>
+<p>The builder exposes nineteen accumulators:</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Accumulator</th>
+<th>Signature</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>acc.count()</code></td>
+<td><code>count()</code></td>
+<td>Number of documents in the group.</td>
+</tr>
+<tr>
+<td><code>acc.sum(expr)</code></td>
+<td><code>sum(expression)</code></td>
+<td>Sum of the expression across the group.</td>
+</tr>
+<tr>
+<td><code>acc.avg(expr)</code></td>
+<td><code>avg(expression)</code></td>
+<td>Average of the expression.</td>
+</tr>
+<tr>
+<td><code>acc.min(expr)</code></td>
+<td><code>min(expression)</code></td>
+<td>Minimum value.</td>
+</tr>
+<tr>
+<td><code>acc.max(expr)</code></td>
+<td><code>max(expression)</code></td>
+<td>Maximum value.</td>
+</tr>
+<tr>
+<td><code>acc.first(expr)</code></td>
+<td><code>first(expression)</code></td>
+<td>Value from the first document in the group.</td>
+</tr>
+<tr>
+<td><code>acc.last(expr)</code></td>
+<td><code>last(expression)</code></td>
+<td>Value from the last document in the group.</td>
+</tr>
+<tr>
+<td><code>acc.push(expr)</code></td>
+<td><code>push(expression)</code></td>
+<td>Array of the expression&#39;s value from every document.</td>
+</tr>
+<tr>
+<td><code>acc.addToSet(expr)</code></td>
+<td><code>addToSet(expression)</code></td>
+<td>Array of distinct values.</td>
+</tr>
+<tr>
+<td><code>acc.firstN({ input, n })</code></td>
+<td><code>firstN({ input, n })</code></td>
+<td>First <code>n</code> values.</td>
+</tr>
+<tr>
+<td><code>acc.lastN({ input, n })</code></td>
+<td><code>lastN({ input, n })</code></td>
+<td>Last <code>n</code> values.</td>
+</tr>
+<tr>
+<td><code>acc.maxN({ input, n })</code></td>
+<td><code>maxN({ input, n })</code></td>
+<td>The <code>n</code> largest values.</td>
+</tr>
+<tr>
+<td><code>acc.minN({ input, n })</code></td>
+<td><code>minN({ input, n })</code></td>
+<td>The <code>n</code> smallest values.</td>
+</tr>
+<tr>
+<td><code>acc.top({ output, sortBy })</code></td>
+<td><code>top({ output, sortBy })</code></td>
+<td>The <code>output</code> value from the document that sorts first under <code>sortBy</code>.</td>
+</tr>
+<tr>
+<td><code>acc.bottom({ output, sortBy })</code></td>
+<td><code>bottom({ output, sortBy })</code></td>
+<td>The <code>output</code> value from the document that sorts last under <code>sortBy</code>.</td>
+</tr>
+<tr>
+<td><code>acc.topN({ output, sortBy, n })</code></td>
+<td><code>topN({ output, sortBy, n })</code></td>
+<td>The <code>output</code> values from the first <code>n</code> documents under <code>sortBy</code>.</td>
+</tr>
+<tr>
+<td><code>acc.bottomN({ output, sortBy, n })</code></td>
+<td><code>bottomN({ output, sortBy, n })</code></td>
+<td>The <code>output</code> values from the last <code>n</code> documents under <code>sortBy</code>.</td>
+</tr>
+<tr>
+<td><code>acc.stdDevPop(expr)</code></td>
+<td><code>stdDevPop(expression)</code></td>
+<td>Population standard deviation.</td>
+</tr>
+<tr>
+<td><code>acc.stdDevSamp(expr)</code></td>
+<td><code>stdDevSamp(expression)</code></td>
+<td>Sample standard deviation.</td>
+</tr>
+</tbody></table></div>
+<ul>
+<li><code>firstN</code>, <code>lastN</code>, <code>maxN</code>, and <code>minN</code> take <code>{ input, n }</code>. <code>input</code> is the expression whose values you collect.</li>
+<li><code>top</code> and <code>bottom</code> take <code>{ output, sortBy }</code>. <code>topN</code> and <code>bottomN</code> take the same two plus <code>n</code>.</li>
+<li><code>output</code> is the expression whose value you want back from each chosen document. <code>sortBy</code> is a plain object such as <code>{ createdAt: 1 }</code>, where <code>1</code> sorts ascending and <code>-1</code> sorts descending. Its keys are plain strings because they name fields, not values.</li>
+<li>Wherever a signature takes <code>n</code>, wrap the number: write <code>n: fn.literal(2)</code>, not <code>n: 2</code>. <code>fn.literal</code> comes from the <a href="#expression-helpers">expression helpers</a> below.</li>
+</ul>
+<p><strong>Put a <code>sort()</code> before the <code>group()</code> when you use <code>acc.first()</code> or <code>acc.last()</code>.</strong> Without one, the document MongoDB calls first is arbitrary and can change between runs.</p>
+<h4 id="examples">Examples</h4>
+<h5 id="count-and-sum"><code>count()</code> and <code>sum()</code></h5>
+<p><code>acc.sum(fn.literal(1))</code> adds 1 for each document, which counts them. To add up a field instead, pass the field, as in <code>acc.sum(f.views)</code> on a collection with a numeric <code>views</code> field. The example schema&#39;s <code>posts</code> has no such field, so that call needs a collection of your own.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">
+
+<span class="hljs-keyword">const</span> plan = db.<span class="hljs-property">query</span>.<span class="hljs-title function_">from</span>(<span class="hljs-string">&#x27;posts&#x27;</span>)
+  .<span class="hljs-title function_">group</span>(<span class="hljs-function">(<span class="hljs-params">f</span>) =&gt;</span> ({ <span class="hljs-attr">_id</span>: <span class="hljs-literal">null</span>, <span class="hljs-attr">total</span>: acc.<span class="hljs-title function_">count</span>(), <span class="hljs-attr">counted</span>: acc.<span class="hljs-title function_">sum</span>(fn.<span class="hljs-title function_">literal</span>(<span class="hljs-number">1</span>)) })).<span class="hljs-title function_">build</span>();
+<span class="hljs-keyword">const</span> [{ total, counted }] = <span class="hljs-keyword">await</span> runtime.<span class="hljs-title function_">query</span>(plan);
+<span class="hljs-comment">// { total: 2, counted: 2 }</span></code></pre></div></figure>
+<h5 id="avg-min-and-max"><code>avg()</code>, <code>min()</code>, and <code>max()</code></h5>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">const</span> plan = db.<span class="hljs-property">query</span>.<span class="hljs-title function_">from</span>(<span class="hljs-string">&#x27;posts&#x27;</span>)
+  .<span class="hljs-title function_">group</span>(<span class="hljs-function">(<span class="hljs-params">f</span>) =&gt;</span> ({ <span class="hljs-attr">_id</span>: <span class="hljs-literal">null</span>, <span class="hljs-attr">earliest</span>: acc.<span class="hljs-title function_">min</span>(f.<span class="hljs-property">createdAt</span>), <span class="hljs-attr">avgYear</span>: acc.<span class="hljs-title function_">avg</span>(fn.<span class="hljs-title function_">year</span>(f.<span class="hljs-property">createdAt</span>)) }))
+  .<span class="hljs-title function_">build</span>();
+<span class="hljs-keyword">const</span> [stats] = <span class="hljs-keyword">await</span> runtime.<span class="hljs-title function_">query</span>(plan);
+<span class="hljs-comment">// { earliest: , avgYear: 2024 }</span></code></pre></div></figure>
+<h5 id="first-and-last"><code>first()</code> and <code>last()</code></h5>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">const</span> plan = db.<span class="hljs-property">query</span>.<span class="hljs-title function_">from</span>(<span class="hljs-string">&#x27;posts&#x27;</span>).<span class="hljs-title function_">sort</span>({ <span class="hljs-attr">createdAt</span>: <span class="hljs-number">1</span> })
+  .<span class="hljs-title function_">group</span>(<span class="hljs-function">(<span class="hljs-params">f</span>) =&gt;</span> ({ <span class="hljs-attr">_id</span>: <span class="hljs-literal">null</span>, <span class="hljs-attr">firstTitle</span>: acc.<span class="hljs-title function_">first</span>(f.<span class="hljs-property">title</span>), <span class="hljs-attr">lastTitle</span>: acc.<span class="hljs-title function_">last</span>(f.<span class="hljs-property">title</span>) }))
+  .<span class="hljs-title function_">build</span>();
+<span class="hljs-keyword">const</span> [{ firstTitle, lastTitle }] = <span class="hljs-keyword">await</span> runtime.<span class="hljs-title function_">query</span>(plan);
+<span class="hljs-comment">// { firstTitle: &#x27;Hello world&#x27;, lastTitle: &#x27;Tutorial one&#x27; }</span></code></pre></div></figure>
+<h5 id="push-and-addtoset"><code>push()</code> and <code>addToSet()</code></h5>
+<p>Both take one expression: <code>group((f) =&gt; ({ _id: null, allTitles: acc.push(f.title), distinctKinds: acc.addToSet(f.kind) }))</code>. <code>allTitles</code> holds one entry per document, while <code>distinctKinds</code> holds each value once.</p>
+<h5 id="firstn-an-n-variant"><code>firstN()</code> (an <code>N</code>-variant)</h5>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">const</span> plan = db.<span class="hljs-property">query</span>.<span class="hljs-title function_">from</span>(<span class="hljs-string">&#x27;posts&#x27;</span>).<span class="hljs-title function_">sort</span>({ <span class="hljs-attr">createdAt</span>: <span class="hljs-number">1</span> })
+  .<span class="hljs-title function_">group</span>(<span class="hljs-function">(<span class="hljs-params">f</span>) =&gt;</span> ({
+    <span class="hljs-attr">_id</span>: <span class="hljs-literal">null</span>,
+    <span class="hljs-attr">firstTwo</span>: acc.<span class="hljs-title function_">firstN</span>({ <span class="hljs-attr">input</span>: f.<span class="hljs-property">title</span>, <span class="hljs-attr">n</span>: fn.<span class="hljs-title function_">literal</span>(<span class="hljs-number">2</span>) }),
+    <span class="hljs-attr">newestTitle</span>: acc.<span class="hljs-title function_">top</span>({ <span class="hljs-attr">output</span>: f.<span class="hljs-property">title</span>, <span class="hljs-attr">sortBy</span>: { <span class="hljs-attr">createdAt</span>: -<span class="hljs-number">1</span> } }), <span class="hljs-comment">// the title string, not a document</span>
+  }))
+  .<span class="hljs-title function_">build</span>();
+<span class="hljs-keyword">const</span> [{ firstTwo, newestTitle }] = <span class="hljs-keyword">await</span> runtime.<span class="hljs-title function_">query</span>(plan);
+<span class="hljs-comment">// firstTwo is [&#x27;Hello world&#x27;, &#x27;Tutorial one&#x27;]</span></code></pre></div></figure>
+<h2 id="expression-helpers">Expression helpers</h2>
+<p>Expression helpers (<code>fn.*</code>) build the computed values used inside stages like <code>addFields()</code>, <code>project()</code>, <code>group()</code> accumulators, and <code>match()</code> (via <code>expr()</code>). Inside a stage, write <code>f.title</code> or <code>fn.toUpper(...)</code>, never <code>&#39;hello&#39;</code> or <code>3</code> on their own, so wrap a constant in <code>fn.literal(&#39;hello&#39;)</code>. The update operators on the <a href="#write-methods">write methods</a> and the <code>MongoFieldFilter</code> methods work the other way round: they take ordinary JavaScript values, so write <code>f.bio.set(&#39;hello&#39;)</code>, not <code>f.bio.set(fn.literal(&#39;hello&#39;))</code>. Import the helpers from <code>@prisma/orm-mongo/query-builder</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"></code></pre></div></figure>
+<p>Each helper is the camelCase name of the MongoDB aggregation operator without its <code>$</code> prefix, so <code>$toUpper</code> is <code>fn.toUpper</code> and <code>$dateToString</code> is <code>fn.dateToString</code>. Five helpers are named differently:</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>MongoDB operator</th>
+<th>Helper</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>$in</code></td>
+<td><code>fn.isIn</code></td>
+</tr>
+<tr>
+<td><code>$type</code></td>
+<td><code>fn.typeOf</code></td>
+</tr>
+<tr>
+<td><code>$toString</code></td>
+<td><code>fn.toString_</code></td>
+</tr>
+<tr>
+<td><code>$first</code> and <code>$last</code></td>
+<td><code>fn.firstElem</code> and <code>fn.lastElem</code></td>
+</tr>
+</tbody></table></div>
+<p>The first three are renamed because <code>in</code> and <code>typeof</code> are reserved words in JavaScript and <code>toString</code> is already a method on every JavaScript object.</p>
+<p>Here is every helper. Anything missing from this list has no helper, including <code>$and</code>, <code>$or</code>, <code>$not</code>, <code>$switch</code>, <code>$ifNull</code>, <code>$map</code>, <code>$reduce</code>, and <code>$filter</code>.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Group</th>
+<th>Helpers</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Arithmetic</td>
+<td><code>add</code>, <code>subtract</code>, <code>multiply</code>, <code>divide</code></td>
+</tr>
+<tr>
+<td>Strings</td>
+<td><code>concat</code>, <code>toLower</code>, <code>toUpper</code>, <code>substr</code>, <code>substrBytes</code>, <code>trim</code>, <code>ltrim</code>, <code>rtrim</code>, <code>split</code>, <code>strLenCP</code>, <code>strLenBytes</code>, <code>replaceOne</code>, <code>replaceAll</code></td>
+</tr>
+<tr>
+<td>Regular expressions</td>
+<td><code>regexMatch</code>, <code>regexFind</code>, <code>regexFindAll</code></td>
+</tr>
+<tr>
+<td>Dates</td>
+<td><code>year</code>, <code>month</code>, <code>dayOfMonth</code>, <code>hour</code>, <code>minute</code>, <code>second</code>, <code>millisecond</code>, <code>dateToString</code>, <code>dateFromString</code>, <code>dateDiff</code>, <code>dateAdd</code>, <code>dateSubtract</code>, <code>dateTrunc</code></td>
+</tr>
+<tr>
+<td>Comparison</td>
+<td><code>cmp</code>, <code>eq</code>, <code>ne</code>, <code>gt</code>, <code>gte</code>, <code>lt</code>, <code>lte</code></td>
+</tr>
+<tr>
+<td>Arrays</td>
+<td><code>size</code>, <code>arrayElemAt</code>, <code>concatArrays</code>, <code>firstElem</code>, <code>lastElem</code>, <code>isIn</code>, <code>indexOfArray</code>, <code>isArray</code>, <code>reverseArray</code>, <code>slice</code>, <code>zip</code>, <code>range</code></td>
+</tr>
+<tr>
+<td>Sets</td>
+<td><code>setUnion</code>, <code>setIntersection</code>, <code>setDifference</code>, <code>setEquals</code>, <code>setIsSubset</code>, <code>anyElementTrue</code>, <code>allElementsTrue</code></td>
+</tr>
+<tr>
+<td>Type conversion</td>
+<td><code>typeOf</code>, <code>convert</code>, <code>toInt</code>, <code>toLong</code>, <code>toDouble</code>, <code>toDecimal</code>, <code>toString_</code>, <code>toObjectId</code>, <code>toBool</code>, <code>toDate</code></td>
+</tr>
+<tr>
+<td>Objects</td>
+<td><code>objectToArray</code>, <code>arrayToObject</code>, <code>getField</code>, <code>setField</code></td>
+</tr>
+<tr>
+<td>Constants and branching</td>
+<td><code>literal</code>, <code>cond</code></td>
+</tr>
+</tbody></table></div>
+<p><code>fn.literal(value)</code> wraps a constant so MongoDB reads it as a value and not as the name of a field. <code>.node</code> is the raw MongoDB expression inside an <code>fn.*</code> value, and a field reference such as <code>f.title</code> has one too. Passing an <code>expr(...)</code> value where <code>.node</code> is expected throws a <code>TypeError</code>. This table is the whole rule for when to write <code>.node</code>:</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Call site</th>
+<th>What you pass</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>project()</code>, <code>addFields()</code>, <code>redact()</code>, and the arguments of an accumulator</td>
+<td>The <code>fn.*</code> value itself.</td>
+</tr>
+<tr>
+<td>The condition argument of <code>fn.cond()</code></td>
+<td>Its <code>.node</code> property.</td>
+</tr>
+<tr>
+<td><code>f.stage.set()</code>, <code>f.stage.replaceRoot()</code>, and <code>f.stage.replaceWith()</code>, documented under <a href="#update-operation-forms">Update operation forms</a></td>
+<td>The <code>.node</code> property.</td>
+</tr>
+<tr>
+<td>The <code>groupBy</code>, <code>startWith</code>, and <code>partitionBy</code> options of <code>bucket()</code>, <code>bucketAuto()</code>, <code>graphLookup()</code>, <code>setWindowFields()</code>, and <code>fill()</code></td>
+<td>The <code>.node</code> property.</td>
+</tr>
+<tr>
+<td><code>match()</code></td>
+<td>The <code>fn.*</code> value wrapped in <code>expr(...)</code>.</td>
+</tr>
+</tbody></table></div>
+<p><code>expr()</code> is what lets a <code>match()</code> filter compare computed values. Import it beside <code>fn</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">
+
+<span class="hljs-keyword">const</span> plan = db.<span class="hljs-property">query</span>.<span class="hljs-title function_">from</span>(<span class="hljs-string">&#x27;posts&#x27;</span>).<span class="hljs-title function_">match</span>(<span class="hljs-function">(<span class="hljs-params">f</span>) =&gt;</span> <span class="hljs-title function_">expr</span>(fn.<span class="hljs-title function_">gt</span>(fn.<span class="hljs-title function_">year</span>(f.<span class="hljs-property">createdAt</span>), fn.<span class="hljs-title function_">literal</span>(<span class="hljs-number">2024</span>)))).<span class="hljs-title function_">build</span>();</code></pre></div></figure>
+<p>For OR, AND, or NOT, pass <code>match()</code> a filter you build yourself instead of a callback:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">
+
+<span class="hljs-keyword">const</span> kindFilter = <span class="hljs-title class_">MongoOrExpr</span>.<span class="hljs-title function_">of</span>([
+  <span class="hljs-title class_">MongoFieldFilter</span>.<span class="hljs-title function_">eq</span>(<span class="hljs-string">&#x27;kind&#x27;</span>, <span class="hljs-string">&#x27;tutorial&#x27;</span>),
+  <span class="hljs-title class_">MongoFieldFilter</span>.<span class="hljs-title function_">eq</span>(<span class="hljs-string">&#x27;kind&#x27;</span>, <span class="hljs-string">&#x27;guide&#x27;</span>),
+]);
+<span class="hljs-keyword">const</span> plan = db.<span class="hljs-property">query</span>.<span class="hljs-title function_">from</span>(<span class="hljs-string">&#x27;posts&#x27;</span>).<span class="hljs-title function_">match</span>(kindFilter).<span class="hljs-title function_">build</span>();
+<span class="hljs-keyword">const</span> rows = <span class="hljs-keyword">await</span> runtime.<span class="hljs-title function_">query</span>(plan);
+<span class="hljs-comment">// rows are the documents whose kind is either tutorial or guide</span></code></pre></div></figure>
+<h4 id="remarks">Remarks</h4>
+<ul>
+<li>There is no <code>fn.*</code> helper for OR, AND, or NOT. In a <code>match()</code> filter, build the filter yourself: <code>MongoOrExpr.of([...])</code> is OR, <code>MongoAndExpr.of([...])</code> is AND, and <code>.not()</code> on any filter is NOT. The example above shows OR.</li>
+<li>Each entry in those lists is a <code>MongoFieldFilter</code>, which has <code>eq</code>, <code>neq</code>, <code>gt</code>, <code>gte</code>, <code>lt</code>, <code>lte</code>, <code>in</code>, <code>nin</code>, <code>isNull</code>, and <code>isNotNull</code>. These are the same filter methods the ORM client uses, described under <a href="#/doc/prisma8/reference/orm-client@combinators">Combinators</a>. A filter you build yourself names the field as a string, as in <code>MongoFieldFilter.eq(&#39;kind&#39;, &#39;tutorial&#39;)</code>, and nothing checks that string against your model.</li>
+<li>&quot;Not equal&quot; has two spellings on this page. The filter method is <code>MongoFieldFilter.neq</code> and the expression helper is <code>fn.ne</code>.</li>
+<li>Inside a computed value in <code>project()</code> or <code>addFields()</code> there is no way to write OR, AND, or NOT. Write that stage yourself with <a href="#pipe"><code>pipe()</code></a>, or write the whole command with <a href="#rawcommand"><code>rawCommand()</code></a>.</li>
+<li><code>fn.slice(array, ...rest)</code> and <code>fn.range(start, end, step)</code> take positional arguments, and so does every helper not listed in the table below. This page does not give the positional order for those helpers. Look each one up in <a target="_blank" rel="noopener" href="https://www.mongodb.com/docs/manual/reference/operator/aggregation/">MongoDB&#39;s aggregation operator reference</a>. Each argument is an expression from the <code>f</code> argument or a <code>fn.literal(...)</code> value.</li>
+<li><strong><code>fn.toObjectId()</code> cannot take a <code>fn.literal()</code> value.</strong> <code>fn.toObjectId(fn.literal(id))</code> throws a <code>TypeError</code>. There is no way to turn a string id into an <code>ObjectId</code> inside a pipeline. Build the <code>ObjectId</code> in your own code instead and pass it to <a href="#match"><code>match()</code></a> in a <code>MongoParamRef</code>, as the <code>match()</code> warning shows.</li>
+</ul>
+<p>These helpers take one object of named arguments instead of positional ones:</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Helper</th>
+<th>Arguments</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>fn.dateDiff</code></td>
+<td><code>{ startDate, endDate, unit, timezone?, startOfWeek? }</code></td>
+</tr>
+<tr>
+<td><code>fn.dateTrunc</code></td>
+<td><code>{ date, unit, binSize?, timezone?, startOfWeek? }</code></td>
+</tr>
+<tr>
+<td><code>fn.dateAdd</code></td>
+<td><code>{ startDate, unit, amount, timezone? }</code></td>
+</tr>
+<tr>
+<td><code>fn.dateSubtract</code></td>
+<td>The same keys as <code>fn.dateAdd</code>.</td>
+</tr>
+<tr>
+<td><code>fn.dateToString</code></td>
+<td><code>{ date, format?, timezone?, onNull? }</code></td>
+</tr>
+<tr>
+<td><code>fn.dateFromString</code></td>
+<td><code>{ dateString, format?, timezone?, onError?, onNull? }</code></td>
+</tr>
+<tr>
+<td><code>fn.trim</code>, <code>fn.ltrim</code>, and <code>fn.rtrim</code></td>
+<td><code>{ input, chars? }</code></td>
+</tr>
+<tr>
+<td><code>fn.regexMatch</code>, <code>fn.regexFind</code>, and <code>fn.regexFindAll</code></td>
+<td><code>{ input, regex, options? }</code></td>
+</tr>
+<tr>
+<td><code>fn.replaceOne</code> and <code>fn.replaceAll</code></td>
+<td><code>{ input, find, replacement }</code></td>
+</tr>
+<tr>
+<td><code>fn.zip</code></td>
+<td><code>{ inputs, useLongestLength?, defaults? }</code></td>
+</tr>
+<tr>
+<td><code>fn.getField</code></td>
+<td><code>{ field, input? }</code></td>
+</tr>
+<tr>
+<td><code>fn.setField</code></td>
+<td><code>{ field, input, value }</code></td>
+</tr>
+<tr>
+<td><code>fn.convert</code></td>
+<td><code>{ input, to, onError?, onNull? }</code></td>
+</tr>
+</tbody></table></div>
+<p>In <code>fn.convert</code>, <code>to</code> takes any MongoDB type name written as an expression, such as <code>fn.literal(&#39;int&#39;)</code> or <code>fn.literal(&#39;objectId&#39;)</code>.</p>
+<h4 id="examples">Examples</h4>
+<h5 id="arithmetic-in-a-projection">Arithmetic in a projection</h5>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">const</span> plan = db.<span class="hljs-property">query</span>.<span class="hljs-title function_">from</span>(<span class="hljs-string">&#x27;posts&#x27;</span>)
+  .<span class="hljs-title function_">project</span>(<span class="hljs-function">(<span class="hljs-params">f</span>) =&gt;</span> ({ <span class="hljs-attr">title</span>: <span class="hljs-number">1</span>, <span class="hljs-attr">computed</span>: fn.<span class="hljs-title function_">add</span>(fn.<span class="hljs-title function_">literal</span>(<span class="hljs-number">1</span>), fn.<span class="hljs-title function_">multiply</span>(fn.<span class="hljs-title function_">literal</span>(<span class="hljs-number">2</span>), fn.<span class="hljs-title function_">literal</span>(<span class="hljs-number">3</span>))) }))
+  .<span class="hljs-title function_">build</span>();
+<span class="hljs-keyword">const</span> rows = <span class="hljs-keyword">await</span> runtime.<span class="hljs-title function_">query</span>(plan);
+<span class="hljs-comment">// computed is 7 for every document</span></code></pre></div></figure>
+<h5 id="string-composition">String composition</h5>
+<p><code>project((f) =&gt; ({ shout: fn.concat(fn.toUpper(f.title), fn.literal(&#39;!&#39;)) }))</code> puts the title in upper case next to a <code>!</code>.</p>
+<h5 id="branch-with-cond">Branch with <code>cond()</code></h5>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">const</span> plan = db.<span class="hljs-property">query</span>.<span class="hljs-title function_">from</span>(<span class="hljs-string">&#x27;posts&#x27;</span>)
+  .<span class="hljs-title function_">project</span>(<span class="hljs-function">(<span class="hljs-params">f</span>) =&gt;</span> ({
+    <span class="hljs-attr">title</span>: <span class="hljs-number">1</span>,
+    <span class="hljs-attr">label</span>: fn.<span class="hljs-title function_">cond</span>(fn.<span class="hljs-title function_">eq</span>(f.<span class="hljs-property">kind</span>, fn.<span class="hljs-title function_">literal</span>(<span class="hljs-string">&#x27;tutorial&#x27;</span>)).<span class="hljs-property">node</span>, fn.<span class="hljs-title function_">literal</span>(<span class="hljs-string">&#x27;is-tutorial&#x27;</span>), fn.<span class="hljs-title function_">literal</span>(<span class="hljs-string">&#x27;not-tutorial&#x27;</span>)),
+  }))
+  .<span class="hljs-title function_">build</span>();
+<span class="hljs-keyword">const</span> rows = <span class="hljs-keyword">await</span> runtime.<span class="hljs-title function_">query</span>(plan);</code></pre></div></figure>
+<h3 id="pipe"><code>pipe()</code></h3>
+<p>Append an arbitrary raw pipeline stage the typed methods don&#39;t cover.</p>
+<h4 id="remarks">Remarks</h4>
+<ul>
+<li><code>pipe(stage)</code> appends a raw stage that you construct yourself, and keeps the row type you already had. The stages are the <code>Mongo*Stage</code> classes, one per MongoDB stage, from <code>@prisma/orm-mongo/query-ast/execution</code>. The class name is <code>Mongo</code>, then the stage name without its <code>$</code>, then <code>Stage</code>, so <code>$unwind</code> is <code>MongoUnwindStage</code>. The example below uses <code>MongoMatchStage</code> and <code>MongoCountStage</code>. The same module exports <code>MongoFieldFilter</code>, which builds the filter a <code>MongoMatchStage</code> takes.</li>
+<li><code>pipe(stage)</code> declares the row type the rows have after that stage. <code>NewShape</code> is a type you write yourself, as at the end of the example below.</li>
+<li>After a <code>pipe()</code> stage the TypeScript type no longer describes the rows. They come back exactly as MongoDB returns them, so a date is a <code>Date</code> and an <code>_id</code> that MongoDB generated is an <code>ObjectId</code> from the <code>mongodb</code> package, the driver Prisma ORM runs your queries through.</li>
+<li>Prefer a typed stage where one exists. <code>pipe()</code> adds one raw stage to a typed chain, and <a href="#rawcommand"><code>rawCommand()</code></a> replaces the whole command.</li>
+</ul>
+<h4 id="examples">Examples</h4>
+<h5 id="append-a-raw-stage">Append a raw stage</h5>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">
+
+<span class="hljs-keyword">const</span> plan = db.<span class="hljs-property">query</span>.<span class="hljs-title function_">from</span>(<span class="hljs-string">&#x27;posts&#x27;</span>)
+  .<span class="hljs-title function_">pipe</span>(<span class="hljs-keyword">new</span> <span class="hljs-title class_">MongoMatchStage</span>(<span class="hljs-title class_">MongoFieldFilter</span>.<span class="hljs-title function_">eq</span>(<span class="hljs-string">&#x27;kind&#x27;</span>, <span class="hljs-string">&#x27;tutorial&#x27;</span>))).<span class="hljs-title function_">build</span>();
+<span class="hljs-keyword">const</span> rows = <span class="hljs-keyword">await</span> runtime.<span class="hljs-title function_">query</span>(plan);
+
+<span class="hljs-keyword">type</span> <span class="hljs-title class_">Counted</span> = { <span class="hljs-attr">total</span>: <span class="hljs-built_in">number</span> };
+<span class="hljs-keyword">const</span> countPlan = db.<span class="hljs-property">query</span>.<span class="hljs-title function_">from</span>(<span class="hljs-string">&#x27;posts&#x27;</span>).<span class="hljs-title function_">pipe</span>(<span class="hljs-keyword">new</span> <span class="hljs-title class_">MongoCountStage</span>(<span class="hljs-string">&#x27;total&#x27;</span>)).<span class="hljs-title function_">build</span>();</code></pre></div></figure>
+<h2 id="read-methods-read-terminals">Read methods [#read-terminals]</h2>
+<p>Finish a read chain with <code>build()</code>, then run the built query with <code>runtime.query(...)</code>.</p>
+<h3 id="build-and-aggregate"><code>build()</code> and <code>aggregate()</code></h3>
+<p>Compile the pipeline into a query you can run.</p>
+<h4 id="remarks">Remarks</h4>
+<ul>
+<li>Write <code>build()</code>. <code>aggregate()</code> is another name for the same method. Neither runs the query: pass the result to <code>runtime.query(...)</code> to fetch documents.</li>
+</ul>
+<h2 id="write-methods">Write methods</h2>
+<p>The pipeline builder can write, not just read. Write methods are available at three points: on the root collection, after a <code>match()</code> filter, and at the end of any pipeline, where <code>out()</code> and <code>merge()</code> write the output into a collection. A write method returns the built query on its own, so there is no <code>build()</code> call after one. The examples below name that built query <code>plan</code>.</p>
+<p>Updater callbacks (the <code>(f) =&gt; [...]</code> argument to the update methods) must return an <strong>array</strong> of operations. This is a firm rule:</p>
+<ul>
+<li>Always return an array. Returning a bare operation, <code>f.bio.set(&#39;x&#39;)</code> rather than <code>[f.bio.set(&#39;x&#39;)]</code>, throws as soon as you call the write method.</li>
+<li>An empty array throws an error whose <code>code</code> is <code>ORM.MUTATION_DATA_MISSING</code>: <code>Updater returned no operations. Return at least one update from the callback ...</code>.</li>
+<li>An updater is either all operator form or all pipeline form. Operator form calls an operator on a field, as in <code>f.bio.set(value)</code>. Pipeline form can read other fields of the same document, and it calls <code>f.stage.*</code>. Type <code>f.stage</code> exactly: <code>stage</code> is not a placeholder for a stage name. You cannot mix the two in one updater. TypeScript rejects the mixed array, and at run time it throws an error whose <code>code</code> is <code>ORM.ARGUMENT_INVALID</code>: <code>Cannot mix ...</code>.</li>
+<li>Applying the same operator to the same field twice in one updater throws an error whose <code>code</code> is <code>ORM.ARGUMENT_INVALID</code>: <code>Update spec collision: ...</code>.</li>
+</ul>
+<h3 id="root-level-writes">Root-level writes</h3>
+<p><code>insertOne</code>, <code>insertMany</code>, <code>updateAll</code>, <code>deleteAll</code>, and <code>upsertOne</code> are available on the collection you name in <code>from(...)</code>, before you add any stage.</p>
+<h4 id="remarks">Remarks</h4>
+<ul>
+<li>These return a built query. Run it with <code>runtime.query(...)</code>.</li>
+<li>Write results are result objects, not documents: <code>insertOne</code> gives <code>{ insertedId }</code>, <code>insertMany</code> gives <code>{ insertedIds, insertedCount }</code>, the update methods and <code>upsertOne</code> give <code>{ matchedCount, modifiedCount }</code>, plus <code>upsertedCount</code> and <code>upsertedId</code> when an upsert inserted a document, and the delete methods give <code>{ deletedCount }</code>. A write returns one result object, as the single row of the result, which is why every example here reads it with <code>const [result] = ...</code>.</li>
+<li>The document you pass to <code>insertOne</code> / <code>insertMany</code> is a plain record. TypeScript requires no particular field, and the builder does not check the record against your contract. You can leave nullable fields out. The examples below pass <code>null</code> for them to make the document shape explicit.</li>
+<li>You can leave <code>_id</code> out and let MongoDB assign one.</li>
+<li><strong>On the way in, values are stored exactly as you pass them, so pass a <code>Date</code> for a date field and an <code>ObjectId</code> from the <code>mongodb</code> package for an id field.</strong> Nothing turns a string into either. This is the write direction only. Reads are decoded as the first half of this page describes.</li>
+<li><a href="#match"><code>match()</code></a> filter values follow the same rule as the values you insert, so an <code>_id</code> filter takes an <code>ObjectId</code>, not a hex string. The <a href="#match"><code>match()</code></a> warning shows how to pass one.</li>
+<li><code>insertMany([])</code> throws an error whose <code>code</code> is <code>ORM.MUTATION_DATA_MISSING</code>.</li>
+</ul>
+<h4 id="examples">Examples</h4>
+<h5 id="insertone-and-insertmany"><code>insertOne()</code> and <code>insertMany()</code></h5>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">const</span> onePlan = db.<span class="hljs-property">query</span>.<span class="hljs-title function_">from</span>(<span class="hljs-string">&#x27;users&#x27;</span>)
+  .<span class="hljs-title function_">insertOne</span>({ <span class="hljs-attr">name</span>: <span class="hljs-string">&#x27;Carol&#x27;</span>, <span class="hljs-attr">email</span>: <span class="hljs-string">&#x27;carol@example.com&#x27;</span>, <span class="hljs-attr">bio</span>: <span class="hljs-literal">null</span>, <span class="hljs-attr">role</span>: <span class="hljs-string">&#x27;author&#x27;</span>, <span class="hljs-attr">address</span>: <span class="hljs-literal">null</span> });
+<span class="hljs-keyword">const</span> [insertOneResult] = <span class="hljs-keyword">await</span> runtime.<span class="hljs-title function_">query</span>(onePlan);
+<span class="hljs-comment">// { insertedId:  }</span>
+
+<span class="hljs-keyword">const</span> manyPlan = db.<span class="hljs-property">query</span>.<span class="hljs-title function_">from</span>(<span class="hljs-string">&#x27;users&#x27;</span>).<span class="hljs-title function_">insertMany</span>([
+  { <span class="hljs-attr">name</span>: <span class="hljs-string">&#x27;Carol&#x27;</span>, <span class="hljs-attr">email</span>: <span class="hljs-string">&#x27;carol@example.com&#x27;</span>, <span class="hljs-attr">bio</span>: <span class="hljs-literal">null</span>, <span class="hljs-attr">role</span>: <span class="hljs-string">&#x27;author&#x27;</span>, <span class="hljs-attr">address</span>: <span class="hljs-literal">null</span> },
+  { <span class="hljs-attr">name</span>: <span class="hljs-string">&#x27;Dave&#x27;</span>, <span class="hljs-attr">email</span>: <span class="hljs-string">&#x27;dave@example.com&#x27;</span>, <span class="hljs-attr">bio</span>: <span class="hljs-literal">null</span>, <span class="hljs-attr">role</span>: <span class="hljs-string">&#x27;reader&#x27;</span>, <span class="hljs-attr">address</span>: <span class="hljs-literal">null</span> },
+]);
+<span class="hljs-keyword">const</span> [insertManyResult] = <span class="hljs-keyword">await</span> runtime.<span class="hljs-title function_">query</span>(manyPlan);
+<span class="hljs-comment">// { insertedIds: [, ], insertedCount: 2 }</span></code></pre></div></figure>
+<h5 id="updateall-array-of-ops-updater"><code>updateAll()</code> (array-of-ops updater)</h5>
+<p><code>db.query.from(&#39;users&#39;).updateAll((f) =&gt; [f.bio.set(&#39;everyone now has bio&#39;)])</code> builds the update. Pass it to <code>runtime.query(...)</code> to run it.</p>
+<h5 id="deleteall"><code>deleteAll()</code></h5>
+<p><code>db.query.from(&#39;users&#39;).deleteAll()</code> builds a delete for every document. Pass it to <code>runtime.query(...)</code> and read <code>deletedCount</code> from the single result object.</p>
+<h5 id="upsertone-on-the-root-filter-then-updater"><code>upsertOne()</code> on the root (filter, then updater)</h5>
+<p><code>upsertOne(filterCallback, updaterCallback)</code>. The first callback returns the filter, and the second returns the array of update operations.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">const</span> plan = db.<span class="hljs-property">query</span>.<span class="hljs-title function_">from</span>(<span class="hljs-string">&#x27;users&#x27;</span>)
+  .<span class="hljs-title function_">upsertOne</span>(<span class="hljs-function">(<span class="hljs-params">f</span>) =&gt;</span> f.<span class="hljs-property">email</span>.<span class="hljs-title function_">eq</span>(<span class="hljs-string">&#x27;erin@example.com&#x27;</span>), <span class="hljs-function">(<span class="hljs-params">f</span>) =&gt;</span> [f.<span class="hljs-property">name</span>.<span class="hljs-title function_">set</span>(<span class="hljs-string">&#x27;Erin&#x27;</span>), f.<span class="hljs-property">email</span>.<span class="hljs-title function_">set</span>(<span class="hljs-string">&#x27;erin@example.com&#x27;</span>)]);
+<span class="hljs-keyword">const</span> [result] = <span class="hljs-keyword">await</span> runtime.<span class="hljs-title function_">query</span>(plan);
+<span class="hljs-comment">// inserts when no document matches: result.upsertedId is defined</span></code></pre></div></figure>
+<h3 id="writes-after-match">Writes after <code>match()</code></h3>
+<p>After a <code>match()</code> filter, <code>updateMany</code>, <code>updateOne</code>, <code>deleteMany</code>, <code>deleteOne</code>, <code>upsertOne</code>, <code>findOneAndUpdate</code>, and <code>findOneAndDelete</code> write against the matched documents.</p>
+<h4 id="remarks">Remarks</h4>
+<ul>
+<li>The <code>match()</code> filter supplies the write&#39;s filter, so you do not repeat it.</li>
+<li>After <code>match()</code>, <code>upsertOne()</code> takes the updater callback only (the filter comes from <code>match()</code>).</li>
+<li><code>updateOne</code> / <code>deleteOne</code> affect at most one matching document. <code>updateMany</code> / <code>deleteMany</code> affect all matches. Which document that is, this builder gives you no way to choose.</li>
+<li><code>findOneAndUpdate()</code> and <code>findOneAndDelete()</code> return the document exactly as the <code>mongodb</code> driver gives it, so its <code>_id</code> is an <code>ObjectId</code> from the <code>mongodb</code> package even though the TypeScript type says <code>string</code>. To get the id as a string, write <code>String(result._id)</code>.</li>
+<li><code>findOneAndUpdate()</code> and <code>findOneAndDelete()</code> are offered straight after <code>match()</code> and nowhere else. TypeScript withdraws them after every other stage, <code>sort()</code> and <code>skip()</code> included. If a cast gets one past TypeScript after a <code>skip()</code>, it throws an error whose <code>code</code> is <code>ORM.OPERATION_UNSUPPORTED</code>.</li>
+</ul>
+<h4 id="examples">Examples</h4>
+<h5 id="updatemany-and-updateone"><code>updateMany()</code> and <code>updateOne()</code></h5>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">const</span> manyPlan = db.<span class="hljs-property">query</span>.<span class="hljs-title function_">from</span>(<span class="hljs-string">&#x27;users&#x27;</span>).<span class="hljs-title function_">match</span>(<span class="hljs-function">(<span class="hljs-params">f</span>) =&gt;</span> f.<span class="hljs-property">role</span>.<span class="hljs-title function_">eq</span>(<span class="hljs-string">&#x27;author&#x27;</span>))
+  .<span class="hljs-title function_">updateMany</span>(<span class="hljs-function">(<span class="hljs-params">f</span>) =&gt;</span> [f.<span class="hljs-property">bio</span>.<span class="hljs-title function_">set</span>(<span class="hljs-string">&#x27;matched-many&#x27;</span>)]);
+<span class="hljs-keyword">await</span> runtime.<span class="hljs-title function_">query</span>(manyPlan);
+
+<span class="hljs-keyword">const</span> onePlan = db.<span class="hljs-property">query</span>.<span class="hljs-title function_">from</span>(<span class="hljs-string">&#x27;users&#x27;</span>).<span class="hljs-title function_">match</span>(<span class="hljs-function">(<span class="hljs-params">f</span>) =&gt;</span> f.<span class="hljs-property">email</span>.<span class="hljs-title function_">eq</span>(<span class="hljs-string">&#x27;alice@example.com&#x27;</span>))
+  .<span class="hljs-title function_">updateOne</span>(<span class="hljs-function">(<span class="hljs-params">f</span>) =&gt;</span> [f.<span class="hljs-property">bio</span>.<span class="hljs-title function_">set</span>(<span class="hljs-string">&#x27;single-update&#x27;</span>)]);
+<span class="hljs-keyword">const</span> [result] = <span class="hljs-keyword">await</span> runtime.<span class="hljs-title function_">query</span>(onePlan);
+<span class="hljs-comment">// { matchedCount: 1, modifiedCount: 1 }</span></code></pre></div></figure>
+<h5 id="deletemany-and-deleteone"><code>deleteMany()</code> and <code>deleteOne()</code></h5>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">const</span> plan = db.<span class="hljs-property">query</span>.<span class="hljs-title function_">from</span>(<span class="hljs-string">&#x27;users&#x27;</span>).<span class="hljs-title function_">match</span>(<span class="hljs-function">(<span class="hljs-params">f</span>) =&gt;</span> f.<span class="hljs-property">role</span>.<span class="hljs-title function_">eq</span>(<span class="hljs-string">&#x27;author&#x27;</span>)).<span class="hljs-title function_">deleteMany</span>();
+<span class="hljs-keyword">const</span> [result] = <span class="hljs-keyword">await</span> runtime.<span class="hljs-title function_">query</span>(plan);
+<span class="hljs-comment">// { deletedCount: 2 }</span></code></pre></div></figure>
+<h5 id="upsertone-after-match-updater-only"><code>upsertOne()</code> after <code>match()</code> (updater only)</h5>
+<p><code>db.query.from(&#39;users&#39;).match((f) =&gt; f.email.eq(&#39;alice@example.com&#39;)).upsertOne((f) =&gt; [f.bio.set(&#39;upserted via match&#39;)])</code> builds the upsert. On a hit, <code>result.modifiedCount</code> is 1.</p>
+<h5 id="findoneandupdate-and-returndocument"><code>findOneAndUpdate()</code> and <code>returnDocument</code></h5>
+<p><code>findOneAndUpdate()</code> returns the matched document. Its second argument is optional and takes <code>returnDocument</code>, which controls which version you get back: <code>&#39;before&#39;</code> returns the document before the update, <code>&#39;after&#39;</code> returns it after. The default is <code>&#39;after&#39;</code>. The same argument takes <code>upsert</code>, which defaults to <code>false</code> and inserts a document when nothing matches.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">const</span> plan = db.<span class="hljs-property">query</span>.<span class="hljs-title function_">from</span>(<span class="hljs-string">&#x27;users&#x27;</span>).<span class="hljs-title function_">match</span>(<span class="hljs-function">(<span class="hljs-params">f</span>) =&gt;</span> f.<span class="hljs-property">email</span>.<span class="hljs-title function_">eq</span>(<span class="hljs-string">&#x27;alice@example.com&#x27;</span>))
+  .<span class="hljs-title function_">findOneAndUpdate</span>(<span class="hljs-function">(<span class="hljs-params">f</span>) =&gt;</span> [f.<span class="hljs-property">bio</span>.<span class="hljs-title function_">set</span>(<span class="hljs-string">&#x27;changed&#x27;</span>)], { <span class="hljs-attr">returnDocument</span>: <span class="hljs-string">&#x27;before&#x27;</span> });
+<span class="hljs-keyword">const</span> [beforeDoc] = <span class="hljs-keyword">await</span> runtime.<span class="hljs-title function_">query</span>(plan);
+<span class="hljs-comment">// beforeDoc.bio is the value from before the update</span></code></pre></div></figure>
+<aside class="callout callout-warning"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 4 2.8 20h18.4L12 4z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M12 10v4.4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="17" r="1.3" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">[The option is `returnDocument`, not `returnNewDocument`]</p><p>Use <code>returnDocument: &#39;before&#39; | &#39;after&#39;</code>. <code>returnNewDocument</code> is not a valid option name, so TypeScript rejects it and suggests <code>returnDocument</code>. If a cast gets it past TypeScript, the unknown key is ignored and you silently get the default <code>&#39;after&#39;</code>.</p>
+</div></aside>
+<h5 id="findoneanddelete"><code>findOneAndDelete()</code></h5>
+<p><code>db.query.from(&#39;users&#39;).match((f) =&gt; f.email.eq(&#39;alice@example.com&#39;)).findOneAndDelete()</code> builds the delete. Its single result row is the removed document.</p>
+<h3 id="update-operation-forms">Update operation forms</h3>
+<p>Inside an updater callback, each operation targets a field. There are two mutually exclusive forms.</p>
+<h4 id="remarks">Remarks</h4>
+<ul>
+<li><strong>Operator form</strong>: call an operator on the <code>f</code> argument, one operator per field. There are fourteen, in the table below.</li>
+<li><strong>Pipeline form</strong>: aggregation-pipeline update stages through <code>f.stage.*</code>, for example <code>f.stage.set({ bio: f.name.node })</code>. The four stages are <code>set</code>, <code>unset</code>, <code>replaceRoot</code>, and <code>replaceWith</code>.</li>
+<li>The two forms cannot be mixed in a single updater (see the write-methods intro). An updater is entirely operator form or entirely pipeline form.</li>
+</ul>
+<p>Operator form takes these arguments:</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Operator</th>
+<th>What you pass</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>set(value)</code></td>
+<td>The new value.</td>
+</tr>
+<tr>
+<td><code>unset()</code></td>
+<td>Nothing. Removes the field.</td>
+</tr>
+<tr>
+<td><code>rename(newName)</code></td>
+<td>The new field name, as a string.</td>
+</tr>
+<tr>
+<td><code>inc(amount)</code></td>
+<td>A number to add. A negative number subtracts.</td>
+</tr>
+<tr>
+<td><code>mul(factor)</code></td>
+<td>A number to multiply the stored value by.</td>
+</tr>
+<tr>
+<td><code>min(value)</code></td>
+<td>A value, written only if it is lower than the stored one.</td>
+</tr>
+<tr>
+<td><code>max(value)</code></td>
+<td>A value, written only if it is higher than the stored one.</td>
+</tr>
+<tr>
+<td><code>push(value)</code></td>
+<td>One value to append to an array field.</td>
+</tr>
+<tr>
+<td><code>addToSet(value)</code></td>
+<td>One value, appended only if the array does not already hold it.</td>
+</tr>
+<tr>
+<td><code>pop(direction)</code></td>
+<td><code>1</code> removes the last element, <code>-1</code> the first. The argument is optional and defaults to <code>1</code>.</td>
+</tr>
+<tr>
+<td><code>pull(value)</code></td>
+<td>The value to remove from an array field.</td>
+</tr>
+<tr>
+<td><code>pullAll(values)</code></td>
+<td>An array of values to remove.</td>
+</tr>
+<tr>
+<td><code>currentDate()</code></td>
+<td>Nothing. Writes the current date.</td>
+</tr>
+<tr>
+<td><code>setOnInsert(value)</code></td>
+<td>A value written only when an upsert inserts a new document, so it does nothing outside <code>upsertOne()</code>.</td>
+</tr>
+</tbody></table></div>
+<h4 id="examples">Examples</h4>
+<h5 id="operator-form">Operator form</h5>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">const</span> plan = db.<span class="hljs-property">query</span>.<span class="hljs-title function_">from</span>(<span class="hljs-string">&#x27;users&#x27;</span>).<span class="hljs-title function_">match</span>(<span class="hljs-function">(<span class="hljs-params">f</span>) =&gt;</span> f.<span class="hljs-property">role</span>.<span class="hljs-title function_">eq</span>(<span class="hljs-string">&#x27;author&#x27;</span>))
+  .<span class="hljs-title function_">updateMany</span>(<span class="hljs-function">(<span class="hljs-params">f</span>) =&gt;</span> [f.<span class="hljs-property">bio</span>.<span class="hljs-title function_">set</span>(<span class="hljs-string">&#x27;operator form&#x27;</span>)]);
+<span class="hljs-keyword">await</span> runtime.<span class="hljs-title function_">query</span>(plan);
+<span class="hljs-comment">// on a collection with a numeric views field and an array tags field (posts has neither):</span>
+<span class="hljs-comment">// updateMany((f) =&gt; [f.views.inc(1), f.tags.push(&#x27;mongodb&#x27;)])</span></code></pre></div></figure>
+<h5 id="pipeline-form-fstage">Pipeline form (<code>f.stage.*</code>)</h5>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">const</span> plan = db.<span class="hljs-property">query</span>.<span class="hljs-title function_">from</span>(<span class="hljs-string">&#x27;users&#x27;</span>).<span class="hljs-title function_">match</span>(<span class="hljs-function">(<span class="hljs-params">f</span>) =&gt;</span> f.<span class="hljs-property">role</span>.<span class="hljs-title function_">eq</span>(<span class="hljs-string">&#x27;author&#x27;</span>))
+  .<span class="hljs-title function_">updateMany</span>(<span class="hljs-function">(<span class="hljs-params">f</span>) =&gt;</span> [f.<span class="hljs-property">stage</span>.<span class="hljs-title function_">set</span>({ <span class="hljs-attr">bio</span>: f.<span class="hljs-property">name</span>.<span class="hljs-property">node</span> })]);
+<span class="hljs-keyword">await</span> runtime.<span class="hljs-title function_">query</span>(plan);
+<span class="hljs-comment">// each author&#x27;s bio is set to that author&#x27;s own name</span></code></pre></div></figure>
+<h3 id="pipeline-write-methods-out-and-merge-pipeline-write-terminals-out-and-merge">Pipeline write methods: <code>out()</code> and <code>merge()</code> [#pipeline-write-terminals-out-and-merge]</h3>
+<p><code>out()</code> and <code>merge()</code> write the pipeline&#39;s output into a collection (<code>$out</code> / <code>$merge</code>).</p>
+<h4 id="remarks">Remarks</h4>
+<ul>
+<li><code>out(collection)</code> writes the pipeline output into a destination collection, replacing its contents. Pass a second argument, the database name as a string, to write into a different database: <code>out(&#39;users_snapshot&#39;, &#39;archive&#39;)</code>.</li>
+<li><code>merge({ into })</code> writes the pipeline output into a target collection, merging with existing documents. <code>into</code> is a collection name or <code>{ db, coll }</code>. The options object also takes <code>on</code>, which is one field name as a string or several as an array of strings, plus <code>whenMatched</code> and <code>whenNotMatched</code>.</li>
+<li><code>whenMatched</code> takes <code>&#39;replace&#39;</code>, <code>&#39;keepExisting&#39;</code>, <code>&#39;merge&#39;</code>, or <code>&#39;fail&#39;</code>, or an array of update stages, which are <code>MongoAddFieldsStage</code>, <code>MongoProjectStage</code>, and <code>MongoReplaceRootStage</code> objects from <code>@prisma/orm-mongo/query-ast/execution</code>. <code>MongoAddFieldsStage</code> takes one object of field names and expressions, as in <code>new MongoAddFieldsStage({ ... })</code>. <code>whenNotMatched</code> takes <code>&#39;insert&#39;</code>, <code>&#39;discard&#39;</code>, or <code>&#39;fail&#39;</code>. A misspelled value fails at the database rather than in TypeScript.</li>
+<li>Both end the chain. They return a built query you run with <code>runtime.query(...)</code>, and that call returns an empty array, because the output goes to the destination collection and not to your program.</li>
+</ul>
+<h4 id="examples">Examples</h4>
+<h5 id="write-the-output-with-out">Write the output with <code>out()</code></h5>
+<p><code>db.query.from(&#39;users&#39;).out(&#39;users_snapshot&#39;)</code> builds the write. After you pass it to <code>runtime.query(...)</code>, the <code>users_snapshot</code> collection holds the pipeline output.</p>
+<h5 id="merge-with-merge">Merge with <code>merge()</code></h5>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">const</span> plan = db.<span class="hljs-property">query</span>.<span class="hljs-title function_">from</span>(<span class="hljs-string">&#x27;users&#x27;</span>)
+  .<span class="hljs-title function_">merge</span>({ <span class="hljs-attr">into</span>: <span class="hljs-string">&#x27;users_archive&#x27;</span>, <span class="hljs-attr">on</span>: <span class="hljs-string">&#x27;email&#x27;</span>, <span class="hljs-attr">whenMatched</span>: <span class="hljs-string">&#x27;merge&#x27;</span>, <span class="hljs-attr">whenNotMatched</span>: <span class="hljs-string">&#x27;insert&#x27;</span> });
+<span class="hljs-keyword">await</span> runtime.<span class="hljs-title function_">query</span>(plan);</code></pre></div></figure>
+<h2 id="rawcommand"><code>rawCommand()</code></h2>
+<p>Run a raw MongoDB aggregate command through the pipeline builder.</p>
+<h4 id="remarks">Remarks</h4>
+<ul>
+<li><code>db.query.rawCommand(command)</code> takes a command you build yourself, for example <code>new RawAggregateCommand(collection, pipeline)</code>, and sends it as you wrote it. The rows come back as <code>unknown</code>, so you type them yourself.</li>
+<li>Use it for anything the typed builder cannot express, such as MongoDB&#39;s <code>$redact</code> stage.</li>
+<li>For the full raw MongoDB API (raw collection methods, untyped writes, and rows that come back as the driver gives them), see <a href="#/doc/prisma8/reference/raw-queries">Raw queries</a>.</li>
+</ul>
+<h4 id="examples">Examples</h4>
+<h5 id="run-a-raw-aggregate-pipeline">Run a raw aggregate pipeline</h5>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">
+
+<span class="hljs-keyword">const</span> plan = db.<span class="hljs-property">query</span>.<span class="hljs-title function_">rawCommand</span>(<span class="hljs-keyword">new</span> <span class="hljs-title class_">RawAggregateCommand</span>(<span class="hljs-string">&#x27;posts&#x27;</span>, [{ <span class="hljs-attr">$count</span>: <span class="hljs-string">&#x27;total&#x27;</span> }]));
+<span class="hljs-keyword">const</span> rows = <span class="hljs-keyword">await</span> runtime.<span class="hljs-title function_">query</span>(plan);
+<span class="hljs-comment">// [{ total: 2 }]</span></code></pre></div></figure>
+<h5 id="filter-by-id-in-a-raw-pipeline">Filter by <code>_id</code> in a raw pipeline</h5>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">
+
+<span class="hljs-keyword">const</span> plan = db.<span class="hljs-property">query</span>.<span class="hljs-title function_">rawCommand</span>(
+  <span class="hljs-keyword">new</span> <span class="hljs-title class_">RawAggregateCommand</span>(<span class="hljs-string">&#x27;posts&#x27;</span>, [{ <span class="hljs-attr">$match</span>: { <span class="hljs-attr">_id</span>: <span class="hljs-keyword">new</span> <span class="hljs-title class_">ObjectId</span>(postId) } }]),
+);
+<span class="hljs-keyword">const</span> rows = <span class="hljs-keyword">await</span> runtime.<span class="hljs-title function_">query</span>(plan);
+<span class="hljs-comment">// a real ObjectId in a raw pipeline document matches the stored _id</span></code></pre></div></figure>

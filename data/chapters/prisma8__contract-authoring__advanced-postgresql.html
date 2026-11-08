@@ -1,0 +1,166 @@
+<p>A production PostgreSQL database usually has more than tables and foreign keys: policies that decide which rows a user may see, indexes over expressions, constraints that reject bad values, tables that another system owns, and extensions such as <code>citext</code>. Prisma ORM 8 supports all of these in <code>contract.prisma</code>, the file that replaced <code>schema.prisma</code>. This page shows each one in the situation it solves. After every change to the contract, you run the same three commands: <code>npx prisma contract emit</code>, which turns <code>contract.prisma</code> into the <code>contract.json</code> and <code>contract.d.ts</code> files your app and the CLI read, then <code>npx prisma migration plan --name &lt;name&gt;</code>, which writes a migration, then <code>npx prisma db migrate --advance-ref db</code>, which applies it to your development database. <a href="#/doc/prisma8/migrations/generating-a-migration">Generating a migration</a> walks through them. The syntax and every option are on <a href="#/doc/prisma8/contract-authoring/psl-syntax">Author in PSL</a>, with the TypeScript form on <a href="#/doc/prisma8/contract-authoring/typescript-schema-builder">Author in TypeScript</a>. <a href="#limitations">Limitations</a> lists what the contract cannot say yet, and what to do instead.</p>
+<p>Every SQL expression on this page is a <code>sql`...` </code> literal, not a quoted string, and it uses column names, not field names. The two differ only when a field has <code>@map</code>. Nothing checks the SQL until the migration runs it.</p>
+<h2 id="rows-that-belong-to-a-user">Rows that belong to a user</h2>
+<p>Your <code>document</code> table holds every user&#39;s documents, and each user may read and change only their own. PostgreSQL enforces that with row-level security: policies on the table, applied to the database role your app connects as. Turn it on for the model with <code>@@rls</code>, name the role, and write a policy block for each operation you want to allow. The model below is in <code>public</code>, the default schema, and <code>@onCreate(uuid())</code> generates the id in your app, which is where Prisma ORM 8 puts every generated value (<code>@default</code> is only for a value the database fills in):</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>src/prisma/contract.prisma (excerpt).ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-prisma"><span class="hljs-keyword">model</span> <span class="hljs-type">Document</span> {
+  id      <span class="hljs-type">Uuid</span>   <span class="hljs-attr">@id</span> <span class="hljs-attr">@onCreate</span>(uuid())
+  ownerId <span class="hljs-type">Uuid</span>
+  title   <span class="hljs-type">String</span>
+
+  <span class="hljs-attr">@@map</span>(<span class="hljs-string">&quot;document&quot;</span>)
+  <span class="hljs-attr">@@rls</span>
+}
+
+namespace unbound {
+  role app_user {}
+}
+
+policy_select document_owner_read {
+  target = <span class="hljs-type">Document</span>
+  roles  = [app_user]
+  using  = sql`<span class="hljs-string">&quot;ownerId&quot;</span> = current_setting(&#x27;app.user_id&#x27;)::uuid`
+}
+
+policy_update document_owner_write {
+  target    = <span class="hljs-type">Document</span>
+  roles     = [app_user]
+  using     = sql`<span class="hljs-string">&quot;ownerId&quot;</span> = current_setting(&#x27;app.user_id&#x27;)::uuid`
+  withCheck = sql`<span class="hljs-string">&quot;ownerId&quot;</span> = current_setting(&#x27;app.user_id&#x27;)::uuid`
+}</code></pre></div></figure>
+<p><code>using</code> decides which existing rows the operation sees, and <code>withCheck</code> decides which new or changed rows it accepts. The <code>role</code> block has nothing inside its braces, and it goes in <code>namespace unbound</code> because a role belongs to the whole database server, not to one schema. From this, <code>migration plan</code> writes the statements that turn row-level security on and create the two policies, and <a target="_blank" rel="noopener" href="https://www.prisma.io/docs/cli/db-verify"><code>db verify</code></a> checks that they exist in the database.</p>
+<p>The role itself is yours to create. Prisma ORM never creates or drops a role; the <code>role</code> block only names one, and <code>db verify</code> fails if it is missing. Create it once, with a login, and grant it exactly the operations your policies allow, here <code>SELECT</code> and <code>UPDATE</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>SQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-sql"><span class="hljs-keyword">CREATE</span> ROLE app_user LOGIN PASSWORD <span class="hljs-string">&#x27;...&#x27;</span>;
+<span class="hljs-keyword">GRANT</span> <span class="hljs-keyword">SELECT</span>, <span class="hljs-keyword">UPDATE</span> <span class="hljs-keyword">ON</span> &quot;public&quot;.&quot;document&quot; <span class="hljs-keyword">TO</span> app_user;</code></pre></div></figure>
+<p>Order matters: the <code>CREATE POLICY</code> statements in the migration name <code>app_user</code>, so create the role before you run <code>db migrate</code>, and run the <code>GRANT</code> after it, once the table exists. Run the two statements by hand, or put the <code>GRANT</code> in a migration that holds only SQL, which <a href="#limitations">Limitations</a> shows how to create.</p>
+<p>Policies apply to the role a connection logs in as, and the table&#39;s owner bypasses them. So your app needs a connection string that logs in as <code>app_user</code>, while the CLI keeps the owner&#39;s. The CLI reads <code>db.connection</code> in <code>prisma.config.ts</code>, and your app reads the <code>url</code> in <code>src/prisma/db.ts</code>, so give the two different values.</p>
+<p>Then set <code>app.user_id</code> before each query. The setting lasts for the transaction, so run the query inside one. <code>db</code> is the client <code>src/prisma/db.ts</code> creates, and <code>&quot;pg/text@1&quot;</code> says the one column <code>set_config</code> returns is text:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">
+
+<span class="hljs-keyword">await</span> db.<span class="hljs-title function_">transaction</span>(<span class="hljs-title function_">async</span> (tx) =&gt; {
+  <span class="hljs-keyword">await</span> tx.<span class="hljs-title function_">query</span>(
+    db.<span class="hljs-property">raw</span>.<span class="hljs-property">sql</span><span class="hljs-string">`SELECT set_config(&#x27;app.user_id&#x27;, <span class="hljs-subst">${userId}</span>, true)`</span>.<span class="hljs-title function_">returnsRow</span>({ <span class="hljs-attr">set_config</span>: <span class="hljs-string">&quot;pg/text@1&quot;</span> }).<span class="hljs-title function_">build</span>(),
+  );
+  <span class="hljs-keyword">return</span> tx.<span class="hljs-property">orm</span>.<span class="hljs-property">public</span>.<span class="hljs-property">Document</span>.<span class="hljs-title function_">all</span>();
+});</code></pre></div></figure>
+<p><a href="#/doc/prisma8/contract-authoring/psl-syntax@row-level-security">Row-level security</a> has <code>policy_insert</code>, <code>policy_delete</code>, <code>policy_all</code>, and <code>permissive</code>. On Supabase, you bind a role first, with <code>await db.asUser(jwt)</code>, and the <a target="_blank" rel="noopener" href="https://www.prisma.io/extensions/supabase">Supabase extension</a> then runs each query as that role.</p>
+<h2 id="an-index-on-an-expression-or-on-some-rows">An index on an expression, or on some rows</h2>
+<p>Users log in by email, and the lookup must ignore case. An ordinary index on <code>email</code> does not help a query on <code>lower(email)</code>, so index the expression:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>src/prisma/contract.prisma (excerpt).ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-prisma"><span class="hljs-keyword">model</span> <span class="hljs-type">User</span> {
+  id    <span class="hljs-type">Uuid</span>   <span class="hljs-attr">@id</span> <span class="hljs-attr">@onCreate</span>(uuid())
+  email <span class="hljs-type">String</span>
+
+  <span class="hljs-attr">@@index</span>(expression: sql`lower(email)`, unique: <span class="hljs-literal">true</span>, name: <span class="hljs-string">&quot;user_email_lower&quot;</span>)
+  <span class="hljs-attr">@@map</span>(<span class="hljs-string">&quot;user&quot;</span>)
+}</code></pre></div></figure>
+<p>Most rows in a <code>task</code> table are done, and the queue only ever reads the open ones. A partial index covers just those rows and stays small:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>src/prisma/contract.prisma (excerpt).ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-prisma"><span class="hljs-keyword">model</span> <span class="hljs-type">Task</span> {
+  id    <span class="hljs-type">Uuid</span>     <span class="hljs-attr">@id</span> <span class="hljs-attr">@onCreate</span>(uuid())
+  done  <span class="hljs-type">Boolean</span>  <span class="hljs-attr">@default</span>(<span class="hljs-literal">false</span>)
+  dueAt <span class="hljs-type">DateTime</span>
+
+  <span class="hljs-attr">@@index</span>([dueAt], where: sql`(done = <span class="hljs-literal">false</span>)`, name: <span class="hljs-string">&quot;task_open_due&quot;</span>)
+  <span class="hljs-attr">@@map</span>(<span class="hljs-string">&quot;task&quot;</span>)
+}</code></pre></div></figure>
+<p><code>expression:</code> replaces the field list, and <code>where:</code> is the condition without the <code>WHERE</code> keyword. <code>unique:</code> makes a unique index, and <code>type:</code> picks the index method, such as <code>&quot;gin&quot;</code> for a list column. The index in the database is named after <code>name:</code> with a short suffix, such as <code>user_email_lower_000a85d8</code>. Changing <code>name:</code> later renames the index; it does not rebuild it. <code>map:</code> is for an index that already exists in the database, and sets its exact name; for a new index, use <code>name:</code>. <a href="#/doc/prisma8/contract-authoring/psl-syntax@indexes">Indexes</a> has every option, and <a href="#/doc/prisma8/contract-authoring/psl-syntax@full-text-indexes">Full-text indexes</a> covers search.</p>
+<h2 id="a-value-the-database-must-reject">A value the database must reject</h2>
+<p>An order total can never be negative, and you want the database to refuse one even when a write bypasses your application. Add a check constraint:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>src/prisma/contract.prisma (excerpt).ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-prisma"><span class="hljs-keyword">model</span> <span class="hljs-type">Order</span> {
+  id    <span class="hljs-type">Int</span>     <span class="hljs-attr">@id</span> <span class="hljs-attr">@default</span>(autoincrement())
+  total <span class="hljs-type">Decimal</span>
+
+  <span class="hljs-attr">@@check</span>(expression: sql`total &gt;= <span class="hljs-number">0</span>`, name: <span class="hljs-string">&quot;order_total_not_negative&quot;</span>)
+  <span class="hljs-attr">@@map</span>(<span class="hljs-string">&quot;orders&quot;</span>)
+}</code></pre></div></figure>
+<p>A model can carry any number of <code>@@check</code> attributes, and <code>name:</code> and <code>map:</code> work as on an index. <a href="#/doc/prisma8/contract-authoring/psl-syntax@check-constraints">Check constraints</a> has the details.</p>
+<h2 id="a-table-prisma-orm-should-not-touch">A table Prisma ORM should not touch</h2>
+<p>An <code>audit_log</code> table is written by a database trigger and owned by the operations team, and a <code>legacy_customer</code> table is shared with another application. You want to read both from your app without <code>migration plan</code> ever altering them. <code>@@control</code> says how far Prisma ORM manages a table:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>src/prisma/contract.prisma (excerpt).ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-prisma"><span class="hljs-keyword">model</span> <span class="hljs-type">AuditLog</span> {
+  id      <span class="hljs-type">Int</span>    <span class="hljs-attr">@id</span> <span class="hljs-attr">@default</span>(autoincrement())
+  message <span class="hljs-type">String</span>
+
+  <span class="hljs-attr">@@map</span>(<span class="hljs-string">&quot;audit_log&quot;</span>)
+  <span class="hljs-attr">@@control</span>(observed)
+}
+
+<span class="hljs-keyword">model</span> <span class="hljs-type">LegacyCustomer</span> {
+  id   <span class="hljs-type">Int</span>    <span class="hljs-attr">@id</span>
+  name <span class="hljs-type">String</span>
+
+  <span class="hljs-attr">@@map</span>(<span class="hljs-string">&quot;legacy_customer&quot;</span>)
+  <span class="hljs-attr">@@control</span>(external)
+}</code></pre></div></figure>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Value</th>
+<th><code>db verify</code></th>
+<th>Migrations</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>managed</code> (the default)</td>
+<td>The table must exist and match the model exactly.</td>
+<td>Create, alter, and drop it.</td>
+</tr>
+<tr>
+<td><code>tolerated</code></td>
+<td>Declared columns must match; extra columns are accepted.</td>
+<td>Create it if missing; never alter or drop it.</td>
+</tr>
+<tr>
+<td><code>external</code></td>
+<td>Declared columns must match; extra columns and constraints are ignored.</td>
+<td>Never touch it.</td>
+</tr>
+<tr>
+<td><code>observed</code></td>
+<td>Anything goes; a mismatch is a warning, not a failure.</td>
+<td>Never touch it.</td>
+</tr>
+</tbody></table></div>
+<p><code>tolerated</code> fails <code>db verify</code> on a changed or missing declared column but accepts columns it does not know; <code>external</code> also ignores constraints it does not know, and never creates the table. Pick <code>external</code> when the table always exists before Prisma ORM arrives and its declared columns are stable, and <code>observed</code> when even those columns may change under you. <a href="#/doc/prisma8/contract-authoring/psl-syntax@control-policy">Control policy</a> is the reference entry; it is unrelated to the row-level security policies above.</p>
+<h2 id="an-extension-a-migration-needs">An extension a migration needs</h2>
+<p>You want a case-insensitive <code>email</code> column. PostgreSQL has the <code>citext</code> type for that, but it comes from an extension that must be installed before the column exists. The citext pack in <code>@prisma/orm-postgres-contrib</code> provides the type and declares the extension, so add it to the config:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Terminal</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-bash"><span class="tk-cmd">npm</span> install @prisma/orm-postgres-contrib</code></pre></div></figure>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>prisma.config.ts (excerpt).ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">
+
+<span class="hljs-comment">// inside ormConfig({ ... }), beside contract and db:</span>
+    <span class="hljs-attr">extensions</span>: [citext],</code></pre></div></figure>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>src/prisma/contract.prisma (excerpt).ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-prisma"><span class="hljs-keyword">model</span> <span class="hljs-type">User</span> {
+  id    <span class="hljs-type">Uuid</span>          <span class="hljs-attr">@id</span> <span class="hljs-attr">@onCreate</span>(uuid())
+  email citext.<span class="hljs-type">Citext</span>
+
+  <span class="hljs-attr">@@map</span>(<span class="hljs-string">&quot;user&quot;</span>)
+}</code></pre></div></figure>
+<p>Pass <code>citext</code> from <code>@prisma/orm-postgres-contrib/citext/runtime</code> to the client&#39;s <code>extensions</code> as well. <code>npx prisma contract emit</code> writes the pack&#39;s files under <code>migrations/</code>, and <code>npx prisma db update</code>, or <code>npx prisma db migrate</code> after <code>migration plan</code> writes your migration, then runs the pack&#39;s migration, which creates the extension, before your migration adds the column. The ORM compares <code>email</code> case-insensitively, as PostgreSQL does.</p>
+<p>For an extension no pack covers, declare it in the contract and write its types with <code>Raw</code>, which takes the database type as written:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>src/prisma/contract.prisma (excerpt).ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-prisma">extension hstore {}
+
+<span class="hljs-keyword">model</span> <span class="hljs-type">Setting</span> {
+  id     <span class="hljs-type">Uuid</span>             <span class="hljs-attr">@id</span> <span class="hljs-attr">@onCreate</span>(uuid())
+  values <span class="hljs-type">Raw</span>(sql`hstore`)
+}</code></pre></div></figure>
+<p><code>migration plan</code> then plans <code>CREATE EXTENSION IF NOT EXISTS hstore</code> before the table that uses it, and <a href="#/doc/prisma8/contract-authoring/psl-syntax@postgresql-extensions">PostgreSQL extensions</a> describes the rest. <code>citext</code> and <code>hstore</code> are among PostgreSQL&#39;s trusted extensions, so the role <code>db migrate</code> connects as needs the <code>CREATE</code> privilege on the database, not superuser. A Prisma <a href="#/doc/prisma8/extensions">extension package</a> such as pgvector declares its PostgreSQL extension in its own contract, so for those you declare nothing.</p>
+<h2 id="adopting-these-from-an-existing-database">Adopting these from an existing database</h2>
+<p><code>npx prisma contract infer --db &quot;$DATABASE_URL&quot;</code> reads a live database and writes a starter contract. It writes each index, check constraint, and policy it finds with <code>map:</code> (<code>@@map</code> on a policy) set to the name the database has, and with the SQL as PostgreSQL stores it, so <code>db verify</code> matches them and <code>migration plan</code> leaves them alone. From then on the rule is: <code>map:</code> for something that already exists in the database under that exact name, <code>name:</code> for something you are adding. Each <code>contract emit</code> on such a contract prints a <code>PN_EXACT_NAME_BODY_COMPARISON</code> warning for every policy, check, and index that has SQL in it and uses <code>map:</code> or <code>@@map</code>. The warnings are expected, and nothing needs to change.</p>
+<h2 id="limitations">Limitations</h2>
+<p>These are the gaps at <code>8.0.0-rc.23</code>, each with what to do instead. Anything the contract cannot say yet goes in a raw SQL step in a migration, which runs the statements you give it. <code>npx prisma migration new --name &lt;name&gt; --from &lt;hash&gt;</code> creates a migration with no operations; <a target="_blank" rel="noopener" href="https://www.prisma.io/docs/cli/migration-new"><code>migration new</code></a> explains <code>--from</code>, which the command needs when the contract has not changed. The step goes in its <code>operations</code> list, with <code>rawSql</code> imported from <code>@prisma/orm-postgres/migration</code>. Recompile the file afterwards, as <a href="#/doc/prisma8/migrations/editing-a-migration">Editing a migration</a> shows. <code>operationClass</code> is <code>additive</code>, <code>widening</code>, <code>destructive</code>, or <code>data</code>, and the <code>GRANT</code> below loosens a rule, so it is <code>widening</code>. <a href="#/doc/prisma8/reference/migration-api@raw-sql">Raw SQL</a> in the migration API reference has the full shape:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>migration.ts (excerpt).ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-title function_">rawSql</span>({
+  <span class="hljs-attr">id</span>: <span class="hljs-string">&#x27;grant.document.app_user&#x27;</span>,
+  <span class="hljs-attr">label</span>: <span class="hljs-string">&#x27;Grant app_user access to &quot;document&quot;&#x27;</span>,
+  <span class="hljs-attr">operationClass</span>: <span class="hljs-string">&#x27;widening&#x27;</span>,
+  <span class="hljs-attr">target</span>: { <span class="hljs-attr">id</span>: <span class="hljs-string">&#x27;postgres&#x27;</span> },
+  <span class="hljs-attr">execute</span>: [{ <span class="hljs-attr">description</span>: <span class="hljs-string">&#x27;grant&#x27;</span>, <span class="hljs-attr">sql</span>: <span class="hljs-string">&#x27;GRANT SELECT, UPDATE ON &quot;public&quot;.&quot;document&quot; TO app_user&#x27;</span> }],
+  <span class="hljs-attr">precheck</span>: [],
+  <span class="hljs-attr">postcheck</span>: [],
+}),</code></pre></div></figure>
+<ul>
+<li><strong>Roles and <code>GRANT</code> are not part of the contract.</strong> Prisma ORM creates policies but never creates a role or grants privileges to one. Create the role and run the <code>GRANT</code> statements in a raw SQL step, or by hand.</li>
+<li><strong><code>FORCE ROW LEVEL SECURITY</code> is not part of the contract.</strong> Row-level security as Prisma ORM declares it does not apply to the table&#39;s owner. To make it apply to the owner too, run <code>ALTER TABLE ... FORCE ROW LEVEL SECURITY</code> in a raw SQL step. Even then a superuser, or a role with <code>BYPASSRLS</code>, is never filtered, so the role your app logs in as must be neither.</li>
+<li><strong>Triggers and functions are not part of the contract.</strong> Create them in a raw SQL step.</li>
+<li><strong>A sort order inside <code>@@index</code> is refused.</strong> <code>@@index([createdAt(sort: Desc)])</code> fails with &quot;Expected a field name&quot; (<a target="_blank" rel="noopener" href="https://github.com/prisma/orm/issues/30270">prisma/orm#30270</a>). Create such an index in a raw SQL step.</li>
+<li><strong>A variant that shares its base model&#39;s table loses its own constraints.</strong> A variant is a model that extends another with <code>@@base</code>, the way <code>Bug</code> extends <code>Task</code> on the PSL page; one with no <code>@@map</code> of its own stores its rows in the base model&#39;s table. A foreign key, <code>@@unique</code>, or <code>@@index</code> declared on it is dropped from the contract without a warning (<a target="_blank" rel="noopener" href="https://github.com/prisma/orm/issues/30445">prisma/orm#30445</a>), and <code>@@check</code> on it is refused. Declare them on the base model, or give the variant its own <code>@@map</code> so it gets its own table. <a href="#/doc/prisma8/contract-authoring/psl-syntax@base-models-and-variants">Base models and variants</a> covers the two layouts.</li>
+<li><strong>SQL you wrote yourself with <code>map:</code> can report drift.</strong> <code>db verify</code> compares the SQL in the contract with the text PostgreSQL stores, and PostgreSQL rewrites what it is given. Inferred SQL matches, because <code>contract infer</code> writes back PostgreSQL&#39;s text; SQL you typed with <code>map:</code> may not (<a target="_blank" rel="noopener" href="https://github.com/prisma/orm/issues/30294">prisma/orm#30294</a>). Use <code>name:</code> for anything you add.</li>
+<li><strong><code>contract infer</code> reads only the <code>public</code> schema</strong> (<a target="_blank" rel="noopener" href="https://github.com/prisma/orm/issues/30573">prisma/orm#30573</a>). Policies, indexes, and tables in other schemas are not read back; write them by hand. It also skips a policy whose role name is not a valid PSL name, and any index, check, or policy whose SQL it cannot read back unchanged, and leaves a comment in the file where it did.</li>
+<li><strong>A generated check cannot be waived.</strong> Prisma ORM always adds a check on an enum column so it accepts only the enum&#39;s values, and on a list column so it rejects <code>NULL</code> elements. On a table whose control policy is managed, it also adds one on each value object column, which accepts only the value object&#39;s shape, and one on a discriminator column, which accepts only its variants&#39; values. A migration that adds such a check fails on a row the check refuses, and the error gives the query that finds those rows. Declare a list <code>String?[]</code> when its elements may be <code>NULL</code>. The <code>@noCheck</code> attribute that used to waive these was removed in <code>8.0.0-rc.19</code>.</li>
+</ul>

@@ -1,0 +1,299 @@
+<p>Most queries fit the ORM API, and when one doesn&#39;t, there is a query builder. Prisma ORM 8 supports PostgreSQL, SQLite, and MongoDB; the SQL query builder is for PostgreSQL and SQLite, the pipeline builder for MongoDB. Neither builder asks you to write SQL as a string. When the builder cannot express a query, <code>db.raw.sql</code> lets you write one, with values still sent as parameters. Both builders come with <code>@prisma/orm-postgres</code> and <code>@prisma/orm-mongo</code>, so there is nothing extra to install.</p>
+<p>The schema file is now <code>contract.prisma</code>; it is the same schema language as Prisma ORM 7 (with the type changes on <a href="#/doc/prisma8/coming-from-prisma-orm-7@schema">Coming from Prisma ORM 7</a>). The docs call it your contract, and TypeScript checks both builders against it.</p>
+<p>You choose per query, not per app, so using the ORM API everywhere and a builder in the three places that need it is normal.</p>
+<p>Every example here imports <code>db</code>, the client you create once in <code>src/prisma/db.ts</code>, and <code>prisma orm init</code> writes that file for you. The examples run from a file directly inside <code>src/</code>.</p>
+<p>Every example on this page queries these four models:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Prisma schema</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-prisma"><span class="hljs-keyword">model</span> <span class="hljs-type">User</span> {
+  id    <span class="hljs-type">String</span>  <span class="hljs-attr">@id</span> <span class="hljs-attr">@onCreate</span>(cuid(<span class="hljs-number">2</span>))
+  email <span class="hljs-type">String</span>  <span class="hljs-attr">@unique</span>
+  name  <span class="hljs-type">String</span>?
+  posts <span class="hljs-type">Post</span>[]
+
+  <span class="hljs-attr">@@map</span>(<span class="hljs-string">&quot;user&quot;</span>)
+}
+
+<span class="hljs-keyword">model</span> <span class="hljs-type">Post</span> {
+  id        <span class="hljs-type">String</span>   <span class="hljs-attr">@id</span> <span class="hljs-attr">@onCreate</span>(cuid(<span class="hljs-number">2</span>))
+  title     <span class="hljs-type">String</span>
+  published <span class="hljs-type">Boolean</span>  <span class="hljs-attr">@default</span>(<span class="hljs-literal">false</span>)
+  createdAt <span class="hljs-type">DateTime</span> <span class="hljs-attr">@default</span>(now())
+  authorId  <span class="hljs-type">String</span>
+  author    <span class="hljs-type">User</span>     <span class="hljs-attr">@relation</span>(fields: [authorId], references: [id])
+  tags      <span class="hljs-type">Tag</span>[]
+
+  <span class="hljs-attr">@@map</span>(<span class="hljs-string">&quot;post&quot;</span>)
+}
+
+<span class="hljs-keyword">model</span> <span class="hljs-type">Tag</span> {
+  id    <span class="hljs-type">String</span> <span class="hljs-attr">@id</span> <span class="hljs-attr">@onCreate</span>(cuid(<span class="hljs-number">2</span>))
+  name  <span class="hljs-type">String</span> <span class="hljs-attr">@unique</span>
+  posts <span class="hljs-type">Post</span>[]
+
+  <span class="hljs-attr">@@map</span>(<span class="hljs-string">&quot;tag&quot;</span>)
+}
+
+<span class="hljs-keyword">model</span> <span class="hljs-type">PostTag</span> {
+  postId <span class="hljs-type">String</span>
+  tagId  <span class="hljs-type">String</span>
+  post   <span class="hljs-type">Post</span>   <span class="hljs-attr">@relation</span>(fields: [postId], references: [id])
+  tag    <span class="hljs-type">Tag</span>    <span class="hljs-attr">@relation</span>(fields: [tagId], references: [id])
+
+  <span class="hljs-attr">@@id</span>([postId, tagId])
+  <span class="hljs-attr">@@map</span>(<span class="hljs-string">&quot;post_tag&quot;</span>)
+}</code></pre></div></figure>
+<p>In Prisma ORM 8 a many-to-many relation is the two list fields plus a model for the join table, as <code>PostTag</code> here; see <a href="#/doc/prisma8/fundamentals/relations-and-joins">Relations and joins</a>. The MongoDB examples use the same models, except that each id is declared as <code>id ObjectId @id @map(&quot;_id&quot;)</code>, so the property is <code>id</code> and the stored field is <code>_id</code>.</p>
+<h2 id="postgresql-sql-query-builder">PostgreSQL: SQL query builder</h2>
+<p>A SQL builder query takes two steps: first you build it, then you run it. You decide the exact SQL: the joins, the grouping, and the columns that come back.</p>
+<p><strong>Use it when:</strong></p>
+<ul>
+<li>The query is easier to say in SQL: joins with conditions, computed columns, one row per group.</li>
+<li>You need PostgreSQL behavior the ORM API doesn&#39;t offer, such as <code>RETURNING</code> on a bulk insert.</li>
+<li>An aggregation needs precise control, such as ordering and limiting by a count in the database.</li>
+<li>A query is performance-sensitive and you want to decide its exact SQL.</li>
+</ul>
+<p><strong>Prefer the ORM API when</strong> the query is CRUD, filtered reads, or relation traversal. The <a href="#/doc/prisma8/fundamentals/reading-data">reading</a>, <a href="#/doc/prisma8/fundamentals/writing-data">writing</a>, and <a href="#/doc/prisma8/fundamentals/relations-and-joins">relations</a> pages cover those methods, with less code and the same type safety.</p>
+<h3 id="build-a-query-and-run-it">Build a query and run it</h3>
+<p>Start from a table with <code>db.sql.public.&lt;table&gt;</code>. <code>db.sql</code> is the SQL query builder, keyed by table name. A table&#39;s name is the model&#39;s <code>@@map</code> value, or the model name exactly as written when the model has no <code>@@map</code>, and column names are the field names unless a field sets <code>@map</code>. <code>public</code> is the PostgreSQL schema your tables are in. If you put a model inside a <code>namespace</code> block in your contract, the block&#39;s name is the PostgreSQL schema instead, so for a model inside <code>namespace billing { ... }</code> you write <code>billing</code> in place of <code>public</code>: <code>db.sql.billing.&lt;table&gt;</code>.</p>
+<p><code>db.query(...)</code> runs a built query and always resolves to an array of rows, even when the query matches one row.</p>
+<p>Chain the clauses you want, call <code>.build()</code>, and pass the result to <code>db.query(...)</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">
+
+<span class="hljs-keyword">const</span> publishedPosts = db.<span class="hljs-property">sql</span>.<span class="hljs-property">public</span>.<span class="hljs-property">post</span>
+  .<span class="hljs-title function_">select</span>(<span class="hljs-string">&quot;id&quot;</span>, <span class="hljs-string">&quot;title&quot;</span>, <span class="hljs-string">&quot;authorId&quot;</span>)
+  .<span class="hljs-title function_">where</span>(<span class="hljs-function">(<span class="hljs-params">f, fns</span>) =&gt;</span> fns.<span class="hljs-title function_">eq</span>(f.<span class="hljs-property">published</span>, <span class="hljs-literal">true</span>))
+  .<span class="hljs-title function_">limit</span>(<span class="hljs-number">10</span>).<span class="hljs-title function_">offset</span>(<span class="hljs-number">20</span>)
+  .<span class="hljs-title function_">build</span>();
+
+<span class="hljs-keyword">const</span> rows = <span class="hljs-keyword">await</span> db.<span class="hljs-title function_">query</span>(publishedPosts);</code></pre></div></figure>
+<p>The <code>.where(...)</code> callback receives two arguments. The first, <code>f</code>, holds the column references, and the second, <code>fns</code>, holds the operators: <code>eq</code>, <code>ne</code>, <code>gt</code>, <code>gte</code>, <code>lt</code>, <code>lte</code>, <code>in</code>, <code>notIn</code>, <code>and</code>, <code>or</code>, and <code>ilike</code> for text columns on PostgreSQL. There are more; the <a href="#/doc/prisma8/reference/sql-query-builder@built-in-functions">SQL query builder reference</a> has the full list.</p>
+<p>Pass a value from your own code straight into an operator. Here <code>authorId</code> is a variable, such as one you read from a request:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">const</span> postsByAuthor = db.<span class="hljs-property">sql</span>.<span class="hljs-property">public</span>.<span class="hljs-property">post</span>
+  .<span class="hljs-title function_">select</span>(<span class="hljs-string">&quot;id&quot;</span>, <span class="hljs-string">&quot;title&quot;</span>)
+  .<span class="hljs-title function_">where</span>(<span class="hljs-function">(<span class="hljs-params">f, fns</span>) =&gt;</span> fns.<span class="hljs-title function_">eq</span>(f.<span class="hljs-property">authorId</span>, authorId)).<span class="hljs-title function_">build</span>();</code></pre></div></figure>
+<p>The builder sends every value you pass this way to the database as a query parameter, never as text pasted into the SQL, so it is safe against SQL injection.</p>
+<p><code>ResultType</code> names the type of one row of a built query, so you can use that type in your own function signatures:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">
+
+<span class="hljs-keyword">type</span> <span class="hljs-title class_">PublishedPost</span> = <span class="hljs-title class_">ResultType</span>&lt;<span class="hljs-keyword">typeof</span> publishedPosts&gt;;
+
+<span class="hljs-keyword">function</span> <span class="hljs-title function_">titles</span>(<span class="hljs-params"><span class="hljs-attr">posts</span>: <span class="hljs-title class_">PublishedPost</span>[]</span>) {
+  <span class="hljs-keyword">return</span> posts.<span class="hljs-title function_">map</span>(<span class="hljs-function">(<span class="hljs-params">post</span>) =&gt;</span> post.<span class="hljs-property">title</span>);
+}</code></pre></div></figure>
+<p><code>ResultType&lt;...&gt;</code> is one row, not the array, so <code>await db.query(publishedPosts)</code> resolves to <code>PublishedPost[]</code>. See <a href="#/doc/prisma8/reference/sql-query-builder@resulttype"><code>ResultType</code></a> in the reference.</p>
+<h3 id="join-tables-with-precise-control">Join tables with precise control</h3>
+<p>Alias each side with <code>.as(...)</code>, join on any condition, and project columns from both sides into a flat result. <code>.select(...)</code> takes column names, or a callback that builds the row from the aliases, or a name plus an expression for a computed column:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">const</span> postsWithAuthors = db.<span class="hljs-property">sql</span>.<span class="hljs-property">public</span>.<span class="hljs-property">post</span>
+  .<span class="hljs-title function_">as</span>(<span class="hljs-string">&quot;p&quot;</span>)
+  .<span class="hljs-title function_">innerJoin</span>(db.<span class="hljs-property">sql</span>.<span class="hljs-property">public</span>.<span class="hljs-property">user</span>.<span class="hljs-title function_">as</span>(<span class="hljs-string">&quot;u&quot;</span>), <span class="hljs-function">(<span class="hljs-params">f, fns</span>) =&gt;</span> fns.<span class="hljs-title function_">eq</span>(f.<span class="hljs-property">p</span>.<span class="hljs-property">authorId</span>, f.<span class="hljs-property">u</span>.<span class="hljs-property">id</span>))
+  .<span class="hljs-title function_">select</span>(<span class="hljs-function">(<span class="hljs-params">f</span>) =&gt;</span> ({ <span class="hljs-attr">postId</span>: f.<span class="hljs-property">p</span>.<span class="hljs-property">id</span>, <span class="hljs-attr">title</span>: f.<span class="hljs-property">p</span>.<span class="hljs-property">title</span>, <span class="hljs-attr">authorEmail</span>: f.<span class="hljs-property">u</span>.<span class="hljs-property">email</span> }))
+  .<span class="hljs-title function_">where</span>(<span class="hljs-function">(<span class="hljs-params">f, fns</span>) =&gt;</span> fns.<span class="hljs-title function_">eq</span>(f.<span class="hljs-property">p</span>.<span class="hljs-property">published</span>, <span class="hljs-literal">true</span>))
+  .<span class="hljs-title function_">limit</span>(<span class="hljs-number">10</span>)
+  .<span class="hljs-title function_">build</span>();
+
+<span class="hljs-keyword">const</span> rows = <span class="hljs-keyword">await</span> db.<span class="hljs-title function_">query</span>(postsWithAuthors);
+<span class="hljs-comment">// Array&lt;{ postId, title, authorEmail }&gt;</span></code></pre></div></figure>
+<p>After a join, <code>f</code> is keyed by the alias you gave each side, so a column is <code>f.p.authorId</code> rather than <code>f.authorId</code>.</p>
+<p>Chain more joins for multi-hop traversals. This is how you get a flat post-tag list through a <a href="#/doc/prisma8/fundamentals/relations-and-joins@many-to-many">many-to-many join table</a>, one row per pair:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">const</span> postTagPairs = db.<span class="hljs-property">sql</span>.<span class="hljs-property">public</span>.<span class="hljs-property">post_tag</span>
+  .<span class="hljs-title function_">as</span>(<span class="hljs-string">&quot;pt&quot;</span>)
+  .<span class="hljs-title function_">innerJoin</span>(db.<span class="hljs-property">sql</span>.<span class="hljs-property">public</span>.<span class="hljs-property">tag</span>.<span class="hljs-title function_">as</span>(<span class="hljs-string">&quot;t&quot;</span>), <span class="hljs-function">(<span class="hljs-params">f, fns</span>) =&gt;</span> fns.<span class="hljs-title function_">eq</span>(f.<span class="hljs-property">pt</span>.<span class="hljs-property">tagId</span>, f.<span class="hljs-property">t</span>.<span class="hljs-property">id</span>))
+  .<span class="hljs-title function_">innerJoin</span>(db.<span class="hljs-property">sql</span>.<span class="hljs-property">public</span>.<span class="hljs-property">post</span>.<span class="hljs-title function_">as</span>(<span class="hljs-string">&quot;p&quot;</span>), <span class="hljs-function">(<span class="hljs-params">f, fns</span>) =&gt;</span> fns.<span class="hljs-title function_">eq</span>(f.<span class="hljs-property">pt</span>.<span class="hljs-property">postId</span>, f.<span class="hljs-property">p</span>.<span class="hljs-property">id</span>))
+  .<span class="hljs-title function_">select</span>(<span class="hljs-function">(<span class="hljs-params">f</span>) =&gt;</span> ({ <span class="hljs-attr">postTitle</span>: f.<span class="hljs-property">p</span>.<span class="hljs-property">title</span>, <span class="hljs-attr">tagName</span>: f.<span class="hljs-property">t</span>.<span class="hljs-property">name</span> }))
+  .<span class="hljs-title function_">build</span>();
+
+<span class="hljs-keyword">const</span> rows = <span class="hljs-keyword">await</span> db.<span class="hljs-title function_">query</span>(postTagPairs);</code></pre></div></figure>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JavaScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript">[
+  { <span class="hljs-attr">postTitle</span>: <span class="hljs-string">&#x27;Hello Prisma 8&#x27;</span>, <span class="hljs-attr">tagName</span>: <span class="hljs-string">&#x27;databases&#x27;</span> },
+  { <span class="hljs-attr">postTitle</span>: <span class="hljs-string">&#x27;Typed queries&#x27;</span>, <span class="hljs-attr">tagName</span>: <span class="hljs-string">&#x27;typescript&#x27;</span> }
+]</code></pre></div></figure>
+<p>The table here is <code>post_tag</code> because the model for the join table sets <code>@@map(&quot;post_tag&quot;)</code>.</p>
+<h3 id="group-and-rank-results">Group and rank results</h3>
+<p>Answer &quot;top N groups&quot; questions, such as the authors with the most posts, by ordering and limiting on an aggregate directly in the database:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">const</span> topAuthors = db.<span class="hljs-property">sql</span>.<span class="hljs-property">public</span>.<span class="hljs-property">post</span>
+  .<span class="hljs-title function_">select</span>(<span class="hljs-function">(<span class="hljs-params">f, fns</span>) =&gt;</span> ({ <span class="hljs-attr">authorId</span>: f.<span class="hljs-property">authorId</span>, <span class="hljs-attr">posts</span>: fns.<span class="hljs-title function_">count</span>() }))
+  .<span class="hljs-title function_">groupBy</span>(<span class="hljs-function">(<span class="hljs-params">f</span>) =&gt;</span> f.<span class="hljs-property">authorId</span>)
+  .<span class="hljs-title function_">orderBy</span>(<span class="hljs-function">(<span class="hljs-params">f, fns</span>) =&gt;</span> fns.<span class="hljs-title function_">count</span>(), { <span class="hljs-attr">direction</span>: <span class="hljs-string">&quot;desc&quot;</span> })
+  .<span class="hljs-title function_">limit</span>(<span class="hljs-number">5</span>)
+  .<span class="hljs-title function_">build</span>();
+
+<span class="hljs-keyword">const</span> rows = <span class="hljs-keyword">await</span> db.<span class="hljs-title function_">query</span>(topAuthors);</code></pre></div></figure>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JavaScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript">[
+  { <span class="hljs-attr">authorId</span>: <span class="hljs-string">&#x27;cuid20000000000000000001&#x27;</span>, <span class="hljs-attr">posts</span>: <span class="hljs-number">2</span> },
+  { <span class="hljs-attr">authorId</span>: <span class="hljs-string">&#x27;cuid20000000000000000002&#x27;</span>, <span class="hljs-attr">posts</span>: <span class="hljs-number">1</span> }
+]</code></pre></div></figure>
+<p>Pass the same aggregate to <code>.orderBy(...)</code> that you passed to <code>.select(...)</code>, and the database does the sorting and the limiting.</p>
+<p>Use <code>fns.countBigInt()</code> when a count can grow past <code>Number.MAX_SAFE_INTEGER</code>, because it returns a <code>bigint</code> while <code>fns.count()</code> returns a JavaScript <code>number</code>. A count larger than <code>Number.MAX_SAFE_INTEGER</code> throws an error with code <code>RUNTIME.DECODE_FAILED</code> rather than rounding.</p>
+<h3 id="write-with-returning">Write with RETURNING</h3>
+<p>SQL builder writes take an array of rows. Use <code>.returning(...)</code> to choose which columns come back from the same statement:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">const</span> insertUser = db.<span class="hljs-property">sql</span>.<span class="hljs-property">public</span>.<span class="hljs-property">user</span>
+  .<span class="hljs-title function_">insert</span>([{ <span class="hljs-attr">email</span>: <span class="hljs-string">&quot;sql@prisma.io&quot;</span> }])
+  .<span class="hljs-title function_">returning</span>(<span class="hljs-string">&quot;id&quot;</span>, <span class="hljs-string">&quot;email&quot;</span>).<span class="hljs-title function_">build</span>();
+
+<span class="hljs-keyword">const</span> [insertedUser] = <span class="hljs-keyword">await</span> db.<span class="hljs-title function_">query</span>(insertUser);
+<span class="hljs-comment">// insertedUser is { id, email }. The id comes from the @onCreate(cuid(2)) in the contract.</span></code></pre></div></figure>
+<p>Drop the <code>.returning(...)</code> call and the insert returns no rows, so run it with <code>db.execute(...)</code>, which resolves to <code>{ affectedRows }</code>.</p>
+<p>The builder writes updates and deletes too. Choose the rows with <code>.where(...)</code>, and add <code>.returning(...)</code> when you want columns back. <code>postId</code> and <code>tagId</code> here are values from your own code:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">const</span> publishPost = db.<span class="hljs-property">sql</span>.<span class="hljs-property">public</span>.<span class="hljs-property">post</span>
+  .<span class="hljs-title function_">update</span>({ <span class="hljs-attr">published</span>: <span class="hljs-literal">true</span> })
+  .<span class="hljs-title function_">where</span>(<span class="hljs-function">(<span class="hljs-params">f, fns</span>) =&gt;</span> fns.<span class="hljs-title function_">eq</span>(f.<span class="hljs-property">id</span>, postId)).<span class="hljs-title function_">build</span>();
+<span class="hljs-keyword">const</span> deleteTag = db.<span class="hljs-property">sql</span>.<span class="hljs-property">public</span>.<span class="hljs-property">tag</span>.<span class="hljs-title function_">delete</span>().<span class="hljs-title function_">where</span>(<span class="hljs-function">(<span class="hljs-params">f, fns</span>) =&gt;</span> fns.<span class="hljs-title function_">eq</span>(f.<span class="hljs-property">id</span>, tagId)).<span class="hljs-title function_">build</span>();
+
+<span class="hljs-keyword">const</span> { affectedRows } = <span class="hljs-keyword">await</span> db.<span class="hljs-title function_">execute</span>(publishPost);
+<span class="hljs-keyword">await</span> db.<span class="hljs-title function_">execute</span>(deleteTag);</code></pre></div></figure>
+<p>Neither of those two returns rows, so both go to <code>execute()</code>. Add <code>.returning(...)</code> to either one and you run it with <code>query()</code> instead.</p>
+<h3 id="raw-sql">Raw SQL</h3>
+<p>Raw SQL comes in two sizes. When the operators don&#39;t cover a single expression you need, write that expression with <code>fns.raw</code> and declare what type it returns with <code>.returns(...)</code>, and the rest of the query stays typed.</p>
+<p>Calling <code>.select</code> a second time adds columns rather than replacing the ones already chosen. The second call takes a name for the new column, then the expression:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">const</span> users = db.<span class="hljs-property">sql</span>.<span class="hljs-property">public</span>.<span class="hljs-property">user</span>
+  .<span class="hljs-title function_">select</span>(<span class="hljs-string">&quot;id&quot;</span>, <span class="hljs-string">&quot;email&quot;</span>)
+  .<span class="hljs-title function_">select</span>(<span class="hljs-string">&quot;upperEmail&quot;</span>, <span class="hljs-function">(<span class="hljs-params">f, fns</span>) =&gt;</span> fns.<span class="hljs-property">raw</span><span class="hljs-string">`UPPER(<span class="hljs-subst">${f.email}</span>)`</span>.<span class="hljs-title function_">returns</span>(<span class="hljs-string">&quot;pg/text@1&quot;</span>))
+  .<span class="hljs-title function_">limit</span>(<span class="hljs-number">10</span>).<span class="hljs-title function_">build</span>();
+
+<span class="hljs-keyword">const</span> rows = <span class="hljs-keyword">await</span> db.<span class="hljs-title function_">query</span>(users);
+<span class="hljs-comment">// [{ id: &#x27;cuid20000000000000000001&#x27;, email: &#x27;alice@prisma.io&#x27;, upperEmail: &#x27;ALICE@PRISMA.IO&#x27; }, ...]</span></code></pre></div></figure>
+<p><code>.returns(...)</code> takes a type name as a string: <code>&quot;pg/text@1&quot;</code> is the PostgreSQL type <code>text</code>, and type names always end in <code>@1</code>. The <a href="#/doc/prisma8/reference/raw-queries">raw queries reference</a> covers how a bare value picks its type name.</p>
+<p>A raw fragment is as safe as an operator, and you can interpolate columns and other typed expressions the same way.</p>
+<p>When the whole statement has to be raw, write it with <code>db.raw.sql</code> and end it with one of two calls. Use <code>.returnsRow(...)</code> when the statement returns rows, then run the built query with <code>query()</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">const</span> limit = <span class="hljs-number">10</span>;
+<span class="hljs-keyword">const</span> user = db.<span class="hljs-property">sql</span>.<span class="hljs-property">public</span>.<span class="hljs-property">user</span>; <span class="hljs-comment">// alias, to shorten user.columns.id</span>
+
+<span class="hljs-keyword">const</span> authorPostCounts = db.<span class="hljs-property">raw</span>.<span class="hljs-property">sql</span><span class="hljs-string">`
+  SELECT u.id, u.email, count(p.id) AS &quot;postCount&quot;
+  FROM &quot;user&quot; u
+  LEFT JOIN &quot;post&quot; p ON p.&quot;authorId&quot; = u.id
+  GROUP BY u.id, u.email
+  LIMIT <span class="hljs-subst">${limit}</span>
+`</span>
+  .<span class="hljs-title function_">returnsRow</span>({ <span class="hljs-attr">id</span>: user.<span class="hljs-property">columns</span>.<span class="hljs-property">id</span>, <span class="hljs-attr">email</span>: user.<span class="hljs-property">columns</span>.<span class="hljs-property">email</span>, <span class="hljs-attr">postCount</span>: <span class="hljs-string">&quot;pg/int8@1&quot;</span> })
+  .<span class="hljs-title function_">build</span>();
+
+<span class="hljs-keyword">const</span> rows = <span class="hljs-keyword">await</span> db.<span class="hljs-title function_">query</span>(authorPostCounts);</code></pre></div></figure>
+<p>Quote identifiers as PostgreSQL requires; <code>&quot;authorId&quot;</code> keeps the camel case. Each entry in the <code>.returnsRow(...)</code> object says how to read one result column. An entry is either a column from the contract, as in <code>user.columns.id</code>, or a type name as a string for a result column the contract has no counterpart for. <code>&quot;pg/int8@1&quot;</code> is a 64-bit integer, so <code>postCount</code> comes back as a <code>bigint</code>.</p>
+<p>Use <code>.affectedCount()</code> when the statement returns no rows, then run the built query with <code>execute()</code>, which resolves to <code>{ affectedRows }</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">const</span> publishDrafts = db.<span class="hljs-property">raw</span>.<span class="hljs-property">sql</span><span class="hljs-string">`
+  UPDATE &quot;post&quot; SET &quot;published&quot; = true WHERE &quot;published&quot; = false
+`</span>.<span class="hljs-title function_">affectedCount</span>().<span class="hljs-title function_">build</span>();
+
+<span class="hljs-keyword">const</span> { affectedRows } = <span class="hljs-keyword">await</span> db.<span class="hljs-title function_">execute</span>(publishDrafts);</code></pre></div></figure>
+<p>To use one raw statement inside another, interpolate it with <code>${...}</code>. End the inner statement at <code>.returnsRow(...)</code> without <code>.build()</code>; call <code>.build()</code> only on the outer one. Every un-built raw statement exposes its declared columns as <code>.returns</code>, so the outer statement can reuse them:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">const</span> minPosts = <span class="hljs-number">5</span>;
+
+<span class="hljs-keyword">const</span> authorsWithPosts = db.<span class="hljs-property">raw</span>.<span class="hljs-property">sql</span><span class="hljs-string">`
+  SELECT p.&quot;authorId&quot; AS &quot;authorId&quot;, count(*) AS &quot;postCount&quot;
+  FROM &quot;post&quot; p
+  GROUP BY p.&quot;authorId&quot;
+  HAVING count(*) &gt;= <span class="hljs-subst">${minPosts}</span>
+`</span>.<span class="hljs-title function_">returnsRow</span>({
+  <span class="hljs-attr">authorId</span>: db.<span class="hljs-property">sql</span>.<span class="hljs-property">public</span>.<span class="hljs-property">post</span>.<span class="hljs-property">columns</span>.<span class="hljs-property">authorId</span>,
+  <span class="hljs-attr">postCount</span>: <span class="hljs-string">&quot;pg/int8@1&quot;</span>,
+});
+
+<span class="hljs-keyword">const</span> activeAuthors = db.<span class="hljs-property">raw</span>.<span class="hljs-property">sql</span><span class="hljs-string">`
+  WITH active AS (<span class="hljs-subst">${authorsWithPosts}</span>)
+  SELECT u.email, active.&quot;postCount&quot;
+  FROM active
+  JOIN &quot;user&quot; u ON u.id = active.&quot;authorId&quot;
+`</span>.<span class="hljs-title function_">returnsRow</span>({
+  <span class="hljs-attr">email</span>: db.<span class="hljs-property">sql</span>.<span class="hljs-property">public</span>.<span class="hljs-property">user</span>.<span class="hljs-property">columns</span>.<span class="hljs-property">email</span>,
+  <span class="hljs-attr">postCount</span>: authorsWithPosts.<span class="hljs-property">returns</span>.<span class="hljs-property">postCount</span>,
+}).<span class="hljs-title function_">build</span>();
+
+<span class="hljs-keyword">const</span> rows = <span class="hljs-keyword">await</span> db.<span class="hljs-title function_">query</span>(activeAuthors);</code></pre></div></figure>
+<p>A column the inner statement already declared can be reused in the outer row object, as <code>authorsWithPosts.returns.postCount</code> is here. The <a href="#/doc/prisma8/reference/raw-queries@the-client-level-dbrawsql-tag">raw queries reference</a> documents every raw query method.</p>
+<h2 id="mongodb-pipeline-builder">MongoDB: Pipeline builder</h2>
+<p>On MongoDB the builder is at <code>db.query</code>, and it builds a typed MongoDB aggregation pipeline: a sequence of stages such as <code>$match</code>, <code>$group</code>, <code>$sort</code>, and <code>$lookup</code>, checked against your contract. There is no <code>db.sql</code> on MongoDB.</p>
+<p>All MongoDB aggregation happens here: the ORM API has no <code>.aggregate(...)</code> on MongoDB, so counts, sums, and grouping are pipeline builder work.</p>
+<p><strong>Use it when:</strong></p>
+<ul>
+<li>You need an aggregation: counts, grouping, or summaries per key.</li>
+<li>You want to join and reshape documents across collections with <code>$lookup</code>.</li>
+<li>A query needs MongoDB pipeline stages that don&#39;t map to the ORM API, such as multi-stage filtering and projection.</li>
+<li>You want to filter with an operator such as <code>gt</code> or <code>ne</code>. On MongoDB the ORM API&#39;s <code>.where(...)</code> matches exact values only, and <code>.match(...)</code> here takes the operators.</li>
+</ul>
+<p><strong>Prefer the ORM API when</strong> the query is document create, read, update, or delete, and for reading a reference relation. A reference relation is a relation stored as an id in the document rather than as an embedded document, and <code>.include(...)</code> already covers the common <code>$lookup</code> case.</p>
+<h3 id="build-a-pipeline-and-run-it">Build a pipeline and run it</h3>
+<p>Start from a collection with <code>db.query.from(...)</code>, which takes the collection name as a string: the model&#39;s <code>@@map</code> value, or the model name exactly as written when the model has no <code>@@map</code>. Every model above sets <code>@@map</code>, so the collections are <code>user</code>, <code>post</code>, <code>tag</code>, and <code>post_tag</code>. On MongoDB the ORM API uses the same name, as in <code>db.orm.post</code>.</p>
+<p><code>acc</code> holds the aggregate functions you can use inside <code>.group(...)</code>, such as <code>acc.count()</code> and <code>acc.max(f.createdAt)</code>. In the pipeline builder, fields use their stored names, so the id is <code>_id</code> (see the note under the contract above), and <code>_id</code> is also the grouping key in <code>.group(...)</code>. On MongoDB <code>db.runtime()</code> returns a promise, so await it before you run anything. Chain stages, call <code>.build()</code>, and run the result:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">
+
+
+<span class="hljs-keyword">const</span> runtime = <span class="hljs-keyword">await</span> db.<span class="hljs-title function_">runtime</span>();
+
+<span class="hljs-comment">// Post count per author, most prolific first</span>
+<span class="hljs-keyword">const</span> postsByAuthor = db.<span class="hljs-property">query</span>
+  .<span class="hljs-title function_">from</span>(<span class="hljs-string">&quot;post&quot;</span>)
+  .<span class="hljs-title function_">group</span>(<span class="hljs-function">(<span class="hljs-params">f</span>) =&gt;</span> ({ <span class="hljs-attr">_id</span>: f.<span class="hljs-property">authorId</span>, <span class="hljs-attr">postCount</span>: acc.<span class="hljs-title function_">count</span>() }))
+  .<span class="hljs-title function_">sort</span>({ <span class="hljs-attr">postCount</span>: -<span class="hljs-number">1</span> }) <span class="hljs-comment">// -1 is descending</span>
+  .<span class="hljs-title function_">build</span>();
+
+<span class="hljs-keyword">const</span> rows = <span class="hljs-keyword">await</span> runtime.<span class="hljs-title function_">query</span>(postsByAuthor);</code></pre></div></figure>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JavaScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript">[
+  { <span class="hljs-attr">_id</span>: <span class="hljs-string">&quot;clx3n9x4v0000abc123def456&quot;</span>, <span class="hljs-attr">postCount</span>: <span class="hljs-number">3</span> },
+  { <span class="hljs-attr">_id</span>: <span class="hljs-string">&quot;clx3n9x4v0001abc123def457&quot;</span>, <span class="hljs-attr">postCount</span>: <span class="hljs-number">2</span> }
+]</code></pre></div></figure>
+<p>The rows are typed by the stages you built.</p>
+<h3 id="filter-and-group-in-stages">Filter and group in stages</h3>
+<p>Chain <code>.match(...)</code> before <code>.group(...)</code> to aggregate over a subset, the pipeline equivalent of <code>WHERE</code> before <code>GROUP BY</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">const</span> draftsByAuthor = db.<span class="hljs-property">query</span>
+  .<span class="hljs-title function_">from</span>(<span class="hljs-string">&quot;post&quot;</span>)
+  .<span class="hljs-title function_">match</span>(<span class="hljs-function">(<span class="hljs-params">f</span>) =&gt;</span> f.<span class="hljs-property">published</span>.<span class="hljs-title function_">eq</span>(<span class="hljs-literal">false</span>))
+  .<span class="hljs-title function_">group</span>(<span class="hljs-function">(<span class="hljs-params">f</span>) =&gt;</span> ({ <span class="hljs-attr">_id</span>: f.<span class="hljs-property">authorId</span>, <span class="hljs-attr">draftCount</span>: acc.<span class="hljs-title function_">count</span>() })).<span class="hljs-title function_">build</span>();
+
+<span class="hljs-keyword">const</span> rows = <span class="hljs-keyword">await</span> runtime.<span class="hljs-title function_">query</span>(draftsByAuthor);</code></pre></div></figure>
+<p>In a <code>.match(...)</code> callback the operators are on the field itself, as in <code>f.published.eq(false)</code>, while the SQL query builder puts them on <code>fns</code> instead. The <a href="#/doc/prisma8/reference/pipeline-builder@match">pipeline builder reference</a> lists the operators you can use here.</p>
+<h3 id="join-collections-with-lookup">Join collections with $lookup</h3>
+<p>Use <code>.lookup(...)</code> for a type-checked join against another collection. The joined documents arrive under the name you give <code>.as(...)</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">const</span> postsWithAuthors = db.<span class="hljs-property">query</span>
+  .<span class="hljs-title function_">from</span>(<span class="hljs-string">&quot;post&quot;</span>)
+  .<span class="hljs-title function_">match</span>(<span class="hljs-function">(<span class="hljs-params">f</span>) =&gt;</span> f.<span class="hljs-property">published</span>.<span class="hljs-title function_">eq</span>(<span class="hljs-literal">true</span>))
+  .<span class="hljs-title function_">lookup</span>(<span class="hljs-function">(<span class="hljs-params"><span class="hljs-keyword">from</span></span>) =&gt;</span>
+    <span class="hljs-title function_">from</span>(<span class="hljs-string">&quot;user&quot;</span>).<span class="hljs-title function_">on</span>(<span class="hljs-function">(<span class="hljs-params">local, foreign</span>) =&gt;</span> ({ <span class="hljs-attr">local</span>: local.<span class="hljs-property">authorId</span>, <span class="hljs-attr">foreign</span>: foreign.<span class="hljs-property">_id</span> })).<span class="hljs-title function_">as</span>(<span class="hljs-string">&quot;author&quot;</span>),
+  )
+  .<span class="hljs-title function_">build</span>();
+
+<span class="hljs-keyword">const</span> rows = <span class="hljs-keyword">await</span> runtime.<span class="hljs-title function_">query</span>(postsWithAuthors);
+<span class="hljs-keyword">const</span> authorId = <span class="hljs-string">&quot;68e1f0c2a4b9d3e5f7a1b2c3&quot;</span>;
+<span class="hljs-keyword">const</span> mine = rows.<span class="hljs-title function_">filter</span>(<span class="hljs-function">(<span class="hljs-params">row</span>) =&gt;</span> <span class="hljs-title class_">String</span>(row.<span class="hljs-property">author</span>[<span class="hljs-number">0</span>]?.<span class="hljs-property">_id</span>) === authorId);</code></pre></div></figure>
+<p>Each row is a post document with an extra <code>author</code> field, and that field is an array of the matching user documents. <code>row.author</code> is empty when the author is missing. A document pulled in by <code>.lookup(...)</code> keeps MongoDB&#39;s own <code>ObjectId</code> for <code>_id</code>, so wrap it in <code>String(...)</code> before you compare it with an id from your own code. The <a href="#/doc/prisma8/reference/pipeline-builder@lookup">pipeline builder reference</a> has the rest of the stages.</p>
+<h2 id="choose-the-right-query-api">Choose the right query API</h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>You need</th>
+<th>Use</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>CRUD, filters, relations, simple aggregates</td>
+<td>ORM API (<code>db.orm</code>)</td>
+</tr>
+<tr>
+<td>Explicit join, computed projection, grouped top-N, <code>RETURNING</code></td>
+<td>SQL query builder (<code>db.sql.public.&lt;table&gt;</code>)</td>
+</tr>
+<tr>
+<td>A whole SQL statement of your own, such as a CTE</td>
+<td>Raw SQL (<code>db.raw.sql</code>)</td>
+</tr>
+<tr>
+<td><code>$group</code>, <code>$lookup</code> with reshaping, any MongoDB aggregation</td>
+<td>Pipeline builder (<code>db.query.from(...)</code>)</td>
+</tr>
+</tbody></table></div>
+<p><code>db.orm</code> holds your models by model name, as in <code>db.orm.public.User</code> on PostgreSQL. On MongoDB there is no schema segment, and the name is the collection: <code>db.orm.post</code>.</p>
+<p>A built query that returns rows runs through <code>db.query(builtQuery)</code> on PostgreSQL, and a write that returns no rows through <code>db.execute(builtQuery)</code>, which resolves to <code>{ affectedRows }</code>. <code>db.toSql(builtQuery)</code> returns the SQL and parameters the query would send, as <code>{ sql, params }</code>, without a database. On MongoDB, await the connection first: <code>(await db.runtime()).query(builtQuery)</code>.</p>
+<p>Inside a transaction, <code>tx</code> is the argument your callback receives, and you run the built query on it: <code>await db.transaction(async (tx) =&gt; tx.query(builtQuery))</code>. <code>tx.query(...)</code> and <code>tx.execute(...)</code> run built queries inside a transaction; see <a href="#/doc/prisma8/fundamentals/transactions">Transactions</a>.</p>
+<h2 id="prompt-your-coding-agent">Prompt your coding agent</h2>
+<p>Projects created with <code>npm create prisma@latest</code> include the <a target="_blank" rel="noopener" href="https://www.prisma.io/docs/ai/tools/skills">Prisma ORM skills</a> for your coding agent. The <code>prisma-8</code> skill covers both builders and the choice between them and the ORM API, so try prompts that map to each section:</p>
+<ul>
+<li>&quot;Using the prisma-8 skill, write a SQL builder query for the top 10 authors by post count.&quot;</li>
+<li>&quot;This report needs post and author columns in one flat result. Build the join with the SQL query builder.&quot;</li>
+<li>&quot;On MongoDB, group posts per author with the pipeline builder and sort by the count.&quot;</li>
+<li>&quot;Review this file and tell me which queries should stay on the ORM API and which need a builder.&quot;</li>
+</ul>
+<h2 id="next">Next</h2>
+<ul>
+<li><a href="#/doc/prisma8/fundamentals/reading-data">Read data</a>: the ORM API these builders extend.</li>
+<li><a href="#/doc/prisma8/fundamentals/relations-and-joins">Relations and joins</a>: understand relationships before reaching for explicit joins.</li>
+<li><a href="#/doc/prisma8/fundamentals/transactions">Transactions</a>: run built queries inside one.</li>
+</ul>
