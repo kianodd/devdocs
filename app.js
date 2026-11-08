@@ -3,7 +3,7 @@
    Courses are built at build time (data/catalog.json). Progress, downloads,
    settings live locally in the browser. */
 
-const APP_VERSION = '2.5.0';
+const APP_VERSION = '2.5.1';
 const $ = (s, el) => (el || document).querySelector(s);
 const $$ = (s, el) => [...(el || document).querySelectorAll(s)];
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -320,7 +320,7 @@ function applySettings() {
   const dark = settings.theme === 'dark' || (settings.theme === 'auto' && mq.matches);
   el.dataset.theme = dark ? 'dark' : 'light';
   el.dataset.themeMode = settings.theme;
-  el.dataset.style = settings.mother || 'ios';
+  el.dataset.style = 'ios';
   el.dataset.palette = settings.themeId || 'default';
   el.dataset.fontsize = String(settings.fontSize);
   el.dataset.density = settings.density;
@@ -585,7 +585,7 @@ function vSection(courseId, idx) {
   bindDlButtons();
 }
 
-const progOpen = new Set();
+let progOpenId; // undefined = not chosen yet; otherwise the single open course id (or null)
 function vProgress() {
   activeTab = 'progress';
   const tot = CAT.courses.reduce((a, c) => { const s = courseStats(c); a.done += s.done; a.total += s.total; a.mins += s.doneMins; return a; }, { done: 0, total: 0, mins: 0 });
@@ -593,7 +593,7 @@ function vProgress() {
   const ws = weekStats();
   const maxDay = Math.max(10, ...ws.days.map((d) => d.mins));
   const dayName = (d) => d.toLocaleDateString(settings.lang === 'en' ? 'en-US' : 'fa-IR', { weekday: 'narrow' });
-  if (!progOpen.size && progress.last) { const c = progress.last.key.split(':')[0]; if (c) progOpen.add(c); }
+  if (progOpenId === undefined) progOpenId = progress.last ? progress.last.key.split(':')[0] : null;
   view().innerHTML = headerHTML({ title: T('progress') }) + `
   <div class="group" style="margin-top:12px"><div class="row">
     <span class="ring-wrap">${ringSVG(pct, 58, 6)}</span>
@@ -613,7 +613,7 @@ function vProgress() {
   <div class="section-label">${T('perSection')}</div>` +
   CAT.courses.map((course) => {
     const st = courseStats(course);
-    const open = progOpen.has(course.id);
+    const open = progOpenId === course.id;
     return `<div class="group acc ${open ? 'open' : ''}" style="margin-bottom:12px">
     <button type="button" class="acc-head" data-acc="${course.id}">
       ${courseIcon(course)}
@@ -630,7 +630,7 @@ function vProgress() {
   setupLargeTitle();
   $$('[data-acc]').forEach((b) => b.onclick = () => {
     const id = b.dataset.acc;
-    progOpen.has(id) ? progOpen.delete(id) : progOpen.add(id);
+    progOpenId = progOpenId === id ? null : id;
     const y = window.scrollY; vProgress(); window.scrollTo(0, y);
   });
 }
@@ -645,7 +645,6 @@ function vSettings() {
   <div class="section-label">${T('appearance')}</div>
   <div class="group">
     <div class="set-row"><span class="lbl">${T('theme')}</span>${segHTML('theme', [{ v: 'auto', l: T('auto') }, { v: 'light', l: T('light') }, { v: 'dark', l: T('dark') }], settings.theme)}</div>
-    <div class="set-row"><span class="lbl">${T('motherStyle')}</span>${segHTML('mother', [{ v: 'ios', l: T('iosStyle') }, { v: 'material', l: T('materialStyle') }], settings.mother || 'ios')}</div>
     <a class="row" href="#/themes"><span class="grow"><span class="ttl">${T('themes')}</span><span class="sub">${esc(settings.lang === 'en' ? paletteById(settings.themeId).en : paletteById(settings.themeId).fa)}</span></span><span class="theme-dots"><i style="background:${paletteById(settings.themeId).aL}"></i><i style="background:${paletteById(settings.themeId).aD}"></i></span><span class="chev">${I.chev}</span></a>
     <div class="set-row" style="flex-direction:column;align-items:stretch;gap:9px"><span class="lbl">${T('accent')}</span>
       <span class="sw-row">
@@ -697,7 +696,6 @@ function vSettings() {
   $$('.seg').forEach((seg) => $$('button', seg).forEach((b) => b.onclick = () => {
     const name = seg.dataset.seg, val = b.dataset.val;
     if (name === 'theme') settings.theme = val;
-    else if (name === 'mother') settings.mother = val;
     else if (name === 'lang') { settings.lang = val; saveSettings(); applySettings(); renderChrome(); vSettings(); window.scrollTo(0, 0); return; }
     else if (name === 'fontSize') settings.fontSize = Number(val);
     else if (name === 'uiSize') settings.uiSize = Number(val);
@@ -946,7 +944,7 @@ function vSearch() {
       <span class="tg-ava" style="background:${course.hue}">${course.icon ? `<img src="${course.icon}" alt="">` : esc(initials(course.title))}</span>
       <span class="grow"><span class="ttl lat">${titleHtml}</span>
       ${snippetHtml ? `<span class="tg-snippet">${snippetHtml}</span>` : ''}
-      <span class="sub lat">${esc(course.title)} · ${esc(ch.section)} · ${fmtMins(ch.minutes)}${ch.size ? ' · ' + fmtSize(ch.size) : ''}</span></span>
+      <span class="sub lat">${esc(course.title)} · ${esc(ch.section)} · <span class="dur">${fmtMins(ch.minutes)}</span>${ch.size ? ' · ' + fmtSize(ch.size) : ''}</span></span>
       <span class="chev">${I.chev}</span></a>`;
   async function doSearch(q, mySeq) {
     const box = $('#search-results');
@@ -1195,6 +1193,7 @@ async function importDownloadsZip(file) {
 
 /* ---------------- changelog ---------------- */
 const CHANGELOG = [
+  { v: '2.5.1', fa: ['دکمه منوی صفحه مطلب به نوار بالا رفت', 'سبک Material حذف شد', 'آکاردئون‌های پیشرفت حالا تک‌فعال‌اند و درست باز و بسته می‌شوند', 'نمایش مدت‌زمان درس در صفحه مطلب اصلاح شد', 'پیش‌نمایش شیشه‌ای در تنظیمات مرتب و بازطراحی شد'], en: ['Chapter menu button moved to the top bar', 'Material style removed', 'Progress accordions are now single-open and toggle reliably', 'Fixed the duration display on chapter pages', 'Glass preview in Settings redesigned'] },
   { v: '2.5.0', fa: ['۵۰ تم رنگی جدید + انتخاب رنگ تأکیدی دلخواه', 'دو سبک طراحی مادر: iOS و Material با سوییچ از تنظیمات', 'شیشه‌ای بودن نوار بالا و پایین قابل تنظیم است و در تنظیمات پیش‌نمایش زنده دارد', 'عکس‌های داخل مطالب تمام‌صفحه باز می‌شوند و با دو انگشت زوم می‌شوند؛ بقیه اپ زوم نمی‌شود', 'کشیدن به پایین (Pull to Refresh) با استایل هماهنگ با تم اپ', 'صفحه پیشرفت: نمودار میله‌ای مطالعه هفتگی و کارت‌های آمار', 'فهرست دوره‌ها در صفحه پیشرفت آکاردئونی شد', 'ابزارهای صفحه مطلب به منوی سه‌نقطه کناری رفت و دکمه «صفحه درس» به آن اضافه شد', 'زمان‌های بالای ۶۰ دقیقه به ساعت نمایش داده می‌شوند', 'آیکون هر دوره کنار نامش در صفحه دوره دیده می‌شود'], en: ['50 new color themes + custom accent color picker', 'Two base design styles: iOS and Material, switchable in Settings', 'Top/bottom bar glass effect is adjustable with a live preview in Settings', 'Article images open fullscreen with pinch zoom; the rest of the app does not zoom', 'Pull to refresh restyled to match the app theme', 'Progress page: weekly study bar chart and stat cards', 'Course lists on the Progress page are now accordions', 'Chapter tools moved to a side three-dot menu with a Course page button', 'Durations over 60 minutes are shown in hours', 'Course icon shown next to its name on the course page'] },
   { v: '2.4.0', fa: ['۱۱ دوره جدید اضافه شد: Zod، TypeScript، React، React Native، Expo، Tailwind CSS، NativeWind 5، NativeWind 4، class-validator، class-transformer و Drizzle ORM — در مجموع ۲٬۴۸۲ فصل تازه و مطابق مستندات رسمی', 'حجم دانلود هر فصل کنار آن و حجم کل هر بخش و دوره قبل از دانلود نمایش داده می‌شود', 'انتخاب اندازه فونت متن حالا با یک پنل پایین‌صفحه‌ای انجام می‌شود', 'مشکل نمایش‌نبودن متن دکمه «تنظیمات» در نوار پایین برطرف شد'], en: ['11 new courses added: Zod, TypeScript, React, React Native, Expo, Tailwind CSS, NativeWind 5, NativeWind 4, class-validator, class-transformer and Drizzle ORM — 2,482 new chapters in total, matching the official docs', 'Download size is now shown next to every chapter, plus total size per section and course, before downloading', 'Text size is now picked from a bottom sheet', 'Fixed the missing "Settings" label in the bottom bar'] },
   { v: '2.3.0', fa: ['دوره Prisma ORM 7 کامل شد: ۱۷ صفحه «شروع» و کوییک‌استارت همه دیتابیس‌ها اضافه شد', 'دوره جدید Prisma ORM 8 با ۵۸ فصل اضافه شد', 'لینک‌های داخل متن که به صفحات همین داک اشاره می‌کنند حالا داخل خود اپ باز می‌شوند (بین نسخه‌های ۷ و ۸ هم کار می‌کند)'], en: ['Prisma ORM 7 is now complete: 17 getting-started and per-database quickstart pages added', 'New course: Prisma ORM 8 with 58 chapters', 'In-text links to pages of the same docs now open inside the app (works across the 7 and 8 courses too)'] },
@@ -1323,13 +1322,12 @@ function vDoc(courseId, slugFrag) {
     <div class="topbar-row">
       <button type="button" class="icon-btn" data-back aria-label="Back">${I.back}</button>
       <div class="topbar-title lat">${esc(ch.title)}</div>
-      <span class="spacer"></span>
+      <button type="button" class="icon-btn" id="doc-menu-btn" aria-label="${T('actions')}" aria-haspopup="true">${I.dots}</button>
     </div>
     <div class="topbar-rule"></div>
   </header>
   <div class="lt-wrap"><h1 class="large-title lat" style="font-size:27px;line-height:1.28">${esc(ch.title)}</h1>
-  <p class="large-sub">${course.icon ? `<span class="sub-ico"><img src="${course.icon}" alt=""></span>` : ''}<span class="lat">${esc(course.title)}</span> · <span class="lat">${esc(ch.section)}</span> · ${fmtMins(ch.minutes)}</p></div>
-  <button type="button" id="doc-menu-btn" aria-label="${T('actions')}" aria-haspopup="true">${I.dots}</button>
+  <p class="large-sub meta-flex"><span class="m-seg">${course.icon ? `<span class="sub-ico"><img src="${course.icon}" alt=""></span>` : ''}<span class="lat">${esc(course.title)}</span></span><span class="m-dot">·</span><span class="m-seg lat">${esc(ch.section)}</span><span class="m-dot">·</span><span class="m-seg dur">${fmtMins(ch.minutes)}</span></p></div>
   <div id="doc-menu" hidden role="menu">
     <a class="dm-item" href="#/course/${courseId}">${courseIcon(course)}<span>${T('courseHome')}</span></a>
     <button type="button" class="dm-item" id="tool-mark">${I.check}<span>${T('markRead')}</span><span class="dm-state"></span></button>
