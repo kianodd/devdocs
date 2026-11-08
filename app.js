@@ -3,7 +3,7 @@
    Courses are built at build time (data/catalog.json). Progress, downloads,
    settings live locally in the browser. */
 
-const APP_VERSION = '2.3.0';
+const APP_VERSION = '2.4.0';
 const $ = (s, el) => (el || document).querySelector(s);
 const $$ = (s, el) => [...(el || document).querySelectorAll(s)];
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -14,7 +14,7 @@ const I = {
   homeFill: '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4.5 10.8 12 4l7.5 6.8V19a1.6 1.6 0 0 1-1.6 1.6H14v-6h-4v6H6.1A1.6 1.6 0 0 1 4.5 19v-8.2Z" fill="currentColor"/></svg>',
   books: '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M5 4.5A1.5 1.5 0 0 1 6.5 3H19v15H6.7A1.7 1.7 0 0 0 5 19.7v-15.2Z" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round"/><path d="M5 16.5A2.5 2.5 0 0 1 7.5 14H19v7H7.5A2.5 2.5 0 0 1 5 18.5v-2Z" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round" transform="translate(0 -1)"/></svg>',
   chart: '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 4v15.5A.5.5 0 0 0 4.5 20H20" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/><rect x="7.5" y="12" width="3" height="5.5" rx="1" fill="currentColor"/><rect x="12" y="8.5" width="3" height="9" rx="1" fill="currentColor"/><rect x="16.5" y="10.5" width="3" height="7" rx="1" fill="currentColor"/></svg>',
-  gear: '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><g fill="currentColor"><rect x="11" y="1.6" width="2" height="3.8" rx="1"/><rect x="11" y="1.6" width="2" height="3.8" rx="1" transform="rotate(45 12 12)"/><rect x="11" y="1.6" width="2" height="3.8" rx="1" transform="rotate(90 12 12)"/><rect x="11" y="1.6" width="2" height="3.8" rx="1" transform="rotate(135 12 12)"/><rect x="11" y="1.6" width="2" height="3.8" rx="1" transform="rotate(180 12 12)"/><rect x="11" y="1.6" width="2" height="3.8" rx="1" transform="rotate(225 12 12)"/><rect x="11" y="1.6" width="2" height="3.8" rx="1" transform="rotate(270 12 12)"/><rect x="11" y="1.6" width="2" height="3.8" rx="1" transform="rotate(315 12 12)"/><path fill-rule="evenodd" d="M12 5.6a6.4 6.4 0 1 0 0 12.8 6.4 6.4 0 0 0 0-12.8Zm0 3.3a3.1 3.1 0 1 1 0 6.2 3.1 3.1 0 0 1 0-6.2Z"/></g></svg',
+  gear: '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><g fill="currentColor"><rect x="11" y="1.6" width="2" height="3.8" rx="1"/><rect x="11" y="1.6" width="2" height="3.8" rx="1" transform="rotate(45 12 12)"/><rect x="11" y="1.6" width="2" height="3.8" rx="1" transform="rotate(90 12 12)"/><rect x="11" y="1.6" width="2" height="3.8" rx="1" transform="rotate(135 12 12)"/><rect x="11" y="1.6" width="2" height="3.8" rx="1" transform="rotate(180 12 12)"/><rect x="11" y="1.6" width="2" height="3.8" rx="1" transform="rotate(225 12 12)"/><rect x="11" y="1.6" width="2" height="3.8" rx="1" transform="rotate(270 12 12)"/><rect x="11" y="1.6" width="2" height="3.8" rx="1" transform="rotate(315 12 12)"/><path fill-rule="evenodd" d="M12 5.6a6.4 6.4 0 1 0 0 12.8 6.4 6.4 0 0 0 0-12.8Zm0 3.3a3.1 3.1 0 1 1 0 6.2 3.1 3.1 0 0 1 0-6.2Z"/></g></svg>',
   check: '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4.5 12.5 9.8 17.8 19.5 6.5" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg>',
   chev: '<svg viewBox="0 0 10 16" fill="none" aria-hidden="true"><path d="M1.5 1.5 8 8l-6.5 6.5" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>',
   back: '<svg class="flip" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M14.5 4.5 7 12l7.5 7.5" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"/></svg>',
@@ -369,7 +369,8 @@ function vCourse(courseId) {
   </div>
   <div class="row">
     <span class="grow"><span class="ttl">${dlCount === st.total ? T('downloadedN') + ' ✓' : T('downloadAll')}</span>
-    <span class="sub" data-dl-count="course:${course.id}">${num(dlCount)} ${T('of')} ${num(st.total)} ${T('chapters')}</span></span>
+    <span class="sub" data-dl-count="course:${course.id}">${num(dlCount)} ${T('of')} ${num(st.total)} ${T('chapters')}</span>
+    <span class="sub">${T('totalSize')}: ${fmtSize(course.chapters.reduce((a, c) => a + (c.size || 0), 0))}</span></span>
     ${dlCount ? `<button type="button" class="dl-btn" data-dl-remove-course="${course.id}" aria-label="Remove">${I.trash}</button>` : ''}
     <button type="button" class="dl-btn" data-dl-course="${course.id}" aria-label="Download">${I.download}</button>
   </div></div>
@@ -406,7 +407,8 @@ function vSection(courseId, idx) {
   view().innerHTML = headerHTML({ title: sec.title, sub: `${course.title} · ${num(ss.total)} ${T('chapters')}`, back: true, latin: true }) + `
   <div class="group" style="margin-top:12px"><div class="row">
     <span class="grow"><span class="ttl">${T('downloadAll')}</span>
-    <span class="sub" data-dl-count="section:${course.id}:${idx}">${num(dlCount)} ${T('of')} ${num(ss.total)} ${T('chapters')} ${T('downloadedN')}</span></span>
+    <span class="sub" data-dl-count="section:${course.id}:${idx}">${num(dlCount)} ${T('of')} ${num(ss.total)} ${T('chapters')} ${T('downloadedN')}</span>
+    <span class="sub">${T('totalSize')}: ${fmtSize(ss.chs.reduce((a, c) => a + (c.size || 0), 0))}</span></span>
     ${dlCount ? `<button type="button" class="dl-btn" data-dl-remove-sec aria-label="Remove">${I.trash}</button>` : ''}
     <button type="button" class="dl-btn" data-dl-sec aria-label="Download">${I.download}</button>
   </div></div>` +
@@ -414,7 +416,7 @@ function vSection(courseId, idx) {
     <div class="group">${g.items.map((ch) => { n++; const key = keyOf(course.id, ch.slug); return `<a class="row" href="#/doc/${course.id}/${esc(ch.slug)}">
       <span class="num-badge">${num(n)}</span>
       <span class="grow"><span class="ttl lat">${esc(ch.title)}</span>
-      <span class="sub">${num(ch.minutes)} ${T('min')}</span></span>
+      <span class="sub">${num(ch.minutes)} ${T('min')}${ch.size ? ' · ' + fmtSize(ch.size) : ''}</span></span>
       ${dlBtnHTML(course.id, ch.slug)}
       <span class="check-dot ${isDone(key) ? 'on' : ''}">${I.check}</span></a>`; }).join('')}</div>`).join('');
   setupLargeTitle('#/course/' + course.id);
@@ -464,7 +466,7 @@ function vSettings() {
   </div>
   <div class="section-label">${T('reading')}</div>
   <div class="group">
-    <div class="set-row" style="flex-direction:column;align-items:stretch;gap:9px"><span class="lbl">${T('fontSize')}</span>${segHTML('fontSize', T('fsNames').map((l, i) => ({ v: i, l })), settings.fontSize, 'wrap')}</div>
+    <button type="button" class="row" id="fs-open"><span class="grow"><span class="ttl">${T('fontSize')}</span></span><span class="pct">${T('fsNames')[settings.fontSize]}</span><span class="chev">${I.chev}</span></button>
     <div class="set-row"><span class="lbl">${T('density')}</span>${segHTML('density', [{ v: 'compact', l: T('compact') }, { v: 'comfortable', l: T('comfortable') }, { v: 'spacious', l: T('spacious') }], settings.density)}</div>
   </div>
   <div class="section-label">${T('offline')}</div>
@@ -500,6 +502,20 @@ function vSettings() {
     saveSettings(); applySettings();
     $$('button', seg).forEach((x) => x.classList.toggle('on', x === b));
   }));
+  const fsOpen = $('#fs-open');
+  if (fsOpen) fsOpen.onclick = () => {
+    const px = [14.5, 16, 17.5, 19, 21];
+    openSheet(`<h3>${T('fontSize')}</h3><div class="sheet-list">${T('fsNames').map((l, i) => `
+      <button type="button" class="fs-opt ${i === settings.fontSize ? 'on' : ''}" data-fs="${i}">
+        <span class="fs-sample" style="font-size:${px[i]}px">${settings.lang === 'en' ? 'Ag' : 'آا'}</span>
+        <span class="grow">${l}</span>${i === settings.fontSize ? `<span class="fs-check">${I.check}</span>` : ''}
+      </button>`).join('')}</div>`);
+    $$('#sheet-root [data-fs]').forEach((b) => b.onclick = () => {
+      settings.fontSize = Number(b.dataset.fs);
+      saveSettings(); applySettings(); closeSheet();
+      const y = window.scrollY; vSettings(); window.scrollTo(0, y);
+    });
+  };
   if (navigator.storage && navigator.storage.estimate) {
     navigator.storage.estimate().then((e) => { const el = $('#storage-est'); if (el) el.textContent = e.usage ? (e.usage / 1048576).toFixed(1) + ' MB' : '—'; }).catch(() => {});
   }
@@ -702,7 +718,7 @@ function vSearch() {
       <span class="tg-ava" style="background:${course.hue}">${course.icon ? `<img src="${course.icon}" alt="">` : esc(initials(course.title))}</span>
       <span class="grow"><span class="ttl lat">${titleHtml}</span>
       ${snippetHtml ? `<span class="tg-snippet">${snippetHtml}</span>` : ''}
-      <span class="sub lat">${esc(course.title)} · ${esc(ch.section)} · ${num(ch.minutes)} ${T('min')}</span></span>
+      <span class="sub lat">${esc(course.title)} · ${esc(ch.section)} · ${num(ch.minutes)} ${T('min')}${ch.size ? ' · ' + fmtSize(ch.size) : ''}</span></span>
       <span class="chev">${I.chev}</span></a>`;
   async function doSearch(q, mySeq) {
     const box = $('#search-results');
@@ -951,6 +967,7 @@ async function importDownloadsZip(file) {
 
 /* ---------------- changelog ---------------- */
 const CHANGELOG = [
+  { v: '2.4.0', fa: ['۱۱ دوره جدید اضافه شد: Zod، TypeScript، React، React Native، Expo، Tailwind CSS، NativeWind 5، NativeWind 4، class-validator، class-transformer و Drizzle ORM — در مجموع ۲٬۴۸۲ فصل تازه و مطابق مستندات رسمی', 'حجم دانلود هر فصل کنار آن و حجم کل هر بخش و دوره قبل از دانلود نمایش داده می‌شود', 'انتخاب اندازه فونت متن حالا با یک پنل پایین‌صفحه‌ای انجام می‌شود', 'مشکل نمایش‌نبودن متن دکمه «تنظیمات» در نوار پایین برطرف شد'], en: ['11 new courses added: Zod, TypeScript, React, React Native, Expo, Tailwind CSS, NativeWind 5, NativeWind 4, class-validator, class-transformer and Drizzle ORM — 2,482 new chapters in total, matching the official docs', 'Download size is now shown next to every chapter, plus total size per section and course, before downloading', 'Text size is now picked from a bottom sheet', 'Fixed the missing "Settings" label in the bottom bar'] },
   { v: '2.3.0', fa: ['دوره Prisma ORM 7 کامل شد: ۱۷ صفحه «شروع» و کوییک‌استارت همه دیتابیس‌ها اضافه شد', 'دوره جدید Prisma ORM 8 با ۵۸ فصل اضافه شد', 'لینک‌های داخل متن که به صفحات همین داک اشاره می‌کنند حالا داخل خود اپ باز می‌شوند (بین نسخه‌های ۷ و ۸ هم کار می‌کند)'], en: ['Prisma ORM 7 is now complete: 17 getting-started and per-database quickstart pages added', 'New course: Prisma ORM 8 with 58 chapters', 'In-text links to pages of the same docs now open inside the app (works across the 7 and 8 courses too)'] },
   { v: '2.2.0', fa: ['حالت تمرکز در صفحه مطلب: پاراگراف‌های اطراف کم‌نور می‌شوند', 'بررسی سلامت دانلودها و تعمیر فایل‌های ناقص از صفحه دانلودها', 'کش خودکار فصل‌های خوانده‌شده (از تنظیمات، بخش آفلاین)', 'صف دانلود در پس‌زمینه با نوار پیشرفت و دکمه مکث/ادامه', 'دانلودها همراه تصاویر فصل کامل می‌شوند و ایندکس جستجوی هر دوره هم آفلاین ذخیره می‌شود تا جستجو بدون اینترنت کار کند', 'جشن کانفتی وقتی یک دوره کامل تمام می‌شود'], en: ['Focus mode in chapters: surrounding paragraphs dim', 'Verify downloads and repair incomplete files from the Downloads page', 'Auto-cache chapters you read (Settings → Offline)', 'Background download queue with a progress pill and pause/resume', 'Downloads include chapter images, and each course search index is stored offline too', 'Confetti celebration when you finish a whole course'] },
   { v: '2.1.0', fa: ['دوره کامل TypeORM اضافه شد (۷۵ فصل)', 'صفحه «دانلودها» با حذف تکی، انتخابی و کلی + خروجی و ورودی ZIP', 'جستجو به سبک تلگرام: دوره‌ها دایره‌ای بالا، نتایج متنی پایین', 'آیکون واقعی هر دوره (NestJS، Prisma، TypeORM) نمایش داده می‌شود', 'خواندن صوتی (TTS) حذف شد', 'اندازه فونت رابط کاربری اضافه شد', 'صفحه «لیست تغییرات» در تنظیمات', 'دکمه حذف سرویس‌ورکر و بارگذاری مجدد در تنظیمات', 'بررسی به‌روزرسانی: وقتی برنامه به‌روز است دیگر مودال نمی‌آید', 'کدهای ترمینال رنگی شدند و تگ‌های اضافی در داک Prisma اصلاح شد', 'رفع مشکل کم‌نشدن حجم بعد از حذف دانلودها و سریع‌شدن شمارنده دانلود', 'ترنزیشن عنوان بزرگ نرم‌تر شد؛ توست تیره اصلاح شد؛ منوی بالای مطلب ثابت شد'], en: ['Complete TypeORM course added (75 chapters)', 'Downloads page with single, selective and delete-all, plus ZIP export/import', 'Telegram-style search: course stories on top, text results below', 'Real course logos (NestJS, Prisma, TypeORM)', 'Text-to-speech removed', 'Interface font size setting added', 'Changelog page in Settings', 'Remove-service-worker & reload button in Settings', 'Update check no longer shows the modal when up to date', 'Colored terminal code blocks; stray tags in Prisma docs fixed', 'Storage now actually frees up after deleting downloads; faster download counters', 'Smoother large-title transition; dark toast fixed; doc toolbar pinned'] },
