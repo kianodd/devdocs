@@ -3,7 +3,7 @@
    Courses are built at build time (data/catalog.json). Progress, downloads,
    settings live locally in the browser. */
 
-const APP_VERSION = '2.4.0';
+const APP_VERSION = '2.5.0';
 const $ = (s, el) => (el || document).querySelector(s);
 const $$ = (s, el) => [...(el || document).querySelectorAll(s)];
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -35,6 +35,8 @@ const I = {
   share: '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3.5v11M8 6.5 12 2.8l4 3.7M5 12.5v6A1.5 1.5 0 0 0 6.5 20h11A1.5 1.5 0 0 0 19 18.5v-6" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>',
   list: '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M8.5 6h11M8.5 12h11M8.5 18h11" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/><circle cx="4.3" cy="6" r="1.5" fill="currentColor"/><circle cx="4.3" cy="12" r="1.5" fill="currentColor"/><circle cx="4.3" cy="18" r="1.5" fill="currentColor"/></svg>',
   book: '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 6.2C10.3 4.7 8 4 5.2 4c-.6 0-1 .1-1.2.2v14c.2-.1.6-.2 1.2-.2 2.8 0 5.1.7 6.8 2.2 1.7-1.5 4-2.2 6.8-2.2.6 0 1 .1 1.2.2v-14C19.8 4.1 19.4 4 18.8 4 16 4 13.7 4.7 12 6.2Zm0 0v14" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>',
+  dots: '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="5" r="1.9" fill="currentColor"/><circle cx="12" cy="12" r="1.9" fill="currentColor"/><circle cx="12" cy="19" r="1.9" fill="currentColor"/></svg>',
+  expand: '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M9 4H4v5M15 4h5v5M9 20H4v-5M15 20h5v-5" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>',
 };
 
 /* ---------------- i18n ---------------- */
@@ -81,6 +83,11 @@ const STR = {
     totalSize: 'حجم کل', items: 'مورد', exported: 'خروجی ZIP ساخته و دانلود شد',
     imported: 'دانلودها وارد شدند', importError: 'این فایل ZIP معتبر نیست یا خراب است.',
     recent: 'اخیرها', allCourses: 'دوره‌ها',
+    hour: 'ساعت', motherStyle: 'سبک طراحی', iosStyle: 'iOS', materialStyle: 'Material',
+    themes: 'تم‌های رنگی', accent: 'رنگ تأکیدی', accentDefault: 'پیش‌فرض تم', customColor: 'رنگ دلخواه',
+    glass: 'شیشه‌ای بودن نوارها', glassNote: 'میزان تار و شفافیت نوار بالا و پایین صفحه',
+    weeklyStudy: 'مطالعه این هفته', today: 'امروز', streak: 'روز پیاپی', totalRead: 'کل مطالعه',
+    courseHome: 'صفحه درس', actions: 'امکانات', zoomHint: 'با دو انگشت زوم کن',
   },
   en: {
     home: 'Home', library: 'Library', progress: 'Progress', settings: 'Settings', search: 'Search',
@@ -124,11 +131,23 @@ const STR = {
     totalSize: 'Total size', items: 'items', exported: 'ZIP exported and downloaded',
     imported: 'Downloads imported', importError: 'This ZIP file is invalid or corrupted.',
     recent: 'Recent', allCourses: 'Courses',
+    hour: 'h', motherStyle: 'Design style', iosStyle: 'iOS', materialStyle: 'Material',
+    themes: 'Color themes', accent: 'Accent color', accentDefault: 'Theme default', customColor: 'Custom color',
+    glass: 'Bar glass effect', glassNote: 'Blur and transparency of the top and bottom bars',
+    weeklyStudy: "This week's study", today: 'Today', streak: 'day streak', totalRead: 'Total read',
+    courseHome: 'Course page', actions: 'Actions', zoomHint: 'Pinch to zoom',
   },
 };
 const T = (k) => (STR[settings.lang] && STR[settings.lang][k]) || STR.fa[k] || k;
 const num = (n) => settings.lang === 'en' ? String(Number(n)) : Number(n).toLocaleString('fa-IR');
 const pctStr = (n) => settings.lang === 'en' ? Math.round(n) + '%' : num(Math.round(n)) + '٪';
+/* minutes -> "45 min" under an hour, "2 h 30 min" above */
+function fmtMins(m) {
+  m = Math.round(m || 0);
+  if (m < 60) return num(m) + ' ' + T('min');
+  const h = Math.floor(m / 60), r = m % 60;
+  return num(h) + ' ' + T('hour') + (r ? ' ' + num(r) + ' ' + T('min') : '');
+}
 
 /* ---------------- storage (with v1 migration) ---------------- */
 const SKEY2 = 'devdocs.settings.v2';
@@ -151,6 +170,10 @@ if (!progress || !progress.done) {
 }
 if (settings.uiSize === undefined) { settings.uiSize = 1; localStorage.setItem(SKEY2, JSON.stringify(settings)); }
 if (settings.autoCache === undefined) { settings.autoCache = false; localStorage.setItem(SKEY2, JSON.stringify(settings)); }
+if (settings.mother === undefined) { settings.mother = 'ios'; localStorage.setItem(SKEY2, JSON.stringify(settings)); }
+if (settings.themeId === undefined) { settings.themeId = 'default'; localStorage.setItem(SKEY2, JSON.stringify(settings)); }
+if (settings.accent === undefined) { settings.accent = null; localStorage.setItem(SKEY2, JSON.stringify(settings)); }
+if (settings.glass === undefined) { settings.glass = 66; localStorage.setItem(SKEY2, JSON.stringify(settings)); }
 let downloads = loadJSON(DKEY, { keys: {} });
 // normalize: values are {at, size}; older entries were plain timestamps
 for (const k of Object.keys(downloads.keys)) {
@@ -196,6 +219,100 @@ const courseIcon = (course, big) => course.icon
   : `<span class="mono" style="background:${course.hue}">${esc(initials(course.title))}</span>`;
 const initials = (title) => title.split(/\s+/).map((w) => w[0]).join('').slice(0, 2).toUpperCase();
 
+/* ---------------- color themes (50 palettes) ----------------
+   Each palette: tint hue for surfaces (-1 = neutral iOS gray) + accent for
+   light/dark. Surfaces are derived, so every palette works in both modes. */
+const PALETTES = [
+  { id: 'default', fa: 'پیش‌فرض iOS', en: 'iOS Default', h: -1, aL: '#0A84FF', aD: '#0A84FF' },
+  { id: 'ocean', fa: 'اقیانوس', en: 'Ocean', h: 212, aL: '#0066CC', aD: '#3395FF' },
+  { id: 'sky', fa: 'آسمان', en: 'Sky', h: 199, aL: '#0284C7', aD: '#38BDF8' },
+  { id: 'royal', fa: 'آبی سلطنتی', en: 'Royal Blue', h: 224, aL: '#2743C7', aD: '#5B7CFF' },
+  { id: 'navy', fa: 'سرمه‌ای', en: 'Navy', h: 222, aL: '#1D3FAE', aD: '#4D6BFE' },
+  { id: 'electric', fa: 'آبی الکتریک', en: 'Electric', h: 217, aL: '#0057FF', aD: '#3D7BFF' },
+  { id: 'babyblue', fa: 'آبی پاستلی', en: 'Baby Blue', h: 204, aL: '#3E9BDC', aD: '#6FBCEB' },
+  { id: 'turquoise', fa: 'فیروزه‌ای', en: 'Turquoise', h: 186, aL: '#0891B2', aD: '#22D3EE' },
+  { id: 'tealdeep', fa: 'فیروزه تیره', en: 'Deep Teal', h: 178, aL: '#0F766E', aD: '#2DD4BF' },
+  { id: 'seafoam', fa: 'سبز دریایی', en: 'Seafoam', h: 160, aL: '#0E9F7A', aD: '#34D399' },
+  { id: 'emerald', fa: 'زمرد', en: 'Emerald', h: 152, aL: '#059669', aD: '#34D399' },
+  { id: 'jade', fa: 'یشمی', en: 'Jade', h: 168, aL: '#0D9488', aD: '#5EEAD4' },
+  { id: 'forest', fa: 'جنگل', en: 'Forest', h: 142, aL: '#15803D', aD: '#4ADE80' },
+  { id: 'mint', fa: 'نعنایی', en: 'Mint', h: 156, aL: '#12A97C', aD: '#4ADE9E' },
+  { id: 'sage', fa: 'مریم‌گلی', en: 'Sage', h: 130, aL: '#5F8D4E', aD: '#9DC08B' },
+  { id: 'lime', fa: 'لیمویی', en: 'Lime', h: 84, aL: '#65A30D', aD: '#A3E635' },
+  { id: 'olive', fa: 'زیتونی', en: 'Olive', h: 74, aL: '#7A8B12', aD: '#BECF4A' },
+  { id: 'gold', fa: 'طلایی', en: 'Gold', h: 43, aL: '#B8860B', aD: '#F5C542' },
+  { id: 'amber', fa: 'کهربایی', en: 'Amber', h: 36, aL: '#D97706', aD: '#FBBF24' },
+  { id: 'mustard', fa: 'خردلی', en: 'Mustard', h: 48, aL: '#C29200', aD: '#FFD43B' },
+  { id: 'sand', fa: 'شنی', en: 'Sand', h: 38, aL: '#A97B2F', aD: '#E3B778' },
+  { id: 'cream', fa: 'کرم', en: 'Cream', h: 40, aL: '#B07D3C', aD: '#E8C07D' },
+  { id: 'sunset', fa: 'غروب', en: 'Sunset', h: 16, aL: '#EA580C', aD: '#FB923C' },
+  { id: 'burnt', fa: 'نارنجی سوخته', en: 'Burnt Orange', h: 18, aL: '#C2410C', aD: '#F97316' },
+  { id: 'copper', fa: 'مسی', en: 'Copper', h: 24, aL: '#B45309', aD: '#F59E0B' },
+  { id: 'bronze', fa: 'برنزی', en: 'Bronze', h: 30, aL: '#9A6B2F', aD: '#D9A45B' },
+  { id: 'cocoa', fa: 'شکلاتی', en: 'Cocoa', h: 22, aL: '#8A5A2B', aD: '#C68B4E' },
+  { id: 'coffee', fa: 'قهوه', en: 'Coffee', h: 26, aL: '#7C4A21', aD: '#B07B4F' },
+  { id: 'taupe', fa: 'بژ مدرن', en: 'Taupe', h: 32, aL: '#8D7B68', aD: '#B8A88F' },
+  { id: 'coral', fa: 'مرجانی', en: 'Coral', h: 8, aL: '#E14E3A', aD: '#FF7A66' },
+  { id: 'crimson', fa: 'قرمز آتشین', en: 'Crimson', h: 348, aL: '#DC2626', aD: '#F87171' },
+  { id: 'cherry', fa: 'گیلاسی', en: 'Cherry', h: 340, aL: '#BE123C', aD: '#FB7185' },
+  { id: 'rose', fa: 'رز', en: 'Rose', h: 336, aL: '#E11D63', aD: '#FB7185' },
+  { id: 'hotpink', fa: 'صورتی تند', en: 'Hot Pink', h: 322, aL: '#DB2777', aD: '#F472B6' },
+  { id: 'blush', fa: 'صورتی پاستلی', en: 'Blush', h: 340, aL: '#E56B8C', aD: '#F9A8C0' },
+  { id: 'peach', fa: 'هلو', en: 'Peach', h: 24, aL: '#E2713A', aD: '#FFAB7A' },
+  { id: 'magenta', fa: 'سرخابی', en: 'Magenta', h: 308, aL: '#C026D3', aD: '#E879F9' },
+  { id: 'violet', fa: 'بنفش', en: 'Violet', h: 262, aL: '#7C3AED', aD: '#A78BFA' },
+  { id: 'royalpurple', fa: 'بنفش سلطنتی', en: 'Royal Purple', h: 272, aL: '#6D28D9', aD: '#A78BFA' },
+  { id: 'indigo', fa: 'نیلی', en: 'Indigo', h: 238, aL: '#4F46E5', aD: '#818CF8' },
+  { id: 'galaxy', fa: 'کهکشان', en: 'Galaxy', h: 258, aL: '#5B21B6', aD: '#8B5CF6' },
+  { id: 'lavender', fa: 'لاوندر', en: 'Lavender', h: 252, aL: '#7C6BD9', aD: '#B4A8F5' },
+  { id: 'lilac', fa: 'یاسی', en: 'Lilac', h: 282, aL: '#9D5BD2', aD: '#C99BE8' },
+  { id: 'midnight', fa: 'نیمه‌شب', en: 'Midnight', h: 228, aL: '#2440A0', aD: '#5B7CFF' },
+  { id: 'neonblue', fa: 'نئون آبی', en: 'Neon Blue', h: 196, aL: '#0091EA', aD: '#00E5FF' },
+  { id: 'neongreen', fa: 'نئون سبز', en: 'Neon Green', h: 130, aL: '#00A152', aD: '#00E676' },
+  { id: 'cyber', fa: 'سایبرپانک', en: 'Cyberpunk', h: 316, aL: '#D6006D', aD: '#FF2E9A' },
+  { id: 'slate', fa: 'خاکستری آبی', en: 'Slate', h: 215, aL: '#475569', aD: '#94A3B8' },
+  { id: 'graphite', fa: 'گرافیتی', en: 'Graphite', h: -1, aL: '#3A3A3C', aD: '#AEAEB2' },
+  { id: 'mono', fa: 'تک‌رنگ', en: 'Mono', h: -1, aL: '#000000', aD: '#FFFFFF' },
+];
+const ACCENTS = ['#0A84FF', '#FF453A', '#FF9F0A', '#FFD60A', '#34C759', '#00C7BE', '#30B0C7', '#32ADE6', '#007AFF', '#5856D6', '#AF52DE', '#FF2D55', '#A2845E', '#636366'];
+function hslRgb(h, s, l) {
+  s /= 100; l /= 100;
+  const k = (n) => (n + h / 30) % 12;
+  const a = s * Math.min(l, 1 - l);
+  const f = (n) => l - a * Math.max(-1, Math.min(k(n) - 3, Math.min(9 - k(n), 1)));
+  return [Math.round(255 * f(0)), Math.round(255 * f(8)), Math.round(255 * f(4))];
+}
+function hexRgb(hex) { const n = parseInt(hex.slice(1), 16); return [(n >> 16) & 255, (n >> 8) & 255, n & 255]; }
+const paletteById = (id) => PALETTES.find((p) => p.id === id) || PALETTES[0];
+
+/* ---------------- reading-time log (for weekly stats) ---------------- */
+const RKEY = 'devdocs.readlog.v1';
+let readlog = loadJSON(RKEY, {});
+const dayKey = (d) => d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+let readlogDirty = 0;
+function addReadSecs(n) {
+  const k = dayKey(new Date());
+  readlog[k] = (readlog[k] || 0) + n;
+  if (++readlogDirty >= 10) { readlogDirty = 0; localStorage.setItem(RKEY, JSON.stringify(readlog)); }
+}
+function flushReadlog() { localStorage.setItem(RKEY, JSON.stringify(readlog)); }
+function weekStats() {
+  const days = [];
+  for (let i = 6; i >= 0; i--) {
+    const d = new Date(); d.setDate(d.getDate() - i);
+    days.push({ date: d, key: dayKey(d), mins: Math.round((readlog[dayKey(d)] || 0) / 60), today: i === 0 });
+  }
+  let streak = 0;
+  for (let i = 0; ; i++) {
+    const d = new Date(); d.setDate(d.getDate() - i);
+    if ((readlog[dayKey(d)] || 0) > 0) streak++;
+    else if (i > 0) break;
+    else continue;
+    if (i > 400) break;
+  }
+  return { days, weekMins: days.reduce((a, d) => a + d.mins, 0), todayMins: days[6].mins, streak, totalMins: Math.round(Object.values(readlog).reduce((a, s) => a + s, 0) / 60) };
+}
+
 /* ---------------- theme & language ---------------- */
 const mq = matchMedia('(prefers-color-scheme: dark)');
 function applySettings() {
@@ -203,11 +320,38 @@ function applySettings() {
   const dark = settings.theme === 'dark' || (settings.theme === 'auto' && mq.matches);
   el.dataset.theme = dark ? 'dark' : 'light';
   el.dataset.themeMode = settings.theme;
+  el.dataset.style = settings.mother || 'ios';
+  el.dataset.palette = settings.themeId || 'default';
   el.dataset.fontsize = String(settings.fontSize);
   el.dataset.density = settings.density;
   el.dataset.uisize = String(settings.uiSize == null ? 1 : settings.uiSize);
   el.lang = settings.lang;
   el.dir = settings.lang === 'en' ? 'ltr' : 'rtl';
+  const pal = paletteById(settings.themeId);
+  const accent = settings.accent || (dark ? pal.aD : pal.aL);
+  el.style.setProperty('--accent', accent);
+  const [ar, ag, ab] = hexRgb(accent.startsWith('#') ? accent : '#0A84FF');
+  el.style.setProperty('--accent-soft', `rgba(${ar}, ${ag}, ${ab}, 0.14)`);
+  if (pal.h >= 0) {
+    if (dark) {
+      el.style.setProperty('--bg', `hsl(${pal.h} 30% 6%)`);
+      el.style.setProperty('--bg-2', `hsl(${pal.h} 24% 11.5%)`);
+      el.style.setProperty('--bg-3', `hsl(${pal.h} 20% 17%)`);
+    } else {
+      el.style.setProperty('--bg', `hsl(${pal.h} 42% 95.5%)`);
+      el.style.setProperty('--bg-2', `hsl(${pal.h} 55% 99%)`);
+      el.style.setProperty('--bg-3', `hsl(${pal.h} 38% 93%)`);
+    }
+    const [gr, gg, gb] = dark ? hslRgb(pal.h, 24, 13) : hslRgb(pal.h, 55, 99);
+    el.dataset.glassRgb = `${gr}, ${gg}, ${gb}`;
+  } else {
+    el.style.removeProperty('--bg'); el.style.removeProperty('--bg-2'); el.style.removeProperty('--bg-3');
+    el.dataset.glassRgb = dark ? '28, 28, 30' : '250, 250, 252';
+  }
+  const g = settings.glass == null ? 66 : settings.glass;
+  el.style.setProperty('--glass', `rgba(${el.dataset.glassRgb}, ${(0.3 + g * 0.006).toFixed(2)})`);
+  el.style.setProperty('--glass-blur', (2 + g * 0.38).toFixed(0) + 'px');
+  el.style.setProperty('--glass-sat', (1.15 + g * 0.008).toFixed(2));
 }
 mq.addEventListener?.('change', applySettings);
 
@@ -231,6 +375,19 @@ function confirmSheet({ title, body, confirmLabel, danger, onConfirm }) {
     </div>`);
   $('#sh-cancel').onclick = closeSheet;
   $('#sh-confirm').onclick = () => { closeSheet(); onConfirm(); };
+}
+function openFontSheet(onPick) {
+  const px = [14.5, 16, 17.5, 19, 21];
+  openSheet(`<h3>${T('fontSize')}</h3><div class="sheet-list">${T('fsNames').map((l, i) => `
+    <button type="button" class="fs-opt ${i === settings.fontSize ? 'on' : ''}" data-fs="${i}">
+      <span class="fs-sample" style="font-size:${px[i]}px">${settings.lang === 'en' ? 'Ag' : 'آا'}</span>
+      <span class="grow">${l}</span>${i === settings.fontSize ? `<span class="fs-check">${I.check}</span>` : ''}
+    </button>`).join('')}</div>`);
+  $$('#sheet-root [data-fs]').forEach((b) => b.onclick = () => {
+    settings.fontSize = Number(b.dataset.fs);
+    saveSettings(); applySettings(); closeSheet();
+    if (onPick) onPick();
+  });
 }
 
 /* ---------------- chrome: tab bar / sidebar ---------------- */
@@ -293,7 +450,7 @@ function courseRow(course) {
   return `<a class="row course-row" href="#/course/${course.id}">
     ${courseIcon(course)}
     <span class="grow"><span class="ttl lat">${esc(course.title)}</span>
-    <span class="sub">${num(course.sections.length)} ${T('sections')} · ${num(st.total)} ${T('chapters')} · ${num(st.mins)} ${T('min')}</span>
+    <span class="sub">${num(course.sections.length)} ${T('sections')} · ${num(st.total)} ${T('chapters')} · ${fmtMins(st.mins)}</span>
     <span class="bar"><i style="width:${st.pct}%;background:${course.hue}"></i></span></span>
     <span class="pct">${pctStr(st.pct)}</span><span class="chev">${I.chev}</span></a>`;
 }
@@ -314,7 +471,7 @@ let docCleanup = null;
 
 function vHome() {
   activeTab = 'home';
-  let h = headerHTML({ title: 'DevDocs', sub: T('tagline'), latin: true });
+  let h = headerHTML({ title: 'DevDocs', latin: true });
   const last = progress.last && chapByKey.get(progress.last.key);
   if (last) {
     const { course, ch } = last;
@@ -361,7 +518,9 @@ function vCourse(courseId) {
   activeTab = 'library';
   const st = courseStats(course);
   const dlCount = course.chapters.filter((ch) => isDownloaded(keyOf(course.id, ch.slug))).length;
-  view().innerHTML = headerHTML({ title: course.title, sub: `${num(course.sections.length)} ${T('sections')} · ${num(st.total)} ${T('chapters')} · ${num(st.mins)} ${T('min')}`, back: true, latin: true }) + `
+  view().innerHTML = headerHTML({ title: course.title, back: true, latin: true }) + `
+  <div class="course-hero">${courseIcon(course, true)}<span class="grow"><span class="ttl lat">${esc(course.title)}</span>
+  <span class="sub">${num(course.sections.length)} ${T('sections')} · ${num(st.total)} ${T('chapters')} · ${fmtMins(st.mins)}</span></span></div>` + `
   <div class="group" style="margin-top:12px"><div class="row">
     <span class="ring-wrap">${ringSVG(st.pct, 46, 5)}</span>
     <span class="grow"><span class="ttl">${pctStr(st.pct)}</span>
@@ -416,7 +575,7 @@ function vSection(courseId, idx) {
     <div class="group">${g.items.map((ch) => { n++; const key = keyOf(course.id, ch.slug); return `<a class="row" href="#/doc/${course.id}/${esc(ch.slug)}">
       <span class="num-badge">${num(n)}</span>
       <span class="grow"><span class="ttl lat">${esc(ch.title)}</span>
-      <span class="sub">${num(ch.minutes)} ${T('min')}${ch.size ? ' · ' + fmtSize(ch.size) : ''}</span></span>
+      <span class="sub">${fmtMins(ch.minutes)}${ch.size ? ' · ' + fmtSize(ch.size) : ''}</span></span>
       ${dlBtnHTML(course.id, ch.slug)}
       <span class="check-dot ${isDone(key) ? 'on' : ''}">${I.check}</span></a>`; }).join('')}</div>`).join('');
   setupLargeTitle('#/course/' + course.id);
@@ -426,29 +585,54 @@ function vSection(courseId, idx) {
   bindDlButtons();
 }
 
+const progOpen = new Set();
 function vProgress() {
   activeTab = 'progress';
   const tot = CAT.courses.reduce((a, c) => { const s = courseStats(c); a.done += s.done; a.total += s.total; a.mins += s.doneMins; return a; }, { done: 0, total: 0, mins: 0 });
   const pct = tot.total ? (tot.done / tot.total) * 100 : 0;
+  const ws = weekStats();
+  const maxDay = Math.max(10, ...ws.days.map((d) => d.mins));
+  const dayName = (d) => d.toLocaleDateString(settings.lang === 'en' ? 'en-US' : 'fa-IR', { weekday: 'narrow' });
+  if (!progOpen.size && progress.last) { const c = progress.last.key.split(':')[0]; if (c) progOpen.add(c); }
   view().innerHTML = headerHTML({ title: T('progress') }) + `
   <div class="group" style="margin-top:12px"><div class="row">
     <span class="ring-wrap">${ringSVG(pct, 58, 6)}</span>
     <span class="grow"><span class="ttl" style="font-size:19px">${pctStr(pct)}</span>
-    <span class="sub">${num(tot.done)} ${T('of')} ${num(tot.total)} ${T('chapters')} · ${num(tot.mins)} ${T('min')} ${T('estTime')}</span></span>
-  </div></div>` +
+    <span class="sub">${num(tot.done)} ${T('of')} ${num(tot.total)} ${T('chapters')} · ${fmtMins(tot.mins)} ${T('estTime')}</span></span>
+  </div></div>
+  <div class="stat-grid">
+    <div class="stat-card"><span class="stat-val">${fmtMins(ws.todayMins)}</span><span class="stat-lbl">${T('today')}</span></div>
+    <div class="stat-card"><span class="stat-val">${fmtMins(ws.weekMins)}</span><span class="stat-lbl">${T('weeklyStudy')}</span></div>
+    <div class="stat-card"><span class="stat-val">${num(ws.streak)} ${settings.lang === 'en' ? '' : 'روز'}</span><span class="stat-lbl">${T('streak')}</span></div>
+    <div class="stat-card"><span class="stat-val">${fmtMins(ws.totalMins)}</span><span class="stat-lbl">${T('totalRead')}</span></div>
+  </div>
+  <div class="section-label">${T('weeklyStudy')}</div>
+  <div class="group chart-card"><div class="chart">
+    ${ws.days.map((d) => `<div class="chart-col"><span class="chart-val">${d.mins ? fmtMins(d.mins) : ''}</span><span class="chart-bar ${d.today ? 'today' : ''}" style="height:${Math.max(3, Math.round((d.mins / maxDay) * 100))}%"></span><span class="chart-lbl">${dayName(d.date)}</span></div>`).join('')}
+  </div></div>
+  <div class="section-label">${T('perSection')}</div>` +
   CAT.courses.map((course) => {
     const st = courseStats(course);
-    return `<div class="section-label lat">${esc(course.title)}</div>
-    <div class="group"><div class="row">
+    const open = progOpen.has(course.id);
+    return `<div class="group acc ${open ? 'open' : ''}" style="margin-bottom:12px">
+    <button type="button" class="acc-head" data-acc="${course.id}">
       ${courseIcon(course)}
-      <span class="grow"><span class="ttl">${pctStr(st.pct)}</span><span class="bar"><i style="width:${st.pct}%"></i></span>
-      <span class="sub">${num(st.done)} ${T('of')} ${num(st.total)} ${T('chapters')}</span></span>
-    </div>${course.sections.map((sec) => { const ss = sectionStats(course, sec); return `<div class="row" style="min-height:44px">
+      <span class="grow"><span class="ttl lat">${esc(course.title)}</span><span class="bar"><i style="width:${st.pct}%"></i></span>
+      <span class="sub">${num(st.done)} ${T('of')} ${num(st.total)} ${T('chapters')} · ${pctStr(st.pct)}</span></span>
+      <span class="acc-chev">${I.chev}</span>
+    </button>
+    ${open ? `<div class="acc-body">${course.sections.map((sec) => { const ss = sectionStats(course, sec); return `<div class="row" style="min-height:44px">
       <span class="grow"><span class="ttl lat" style="font-size:14.5px">${esc(sec.title)}</span>
       <span class="bar" style="margin-top:5px"><i style="width:${ss.pct}%"></i></span></span>
-      <span class="pct">${num(ss.done)}/${num(ss.total)}</span></div>`; }).join('')}</div>`;
-  }).join('');
+      <span class="pct">${num(ss.done)}/${num(ss.total)}</span></div>`; }).join('')}</div>` : ''}
+    </div>`;
+  }).join('') + '<div style="height:6px"></div>';
   setupLargeTitle();
+  $$('[data-acc]').forEach((b) => b.onclick = () => {
+    const id = b.dataset.acc;
+    progOpen.has(id) ? progOpen.delete(id) : progOpen.add(id);
+    const y = window.scrollY; vProgress(); window.scrollTo(0, y);
+  });
 }
 
 function segHTML(name, options, current, cls) {
@@ -461,8 +645,27 @@ function vSettings() {
   <div class="section-label">${T('appearance')}</div>
   <div class="group">
     <div class="set-row"><span class="lbl">${T('theme')}</span>${segHTML('theme', [{ v: 'auto', l: T('auto') }, { v: 'light', l: T('light') }, { v: 'dark', l: T('dark') }], settings.theme)}</div>
+    <div class="set-row"><span class="lbl">${T('motherStyle')}</span>${segHTML('mother', [{ v: 'ios', l: T('iosStyle') }, { v: 'material', l: T('materialStyle') }], settings.mother || 'ios')}</div>
+    <a class="row" href="#/themes"><span class="grow"><span class="ttl">${T('themes')}</span><span class="sub">${esc(settings.lang === 'en' ? paletteById(settings.themeId).en : paletteById(settings.themeId).fa)}</span></span><span class="theme-dots"><i style="background:${paletteById(settings.themeId).aL}"></i><i style="background:${paletteById(settings.themeId).aD}"></i></span><span class="chev">${I.chev}</span></a>
+    <div class="set-row" style="flex-direction:column;align-items:stretch;gap:9px"><span class="lbl">${T('accent')}</span>
+      <span class="sw-row">
+        <button type="button" class="sw auto ${!settings.accent ? 'on' : ''}" data-accent="" title="${T('accentDefault')}">${settings.accent ? '' : I.check}</button>
+        ${ACCENTS.map((c) => `<button type="button" class="sw ${settings.accent === c ? 'on' : ''}" data-accent="${c}" style="background:${c}">${settings.accent === c ? I.check : ''}</button>`).join('')}
+        <label class="sw custom" title="${T('customColor')}" style="background:conic-gradient(#FF453A,#FF9F0A,#FFD60A,#34C759,#32ADE6,#AF52DE,#FF453A)"><input type="color" id="accent-custom" value="${settings.accent && !ACCENTS.includes(settings.accent) ? settings.accent : '#0A84FF'}"></label>
+      </span></div>
     <div class="set-row"><span class="lbl">${T('uiLang')}</span>${segHTML('lang', [{ v: 'fa', l: 'فارسی' }, { v: 'en', l: 'English' }], settings.lang)}</div>
     <div class="set-row"><span class="lbl">${T('uiFontSize')}</span>${segHTML('uiSize', T('uiFsNames').map((l, i) => ({ v: i, l })), settings.uiSize == null ? 1 : settings.uiSize)}</div>
+  </div>
+  <div class="section-label">${T('glass')}</div>
+  <div class="group">
+    <div class="set-row"><span class="lbl">${T('glass')}</span><span class="pct" id="glass-val">${num(settings.glass == null ? 66 : settings.glass)}٪</span></div>
+    <div style="padding:0 14px 6px"><input type="range" id="glass-range" min="0" max="100" step="1" value="${settings.glass == null ? 66 : settings.glass}"></div>
+    <p class="set-note" style="margin:0 14px 4px">${T('glassNote')}</p>
+    <div class="glass-preview" aria-hidden="true">
+      <div class="gp-top"><span class="gp-dot"></span><span class="gp-line"></span><span class="gp-dot"></span></div>
+      <div class="gp-body"><span></span><span></span><span></span></div>
+      <div class="gp-tab"><i class="on"></i><i></i><i></i><i></i></div>
+    </div>
   </div>
   <div class="section-label">${T('reading')}</div>
   <div class="group">
@@ -494,6 +697,7 @@ function vSettings() {
   $$('.seg').forEach((seg) => $$('button', seg).forEach((b) => b.onclick = () => {
     const name = seg.dataset.seg, val = b.dataset.val;
     if (name === 'theme') settings.theme = val;
+    else if (name === 'mother') settings.mother = val;
     else if (name === 'lang') { settings.lang = val; saveSettings(); applySettings(); renderChrome(); vSettings(); window.scrollTo(0, 0); return; }
     else if (name === 'fontSize') settings.fontSize = Number(val);
     else if (name === 'uiSize') settings.uiSize = Number(val);
@@ -503,19 +707,21 @@ function vSettings() {
     $$('button', seg).forEach((x) => x.classList.toggle('on', x === b));
   }));
   const fsOpen = $('#fs-open');
-  if (fsOpen) fsOpen.onclick = () => {
-    const px = [14.5, 16, 17.5, 19, 21];
-    openSheet(`<h3>${T('fontSize')}</h3><div class="sheet-list">${T('fsNames').map((l, i) => `
-      <button type="button" class="fs-opt ${i === settings.fontSize ? 'on' : ''}" data-fs="${i}">
-        <span class="fs-sample" style="font-size:${px[i]}px">${settings.lang === 'en' ? 'Ag' : 'آا'}</span>
-        <span class="grow">${l}</span>${i === settings.fontSize ? `<span class="fs-check">${I.check}</span>` : ''}
-      </button>`).join('')}</div>`);
-    $$('#sheet-root [data-fs]').forEach((b) => b.onclick = () => {
-      settings.fontSize = Number(b.dataset.fs);
-      saveSettings(); applySettings(); closeSheet();
-      const y = window.scrollY; vSettings(); window.scrollTo(0, y);
-    });
-  };
+  if (fsOpen) fsOpen.onclick = () => openFontSheet(() => { const y = window.scrollY; vSettings(); window.scrollTo(0, y); });
+  $$('[data-accent]').forEach((b) => b.onclick = () => {
+    settings.accent = b.dataset.accent || null;
+    saveSettings(); applySettings();
+    const y = window.scrollY; vSettings(); window.scrollTo(0, y);
+  });
+  const accCustom = $('#accent-custom');
+  if (accCustom) accCustom.addEventListener('input', () => { settings.accent = accCustom.value; saveSettings(); applySettings(); });
+  if (accCustom) accCustom.addEventListener('change', () => { const y = window.scrollY; vSettings(); window.scrollTo(0, y); });
+  const gRange = $('#glass-range');
+  if (gRange) gRange.addEventListener('input', () => {
+    settings.glass = Number(gRange.value);
+    saveSettings(); applySettings();
+    const gv = $('#glass-val'); if (gv) gv.textContent = num(settings.glass) + '٪';
+  });
   if (navigator.storage && navigator.storage.estimate) {
     navigator.storage.estimate().then((e) => { const el = $('#storage-est'); if (el) el.textContent = e.usage ? (e.usage / 1048576).toFixed(1) + ' MB' : '—'; }).catch(() => {});
   }
@@ -535,6 +741,28 @@ function vSettings() {
   };
   const inst = $('#install-app');
   if (inst) inst.onclick = async () => { if (deferredInstall) { deferredInstall.prompt(); await deferredInstall.userChoice; deferredInstall = null; vSettings(); } };
+}
+
+/* ---------------- themes gallery ---------------- */
+function vThemes() {
+  activeTab = 'settings';
+  const dark = document.documentElement.dataset.theme === 'dark';
+  view().innerHTML = headerHTML({ title: T('themes'), back: true }) + `
+  <div class="theme-grid">${PALETTES.map((p) => {
+    const acc = dark ? p.aD : p.aL;
+    const bg = p.h >= 0 ? `hsl(${p.h} 45% ${dark ? 12 : 92}%)` : (dark ? '#1C1C1E' : '#F2F2F7');
+    const bg2 = p.h >= 0 ? `hsl(${p.h} 40% ${dark ? 20 : 99}%)` : (dark ? '#2C2C2E' : '#FFFFFF');
+    return `<button type="button" class="theme-card ${settings.themeId === p.id ? 'on' : ''}" data-theme-id="${p.id}">
+      <span class="theme-prev" style="background:linear-gradient(135deg, ${bg} 0%, ${bg2} 58%, ${acc} 135%)"><i style="background:${acc}"></i></span>
+      <span class="theme-name">${esc(settings.lang === 'en' ? p.en : p.fa)}</span>
+      ${settings.themeId === p.id ? `<span class="theme-check">${I.check}</span>` : ''}
+    </button>`;
+  }).join('')}</div><div style="height:16px"></div>`;
+  setupLargeTitle('#/settings');
+  $$('[data-theme-id]').forEach((b) => b.onclick = () => {
+    settings.themeId = b.dataset.themeId;
+    saveSettings(); applySettings(); vThemes();
+  });
 }
 
 /* ---------------- offline downloads ---------------- */
@@ -718,7 +946,7 @@ function vSearch() {
       <span class="tg-ava" style="background:${course.hue}">${course.icon ? `<img src="${course.icon}" alt="">` : esc(initials(course.title))}</span>
       <span class="grow"><span class="ttl lat">${titleHtml}</span>
       ${snippetHtml ? `<span class="tg-snippet">${snippetHtml}</span>` : ''}
-      <span class="sub lat">${esc(course.title)} · ${esc(ch.section)} · ${num(ch.minutes)} ${T('min')}${ch.size ? ' · ' + fmtSize(ch.size) : ''}</span></span>
+      <span class="sub lat">${esc(course.title)} · ${esc(ch.section)} · ${fmtMins(ch.minutes)}${ch.size ? ' · ' + fmtSize(ch.size) : ''}</span></span>
       <span class="chev">${I.chev}</span></a>`;
   async function doSearch(q, mySeq) {
     const box = $('#search-results');
@@ -967,6 +1195,7 @@ async function importDownloadsZip(file) {
 
 /* ---------------- changelog ---------------- */
 const CHANGELOG = [
+  { v: '2.5.0', fa: ['۵۰ تم رنگی جدید + انتخاب رنگ تأکیدی دلخواه', 'دو سبک طراحی مادر: iOS و Material با سوییچ از تنظیمات', 'شیشه‌ای بودن نوار بالا و پایین قابل تنظیم است و در تنظیمات پیش‌نمایش زنده دارد', 'عکس‌های داخل مطالب تمام‌صفحه باز می‌شوند و با دو انگشت زوم می‌شوند؛ بقیه اپ زوم نمی‌شود', 'کشیدن به پایین (Pull to Refresh) با استایل هماهنگ با تم اپ', 'صفحه پیشرفت: نمودار میله‌ای مطالعه هفتگی و کارت‌های آمار', 'فهرست دوره‌ها در صفحه پیشرفت آکاردئونی شد', 'ابزارهای صفحه مطلب به منوی سه‌نقطه کناری رفت و دکمه «صفحه درس» به آن اضافه شد', 'زمان‌های بالای ۶۰ دقیقه به ساعت نمایش داده می‌شوند', 'آیکون هر دوره کنار نامش در صفحه دوره دیده می‌شود'], en: ['50 new color themes + custom accent color picker', 'Two base design styles: iOS and Material, switchable in Settings', 'Top/bottom bar glass effect is adjustable with a live preview in Settings', 'Article images open fullscreen with pinch zoom; the rest of the app does not zoom', 'Pull to refresh restyled to match the app theme', 'Progress page: weekly study bar chart and stat cards', 'Course lists on the Progress page are now accordions', 'Chapter tools moved to a side three-dot menu with a Course page button', 'Durations over 60 minutes are shown in hours', 'Course icon shown next to its name on the course page'] },
   { v: '2.4.0', fa: ['۱۱ دوره جدید اضافه شد: Zod، TypeScript، React، React Native، Expo، Tailwind CSS، NativeWind 5، NativeWind 4، class-validator، class-transformer و Drizzle ORM — در مجموع ۲٬۴۸۲ فصل تازه و مطابق مستندات رسمی', 'حجم دانلود هر فصل کنار آن و حجم کل هر بخش و دوره قبل از دانلود نمایش داده می‌شود', 'انتخاب اندازه فونت متن حالا با یک پنل پایین‌صفحه‌ای انجام می‌شود', 'مشکل نمایش‌نبودن متن دکمه «تنظیمات» در نوار پایین برطرف شد'], en: ['11 new courses added: Zod, TypeScript, React, React Native, Expo, Tailwind CSS, NativeWind 5, NativeWind 4, class-validator, class-transformer and Drizzle ORM — 2,482 new chapters in total, matching the official docs', 'Download size is now shown next to every chapter, plus total size per section and course, before downloading', 'Text size is now picked from a bottom sheet', 'Fixed the missing "Settings" label in the bottom bar'] },
   { v: '2.3.0', fa: ['دوره Prisma ORM 7 کامل شد: ۱۷ صفحه «شروع» و کوییک‌استارت همه دیتابیس‌ها اضافه شد', 'دوره جدید Prisma ORM 8 با ۵۸ فصل اضافه شد', 'لینک‌های داخل متن که به صفحات همین داک اشاره می‌کنند حالا داخل خود اپ باز می‌شوند (بین نسخه‌های ۷ و ۸ هم کار می‌کند)'], en: ['Prisma ORM 7 is now complete: 17 getting-started and per-database quickstart pages added', 'New course: Prisma ORM 8 with 58 chapters', 'In-text links to pages of the same docs now open inside the app (works across the 7 and 8 courses too)'] },
   { v: '2.2.0', fa: ['حالت تمرکز در صفحه مطلب: پاراگراف‌های اطراف کم‌نور می‌شوند', 'بررسی سلامت دانلودها و تعمیر فایل‌های ناقص از صفحه دانلودها', 'کش خودکار فصل‌های خوانده‌شده (از تنظیمات، بخش آفلاین)', 'صف دانلود در پس‌زمینه با نوار پیشرفت و دکمه مکث/ادامه', 'دانلودها همراه تصاویر فصل کامل می‌شوند و ایندکس جستجوی هر دوره هم آفلاین ذخیره می‌شود تا جستجو بدون اینترنت کار کند', 'جشن کانفتی وقتی یک دوره کامل تمام می‌شود'], en: ['Focus mode in chapters: surrounding paragraphs dim', 'Verify downloads and repair incomplete files from the Downloads page', 'Auto-cache chapters you read (Settings → Offline)', 'Background download queue with a progress pill and pause/resume', 'Downloads include chapter images, and each course search index is stored offline too', 'Confetti celebration when you finish a whole course'] },
@@ -1099,12 +1328,15 @@ function vDoc(courseId, slugFrag) {
     <div class="topbar-rule"></div>
   </header>
   <div class="lt-wrap"><h1 class="large-title lat" style="font-size:27px;line-height:1.28">${esc(ch.title)}</h1>
-  <p class="large-sub"><span class="lat">${esc(course.title)}</span> · <span class="lat">${esc(ch.section)}</span> · ${num(ch.minutes)} ${T('min')}</p></div>
-  <div class="doc-tools" role="toolbar">
-    <button type="button" id="tool-mark">${I.check}<span>${T('markRead')}</span></button>
-    <button type="button" id="tool-tr">${I.globe}<span>${T('translateBtn')}</span></button>
-    <button type="button" id="tool-dl">${I.download}<span>${T('downloadAll').split(' ')[0] === 'دانلود' ? 'آفلاین' : 'Offline'}</span></button>
-    <button type="button" id="tool-focus">${I.target}<span>${T('focusMode')}</span></button>
+  <p class="large-sub">${course.icon ? `<span class="sub-ico"><img src="${course.icon}" alt=""></span>` : ''}<span class="lat">${esc(course.title)}</span> · <span class="lat">${esc(ch.section)}</span> · ${fmtMins(ch.minutes)}</p></div>
+  <button type="button" id="doc-menu-btn" aria-label="${T('actions')}" aria-haspopup="true">${I.dots}</button>
+  <div id="doc-menu" hidden role="menu">
+    <a class="dm-item" href="#/course/${courseId}">${courseIcon(course)}<span>${T('courseHome')}</span></a>
+    <button type="button" class="dm-item" id="tool-mark">${I.check}<span>${T('markRead')}</span><span class="dm-state"></span></button>
+    <button type="button" class="dm-item" id="tool-tr">${I.globe}<span>${T('translateBtn')}</span></button>
+    <button type="button" class="dm-item" id="tool-dl">${I.download}<span>${settings.lang === 'en' ? 'Offline' : 'آفلاین'}</span></button>
+    <button type="button" class="dm-item" id="tool-focus">${I.target}<span>${T('focusMode')}</span><span class="dm-state"></span></button>
+    <button type="button" class="dm-item" id="tool-font">${I.list}<span>${T('fontSize')}</span></button>
   </div>
   <div class="article" id="article" dir="ltr" lang="en"><div class="empty">…</div></div>
   <div class="mark-zone">
@@ -1119,11 +1351,22 @@ function vDoc(courseId, slugFrag) {
 
   const article = $('#article');
   const markBtn = $('#mark-btn'), toolMark = $('#tool-mark'), toolDl = $('#tool-dl');
+  /* ---- side three-dot menu ---- */
+  const menuBtn = $('#doc-menu-btn'), docMenu = $('#doc-menu');
+  const closeMenu = () => { docMenu.hidden = true; menuBtn.classList.remove('open'); };
+  const onDocClick = (e) => { if (!e.target.closest('#doc-menu') && !e.target.closest('#doc-menu-btn')) closeMenu(); };
+  menuBtn.onclick = () => { const open = docMenu.hidden; docMenu.hidden = !open; menuBtn.classList.toggle('open', open); };
+  document.addEventListener('click', onDocClick);
+  $$('#doc-menu .dm-item').forEach((it) => it.addEventListener('click', () => { if (it.id !== 'tool-tr') closeMenu(); }));
+  $('#tool-font').onclick = () => { closeMenu(); openFontSheet(); };
+  /* ---- reading-time accrual for the weekly chart ---- */
+  const readTimer = setInterval(() => { if (!document.hidden) addReadSecs(1); }, 1000);
   function syncMark() {
     const on = isDone(key);
     markBtn.classList.toggle('done', on);
     markBtn.innerHTML = on ? `${I.check}<span>${T('markRead')} ✓</span>` : `${I.check}<span>${T('markRead')}</span>`;
     toolMark.classList.toggle('on', on);
+    const st = $('.dm-state', toolMark); if (st) st.textContent = on ? '✓' : '';
   }
   function syncDl() {
     const on = isDownloaded(key);
@@ -1252,7 +1495,7 @@ function vDoc(courseId, slugFrag) {
   toolFocus.onclick = () => setFocus(!article.classList.contains('focus-on'));
 
   /* ---- load chapter ---- */
-  docCleanup = () => { docScrollFn = null; rp.style.opacity = '0'; if (focusIO) { focusIO.disconnect(); focusIO = null; } };
+  docCleanup = () => { docScrollFn = null; rp.style.opacity = '0'; if (focusIO) { focusIO.disconnect(); focusIO = null; } clearInterval(readTimer); flushReadlog(); document.removeEventListener('click', onDocClick); };
   fetch(ch.file).then((r) => { if (!r.ok) throw new Error('load'); return r.text(); }).then((html) => {
     article.innerHTML = html;
     if (settings.autoCache && !isDownloaded(key)) {
@@ -1271,6 +1514,8 @@ function vDoc(courseId, slugFrag) {
 
   /* ---- article interactions: copy, lang tabs, in-page anchors ---- */
   article.addEventListener('click', (e) => {
+    const img = e.target.closest('img');
+    if (img) { openLightbox(img.currentSrc || img.src); return; }
     const copy = e.target.closest('[data-copy]');
     if (copy) {
       const card = copy.closest('.code-card');
@@ -1295,6 +1540,129 @@ function vDoc(courseId, slugFrag) {
   });
 }
 
+/* ---------------- image lightbox (own pinch zoom) ---------------- */
+let lbState = null;
+function lbApply() {
+  const img = $('#lb-img');
+  if (img && lbState) img.style.transform = `translate(${lbState.tx}px, ${lbState.ty}px) scale(${lbState.scale})`;
+}
+function openLightbox(src) {
+  const lb = $('#lightbox'); if (!lb) return;
+  $('#lb-img').src = src;
+  lbState = { scale: 1, tx: 0, ty: 0, pointers: new Map(), pinchD: 0, startScale: 1, lastTap: 0, moved: false };
+  lbApply();
+  lb.hidden = false;
+  document.body.style.overflow = 'hidden';
+}
+function closeLightbox() {
+  const lb = $('#lightbox'); if (lb) lb.hidden = true;
+  lbState = null;
+  document.body.style.overflow = '';
+}
+function setupLightbox() {
+  const lb = $('#lightbox'); if (!lb) return;
+  const img = $('#lb-img');
+  $('#lb-close').onclick = closeLightbox;
+  lb.addEventListener('click', (e) => { if (e.target === lb && lbState && lbState.scale <= 1.02 && !lbState.moved) closeLightbox(); });
+  img.addEventListener('pointerdown', (e) => {
+    img.setPointerCapture(e.pointerId);
+    lbState.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    lbState.moved = false;
+    if (lbState.pointers.size === 2) {
+      const [a, b] = [...lbState.pointers.values()];
+      lbState.pinchD = Math.hypot(a.x - b.x, a.y - b.y);
+      lbState.startScale = lbState.scale;
+    }
+  });
+  img.addEventListener('pointermove', (e) => {
+    if (!lbState || !lbState.pointers.has(e.pointerId)) return;
+    const prev = lbState.pointers.get(e.pointerId);
+    const dx = e.clientX - prev.x, dy = e.clientY - prev.y;
+    if (Math.abs(dx) + Math.abs(dy) > 2) lbState.moved = true;
+    lbState.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (lbState.pointers.size === 1) {
+      if (lbState.scale > 1) { lbState.tx += dx; lbState.ty += dy; lbApply(); }
+    } else if (lbState.pointers.size === 2) {
+      const [a, b] = [...lbState.pointers.values()];
+      const d = Math.hypot(a.x - b.x, a.y - b.y);
+      if (lbState.pinchD > 0) lbState.scale = Math.min(5, Math.max(1, lbState.startScale * (d / lbState.pinchD)));
+      if (lbState.scale <= 1) { lbState.tx = 0; lbState.ty = 0; }
+      lbApply();
+    }
+  });
+  const release = (e) => {
+    if (!lbState) return;
+    const wasSingle = lbState.pointers.size === 1 && lbState.pointers.has(e.pointerId);
+    lbState.pointers.delete(e.pointerId);
+    if (wasSingle && !lbState.moved) {
+      const now = Date.now();
+      if (now - lbState.lastTap < 300) {
+        if (lbState.scale > 1) { lbState.scale = 1; lbState.tx = 0; lbState.ty = 0; }
+        else lbState.scale = 2.6;
+        lbApply();
+        lbState.lastTap = 0;
+      } else lbState.lastTap = now;
+    }
+    if (lbState.pointers.size < 2) lbState.pinchD = 0;
+  };
+  img.addEventListener('pointerup', release);
+  img.addEventListener('pointercancel', release);
+  img.addEventListener('wheel', (e) => {
+    if (!lbState) return;
+    e.preventDefault();
+    lbState.scale = Math.min(5, Math.max(1, lbState.scale * Math.exp(-e.deltaY * 0.0015)));
+    if (lbState.scale <= 1) { lbState.tx = 0; lbState.ty = 0; }
+    lbApply();
+  }, { passive: false });
+}
+
+/* ---------------- custom pull-to-refresh ---------------- */
+function setupPTR() {
+  const ptr = $('#ptr'); if (!ptr) return;
+  let startY = null, dy = 0, armed = false;
+  const TH = 68;
+  const blocked = () => !$('#lightbox').hidden || $('#sheet-root').innerHTML !== '';
+  window.addEventListener('touchstart', (e) => {
+    if (e.touches.length !== 1 || window.scrollY > 0 || blocked()) { startY = null; return; }
+    if (e.target.closest('input, textarea, select')) { startY = null; return; }
+    startY = e.touches[0].clientY; dy = 0; armed = false;
+  }, { passive: true });
+  window.addEventListener('touchmove', (e) => {
+    if (startY === null) return;
+    dy = e.touches[0].clientY - startY;
+    if (dy <= 0) { ptr.style.transform = 'translate(-50%, -76px)'; return; }
+    e.preventDefault();
+    armed = dy > TH;
+    ptr.classList.toggle('armed', armed);
+    ptr.style.transition = 'none';
+    ptr.style.transform = `translate(-50%, ${-76 + Math.min(dy * 0.55, 84)}px)`;
+    ptr.style.setProperty('--ptr-rot', Math.min(dy * 2.4, 300) + 'deg');
+  }, { passive: false });
+  window.addEventListener('touchend', () => {
+    if (startY === null) return;
+    startY = null;
+    ptr.style.transition = 'transform 0.3s ease';
+    if (armed) {
+      ptr.style.transform = 'translate(-50%, 10px)';
+      ptr.classList.add('spinning');
+      checkForUpdate(false);
+      const h = location.hash || '#/';
+      if (h.startsWith('#/doc')) router();
+      else { router(); window.scrollTo(0, 0); }
+      setTimeout(() => { ptr.classList.remove('spinning'); ptr.style.transform = 'translate(-50%, -76px)'; }, 650);
+    } else {
+      ptr.style.transform = 'translate(-50%, -76px)';
+    }
+    armed = false;
+  });
+}
+
+/* the app itself is not pinch-zoomable; only the lightbox zooms */
+document.addEventListener('gesturestart', (e) => e.preventDefault());
+document.addEventListener('touchmove', (e) => {
+  if (e.touches.length > 1 && !(e.target.closest && e.target.closest('#lightbox'))) e.preventDefault();
+}, { passive: false });
+
 /* ---------------- router ---------------- */
 function router() {
   if (docCleanup) { docCleanup(); docCleanup = null; }
@@ -1306,6 +1674,7 @@ function router() {
   else if (parts[0] === 'library') vLibrary();
   else if (parts[0] === 'progress') vProgress();
   else if (parts[0] === 'settings') vSettings();
+  else if (parts[0] === 'themes') vThemes();
   else if (parts[0] === 'downloads') vDownloads();
   else if (parts[0] === 'changelog') vChangelog();
   else if (parts[0] === 'search') vSearch();
@@ -1331,6 +1700,8 @@ window.addEventListener('hashchange', router);
   } catch { view().innerHTML = `<div class="empty">${T('dlError')}</div>`; return; }
   indexCatalog();
   router();
+  setupLightbox();
+  setupPTR();
   registerSW();
   setTimeout(() => checkForUpdate(false), 5000);
   setInterval(() => { if (!document.hidden) checkForUpdate(false); }, 30 * 60 * 1000);

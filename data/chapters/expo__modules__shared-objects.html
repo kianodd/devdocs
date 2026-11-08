@@ -1,0 +1,118 @@
+<p>Shared objects let you expose long-lived native instances from Android and iOS to your app&#39;s JavaScript/TypeScript without giving control of their lifecycle. They can be used to keep heavy state objects, such as a decoded bitmap, alive across React components, rather than spinning up a new native instance every time a component mounts.</p>
+<p>In this guide, let&#39;s understand what a shared object is and how they are implemented in native platforms.</p>
+<h2 id="what-is-a-shared-object">What is a shared object?</h2>
+<p>A shared object is a custom class that bridges a native instance from Android and/or iOS to your app&#39;s JavaScript/TypeScript code through an Expo module. On the native side in Kotlin and Swift, you declare the class by inheriting from <code>SharedObject</code> and expose it in your module definition using <code>Class()</code>. A shared object is deallocated automatically once neither JavaScript nor native holds a reference.</p>
+<h2 id="why-use-shared-objects">Why use shared objects?</h2>
+<p>Large media assets, like images, can exceed several megabytes once decoded into memory. Without shared objects, passing these assets between different parts of your app forces each part to reload from the disk every time and decode the same file multiple times. This can increase memory pressure, create an I/O bottleneck, drop frames, or cause battery drain.</p>
+<p>Shared objects solve this by keeping a single native instance alive in memory while multiple JavaScript references point to it.</p>
+<h2 id="example-image-manipulation-without-disk-io">Example: Image manipulation without disk I/O</h2>
+<p>To understand shared objects, consider an example where you need to rotate and flip an image picked by the app user and then display that image in your app after manipulating it.</p>
+<h3 id="without-shared-objects">Without shared objects</h3>
+<p>Historically, native modules were often written in a <em>stateless</em> way, where each function operated independently without maintaining state between calls. If you wanted to perform two separate operations on the same object (such as an image file), you would load it from disk in both places and repeat the I/O operation each time.</p>
+<p>Without shared objects, <code>ImagePicker</code> reads from a file URI such as <code>&quot;file:///path/to/image.jpg&quot;</code> and decodes the image into memory. The image manipulator module then reads the same URI and decodes the image into memory again. When the app user calls a transform method (for example, <code>rotate()</code>) to rotate the image, the module saves the rotated image to a new file. Finally, when the new URI is passed to the <code>Image</code> component, it decodes the image from disk again to render the image. This workflow results in two or more decode and disk read operations.</p>
+<h3 id="with-shared-objects">With shared objects</h3>
+<p>The same scenario becomes much more efficient with shared objects. <code>ImagePicker</code> reads the URI and decodes the image once into a shared object. When the app user calls a transform method (for example, <code>rotate()</code>), the module manipulates the in-memory bitmap without writing to the disk. If you need a file output, call an explicit save function (for example, <code>saveAsync</code> in an image manipulator), otherwise the transforms stay in memory only.</p>
+<p>Finally, the shared object is passed to the <code>Image</code> component and this time the image is rendered from memory. The entire workflow requires just one disk read and one decode operation, with all transformations happening in memory.</p>
+<p>The performance gains are significant. By eliminating redundant disk I/O and decode operations, you keep only a single bitmap in memory instead of multiple copies. This reduces CPU usage, which helps preserve battery life, and lowers the risk of crashes from memory pressure.</p>
+<p>Shared objects also unlock a more convenient, object-oriented API shape. You can expose methods on a long-lived instance (for example, <code>rotate()</code>, <code>flipX()</code>, <code>renderAsync()</code>) and let callers chain operations on that stateful object, instead of exposing a flat set of stateless functions.</p>
+<h3 id="implementation-with-shared-objects">Implementation with shared objects</h3>
+<p>Now that you understand why shared objects are useful, let&#39;s look into a minimal implementation that demonstrates the core concepts of the previous example.</p>
+<p>The example creates a simple image manipulation module that loads an image from a file path, applies transforms (rotate and flip) in memory, and exposes a shared reference that other modules can consume.</p>
+<h3 id="android-implementation">Android implementation</h3>
+<p>In Android, you create a shared object from <code>SharedObject</code> class provided by <code>expo.modules.kotlin.sharedobjects.SharedObject</code>. This class manages the decoded bitmap and exposes methods to manipulate it. The implementation keeps only the current image in memory and applies transforms in place, so you allocate a new bitmap only when a transformation like rotation or flip produces one:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">
+  const result = await ImagePicker.launchImageLibraryAsync({
+    quality: 1,
+    allowsMultipleSelection: false,
+  });
+
+  if (result.canceled || !result.assets?.length) {
+    return null;
+  }
+
+  // At this point we still have a disk URI.
+  // The native module will lift it into a shared object.
+  return result.assets[0].uri;
+}</code></pre></div></figure>
+<p>In the above example, <code>ImagePicker</code> doesn&#39;t need to know about shared objects. It returns what it should, which is a file path. Your native module is responsible for transforming that path into a shared object that other Expo modules can work with, such as <code>Image</code> from <code>expo-image</code>.</p>
+<h2 id="expo-libraries-that-use-shared-objects">Expo libraries that use shared objects</h2>
+<p>Some examples of <a target="_blank" rel="noopener" href="https://docs.expo.dev/versions/latest/">Expo SDK libraries</a> that use shared objects and their purpose:</p>
+<ul>
+<li><code>expo-image</code> library uses <code>SharedObject</code> to keep a decoded operation alive and the view component accepts <code>SharedRef</code> on Android and <code>SharedRef</code> on iOS. This design allows images to be passed between modules without decoding it again. To explore more, see <code>expo-image</code> library&#39;s source code for <a target="_blank" rel="noopener" href="https://github.com/expo/expo/tree/main/packages/expo-image/android/src/main/java/expo/modules/image">Android</a> and <a target="_blank" rel="noopener" href="https://github.com/expo/expo/tree/main/packages/expo-image/ios">iOS</a>.</li>
+<li><code>expo-image-manipulator</code> library demonstrates handling asynchronous operations, queuing multiple operations, and exposing a clean JavaScript API. To explore more, see <code>expo-image-manipulator</code> library&#39;s source code for <a target="_blank" rel="noopener" href="https://github.com/expo/expo/tree/main/packages/expo-image-manipulator/android/src/main/java/expo/modules/imagemanipulator">Android</a> and <a target="_blank" rel="noopener" href="https://github.com/expo/expo/tree/main/packages/expo-image-manipulator/ios">iOS</a>.</li>
+<li><code>expo-sqlite</code> library uses shared objects to keep database, session, and statement handles across calls while coordinating access to the underlying database. To explore more, see <code>expo-sqlite</code> library&#39;s source code for <a target="_blank" rel="noopener" href="https://github.com/expo/expo/tree/main/packages/expo-sqlite/android/src/main/java/expo/modules/sqlite">Android</a> and <a target="_blank" rel="noopener" href="https://github.com/expo/expo/tree/main/packages/expo-sqlite/ios">iOS</a>.</li>
+<li><code>expo/fetch</code> library uses shared objects to keep request and response lifecycles alive for streaming, cancellation, and redirect handling while presenting a JavaScript fetch-compatible API. To explore more, see <code>expo/fetch</code> library&#39;s source code for <a target="_blank" rel="noopener" href="https://github.com/expo/expo/tree/main/packages/expo/android/src/main/java/expo/modules/fetch">Android</a> and <a target="_blank" rel="noopener" href="https://github.com/expo/expo/tree/main/packages/expo/ios/Fetch">iOS</a>.</li>
+</ul>
+<h2 id="performance-benefits-of-shared-objects">Performance benefits of shared objects</h2>
+<p>Using shared objects provides several performance improvements, such as:</p>
+<ul>
+<li><strong>Reduced disk I/O:</strong> A single read operation instead of multiple reads across different modules or function calls</li>
+<li><strong>Fewer decode operations:</strong> Expensive decoding (such as JPEG/PNG to bitmap) happens once, not repeatedly</li>
+<li><strong>Lower memory pressure:</strong> One decode instance in memory instead of multiple copies</li>
+<li><strong>Faster operations:</strong> In-memory transformations are significantly faster than disk-based ones</li>
+<li><strong>Avoid frame drops:</strong> Less I/O blocking means smoother UI interactions</li>
+</ul>
+<h2 id="class-definition-dsl">Class definition DSL</h2>
+<p>When you expose a shared object using <code>Class()</code>, the class definition block accepts several DSL components beyond <code>Function</code> and <code>AsyncFunction</code>. These components let you define constructors, static methods, and properties directly on the class.</p>
+<p>Defines a constructor that JavaScript code can use to create new instances of the shared object with <code>new ClassName(args)</code>. Without a <code>Constructor</code>, instances can only be created by native functions that return the shared object.</p>
+<p>The constructor receives arguments from JavaScript and must return an instance of the shared object class.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">Class(MySharedObject.self) {
+  Constructor { (date: Date) in
+    /* @hide ... */ /* @end */
+  }
+}</code></pre></div></figure>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">Class(MySharedObject::class) {
+  Constructor { date: Date -&gt;
+    /* @hide ... */ /* @end */
+  }
+}</code></pre></div></figure>
+<p>Defines a synchronous function on the class prototype, callable from JavaScript as <code>ClassName.functionName()</code>. Unlike <code>Function</code>, a <code>StaticFunction</code> does not receive the instance as an argument.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">StaticFunction(&quot;myStaticFunction&quot;) { in
+  /* @hide ... */ /* @end */
+}</code></pre></div></figure>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">StaticFunction(&quot;myStaticFunction&quot;) { -&gt;
+  /* @hide ... */ /* @end */
+}</code></pre></div></figure>
+<p>Defines an asynchronous function on the class itself, callable from JavaScript as <code>await ClassName.functionName()</code>. Returns a <code>Promise</code>. On Kotlin, you can use the <code>Coroutine</code> modifier for suspendable bodies.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">StaticAsyncFunction(&quot;myStaticAsyncFunction&quot;) { in
+  /* @hide ... */ /* @end */
+}</code></pre></div></figure>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">StaticAsyncFunction(&quot;myStaticAsyncFunction&quot;) { -&gt;
+  /* @hide ... */ /* @end */
+}</code></pre></div></figure>
+<p>Inside a <code>Class()</code> block, <code>Property</code> receives the class instance as a parameter, similar to how <code>Function</code> does. This lets you expose computed properties on shared object instances.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">Class(VideoPlayer.self) {
+  Property(&quot;isPlaying&quot;) { (player: VideoPlayer) -&gt; Bool in
+    return player.isPlaying
+  }
+
+  Property(&quot;volume&quot;)
+    .get { (player: VideoPlayer) -&gt; Float in
+      return player.volume
+    }
+    .set { (player: VideoPlayer, volume: Float) in
+      player.volume = volume
+    }
+}</code></pre></div></figure>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">Class(VideoPlayer::class) {
+  Property(&quot;isPlaying&quot;) { player: VideoPlayer -&gt;
+    return@Property player.isPlaying
+  }
+
+  Property(&quot;volume&quot;)
+    .get { player: VideoPlayer -&gt;
+      return@get player.volume
+    }
+    .set { player: VideoPlayer, volume: Float -&gt;
+      player.volume = volume
+    }
+}</code></pre></div></figure>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JavaScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript"><span class="hljs-keyword">const</span> player = <span class="hljs-keyword">new</span> <span class="hljs-title class_">VideoPlayer</span>(source);
+
+<span class="hljs-comment">// Read-only property</span>
+<span class="hljs-variable language_">console</span>.<span class="hljs-title function_">log</span>(player.<span class="hljs-property">isPlaying</span>); <span class="hljs-comment">// false</span>
+
+<span class="hljs-comment">// Read-write property</span>
+player.<span class="hljs-property">volume</span> = <span class="hljs-number">0.5</span>;
+<span class="hljs-variable language_">console</span>.<span class="hljs-title function_">log</span>(player.<span class="hljs-property">volume</span>); <span class="hljs-comment">// 0.5</span></code></pre></div></figure>
+<h2 id="additional-resources">Additional resources</h2>

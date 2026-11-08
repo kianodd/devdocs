@@ -1,0 +1,186 @@
+<p>Rebuilding the app for every production change is wasteful when most changes are TypeScript/JavaScript only.</p>
+<h2 id="learning-outcomes">Learning outcomes</h2>
+<ul>
+<li>Trigger production deployments from a <code>release/*</code> branch instead of every push to <code>main</code></li>
+<li>Branch between a native build and an <a href="#/doc/expo/deploy/send-over-the-air-updates">OTA update</a> based on the project fingerprint</li>
+<li>Automate app store submissions as a follow-up step in the production workflow</li>
+</ul>
+<p><a href="#/doc/expo/eas/cli">EAS CLI</a> prompts to generate credentials the first time we trigger a build for a profile. Trigger the production build manually for both Android and iOS so the credentials exist before the workflow runs:</p>
+<h2 id="using-a-release-branch">Using a release branch</h2>
+<p>Previously, with development builds, we have seen that using the <code>on.push.branches</code> trigger runs our workflow on every push to the specified <code>main</code> branch. For production deployments, triggering a workflow on every push to the <code>main</code> branch means every change merged is a new release. Teams usually want a deliberate release process, so they use a release branch or tag instead.</p>
+<p>In a release branch strategy, we usually specify the branch with a pattern such as <code>release/*</code>, where <code>*</code> is the feature or version name. This is what separates Continuous Integration (CI) from Continuous Delivery (CD). CI runs on every push to the <code>main</code> branch, while CD runs on a release branch when the team is ready to deploy to production.</p>
+<p>The table below shows how each workflow&#39;s trigger defines its purpose:</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Workflow file</th>
+<th>Trigger</th>
+<th>Build profile</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>.eas/workflows/build.yml</strong></td>
+<td><code>on.push.branches: [&#39;main&#39;]</code></td>
+<td><code>development</code></td>
+<td>CI workflow that runs on every push to the <code>main</code> branch. It can run unit tests and generate development builds.</td>
+</tr>
+<tr>
+<td><strong>.eas/workflows/preview.yml</strong></td>
+<td><code>on.push.branches: [&#39;main&#39;]</code></td>
+<td><code>preview</code></td>
+<td>Preview workflow that runs on every push to the <code>main</code> branch. It can generate preview builds for internal testing and sharing with stakeholders.</td>
+</tr>
+<tr>
+<td><strong>.eas/workflows/production.yml</strong></td>
+<td><code>on.push.branches: [&#39;release/*&#39;]</code></td>
+<td><code>production</code></td>
+<td>CD workflow that runs on every push to a release branch.</td>
+</tr>
+</tbody></table></div>
+<p>The above files coexist inside a project&#39;s GitHub repository without any conflict. Each uses a different build profile and a trigger.</p>
+<h2 id="the-build-job-type-for-production-builds">The <code>build</code> job type for production builds</h2>
+<p>Let&#39;s start by creating a production workflow. It uses the <a href="#/doc/expo/tutorial/cicd/first-workflow@types-of-jobs-in-expo-workflows">pre-packaged</a> <code>build</code> job type from Expo Workflows and runs for both Android and iOS.</p>
+<h3 id="add-a-productionyml">Add a production.yml</h3>
+<p>Inside <strong>.eas/workflows/</strong>, create a new file called <strong>production.yml</strong> that uses the <code>production</code> build profile from <strong>eas.json</strong>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>.eas/workflows/production.yml</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-yaml"><span class="hljs-attr">name:</span> <span class="hljs-string">Deploy</span> <span class="hljs-string">to</span> <span class="hljs-string">production</span>
+
+<span class="hljs-attr">on:</span>
+  <span class="hljs-attr">push:</span>
+    <span class="hljs-attr">branches:</span> [<span class="hljs-string">&#x27;release/*&#x27;</span>]
+
+<span class="hljs-attr">jobs:</span>
+  <span class="hljs-attr">build_android:</span>
+    <span class="hljs-attr">name:</span> <span class="hljs-string">Build</span> <span class="hljs-string">Android</span>
+    <span class="hljs-attr">type:</span> <span class="hljs-string">build</span>
+    <span class="hljs-attr">params:</span>
+      <span class="hljs-attr">platform:</span> <span class="hljs-string">android</span>
+      <span class="hljs-attr">profile:</span> <span class="hljs-string">production</span>
+  <span class="hljs-attr">build_ios:</span>
+    <span class="hljs-attr">name:</span> <span class="hljs-string">Build</span> <span class="hljs-string">iOS</span>
+    <span class="hljs-attr">type:</span> <span class="hljs-string">build</span>
+    <span class="hljs-attr">params:</span>
+      <span class="hljs-attr">platform:</span> <span class="hljs-string">ios</span>
+      <span class="hljs-attr">profile:</span> <span class="hljs-string">production</span></code></pre></div></figure>
+<p>This creates a <strong>.aab</strong> artifact for Android and an <strong>.ipa</strong> artifact for iOS on a push to any branch that matches the pattern <code>release/*</code>.</p>
+<h3 id="add-fingerprints-to-the-workflow">Add fingerprints to the workflow</h3>
+<p>Let&#39;s add a <a href="#/doc/expo/eas/workflows/pre-packaged-jobs@fingerprint"><code>fingerprint</code></a> job to the workflow to check if there are changes to native code and update existing <code>build_android</code> and <code>build_ios</code> jobs based on that. We are also adding <a href="#/doc/expo/eas/workflows/pre-packaged-jobs@get-build"><code>get-build</code></a> jobs to look up existing builds for Android and iOS.</p>
+<p>Update the <strong>production.yml</strong> file with the following code:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>.eas/workflows/production.yml</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-yaml"><span class="hljs-attr">name:</span> <span class="hljs-string">Deploy</span> <span class="hljs-string">to</span> <span class="hljs-string">production</span>
+
+<span class="hljs-attr">on:</span>
+  <span class="hljs-attr">push:</span>
+    <span class="hljs-attr">branches:</span> [<span class="hljs-string">&#x27;release/*&#x27;</span>]
+
+<span class="hljs-attr">jobs:</span>
+  <span class="hljs-comment"># @info #</span>
+  <span class="hljs-attr">fingerprint:</span>
+    <span class="hljs-attr">name:</span> <span class="hljs-string">Fingerprint</span>
+    <span class="hljs-attr">type:</span> <span class="hljs-string">fingerprint</span>
+    <span class="hljs-attr">environment:</span> <span class="hljs-string">production</span>
+  <span class="hljs-comment"># @end #</span>
+  <span class="hljs-comment"># @info #</span>
+  <span class="hljs-attr">get_android_build:</span>
+    <span class="hljs-attr">name:</span> <span class="hljs-string">Check</span> <span class="hljs-string">for</span> <span class="hljs-string">existing</span> <span class="hljs-string">Android</span> <span class="hljs-string">build</span>
+    <span class="hljs-attr">needs:</span> [<span class="hljs-string">fingerprint</span>]
+    <span class="hljs-attr">type:</span> <span class="hljs-string">get-build</span>
+    <span class="hljs-attr">params:</span>
+      <span class="hljs-attr">fingerprint_hash:</span> <span class="hljs-string">${{</span> <span class="hljs-string">needs.fingerprint.outputs.android_fingerprint_hash</span> <span class="hljs-string">}}</span>
+      <span class="hljs-attr">profile:</span> <span class="hljs-string">production</span>
+  <span class="hljs-attr">get_ios_build:</span>
+    <span class="hljs-attr">name:</span> <span class="hljs-string">Check</span> <span class="hljs-string">for</span> <span class="hljs-string">existing</span> <span class="hljs-string">iOS</span> <span class="hljs-string">build</span>
+    <span class="hljs-attr">needs:</span> [<span class="hljs-string">fingerprint</span>]
+    <span class="hljs-attr">type:</span> <span class="hljs-string">get-build</span>
+    <span class="hljs-attr">params:</span>
+      <span class="hljs-attr">fingerprint_hash:</span> <span class="hljs-string">${{</span> <span class="hljs-string">needs.fingerprint.outputs.ios_fingerprint_hash</span> <span class="hljs-string">}}</span>
+      <span class="hljs-attr">profile:</span> <span class="hljs-string">production</span>
+  <span class="hljs-comment"># @end #</span>
+  <span class="hljs-attr">build_android:</span>
+    <span class="hljs-attr">name:</span> <span class="hljs-string">Build</span> <span class="hljs-string">Android</span>
+    <span class="hljs-attr">needs:</span> [<span class="hljs-string">get_android_build</span>]
+    <span class="hljs-comment"># @info #</span>
+    <span class="hljs-attr">if:</span> <span class="hljs-string">${{</span> <span class="hljs-type">!needs.get_android_build.outputs.build_id</span> <span class="hljs-string">}}</span>
+    <span class="hljs-comment"># @end #</span>
+    <span class="hljs-attr">type:</span> <span class="hljs-string">build</span>
+    <span class="hljs-attr">params:</span>
+      <span class="hljs-attr">platform:</span> <span class="hljs-string">android</span>
+      <span class="hljs-attr">profile:</span> <span class="hljs-string">production</span>
+  <span class="hljs-attr">build_ios:</span>
+    <span class="hljs-attr">name:</span> <span class="hljs-string">Build</span> <span class="hljs-string">iOS</span>
+    <span class="hljs-attr">needs:</span> [<span class="hljs-string">get_ios_build</span>]
+    <span class="hljs-comment"># @info #</span>
+    <span class="hljs-attr">if:</span> <span class="hljs-string">${{</span> <span class="hljs-type">!needs.get_ios_build.outputs.build_id</span> <span class="hljs-string">}}</span>
+    <span class="hljs-comment"># @end #</span>
+    <span class="hljs-attr">type:</span> <span class="hljs-string">build</span>
+    <span class="hljs-attr">params:</span>
+      <span class="hljs-attr">platform:</span> <span class="hljs-string">ios</span>
+      <span class="hljs-attr">profile:</span> <span class="hljs-string">production</span></code></pre></div></figure>
+<p>In the above workflow, the <code>fingerprint</code> job runs first and generates a hash based on the changes in the codebase. The <code>get-build</code> jobs then check if there are existing builds for Android and iOS with the same fingerprint hash. If there are no existing builds, the <code>build</code> jobs run to create new builds for production.</p>
+<p>The <a href="#/doc/expo/eas/workflows/syntax@jobsjob_idenvironment"><code>environment</code></a> field on the <code>fingerprint</code> job tells Expo Workflows which environment variables to load when computing the fingerprint. Our production environment may have different values for variables such as <code>API_URL</code> or feature flags. Those values can affect the native layer when Expo Build bakes them into the build. Setting <code>environment: production</code> ensures the fingerprint reflects what ships.</p>
+<p>The <a href="#/doc/expo/eas/workflows/syntax@jobsjob_idif"><code>if</code></a> field used on the <code>build_android</code> and <code>build_ios</code> jobs is a boolean expression. When it evaluates to <code>false</code>, the build jobs are skipped. The <code>!</code> operator means the build job runs only when <code>get-build</code> did not find a matching build.</p>
+<h3 id="add-a-job-for-updates">Add a job for updates</h3>
+<p>Currently, our workflow only creates production builds when there are changes to native code. If there are only changes to TypeScript/JavaScript files, we want to trigger an OTA update instead of a native build.</p>
+<p>Let&#39;s add two jobs <code>update_android</code> and <code>update_ios</code> that run when there are no changes to native code and use <code>update</code> job type to trigger an OTA update:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>.eas/workflows/production.yml</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-yaml"><span class="hljs-attr">name:</span> <span class="hljs-string">Deploy</span> <span class="hljs-string">to</span> <span class="hljs-string">production</span>
+
+<span class="hljs-attr">on:</span>
+  <span class="hljs-attr">push:</span>
+    <span class="hljs-attr">branches:</span> [<span class="hljs-string">&#x27;release/*&#x27;</span>]
+
+<span class="hljs-attr">jobs:</span>
+  <span class="hljs-attr">fingerprint:</span>
+    <span class="hljs-comment"># ...</span>
+  <span class="hljs-attr">get_android_build:</span>
+    <span class="hljs-comment"># ...</span>
+  <span class="hljs-attr">get_ios_build:</span>
+    <span class="hljs-comment"># ...</span>
+  <span class="hljs-attr">build_android:</span>
+    <span class="hljs-comment"># ...</span>
+  <span class="hljs-attr">build_ios:</span>
+    <span class="hljs-comment"># ...</span>
+  <span class="hljs-attr">update_android:</span>
+    <span class="hljs-attr">name:</span> <span class="hljs-string">Publish</span> <span class="hljs-string">Android</span> <span class="hljs-string">update</span>
+    <span class="hljs-attr">needs:</span> [<span class="hljs-string">get_android_build</span>]
+    <span class="hljs-attr">if:</span> <span class="hljs-string">${{</span> <span class="hljs-string">needs.get_android_build.outputs.build_id</span> <span class="hljs-string">}}</span>
+    <span class="hljs-attr">type:</span> <span class="hljs-string">update</span>
+    <span class="hljs-attr">params:</span>
+      <span class="hljs-attr">branch:</span> <span class="hljs-string">production</span>
+      <span class="hljs-attr">platform:</span> <span class="hljs-string">android</span>
+  <span class="hljs-attr">update_ios:</span>
+    <span class="hljs-attr">name:</span> <span class="hljs-string">Publish</span> <span class="hljs-string">iOS</span> <span class="hljs-string">update</span>
+    <span class="hljs-attr">needs:</span> [<span class="hljs-string">get_ios_build</span>]
+    <span class="hljs-attr">if:</span> <span class="hljs-string">${{</span> <span class="hljs-string">needs.get_ios_build.outputs.build_id</span> <span class="hljs-string">}}</span>
+    <span class="hljs-attr">type:</span> <span class="hljs-string">update</span>
+    <span class="hljs-attr">params:</span>
+      <span class="hljs-attr">branch:</span> <span class="hljs-string">production</span>
+      <span class="hljs-attr">platform:</span> <span class="hljs-string">ios</span></code></pre></div></figure>
+<p>Our workflow only builds production-ready app binaries or publishes OTA updates. Automating store submission is a common next step discussed below in the <a href="#automate-app-store-submissions">Automate app store submissions</a> section.</p>
+<h3 id="create-a-release-branch-and-push-changes">Create a release branch and push changes</h3>
+<blockquote>
+<p><strong>info</strong> <strong>Note:</strong> Ensure that the workflow file is already part of our GitHub repository and available on the <code>main</code> branch at this point.</p>
+</blockquote>
+<p>To test our workflow, let&#39;s create a release branch and push it to our GitHub repository from a terminal window:</p>
+<p>Open the Expo dashboard and find the workflow run. Since no build exists yet for this fingerprint, the <code>build</code> jobs should run, and the <code>update</code> jobs should be grayed out.</p>
+<p>Both Android and iOS builds are running in parallel. Once each job completes, we receive a new artifact for Android and iOS.</p>
+<p>Now, let&#39;s make a TypeScript/JavaScript only change in our example project on the same release branch and push again using the commands below:</p>
+<p>After the workflow runs, notice in the Expo dashboard that the fingerprint matches the build from the last push. The <code>build</code> jobs are skipped entirely, and the <code>update</code> jobs publish an OTA update.</p>
+<h2 id="automate-app-store-submissions">Automate app store submissions</h2>
+<p>The workflow we have built in this chapter only builds production-ready app binaries or publishes OTA updates to an existing production app. <a href="#/doc/expo/build/automate-submissions">Automating store submission</a> is a common next step in a production release workflow.</p>
+<p>Expo Workflows provides a <code>submit</code> pre-packaged job for automating app store submissions. It requires us to manage our app store credentials with EAS CLI. It also requires us to fulfill app store requirements, such as manually uploading the first Android release (<strong>.aab</strong>) to the Google Play Store. iOS has its own Apple Developer Program enrollment and signing credentials to set up.</p>
+<p>Once the app store requirements are in place, we can add two new jobs <code>submit_android</code> and <code>submit_ios</code> to our workflow that run after the <code>build</code> jobs:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>.eas/workflows/production.yml</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-yaml">
+
+<span class="hljs-attr">submit_android:</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">Submit</span> <span class="hljs-string">Android</span>
+  <span class="hljs-attr">needs:</span> [<span class="hljs-string">build_android</span>]
+  <span class="hljs-attr">type:</span> <span class="hljs-string">submit</span>
+  <span class="hljs-attr">params:</span>
+    <span class="hljs-attr">build_id:</span> <span class="hljs-string">${{</span> <span class="hljs-string">needs.build_android.outputs.build_id</span> <span class="hljs-string">}}</span>
+<span class="hljs-attr">submit_ios:</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">Submit</span> <span class="hljs-string">iOS</span>
+  <span class="hljs-attr">needs:</span> [<span class="hljs-string">build_ios</span>]
+  <span class="hljs-attr">type:</span> <span class="hljs-string">submit</span>
+  <span class="hljs-attr">params:</span>
+    <span class="hljs-attr">build_id:</span> <span class="hljs-string">${{</span> <span class="hljs-string">needs.build_ios.outputs.build_id</span> <span class="hljs-string">}}</span></code></pre></div></figure>
+<p>The above <code>submit_android</code> and <code>submit_ios</code> jobs require a <code>build_id</code> parameter to know which build to submit to the app stores. They run only when the <code>build_android</code> and <code>build_ios</code> jobs run, which means a new production build is created. If there are only changes to TypeScript/JavaScript files, the <code>submit</code> jobs are skipped as well since no new build is created.</p>
+<h2 id="summary">Summary</h2>

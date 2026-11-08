@@ -1,0 +1,101 @@
+<p>This page describes the process of building iOS projects with Expo Build. You may want to read this if you are interested in the implementation details of the build service.</p>
+<h2 id="build-process">Build process</h2>
+<p>Let&#39;s take a closer look at the steps for building iOS projects with Expo Build. We&#39;ll first run some steps on your local machine to prepare the project, and then we&#39;ll build the project on a remote service.</p>
+<h3 id="local-steps">Local steps</h3>
+<p>The first phase happens on your computer. EAS CLI is in charge of completing the following steps:</p>
+<ol>
+<li><p>If <code>cli.requireCommit</code> is set to <code>true</code> in <strong>eas.json</strong>, check if the git index is clean - this means that there aren&#39;t any uncommitted changes. If it&#39;s not clean, EAS CLI will provide an option to commit local changes for you or abort the build process.</p>
+</li>
+<li><p>Prepare the credentials needed for the build.</p>
+<ul>
+<li>Depending on the value of <code>builds.ios.PROFILE_NAME.credentialsSource</code>, the credentials are obtained from either the local <strong>credentials.json</strong> file or from the Expo servers. If the <code>remote</code> mode is selected but no credentials exist yet, you&#39;re offered to generate them.</li>
+</ul>
+</li>
+<li><p>Projects that manage their own native directories (<strong>android</strong> and <strong>ios</strong>), require an additional step: check whether the Xcode project is configured to be buildable on the Expo servers (to ensure the correct bundle identifier and Apple Team ID are set).</p>
+</li>
+<li><p>Create the tarball containing a copy of the repository. Actual behavior depends on the <a href="#/doc/expo/build-reference/project-upload@version-control-workflows">version control workflow</a> you are using.</p>
+</li>
+<li><p>Upload the project tarball to a private Google Cloud Storage (GCS) bucket and send the build request to Expo Build.</p>
+</li>
+</ol>
+<h3 id="remote-steps">Remote steps</h3>
+<p>In this next phase, this is what happens when Expo Build picks up your request:</p>
+<ol>
+<li><p>Create a new macOS VM for the build.</p>
+<ul>
+<li>Every build gets its own fresh macOS VM with all build tools installed there (Xcode, Fastlane, and so on).</li>
+</ul>
+</li>
+<li><p>Download the project tarball from a private GCS bucket and unpack it.</p>
+</li>
+<li><p><a href="#/doc/expo/build-reference/private-npm-packages">Create <strong>.npmrc</strong></a> if <code>NPM_TOKEN</code> is set.</p>
+</li>
+<li><p>Run the <code>eas-build-pre-install</code> script from <strong>package.json</strong> if defined.</p>
+</li>
+<li><p>Run <code>npm install</code> in the project root (or <code>yarn install</code> if <strong>yarn.lock</strong> exists).</p>
+</li>
+<li><p>Run <code>npx expo-doctor</code> to diagnose potential issues with your project configuration.</p>
+</li>
+<li><p>Restore the credentials</p>
+<ul>
+<li>Create a new keychain.</li>
+<li>Import the Distribution Certificate into the keychain.</li>
+<li>Write the Provisioning Profile to the <strong>~/Library/MobileDevice/Provisioning Profiles</strong> directory.</li>
+<li>Verify that the Distribution Certificate and Provisioning Profile match (every Provisioning Profile is assigned to a particular Distribution Certificate and cannot be used for building the iOS with any other certificate).</li>
+</ul>
+</li>
+<li><p>Additional step for projects using Continuous Native Generation (CNG): Run <code>npx expo prebuild</code> to generate <strong>android</strong> and <strong>ios</strong> directories. This step will use the versioned Expo CLI.</p>
+</li>
+<li><p>Restore a previously saved cache identified by the <code>cache.key</code> value in the <a href="#/doc/expo/build/eas-json">build profile</a>.</p>
+</li>
+<li><p>Run <code>pod install</code> in the <strong>ios</strong> directory inside your project.</p>
+</li>
+<li><p>Run the <code>eas-build-post-install</code> script from <strong>package.json</strong> if defined.</p>
+</li>
+<li><p>Update the Xcode project with the ID of the Provisioning Profile.</p>
+</li>
+<li><p>Create <strong>Gymfile</strong> in the <strong>ios</strong> directory if it does <strong>not</strong> already exist (check out the <a href="#default-gymfile">Default Gymfile</a> section).</p>
+</li>
+<li><p>Run <code>fastlane gym</code> in the <strong>ios</strong> directory.</p>
+</li>
+<li><p><strong>Deprecated:</strong> Run the <code>eas-build-pre-upload-artifacts</code> script from <strong>package.json</strong> if defined.</p>
+</li>
+<li><p>Store a cache of files and directories defined in the <a href="#/doc/expo/build/eas-json">build profile</a>. <strong>Podfile.lock</strong> is cached by default. Subsequent builds will restore this cache.</p>
+</li>
+<li><p>Upload the application archive to a private GCS bucket.</p>
+<ul>
+<li>The artifact path can be configured in <strong>eas.json</strong> at <code>builds.ios.PROFILE_NAME.applicationArchivePath</code>. It defaults to <strong>ios/build/App.ipa</strong>. You can specify a glob-like pattern for <code>applicationArchivePath</code>. We&#39;re using <a target="_blank" rel="noopener" href="https://github.com/isaacs/node-glob#glob-primer">glob patterns</a> for pattern matching.</li>
+</ul>
+</li>
+<li><p>If the build was successful: run the <code>eas-build-on-success</code> script from <strong>package.json</strong> if defined.</p>
+</li>
+<li><p>If the build failed: run the <code>eas-build-on-error</code> script from <strong>package.json</strong> if defined.</p>
+</li>
+<li><p>Run the <code>eas-build-on-complete</code> script from <strong>package.json</strong> if defined. The <code>EAS_BUILD_STATUS</code> env variable is set to either <code>finished</code> or <code>errored</code>.</p>
+</li>
+<li><p>Upload the build artifacts archive to a private GCS bucket if <code>buildArtifactPaths</code> is specified in the build profile.</p>
+</li>
+</ol>
+<h2 id="building-ios-projects-with-fastlane">Building iOS projects with Fastlane</h2>
+<p>We&#39;re using <a target="_blank" rel="noopener" href="https://fastlane.tools/">Fastlane</a> for building iOS projects. To be more precise, we&#39;re using the <code>fastlane gym</code> command (<a target="_blank" rel="noopener" href="https://docs.fastlane.tools/actions/gym/">see the Fastlane docs to learn more</a>). This command allows you to declare the build configuration in <strong>Gymfile</strong>.</p>
+<p>Expo Build can use your own <strong>Gymfile</strong>. All you need to do is to place this file in the <strong>ios</strong> directory.</p>
+<h3 id="default-gymfile">Default Gymfile</h3>
+<p>If the <strong>ios/Gymfile</strong> file doesn&#39;t exist, the iOS builder creates a default one which looks similar to the following:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">suppress_xcode_output(true)
+clean(true)
+
+scheme(&quot;app&quot;)
+
+export_options({
+  method: &quot;app-store&quot;,
+  provisioningProfiles: {
+    &quot;com.expo.eas.builds.test.application&quot; =&gt; &quot;dd83ed9c-4f89-462e-b901-60ae7fe6d737&quot;
+  }
+})
+
+export_xcargs &quot;OTHER_CODE_SIGN_FLAGS=\&quot;--keychain /tmp/path/to/keychain\&quot;&quot;
+
+disable_xcpretty(true)
+
+output_directory(&quot;./build&quot;)
+output_name(&quot;App&quot;)</code></pre></div></figure>

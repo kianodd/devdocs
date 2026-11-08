@@ -1,0 +1,74 @@
+<p>Apps using <code>expo-updates</code> can take advantage of built-in error recovery behavior as an extra safeguard against accidentally publishing broken updates.</p>
+<p>While we cannot stress enough the importance of testing updates in a staging environment before publishing to production, humans (and even computers) occasionally make mistakes, and the error recovery behavior described here can serve as a last resort in such cases.</p>
+<blockquote>
+<p><strong>warning</strong> <strong>Disclaimer:</strong> The behavior documented below is subject to change and should not be relied upon. Always test your code carefully and thoroughly in production-like environments before publishing updates.</p>
+</blockquote>
+<h2 id="help-i-published-a-broken-update-to-production-what-should-i-do">Help! I published a broken update to production. What should I do?</h2>
+<p>First of all, don&#39;t panic. Mistakes happen; most likely, everything will be fine.</p>
+<p>The important thing is to <strong>publish a new update with a fix as soon as possible (though not before you are 100% confident in your fix).</strong> The error recovery mechanism in <code>expo-updates</code> will ensure that in most cases, even users who have already downloaded the broken update should be able to get the fix.</p>
+<p>The first thing to try is rolling back to an older update that you know was working. <strong>However, this may not always be safe;</strong> your broken update may, for example, have modified persistent state (such as data stored in AsyncStorage or on the device&#39;s file system) in a non-backwards-compatible way. It&#39;s important to test in a staging environment that emulates an end user&#39;s device state as closely as possible to load the broken update and then roll back.</p>
+<p>If you can identify an older update that is safe to roll back to, you can do so using Expo Update&#39;s <code>republish</code> option from <a target="_blank" rel="noopener" href="https://expo.dev/accounts/%5Baccount%5D/projects/%5Bproject%5D/updates">Expo dashboard</a> or <a href="#/doc/expo/eas-update/eas-cli@republish-a-previous-update-within-a-branch">EAS CLI</a>.</p>
+<p>If you cannot identify an older update that is safe to roll back to, you&#39;ll need to fix it forward. While it&#39;s best to roll out a fix as quickly as possible, you should take the time to ensure your fix is solid, and know that even users who download your broken update in the meantime should be able to download your fix.</p>
+<p>If you&#39;d like more details about how this works, read on.</p>
+<h2 id="explaining-the-error-recovery-flow">Explaining the error recovery flow</h2>
+<p>The error recovery flow is intended to be as lightweight as possible. It is not a full safety net that protects your end users from the results of errors; in many cases, users will still see a crash.</p>
+<p>Rather, the purpose is to prevent updates from &quot;bricking&quot; your app (causing a crash on launch before the app can check for updates, making the app unusable until uninstalled and reinstalled) by ensuring that in as many cases as possible, the app has the opportunity to download a new update and fix itself.</p>
+<h3 id="catching-an-error">Catching an error</h3>
+<p>If your app throws a fatal error when executing JS which is early enough in the app&#39;s lifecycle that it may prevent the app from being able to download further updates, <code>expo-updates</code> will catch this error.</p>
+<blockquote>
+<p>If more than 10 seconds have elapsed between your app&#39;s first render and the time a fatal error is thrown, <code>expo-updates</code> will not catch this error at all and none of the error recovery code will be triggered. Therefore, we highly recommend that your app check for updates very shortly after launching, whether automatically or manually to ensure you can push out fixes in the event of a future error.</p>
+</blockquote>
+<p>If <code>expo-updates</code> catches a JS error, what will happen next depends on whether React Native has fired the native &quot;content appeared&quot; event (<code>ReactMarkerConstants.CONTENT_APPEARED</code> on Android or <code>RCTContentDidAppearNotification</code> on iOS) — approximately when your app&#39;s first view has been rendered on the screen, for this particular update, either on this launch or a previous one.</p>
+<blockquote>
+<p><strong>Why this distinction?</strong> In some cases <code>expo-updates</code> may try to automatically roll back to an older (working) update, but this can be dangerous if your new update has modified persistent state in a non-backwards compatible way. We assume that if the error occurs before the first view has rendered, no such code has been able to execute, and so rolling back is safe. After this point <code>expo-updates</code> will only fix forward and will not roll back.</p>
+</blockquote>
+<h3 id="if-content-has-appeared">If content has appeared</h3>
+<p>If an error is caught and the &quot;content appeared&quot; event has already fired, OR if it has ever been fired on this device on a past launch of the same update, the following will happen:</p>
+<ul>
+<li>A 5 second timer will be started, and (unless <code>EXUpdatesCheckOnLaunch</code>/<code>expo.modules.updates.EXPO_UPDATES_CHECK_ON_LAUNCH</code> is set to <code>NEVER</code>) the app will check for a new update and download it if there is one.</li>
+<li>If there is no new update, the update finishes downloading, or the timer runs out (whichever happens first), the app will throw the original error and crash.</li>
+</ul>
+<p>Note that if a new update is downloaded, it will launch when the user next tries to open the app.</p>
+<h3 id="if-content-has-not-appeared">If content has not appeared</h3>
+<p>If an error is caught before the &quot;content appeared&quot; event has fired, and this is the first time the current update is being launched on this device, the following will happen:</p>
+<ul>
+<li>The update will be marked as &quot;failed&quot; locally and will not be launched again on this device.</li>
+<li>A 5 second timer will be started, and (unless <code>EXUpdatesCheckOnLaunch</code>/<code>expo.modules.updates.EXPO_UPDATES_CHECK_ON_LAUNCH</code> is set to <code>NEVER</code>) the app will check for a new update and download it if there is one.</li>
+<li>If a new update finishes downloading before the timer runs out, the app will immediately try to reload itself and launch the newly downloaded update.</li>
+<li>If this newly downloaded update also throws a fatal error, or there is no new update, or the timer runs out, the app will immediately try to reload by rolling back to an older update, whichever one was most recently launched successfully.</li>
+<li>If this also fails, or there is no older update available on the device, the app will throw the original error and crash.</li>
+</ul>
+<h2 id="error-stacktraces">Error stacktraces</h2>
+<p>If your app encounters a fatal JS error, and the error recovery system cannot recover, it will re-throw the original exception to cause a crash. The stacktrace will look similar to this:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">--------- beginning of crash
+AndroidRuntime: FATAL EXCEPTION: expo-updates-error-recovery
+AndroidRuntime: Process: com.myapp.MyApp, PID: 12498
+AndroidRuntime: com.facebook.react.common.JavascriptException
+AndroidRuntime:
+AndroidRuntime: 	at com.facebook.react.modules.core.ExceptionsManagerModule.reportException(ExceptionsManagerModule.java:72)
+AndroidRuntime: 	at java.lang.reflect.Method.invoke(Native Method)
+AndroidRuntime: 	at com.facebook.react.bridge.JavaMethodWrapper.invoke(JavaMethodWrapper.java:372)
+AndroidRuntime: 	at com.facebook.react.bridge.JavaModuleWrapper.invoke(JavaModuleWrapper.java:188)
+AndroidRuntime: 	at com.facebook.react.bridge.queue.NativeRunnable.run(Native Method)
+AndroidRuntime: 	at android.os.Handler.handleCallback(Handler.java:938)
+AndroidRuntime: 	at android.os.Handler.dispatchMessage(Handler.java:99)
+AndroidRuntime: 	at com.facebook.react.bridge.queue.MessageQueueThreadHandler.dispatchMessage(MessageQueueThreadHandler.java:27)
+AndroidRuntime: 	at android.os.Looper.loop(Looper.java:223)
+AndroidRuntime: 	at com.facebook.react.bridge.queue.MessageQueueThreadImpl$4.run(MessageQueueThreadImpl.java:228)
+AndroidRuntime: 	at java.lang.Thread.run(Thread.java:923)</code></pre></div></figure>
+<p>On Android, the stacktrace of the original exception is preserved. Depending on your crash reporting service, you may or may not need to reproduce the crash locally to see more information about the underlying error.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">Last Exception Backtrace:
+0   CoreFoundation                	0xf203feba4 __exceptionPreprocess + 220 (NSException.m:200)
+1   libobjc.A.dylib               	0xf201a1be7 objc_exception_throw + 60 (objc-exception.mm:565)
+2   MyApp                         	0x10926b7ee -[EXUpdatesAppController throwException:] + 24 (EXUpdatesAppController.m:422)
+3   MyApp                         	0x109280352 -[EXUpdatesErrorRecovery _crash] + 984 (EXUpdatesErrorRecovery.m:222)
+4   MyApp                         	0x10927fa3d -[EXUpdatesErrorRecovery _runNextTask] + 148 (EXUpdatesErrorRecovery.m:0)
+5   libdispatch.dylib             	0x109bc1848 _dispatch_call_block_and_release + 32 (init.c:1517)
+6   libdispatch.dylib             	0x109bc2a2c _dispatch_client_callout + 20 (object.m:560)
+7   libdispatch.dylib             	0x109bc93a6 _dispatch_lane_serial_drain + 668 (inline_internal.h:2622)
+8   libdispatch.dylib             	0x109bca0bc _dispatch_lane_invoke + 392 (queue.c:3944)
+9   libdispatch.dylib             	0x109bd6472 _dispatch_workloop_worker_thread + 648 (queue.c:6732)
+10  libsystem_pthread.dylib       	0xf6da2845d _pthread_wqthread + 288 (pthread.c:2599)
+11  libsystem_pthread.dylib       	0xf6da2742f start_wqthread + 8</code></pre></div></figure>
+<p>Even though it appears the exception was thrown from expo-updates, this stacktrace generally indicates <strong>an error that originated in JavaScript</strong>.</p>
+<p>Unfortunately, Apple&#39;s crash reporting does not include the exception message, which details the underlying error and its location in JavaScript. To see the message and help you narrow down the issue, you may need to reproduce the crash locally with the Xcode debugger or macOS Console app attached.</p>

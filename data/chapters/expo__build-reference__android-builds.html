@@ -1,0 +1,77 @@
+<p>This page describes the process of building Android projects with Expo Build. You may want to read this if you are interested in the implementation details of the build service.</p>
+<h2 id="build-process">Build process</h2>
+<p>Let&#39;s take a closer look at the steps for building Android projects with Expo Build. We&#39;ll first run some steps on your local machine to prepare the project, and then we&#39;ll build the project on a remote service.</p>
+<h3 id="local-steps">Local steps</h3>
+<p>The first phase happens on your computer. EAS CLI is in charge of completing the following steps:</p>
+<ol>
+<li><p>If <code>cli.requireCommit</code> is set to <code>true</code> in <strong>eas.json</strong>, check if the git index is clean - this means that there aren&#39;t any uncommitted changes. If it&#39;s not clean, EAS CLI will provide an option to commit local changes for you or abort the build process.</p>
+</li>
+<li><p>Prepare the credentials needed for the build unless <code>builds.android.PROFILE_NAME.withoutCredentials</code> is set to <code>true</code>.</p>
+<ul>
+<li>Depending on the value of <code>builds.android.PROFILE_NAME.credentialsSource</code>, the credentials are obtained from either the local <strong>credentials.json</strong> file or from the Expo servers. If the <code>remote</code> mode is selected but no credentials exist yet, you&#39;re prompted to generate a new keystore.</li>
+</ul>
+</li>
+<li><p>Create a tarball containing a copy of the repository. Actual behavior depends on the <a href="#/doc/expo/build-reference/project-upload@version-control-workflows">version control workflow</a> you are using.</p>
+</li>
+<li><p>Upload the project tarball to a private Google Cloud Storage (GCS) bucket and send the build request to Expo Build.</p>
+</li>
+</ol>
+<h3 id="remote-steps">Remote steps</h3>
+<p>Next, this is what happens when Expo Build picks up your request:</p>
+<ol>
+<li><p>Create a new Docker container for the build.</p>
+<ul>
+<li>Every build gets its own fresh container with all build tools installed there (Java JDK, Android SDK, NDK, and so on).</li>
+</ul>
+</li>
+<li><p>Download the project tarball from a private GCS bucket and unpack it.</p>
+</li>
+<li><p><a href="#/doc/expo/build-reference/private-npm-packages">Create <strong>.npmrc</strong></a> if <code>NPM_TOKEN</code> is set.</p>
+</li>
+<li><p>Run the <code>eas-build-pre-install</code> script from <strong>package.json</strong> if defined.</p>
+</li>
+<li><p>Run <code>npm install</code> in the project root (or <code>yarn install</code> if <code>yarn.lock</code> exists).</p>
+</li>
+<li><p>Run <code>npx expo-doctor</code> to diagnose potential issues with your project configuration.</p>
+</li>
+<li><p>Additional step for projects that use <a href="#/doc/expo/workflow/continuous-native-generation">Continuous Native Generation (CNG)</a>: Run <code>npx expo prebuild</code> to generate <strong>android</strong> and <strong>ios</strong> directories. This step will use the versioned Expo CLI.</p>
+</li>
+<li><p>Restore a previously saved cache identified by the <code>cache.key</code> value in the <a href="#/doc/expo/build/eas-json">build profile</a>.</p>
+</li>
+<li><p>Run the <code>eas-build-post-install</code> script from <strong>package.json</strong> if defined.</p>
+</li>
+<li><p>Restore the keystore (if it was included in the build request).</p>
+</li>
+<li><p>Inject the signing <a href="#configuring-gradle">configuration into <strong>build.gradle</strong></a>.</p>
+</li>
+<li><p>Run <code>./gradlew COMMAND</code> in the <strong>android</strong> directory inside your project.</p>
+<ul>
+<li><code>COMMAND</code> is the command defined in your <strong>eas.json</strong> at <code>builds.android.PROFILE_NAME.gradleCommand</code>. It defaults to <code>:app:bundleRelease</code> which produces the AAB (Android App Bundle).</li>
+</ul>
+</li>
+<li><p><strong>Deprecated:</strong> Run the <code>eas-build-pre-upload-artifacts</code> script from <strong>package.json</strong> if defined.</p>
+</li>
+<li><p>Store a cache of files and directories defined in the <a href="#/doc/expo/build/eas-json">build profile</a>. Subsequent builds will restore this cache.</p>
+</li>
+<li><p>Upload the application archive to GCS.</p>
+<ul>
+<li>The artifact path can be configured in <strong>eas.json</strong> at <code>builds.android.PROFILE_NAME.applicationArchivePath</code>. It defaults to <code>android/app/build/outputs/**/*.{apk,aab}</code>. We&#39;re using <a target="_blank" rel="noopener" href="https://github.com/isaacs/node-glob#glob-primer">glob patterns</a> for pattern matching.</li>
+</ul>
+</li>
+<li><p>If the build was successful: run the <code>eas-build-on-success</code> script from <strong>package.json</strong> if defined.</p>
+</li>
+<li><p>If the build failed: run the <code>eas-build-on-error</code> script from <strong>package.json</strong> if defined.</p>
+</li>
+<li><p>Run the <code>eas-build-on-complete</code> script from <strong>package.json</strong> if defined. The <code>EAS_BUILD_STATUS</code> env variable is set to either <code>finished</code> or <code>errored</code>.</p>
+</li>
+<li><p>Upload the build artifacts archive to a private GCS bucket if <code>buildArtifactPaths</code> is specified in the build profile.</p>
+</li>
+</ol>
+<h2 id="project-auto-configuration">Project auto-configuration</h2>
+<p>Every time you want to build a new Android app binary, we validate that the project is set up correctly so we can seamlessly run the build process on our servers. This mainly applies to <a href="#/doc/expo/bare/overview">existing React Native projects</a>, but similar steps are run when building projects that use Continuous Native Generation (CNG).</p>
+<h3 id="android-keystore">Android keystore</h3>
+<p>Android requires you to sign your application with a certificate. That certificate is stored in your keystore. The Google Play Store identifies applications based on the certificate. This means that if you lose your keystore, you may not be able to update your application in the store. However, with <a target="_blank" rel="noopener" href="https://developer.android.com/studio/publish/app-signing#app-signing-google-play">Play App Signing</a>, you can mitigate the risk of losing your keystore.</p>
+<p>Your application&#39;s keystore should be kept private. <strong>Under no circumstances should you check it in to your repository.</strong> Debug keystores are the only exception because we don&#39;t use them for uploading apps to the Google Play Store.</p>
+<h3 id="configuring-gradle">Configuring Gradle</h3>
+<p>Your app binary needs to be signed with a keystore. Since we&#39;re building the project on a remote server, we had to come up with a way to provide Gradle with credentials which aren&#39;t, for security reasons, checked in to your repository. In one of the remote steps, we inject the signing configuration into your <strong>build.gradle</strong>. Expo Build creates the <strong>android/app/eas-build.gradle</strong> file with the following contents:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Groovy</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-groovy"><span class="hljs-comment">// Build integration with EAS</span></code></pre></div></figure>

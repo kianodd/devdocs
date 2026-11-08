@@ -1,0 +1,233 @@
+<h2 id="what-are-codecs">What are codecs?</h2>
+<p>Codecs are a driver-aware transform layer that sits between your JavaScript values and the database. They solve the problem of <strong>different drivers returning and accepting data in different formats</strong> for the same column types.</p>
+<h2 id="why-are-they-needed">Why are they needed?</h2>
+<ol>
+<li><p><strong>Driver differences</strong> — each PG driver (<code>node-postgres</code>, <code>postgres-js</code>, <code>pglite</code>, etc.) parses and serializes types differently. Codecs normalize these differences so your app code doesn&#39;t have to care which driver you&#39;re using.</p>
+</li>
+<li><p><strong>JSON context</strong> — when a column is selected inside a JSON function (like <code>jsonAgg</code>, <code>jsonBuildObject</code>, or relational queries), the database returns values in JSON format which may differ from the regular format. For example, <code>bigint</code> in JSON becomes a number (losing precision). Codecs handle this by casting to text before JSON-ification (<code>castInJson</code>) and then parsing it back (<code>normalizeInJson</code>).</p>
+</li>
+</ol>
+<h2 id="how-codecs-work">How codecs work</h2>
+<p>Codecs have two layers: <strong>cast</strong> and <strong>normalize</strong>.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">
+          ┌───────────────────────────────────────┐
+          │  Cast layer (DB level)                │
+          │  SELECT &quot;bigint&quot;::text FROM &quot;users&quot;   │
+          └───────────────────────────────────────┘
+ 
+          ┌────────────────────────────────────┐
+          │  Normalize layer (Code level)      │
+          │  &quot;123&quot; → BigInt(&quot;123&quot;) → 123n      │
+          └────────────────────────────────────┘</code></pre></div></figure>
+<br/><p><strong>Cast</strong> operates at the database level — it wraps a column in a SQL <code>::type</code></p>
+<p><strong>Normalize</strong> operates at the code level — it transforms the raw value into the  type you/driver expect</p>
+<br/><p>Both layers can have separate variants for different query contexts:</p>
+<p>For reads (SELECT):</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">SQL generation:      SELECT &quot;col&quot;::text FROM ...     ← cast layer modifies SQL
+                            ▼
+Database executes:   returns text representation
+                            ▼
+JS result mapping:   parseLineABC(rawValue)          ← normalize layer transforms in JS
+                            ▼
+Your code gets:      { a: 1, b: 2, c: 3 }</code></pre></div></figure>
+<p>For writes (INSERT/UPDATE):</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">Your JS value:       { key: &quot;val&quot; }
+                            ▼
+JS param building:   JSON.stringify(value)            ← normalize layer transforms in JS
+                            ▼
+SQL generation:      INSERT ... VALUES ($1::jsonb)    ← cast layer modifies SQL
+                            ▼
+Database receives:   &#x27;{&quot;key&quot;:&quot;val&quot;}&#x27; with type hint</code></pre></div></figure>
+<br/><p>Each layer operates across 3 contexts, each with scalar and array variants:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">                        Cast (SQL)              Normalize (JS)
+                   ┌──────────────────┐    ┌──────────────────────┐
+  Regular SELECT   │ cast             │    │ normalize            │
+                   │ castArray        │    │ normalizeArray       │
+                   ├──────────────────┤    ├──────────────────────┤
+  Inside JSON      │ castInJson       │    │ normalizeInJson      │
+  (jsonAgg, RQB)   │ castArrayInJson  │    │ normalizeArrayInJson │
+                   ├──────────────────┤    ├──────────────────────┤
+  Params           │ castParam        │    │ normalizeParam       │
+  (INSERT/UPDATE)  │ castArrayParam   │    │ normalizeParamArray  │
+                   └──────────────────┘    └──────────────────────┘</code></pre></div></figure>
+<p>JSON context exists because databases serialize values differently inside JSON — a <code>bigint</code> that normally comes back as a string from the driver will come back as a lossy number inside a JSON object. So codecs need separate handling: cast to <code>::text</code> in SQL before JSON wrapping, then parse the text back in JS after.</p>
+<br/><div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Method</th>
+<th>When</th>
+<th align="center">Example SQL</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>cast</code></td>
+<td>Column in SELECT</td>
+<td align="center"><code>&quot;col&quot;::text</code></td>
+</tr>
+<tr>
+<td><code>castArray</code></td>
+<td>Array column in SELECT</td>
+<td align="center"><code>&quot;col&quot;::text[]</code></td>
+</tr>
+<tr>
+<td><code>castInJson</code></td>
+<td>Column inside JSON functions</td>
+<td align="center"><code>&quot;col&quot;::text</code> (inside <code>json_agg</code>)</td>
+</tr>
+<tr>
+<td><code>castArrayInJson</code></td>
+<td>Array column inside JSON</td>
+<td align="center"></td>
+</tr>
+<tr>
+<td><code>castParam</code></td>
+<td>Param placeholder in INSERT/UPDATE/WHERE</td>
+<td align="center"><code>$1::date</code></td>
+</tr>
+<tr>
+<td><code>castArrayParam</code></td>
+<td>Array param placeholder</td>
+<td align="center"><code>$1::date[]</code></td>
+</tr>
+</tbody></table></div>
+<br/><div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Method</th>
+<th>When</th>
+<th align="center">Example</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>normalize</code></td>
+<td>SELECT result → JS value</td>
+<td align="center"><code>&quot;123&quot;</code> → <code>123n</code></td>
+</tr>
+<tr>
+<td><code>normalizeArray</code></td>
+<td>SELECT array result → JS array</td>
+<td align="center"><code>[&quot;123&quot;, &quot;456&quot;]</code> → <code>[123n, 456n]</code></td>
+</tr>
+<tr>
+<td><code>normalizeInJson</code></td>
+<td>SELECT result inside JSON → JS</td>
+<td align="center">JSON <code>bigint</code> → <code>BigInt</code></td>
+</tr>
+<tr>
+<td><code>normalizeArrayInJson</code></td>
+<td>SELECT array inside JSON → JS</td>
+<td align="center"></td>
+</tr>
+<tr>
+<td><code>normalizeParam</code></td>
+<td>JS value → driver param (INSERT/UPDATE/WHERE)</td>
+<td align="center"><code>{ key: &quot;val&quot; }</code> → <code>&#39;{&quot;key&quot;:&quot;val&quot;}&#39;</code></td>
+</tr>
+<tr>
+<td><code>normalizeParamArray</code></td>
+<td>JS array → driver array param</td>
+<td align="center"><code>[1, 2]</code> → <code>{1,2}</code> (PG array literal)</td>
+</tr>
+</tbody></table></div>
+<br/><h2 id="are-they-enabled-by-default">Are they enabled by default?</h2>
+<p>Yes. Every driver ships default codecs. When you call <code>drizzle(client)</code>, the driver&#39;s codecs are automatically used.<br>You don&#39;t need to do anything to enable them.</p>
+<h2 id="how-codecs-work-in-built-in-column-types">How codecs work in built-in column types</h2>
+<p>Every built-in PG column class declares a <code>codec</code> string identifier:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-comment">// pg-core/columns/integer.ts</span>
+<span class="hljs-keyword">class</span> <span class="hljs-title class_">PgInteger</span> <span class="hljs-keyword">extends</span> <span class="hljs-title class_ inherited__">PgColumn</span> {
+  <span class="hljs-keyword">override</span> <span class="hljs-keyword">readonly</span> codec = <span class="hljs-string">&#x27;int&#x27;</span>;
+}
+
+<span class="hljs-comment">// pg-core/columns/bigint.ts  </span>
+<span class="hljs-keyword">class</span> <span class="hljs-title class_">PgBigInt53</span> <span class="hljs-keyword">extends</span> <span class="hljs-title class_ inherited__">PgColumn</span> {
+  <span class="hljs-keyword">override</span> <span class="hljs-keyword">readonly</span> codec = <span class="hljs-string">&#x27;bigint:number&#x27;</span>;
+}
+<span class="hljs-keyword">class</span> <span class="hljs-title class_">PgBigInt64</span> <span class="hljs-keyword">extends</span> <span class="hljs-title class_ inherited__">PgColumn</span> {
+  <span class="hljs-keyword">override</span> <span class="hljs-keyword">readonly</span> codec = <span class="hljs-string">&#x27;bigint&#x27;</span>;
+}
+<span class="hljs-keyword">class</span> <span class="hljs-title class_">PgBigIntString</span> <span class="hljs-keyword">extends</span> <span class="hljs-title class_ inherited__">PgColumn</span> {
+  <span class="hljs-keyword">override</span> <span class="hljs-keyword">readonly</span> codec = <span class="hljs-string">&#x27;bigint:string&#x27;</span>;
+}
+
+<span class="hljs-comment">// pg-core/columns/line.ts</span>
+<span class="hljs-keyword">class</span> <span class="hljs-title class_">PgLineABC</span> <span class="hljs-keyword">extends</span> <span class="hljs-title class_ inherited__">PgColumn</span> {
+  <span class="hljs-keyword">override</span> <span class="hljs-keyword">readonly</span> codec = <span class="hljs-string">&#x27;line&#x27;</span>;
+}
+<span class="hljs-keyword">class</span> <span class="hljs-title class_">PgLineTuple</span> <span class="hljs-keyword">extends</span> <span class="hljs-title class_ inherited__">PgColumn</span> {
+  <span class="hljs-keyword">override</span> <span class="hljs-keyword">readonly</span> codec = <span class="hljs-string">&#x27;line:tuple&#x27;</span>
+}
+
+...</code></pre></div></figure>
+<p>This identifier is a lookup key into the driver&#39;s codec map. If the driver defines transforms for that key, they&#39;re applied. If not, the value passes through untouched.</p>
+<p>For example, <code>integer</code> has codec <code>&#39;int&#39;</code>. The <code>node-postgres</code> codec map has <strong>no entry</strong> for <code>&#39;int&#39;</code> — integers don&#39;t need any transformation. But <code>bigint</code> has codec <code>&#39;bigint&#39;</code>, and node-postgres defines:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-comment">// node-postgres/codecs.ts</span>
+<span class="hljs-attr">bigint</span>: {
+  <span class="hljs-attr">normalize</span>: <span class="hljs-title class_">BigInt</span>,                           <span class="hljs-comment">// SELECT: &quot;123&quot; → 123n</span>
+  <span class="hljs-attr">normalizeArray</span>: <span class="hljs-title function_">arrayCompatNormalize</span>(<span class="hljs-title class_">BigInt</span>), <span class="hljs-comment">// SELECT array: [&quot;123&quot;] → [123n]</span>
+}</code></pre></div></figure>
+<h2 id="overriding-codecs-for-built-in-types">Overriding codecs for built-in types</h2>
+<p>Built-in columns (like <code>integer()</code>, <code>bigint()</code>, <code>date()</code>, <code>text()</code>, etc.) have a hardcoded <code>codec</code> string — you can&#39;t change which codec identifier a column uses. But you <strong>can</strong> change what that codec identifier does by overriding the driver&#39;s codec map.</p>
+<p>Every PG driver accepts a <code>codecs</code> option in <code>drizzle()</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">const</span> db = <span class="hljs-title function_">drizzle</span>(client, {
+  <span class="hljs-attr">codecs</span>: {
+    <span class="hljs-string">&quot;bigint:number&quot;</span>: {
+      <span class="hljs-attr">cast</span>: <span class="hljs-function">(<span class="hljs-params">name</span>) =&gt;</span> sql<span class="hljs-string">`<span class="hljs-subst">${name}</span>::text`</span>,
+      <span class="hljs-attr">normalize</span>: <span class="hljs-title class_">BigInt</span>,
+    },
+  },
+});</code></pre></div></figure>
+<h2 id="how-codecs-work-in-customtype">How codecs work in <code>customType()</code></h2>
+<p><code>toDriver</code>/<code>fromDriver</code> on <code>customType</code> and codecs are <strong>separate layers</strong>. 
+<code>toDriver</code>/<code>fromDriver</code> are per-column instance transforms. Codecs are driver-level transforms and both are applied<br>On reads - <code>codec normalize</code> first → then <code>fromDriver</code>
+On writes - <code>toDriver</code> first → then <code>codec normalizeParam</code></p>
+<p>Read more about custom types <a href="#/doc/drizzle/pg/custom-types">here</a></p>
+<p>When defining a custom column type, you can specify which codec to use via the <code>codec</code> property:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">
+
+<span class="hljs-comment">// Use an existing codec by name</span>
+<span class="hljs-keyword">const</span> customBigint = customType&lt;{ <span class="hljs-attr">data</span>: <span class="hljs-built_in">bigint</span>; <span class="hljs-attr">driverData</span>: <span class="hljs-built_in">string</span> }&gt;({
+  <span class="hljs-title function_">dataType</span>(<span class="hljs-params"></span>) {
+    <span class="hljs-keyword">return</span> <span class="hljs-string">&quot;bigint&quot;</span>;
+  },
+  <span class="hljs-title function_">fromDriver</span>(<span class="hljs-params"><span class="hljs-attr">value</span>: <span class="hljs-built_in">string</span></span>) {
+    <span class="hljs-keyword">return</span> <span class="hljs-title class_">BigInt</span>(<span class="hljs-title class_">Number</span>(value) * <span class="hljs-number">1000</span>); <span class="hljs-comment">// ← extra column mapping logic</span>
+  },
+  <span class="hljs-attr">codec</span>: <span class="hljs-string">&quot;bigint&quot;</span>, <span class="hljs-comment">// ← uses the driver&#x27;s bigint codec</span>
+});
+
+<span class="hljs-comment">// Codec as a function (useful when codec depends on config)</span>
+<span class="hljs-keyword">const</span> customDataType = customType&lt;{
+  <span class="hljs-attr">data</span>: <span class="hljs-built_in">number</span>;
+  <span class="hljs-attr">driverData</span>: <span class="hljs-built_in">bigint</span> | <span class="hljs-built_in">number</span>;
+  <span class="hljs-attr">config</span>?: { <span class="hljs-attr">mode</span>: <span class="hljs-string">&quot;bigint&quot;</span> | <span class="hljs-string">&quot;number&quot;</span> };
+  <span class="hljs-attr">configRequired</span>: <span class="hljs-literal">true</span>;
+}&gt;({
+  <span class="hljs-title function_">dataType</span>(<span class="hljs-params"></span>) {
+    <span class="hljs-keyword">return</span> <span class="hljs-string">`custom_type`</span>;
+  },
+  <span class="hljs-title function_">fromDriver</span>(<span class="hljs-params"><span class="hljs-attr">value</span>: <span class="hljs-built_in">bigint</span> | <span class="hljs-built_in">number</span></span>) {
+    <span class="hljs-keyword">return</span> <span class="hljs-title class_">Number</span>(value) / <span class="hljs-number">1000</span>; <span class="hljs-comment">// ← extra column mapping logic</span>
+  },
+  <span class="hljs-attr">codec</span>: <span class="hljs-function">(<span class="hljs-params">config</span>) =&gt;</span> {
+    <span class="hljs-comment">// ← can be dynamic based on config</span>
+    <span class="hljs-keyword">if</span> (!config || config.<span class="hljs-property">mode</span> === <span class="hljs-string">&quot;bigint&quot;</span>) {
+      <span class="hljs-keyword">return</span> <span class="hljs-string">&quot;bigint&quot;</span>;
+    }
+
+    <span class="hljs-keyword">return</span> <span class="hljs-string">&quot;bigint:number&quot;</span>;
+  },
+});
+
+<span class="hljs-comment">// No codec — skip codec transforms entirely</span>
+<span class="hljs-keyword">const</span> rawCustom = customType&lt;{ <span class="hljs-attr">data</span>: <span class="hljs-built_in">string</span>; <span class="hljs-attr">driverData</span>: <span class="hljs-built_in">string</span> }&gt;({
+  <span class="hljs-title function_">dataType</span>(<span class="hljs-params"></span>) {
+    <span class="hljs-keyword">return</span> <span class="hljs-string">&#x27;my_type&#x27;</span>;
+  },
+  <span class="hljs-comment">// codec is undefined by default — no codec transforms applied</span>
+});</code></pre></div></figure>
+<p>The <code>codec</code> field accepts:</p>
+<ul>
+<li>A <code>string</code> — one of the PostgreSQL type identifiers (e.g. <code>&#39;bigint&#39;</code>, <code>&#39;date&#39;</code>, <code>&#39;json&#39;</code>, <code>&#39;text&#39;</code>, etc.)</li>
+<li>A <code>function</code> <code>(config) =&gt; string | undefined</code> — dynamically resolve the codec based on the column&#39;s config</li>
+<li><code>undefined</code> (default) — no codec, values pass through as-is</li>
+</ul>

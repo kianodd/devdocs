@@ -1,0 +1,72 @@
+<h2 id="granular-checks-for-branches-in-return-expressions">Granular Checks for Branches in Return Expressions</h2>
+<p>Consider some code like the following:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">declare</span> <span class="hljs-keyword">const</span> <span class="hljs-attr">untypedCache</span>: <span class="hljs-title class_">Map</span>&lt;<span class="hljs-built_in">any</span>, <span class="hljs-built_in">any</span>&gt;;
+
+<span class="hljs-keyword">function</span> <span class="hljs-title function_">getUrlObject</span>(<span class="hljs-params"><span class="hljs-attr">urlString</span>: <span class="hljs-built_in">string</span></span>): <span class="hljs-variable constant_">URL</span> {
+    <span class="hljs-keyword">return</span> untypedCache.<span class="hljs-title function_">has</span>(urlString) ?
+        untypedCache.<span class="hljs-title function_">get</span>(urlString) :
+        urlString;
+}</code></pre></div></figure>
+<p>The intent of this code is to retrieve a URL object from a cache if it exists, or to create a new URL object if it doesn&#39;t.
+However, there&#39;s a bug: we forgot to actually construct a new URL object with the input.
+Unfortunately, TypeScript generally didn&#39;t catch this sort of bug.</p>
+<p>When TypeScript checks conditional expressions like <code>cond ? trueBranch : falseBranch</code>, its type is treated as a union of the types of the two branches.
+In other words, it gets the type of <code>trueBranch</code> and <code>falseBranch</code>, and combines them into a union type.
+In this case, the type of <code>untypedCache.get(urlString)</code> is <code>any</code>, and the type of <code>urlString</code> is <code>string</code>.
+This is where things go wrong because <code>any</code> is so infectious in how it interacts with other types.
+The union <code>any | string</code> is simplified to <code>any</code>, so by the time TypeScript starts checking whether the expression in our <code>return</code> statement is compatible with the expected return type of <code>URL</code>, the type system has lost any information that would have caught the bug in this code.</p>
+<p>In TypeScript 5.8, the type system special-cases conditional expressions directly inside <code>return</code> statements.
+Each branch of the conditional is checked against the declared return type of the containing functions (if one exists), so the type system can catch the bug in the example above.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">declare</span> <span class="hljs-keyword">const</span> <span class="hljs-attr">untypedCache</span>: <span class="hljs-title class_">Map</span>&lt;<span class="hljs-built_in">any</span>, <span class="hljs-built_in">any</span>&gt;;
+
+<span class="hljs-keyword">function</span> <span class="hljs-title function_">getUrlObject</span>(<span class="hljs-params"><span class="hljs-attr">urlString</span>: <span class="hljs-built_in">string</span></span>): <span class="hljs-variable constant_">URL</span> {
+    <span class="hljs-keyword">return</span> untypedCache.<span class="hljs-title function_">has</span>(urlString) ?
+        untypedCache.<span class="hljs-title function_">get</span>(urlString) :
+        urlString;
+    <span class="hljs-comment">//  ~~~~~~~~~</span>
+    <span class="hljs-comment">// error! Type &#x27;string&#x27; is not assignable to type &#x27;URL&#x27;.</span>
+}</code></pre></div></figure>
+<p>This change was made <a target="_blank" rel="noopener" href="https://github.com/microsoft/TypeScript/pull/56941">within this pull request</a>, as part of a broader set of future improvements for TypeScript.</p>
+<h2 id="support-for-require-of-ecmascript-modules-in---module-nodenext">Support for <code>require()</code> of ECMAScript Modules in <code>--module nodenext</code></h2>
+<p>For years, Node.js supported ECMAScript modules (ESM) alongside CommonJS modules.
+Unfortunately, the interoperability between the two had some challenges.</p>
+<ul>
+<li>ESM files could <code>import</code> CommonJS files</li>
+<li>CommonJS files <em><strong>could not</strong></em> <code>require()</code> ESM files</li>
+</ul>
+<p>In other words, consuming CommonJS files from ESM files was possible, but not the other way around.
+This introduced many challenges for library authors who wanted to provide ESM support.
+These library authors would either have to break compatibility with CommonJS users, &quot;dual-publish&quot; their libraries (providing separate entry-points for ESM and CommonJS), or just stay on CommonJS indefinitely.
+While dual-publishing might sound like a good middle-ground, it is a complex and error-prone process that also roughly doubles the amount of code within a package.</p>
+<p>Node.js 22 relaxes some of these restrictions and permits <code>require(&quot;esm&quot;)</code> calls from CommonJS modules to ECMAScript modules.
+Node.js still does not permit <code>require()</code> on ESM files that contain a top-level <code>await</code>, but most other ESM files are now consumable from CommonJS files.
+This presents a major opportunity for library authors to provide ESM support without having to dual-publish their libraries.</p>
+<p>TypeScript 5.8 supports this behavior under the <code>--module nodenext</code> flag.
+When <code>--module nodenext</code> is enabled, TypeScript will avoid issuing errors on these <code>require()</code> calls to ESM files.</p>
+<p>Because this feature may be back-ported to older versions of Node.js, there is currently no stable <code>--module nodeXXXX</code> option that enables this behavior;
+however, we predict future versions of TypeScript may be able to stabilize the feature under <code>node20</code>.
+In the meantime, we encourage users of Node.js 22 and newer to use <code>--module nodenext</code>, while library authors and users of older Node.js versions should remain on <code>--module node16</code> (or make the minor update to <a href="#--module-node18"><code>--module node18</code></a>).</p>
+<p>For more information, <a target="_blank" rel="noopener" href="https://github.com/microsoft/TypeScript/pull/60761">see our support for require(&quot;esm&quot;) here</a>.</p>
+<h2 id="--module-node18"><code>--module node18</code></h2>
+<p>TypeScript 5.8 introduces a stable <code>--module node18</code> flag.
+For users who are fixed on using Node.js 18, this flag provides a stable point of reference that does not incorporate certain behaviors that are in <code>--module nodenext</code>.
+Specifically:</p>
+<ul>
+<li><code>require()</code> of ECMAScript modules is disallowed under <code>node18</code>, but allowed under <code>nodenext</code></li>
+<li>import assertions (deprecated in favor of import attributes) are allowed under <code>node18</code>, but are disallowed under <code>nodenext</code></li>
+</ul>
+<p>See more at both <a target="_blank" rel="noopener" href="https://github.com/microsoft/TypeScript/pull/60722">the <code>--module node18</code> pull request</a> and <a target="_blank" rel="noopener" href="https://github.com/microsoft/TypeScript/pull/60761">changes made to <code>--module nodenext</code></a>.</p>
+<h2 id="the---erasablesyntaxonly-option">The <code>--erasableSyntaxOnly</code> Option</h2>
+<p>Recently, Node.js 23.6 unflagged <a target="_blank" rel="noopener" href="https://nodejs.org/api/typescript.html#type-stripping">experimental support for running TypeScript files directly</a>;
+however, only certain constructs are supported under this mode.
+Node.js has unflagged a mode called <code>--experimental-strip-types</code> which requires that any TypeScript-specific syntax cannot have runtime semantics.
+Phrased differently, it must be possible to easily <em>erase</em> or &quot;strip out&quot; any TypeScript-specific syntax from a file, leaving behind a valid JavaScript file.</p>
+<p>That means constructs like the following are not supported:</p>
+<ul>
+<li><code>enum</code> declarations</li>
+<li><code>namespace</code>s and <code>module</code>s with runtime code</li>
+<li>parameter properties in classes</li>
+<li>Non-ECMAScript <code>import =</code> and <code>export =</code> assignments</li>
+</ul>
+<p>Here are some examples of what does not work:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-comment">// ❌ error: An `import ... = require(...)` alias</span></code></pre></div></figure>

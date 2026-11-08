@@ -1,0 +1,215 @@
+<p>Zod 4.5 implements a &quot;method memoization&quot; pattern that allows it to defer allocating memory for bound methods until they are used (if ever). This post discusses that pattern.</p>
+<p>In Zod 4.4 a bare <code>z.string()</code> retained 7.5kb of heap. In Zod 4.5 it retains 784 bytes. </p>
+<p>Retained heap per schema instance, Zod 4.4.3 vs 4.5 (<a target="_blank" rel="noopener" href="https://github.com/colinhacks/zod/blob/main/packages/bench/memory/schema-footprint.ts">benchmark</a>)&lt;/&gt;}
+/&gt;</p>
+<h2 id="the-problem">The problem</h2>
+<p>By default all methods on Zod schemas are <em>auto-bound</em>, meaning they do not rely on implicit <code>this</code> semantics to work properly. That enables patterns like this, which otherwise may break or behave in unexpected ways when reliant on unbound prototype methods.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">const</span> { parse } = z.<span class="hljs-title function_">string</span>();
+
+<span class="hljs-title function_">parse</span>(<span class="hljs-string">&quot;some data&quot;</span>);</code></pre></div></figure>
+<p>This is often useful for preventing unexpected behavior in certain uncommon circumstances. There&#39;s a <a target="_blank" rel="noopener" href="https://www.npmjs.com/package/auto-bind">package on npm</a> that specifically implements some auto-bind utilities. But there&#39;s a downside, which is that every method is now a bound closure that takes up space in memory. It&#39;s no longer possible for multiple instances of one class to share a method via regular prototype chain inheritance.</p>
+<h2 id="the-fix">The fix</h2>
+<p>This is now conclusively fixed in Zod 4.5 via a pattern I&#39;ve been calling &quot;method memoization&quot;.</p>
+<p>Zod classes define their methods as <em>getters</em> on a standard <code>prototype</code>. The first time an instance&#39;s method is accessed, it falls through to the prototype via standard prototype inheritance. The getter returns a method implementation that&#39;s bound to the accessing instance and <em>assigns it as an <a target="_blank" rel="noopener" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Object/hasOwnProperty">own property</a></em> to the instance, effectively memoizing it forever. Successive accesses on that same method thus avoid getter-invocation overheads and resolve directly from the own property.</p>
+<p>It&#39;s a more sophisticated variant of the self-overwriting getter I&#39;ve described before.</p>
+<p>An instance method that&#39;s never used (and most aren&#39;t!) is never materialized, nor is it ever stored as an own property on the instance. </p>
+<h2 id="the-results">The results</h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>schema</th>
+<th>4.4.3</th>
+<th>4.5</th>
+<th>smaller</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>z.string()</code></td>
+<td>7.5kb</td>
+<td>784b</td>
+<td><strong>9.8x</strong></td>
+</tr>
+<tr>
+<td><code>z.number()</code></td>
+<td>4.4kb</td>
+<td>706b</td>
+<td><strong>6.4x</strong></td>
+</tr>
+<tr>
+<td><code>z.boolean()</code></td>
+<td>3.6kb</td>
+<td>594b</td>
+<td><strong>6.3x</strong></td>
+</tr>
+<tr>
+<td><code>z.literal(&quot;a&quot;)</code></td>
+<td>5.1kb</td>
+<td>1.7kb</td>
+<td><strong>3.0x</strong></td>
+</tr>
+<tr>
+<td><code>z.enum([...])</code></td>
+<td>5.3kb</td>
+<td>1.5kb</td>
+<td><strong>3.5x</strong></td>
+</tr>
+<tr>
+<td><code>z.email()</code></td>
+<td>5.8kb</td>
+<td>2.2kb</td>
+<td><strong>2.7x</strong></td>
+</tr>
+<tr>
+<td><code>z.uuid()</code></td>
+<td>5.9kb</td>
+<td>2.2kb</td>
+<td><strong>2.6x</strong></td>
+</tr>
+<tr>
+<td><code>z.iso.datetime()</code></td>
+<td>6.1kb</td>
+<td>2.5kb</td>
+<td><strong>2.4x</strong></td>
+</tr>
+<tr>
+<td><code>z.string().min(1)</code></td>
+<td>16.7kb</td>
+<td>3.4kb</td>
+<td><strong>5.0x</strong></td>
+</tr>
+<tr>
+<td><code>z.string().min(1).max(5)</code></td>
+<td>25.8kb</td>
+<td>6.0kb</td>
+<td><strong>4.3x</strong></td>
+</tr>
+<tr>
+<td><code>z.string().optional()</code></td>
+<td>12.6kb</td>
+<td>1.5kb</td>
+<td><strong>8.4x</strong></td>
+</tr>
+<tr>
+<td><code>z.string().nullable()</code></td>
+<td>13.1kb</td>
+<td>1.5kb</td>
+<td><strong>8.8x</strong></td>
+</tr>
+<tr>
+<td><code>z.string().default(&quot;&quot;)</code></td>
+<td>13.1kb</td>
+<td>1.9kb</td>
+<td><strong>7.1x</strong></td>
+</tr>
+<tr>
+<td><code>z.string().brand()</code></td>
+<td>7.6kb</td>
+<td>872b</td>
+<td><strong>8.9x</strong></td>
+</tr>
+<tr>
+<td><code>z.string().refine(...)</code></td>
+<td>20.5kb</td>
+<td>4.4kb</td>
+<td><strong>4.7x</strong></td>
+</tr>
+<tr>
+<td><code>z.string().transform(...)</code></td>
+<td>17.5kb</td>
+<td>2.0kb</td>
+<td><strong>8.5x</strong></td>
+</tr>
+<tr>
+<td><code>z.string().pipe(...)</code></td>
+<td>21.4kb</td>
+<td>2.2kb</td>
+<td><strong>9.6x</strong></td>
+</tr>
+<tr>
+<td><code>z.array(z.string())</code></td>
+<td>11.2kb</td>
+<td>1.9kb</td>
+<td><strong>5.8x</strong></td>
+</tr>
+<tr>
+<td><code>z.tuple([...])</code>, 3 items</td>
+<td>15.7kb</td>
+<td>2.8kb</td>
+<td><strong>5.7x</strong></td>
+</tr>
+<tr>
+<td><code>z.record(...)</code></td>
+<td>16.4kb</td>
+<td>2.6kb</td>
+<td><strong>6.2x</strong></td>
+</tr>
+<tr>
+<td><code>z.object({})</code></td>
+<td>6.6kb</td>
+<td>3.3kb</td>
+<td><strong>2.0x</strong></td>
+</tr>
+<tr>
+<td><code>z.object({...})</code>, 3 keys</td>
+<td>22.2kb</td>
+<td>5.3kb</td>
+<td><strong>4.2x</strong></td>
+</tr>
+<tr>
+<td><code>z.object({...})</code>, 10 keys</td>
+<td>82.0kb</td>
+<td>11.0kb</td>
+<td><strong>7.5x</strong></td>
+</tr>
+<tr>
+<td><code>z.union([...])</code>, 2 options</td>
+<td>17.5kb</td>
+<td>2.1kb</td>
+<td><strong>8.3x</strong></td>
+</tr>
+<tr>
+<td><code>z.discriminatedUnion(...)</code>, 2 options</td>
+<td>42.0kb</td>
+<td>12.7kb</td>
+<td><strong>3.3x</strong></td>
+</tr>
+<tr>
+<td><code>z.lazy(...)</code></td>
+<td>5.9kb</td>
+<td>1.3kb</td>
+<td><strong>4.5x</strong></td>
+</tr>
+<tr>
+<td><code>zod/mini</code> <code>z.string()</code></td>
+<td>2.5kb</td>
+<td>577b</td>
+<td><strong>4.4x</strong></td>
+</tr>
+<tr>
+<td><code>zod/mini</code> <code>z.object({...})</code>, 3 keys</td>
+<td>11.8kb</td>
+<td>3.2kb</td>
+<td><strong>3.7x</strong></td>
+</tr>
+</tbody></table></div>
+<h2 id="own-properties-and-v8">Own properties and V8</h2>
+<p>The problem with the old approach is exacerbated by a detail of V8&#39;s memory allocation around an object&#39;s own properties.</p>
+<ul>
+<li>With fewer than 13 own properties, V8 tracks them in a compact 128-byte backing store</li>
+<li>With 13 or more, V8 bumps the store up to 848 bytes</li>
+<li>With 21 or more, it steps again to 1616 bytes</li>
+</ul>
+<p>A regular string schema in <code>zod@4.4.3</code> carried 49 own properties (40 methods and 9 properties) so every instance got the 1616-byte backing store.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-comment">// zod@4.4.3</span>
+<span class="hljs-keyword">const</span> s = z.<span class="hljs-title function_">string</span>();
+<span class="hljs-title class_">Object</span>.<span class="hljs-title function_">getOwnPropertyNames</span>(s).<span class="hljs-property">length</span>; <span class="hljs-comment">// 49</span>
+<span class="hljs-title class_">Object</span>.<span class="hljs-title function_">getOwnPropertyNames</span>(s).<span class="hljs-title function_">filter</span>(<span class="hljs-function">(<span class="hljs-params">k</span>) =&gt;</span> <span class="hljs-keyword">typeof</span> s[k] === <span class="hljs-string">&quot;function&quot;</span>).<span class="hljs-property">length</span>; <span class="hljs-comment">// 40</span></code></pre></div></figure>
+<p>Under the new system there are only six eagerly bound properties: <code>_zod</code>, <code>def</code>, <code>type</code>, <code>format</code>, <code>minLength</code>, and <code>maxLength</code>. Everything else lives on the memoizing prototype.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>TypeScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-comment">// zod@4.5.0</span>
+<span class="hljs-keyword">const</span> s = z.<span class="hljs-title function_">string</span>();
+<span class="hljs-title class_">Object</span>.<span class="hljs-title function_">getOwnPropertyNames</span>(s).<span class="hljs-property">length</span>; <span class="hljs-comment">// 6</span>
+<span class="hljs-title class_">Object</span>.<span class="hljs-title function_">getOwnPropertyNames</span>(<span class="hljs-title class_">Object</span>.<span class="hljs-title function_">getPrototypeOf</span>(s)).<span class="hljs-property">length</span>; <span class="hljs-comment">// 86</span></code></pre></div></figure>
+<h2 id="measuring-this">Measuring this</h2>
+<p>Retained bytes can be tricky to measure. The numbers above come from <a target="_blank" rel="noopener" href="https://github.com/colinhacks/zod/blob/main/packages/bench/memory/schema-footprint.ts"><code>packages/bench/memory/schema-footprint.ts</code></a> in the repo.</p>
+<p>Upgrade to Zod 4.5 for these enhancements.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Terminal</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-bash"><span class="tk-cmd">npm</span> upgrade zod@latest</code></pre></div></figure>

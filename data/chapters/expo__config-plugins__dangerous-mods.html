@@ -1,0 +1,144 @@
+<p>Dangerous mods in Expo provide direct access to native project files through string manipulation and regular expressions. While <a href="#/doc/expo/config-plugins/mods">existing mod plugins</a> are the recommended approach, dangerous mods serve as an escape hatch for modifications that cannot be achieved through existing mod plugins.</p>
+<p>Automated direct source code manipulation does not typically compose well. For example, if a dangerous mod replaces text in a source file, and a subsequent dangerous mod expects the original text to be there (perhaps it uses the original text as an anchor for a regular expression) then it is unlikely produce the desired result — depending on how it is written, it may either throw an error or log. Other types of mods are less prone to this type of problem, although it can happen with mods that manipulate source files directly like <code>withAndroidManifest</code> and <code>withPodfile</code>.</p>
+<p>Unlike standard mods, which can run multiple times safely, dangerous mods are rarely guaranteed to be idempotent. Running the same dangerous mod multiple times may produce different results, cause duplicate modifications, or break the target file entirely.</p>
+<h2 id="when-to-use-a-dangerous-mod">When to use a dangerous mod</h2>
+<p>Consider using a dangerous mod when:</p>
+<ul>
+<li><strong>Can&#39;t make the modification with a standard mod</strong>: The modification you need isn&#39;t supported by existing mod plugins like <a href="#/doc/expo/config-plugins/mods@android"><code>withAndroidManifest</code></a>, <a href="#/doc/expo/config-plugins/mods@ios"><code>withPodfile</code></a>, and so on, or if a library requires specific native modifications that aren&#39;t covered by standard plugins.</li>
+<li><strong>Legacy Expo SDK compatibility:</strong> You are targeting an older Expo SDK version that doesn&#39;t include the mod plugin you need.</li>
+<li><strong>Need to modify text with regexes or replace functions</strong>: You need to make complex text changes that existing mod plugins do not support. Expo uses dangerous mods internally for large file system refactoring, for example, when a library&#39;s name changes.</li>
+</ul>
+<h2 id="how-to-use-a-dangerous-mod">How to use a dangerous mod</h2>
+<p>In a real-world scenario, you can use the example config plugin described in this section directly in your project by following the standard config plugin usage pattern from the <a href="#/doc/expo/config-plugins/plugins@creating-a-config-plugin">Creating a config plugin section</a>. However, with the existing mod plugin called <a href="#/doc/expo/config-plugins/mods@ios"><code>withPodfile</code></a>, you don&#39;t have to use the dangerous mod. The example below is just for demonstration of how a dangerous mod can be created and used.</p>
+<p>Let&#39;s take a look at an example config plugin to modify a file inside a native directory (<strong>ios</strong>). This is useful when you are using Continuous Native Generation in your Expo project. With the help of this config plugin, the native file (<strong>ios/Podfile</strong>) will update anytime the <code>npx expo prebuild</code> command runs, whether you run it manually or using Expo Build). This example is an ideal use case when an existing mod plugin cannot edit and update a file inside a native directory.</p>
+<p>Following the directory structure and steps to create a config plugin (steps 3, 4, and 5) from <a href="#/doc/expo/config-plugins/plugins@creating-a-config-plugin">Creating a config plugin section</a>, let&#39;s assume this config plugin is created inside the <strong>plugins</strong> directory of your Expo project:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>withCustomPodfile.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">
+
+
+
+<span class="hljs-keyword">const</span> <span class="hljs-attr">withCustomPodfile</span>: <span class="hljs-title class_">ConfigPlugin</span> = <span class="hljs-function"><span class="hljs-params">config</span> =&gt;</span> {
+  <span class="hljs-keyword">return</span> <span class="hljs-title function_">withDangerousMod</span>(config, [
+    <span class="hljs-string">&#x27;ios&#x27;</span>,
+    <span class="hljs-keyword">async</span> config =&gt; {
+      <span class="hljs-keyword">const</span> podfilePath = path.<span class="hljs-title function_">join</span>(config.<span class="hljs-property">modRequest</span>.<span class="hljs-property">platformProjectRoot</span>, <span class="hljs-string">&#x27;Podfile&#x27;</span>);
+
+      <span class="hljs-keyword">try</span> {
+        <span class="hljs-keyword">let</span> contents = <span class="hljs-keyword">await</span> fs.<span class="hljs-title function_">readFile</span>(podfilePath, <span class="hljs-string">&#x27;utf8&#x27;</span>);
+        <span class="hljs-keyword">const</span> projectName = <span class="hljs-title class_">IOSConfig</span>.<span class="hljs-property">XcodeUtils</span>.<span class="hljs-title function_">getProjectName</span>(config.<span class="hljs-property">modRequest</span>.<span class="hljs-property">projectRoot</span>);
+
+        contents = <span class="hljs-title function_">addCustomPod</span>(contents, projectName);
+        <span class="hljs-keyword">await</span> fs.<span class="hljs-title function_">writeFile</span>(podfilePath, contents);
+
+        <span class="hljs-variable language_">console</span>.<span class="hljs-title function_">log</span>(<span class="hljs-string">&#x27;✅ Successfully added custom pod to Podfile&#x27;</span>);
+      } <span class="hljs-keyword">catch</span> (error) {
+        <span class="hljs-variable language_">console</span>.<span class="hljs-title function_">warn</span>(<span class="hljs-string">&#x27;⚠️ Podfile not found, skipping modification&#x27;</span>);
+      }
+
+      <span class="hljs-keyword">return</span> config;
+    },
+  ]);
+};
+
+<span class="hljs-keyword">function</span> <span class="hljs-title function_">addCustomPod</span>(<span class="hljs-params"><span class="hljs-attr">contents</span>: <span class="hljs-built_in">string</span>, <span class="hljs-attr">projectName</span>: <span class="hljs-built_in">string</span></span>): <span class="hljs-built_in">string</span> {
+  <span class="hljs-keyword">if</span> (contents.<span class="hljs-title function_">includes</span>(<span class="hljs-string">&quot;pod &#x27;Alamofire&#x27;&quot;</span>)) {
+    <span class="hljs-variable language_">console</span>.<span class="hljs-title function_">log</span>(<span class="hljs-string">&#x27;Alamofire pod already exists, skipping&#x27;</span>);
+    <span class="hljs-keyword">return</span> contents;
+  }
+
+  <span class="hljs-keyword">const</span> targetRegex = <span class="hljs-keyword">new</span> <span class="hljs-title class_">RegExp</span>(
+    <span class="hljs-string">`(target [&#x27;&quot;]<span class="hljs-subst">${projectName}</span>[&#x27;&quot;] do[\\s\\S]*?use_expo_modules!)`</span>,
+    <span class="hljs-string">&#x27;m&#x27;</span>
+  );
+
+  <span class="hljs-keyword">return</span> contents.<span class="hljs-title function_">replace</span>(targetRegex, <span class="hljs-string">`$1\n  pod &#x27;Alamofire&#x27;, &#x27;~&gt; 5.6&#x27;`</span>);
+}</code></pre></div></figure>
+<p>In the example above, the plugin <strong>withCustomPodfile</strong> will add a CocoaPod dependency automatically to your project&#39;s native <strong>ios/Podfile</strong> during the prebuild process. It uses <code>withDangerousMod</code> to provide access to the native file system directly and run after the native project is generated, but before any CocoaPod dependency is installed.</p>
+<p>The <strong>Podfile</strong> requires direct text manipulation, which is done using a regex pattern inside <code>addCustomMod</code> function. This process also requires that the CocoaPod dependency is inserted into the <strong>Podfile</strong> at a specific location, which is after the <code>use_expo_modules!</code> statement.</p>
+<h2 id="withdangerousmod-syntax-and-requirements"><code>withDangerousMod</code> syntax and requirements</h2>
+<p>Using <code>withDangerousMod</code> requires certain parameters:</p>
+<ol>
+<li>A native platform (<strong>android</strong> or <strong>ios</strong>)</li>
+<li>An asynchronous function that receives <code>config</code> object with file system access</li>
+<li>Relative file name/path to access inside the native directory</li>
+<li>Reading the existing file, modifying its contents, and writing back to the file</li>
+<li>(Optional) Log custom messages for success and failure state when a plugin executes during the prebuild process</li>
+</ol>
+<p>The code snippet below provides a skeleton of the required field and how the config plugin can be structured when using <code>withDangerousMod</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">
+
+
+
+<span class="hljs-keyword">const</span> <span class="hljs-attr">myPlugin</span>: <span class="hljs-title class_">ConfigPlugin</span> = <span class="hljs-function"><span class="hljs-params">config</span> =&gt;</span> {
+  <span class="hljs-keyword">return</span> <span class="hljs-title function_">withDangerousMod</span>(config, [
+    <span class="hljs-string">&#x27;platform&#x27;</span>, <span class="hljs-comment">// 1. &quot;ios&quot; | &quot;android&quot;</span>
+    <span class="hljs-keyword">async</span> config =&gt; {
+      <span class="hljs-comment">// 2. Async modification function</span>
+      <span class="hljs-comment">// 3. Build file paths</span>
+      <span class="hljs-keyword">const</span> filePath = path.<span class="hljs-title function_">join</span>(
+        config.<span class="hljs-property">modRequest</span>.<span class="hljs-property">platformProjectRoot</span>, <span class="hljs-comment">// Native project root</span>
+        <span class="hljs-string">&#x27;path/to/file&#x27;</span> <span class="hljs-comment">// Relative path to target file</span>
+      );
+
+      <span class="hljs-keyword">try</span> {
+        <span class="hljs-comment">// 4. Read existing file, modify its contents, and write back to the file</span>
+        <span class="hljs-keyword">let</span> contents = <span class="hljs-keyword">await</span> fs.<span class="hljs-title function_">readFile</span>(filePath, <span class="hljs-string">&#x27;utf8&#x27;</span>);
+        contents = <span class="hljs-title function_">modifyContents</span>(contents);
+        <span class="hljs-keyword">await</span> fs.<span class="hljs-title function_">writeFile</span>(filePath, contents);
+
+        <span class="hljs-comment">// 5. Log success and failure states</span>
+        <span class="hljs-variable language_">console</span>.<span class="hljs-title function_">log</span>(<span class="hljs-string">&#x27;✅ Successfully modified file&#x27;</span>);
+      } <span class="hljs-keyword">catch</span> (error) {
+        <span class="hljs-variable language_">console</span>.<span class="hljs-title function_">warn</span>(<span class="hljs-string">&#x27;⚠️ File modification failed:&#x27;</span>, error);
+      }
+
+      <span class="hljs-keyword">return</span> config;
+    },
+  ]);
+};
+
+<span class="hljs-comment">// Helper functions to use regex to modify the contents of the file</span></code></pre></div></figure>
+<h3 id="available-paths-in-config-plugins">Available paths in config plugins</h3>
+<p>Different path properties available in config plugins:</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Path</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>config.modRequest.projectRoot</code></td>
+<td><code>string</code></td>
+<td>Universal app project root directory where <strong>package.json</strong> is located. Used for resolving assets, reading <strong>package.json</strong>, and cross-platform operations. Always verify the directory exists and contains <strong>package.json</strong>.</td>
+</tr>
+<tr>
+<td><code>config.modRequest.platformProjectRoot</code></td>
+<td><code>string</code></td>
+<td>Platform-specific project root (<strong>projectRoot/android</strong> or <strong>projectRoot/ios</strong>). Used for platform-specific file operations like modifying native configuration files. Ensure the platform directory exists relative to main <code>projectRoot</code>.</td>
+</tr>
+<tr>
+<td><code>config.modRequest.projectName</code></td>
+<td><code>string</code></td>
+<td>[iOS only] Project name component for constructing iOS file paths (for example, <strong>projectRoot/ios/[projectName]/</strong>). Used for iOS-specific file path construction. Only available on iOS platform and should match the actual Xcode project structure.</td>
+</tr>
+<tr>
+<td><code>config.modRequest.introspect</code></td>
+<td><code>boolean</code></td>
+<td>Whether running in introspection mode where no filesystem changes should be made. When <code>true</code>, mods should only read and analyze files without writing. Used during config analysis and validation.</td>
+</tr>
+<tr>
+<td><code>config.modRequest.ignoreExistingNativeFiles</code></td>
+<td><code>boolean</code></td>
+<td>Whether to ignore existing native files. Used in template-based operations, particularly affects entitlements and other native configs to ensure alignment with prebuild expectations.</td>
+</tr>
+</tbody></table></div>
+<h2 id="considerations-when-using-a-dangerous-mod">Considerations when using a dangerous mod</h2>
+<p>When using a dangerous mod, consider the following:</p>
+<ul>
+<li><strong>Limited idempotency guarantees.</strong> Unlike standard mods, which are generally idempotent and can work without the clean flag, dangerous mods are <strong>rarely guaranteed to be idempotent</strong>. This means running the same dangerous mod multiple times may produce different results or cause issues.</li>
+<li><strong>Experimental and prone to breakage.</strong> Be careful using <code>withDangerousMod</code> as it is subject to change in the future. Test your dangerous mods thoroughly with each SDK release, as they are especially prone to breakage when native template changes occur.</li>
+<li><strong>Use standard mod plugins</strong>. Both Android and iOS offer mod plugins like <code>withAndroidManifest</code>, <code>withPodfile</code>, <code>withPodfileProperties</code>, and so on, to perform common native file modifications. Only use a dangerous mod when there are no <a href="#/doc/expo/config-plugins/mods@available-mod-plugins">existing mod plugins available</a> to handle your use case.</li>
+<li><strong>Don&#39;t assume a file exists</strong>. Always check the native directory and the relative path to the file before reading/writing to it. If you use CNG, you can always run <code>npx expo prebuild</code> to create native <strong>android</strong> and <strong>ios</strong> directories and manually verify a file&#39;s existence.</li>
+<li><strong>Dangerous mods run first</strong>. The order in which dangerous mods execute might be unreliable since dangerous mods run before other modifiers. This can affect the predictability of your build process and may cause conflicts with other modifications.</li>
+</ul>
