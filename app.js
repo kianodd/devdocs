@@ -3,7 +3,7 @@
    Courses are built at build time (data/catalog.json). Progress, downloads,
    settings live locally in the browser. */
 
-const APP_VERSION = '2.1.0';
+const APP_VERSION = '2.2.0';
 const $ = (s, el) => (el || document).querySelector(s);
 const $$ = (s, el) => [...(el || document).querySelectorAll(s)];
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -28,6 +28,7 @@ const I = {
   globe: '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="8.6" stroke="currentColor" stroke-width="1.8"/><path d="M3.4 12h17.2M12 3.4c2.5 2.4 3.8 5.3 3.8 8.6s-1.3 6.2-3.8 8.6c-2.5-2.4-3.8-5.3-3.8-8.6S9.5 5.8 12 3.4Z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>',
   speaker: '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 9.5v5h3.4L12 18.6V5.4L7.4 9.5H4Z" fill="currentColor"/><path d="M15.5 9.2a4 4 0 0 1 0 5.6M18 6.8a7.4 7.4 0 0 1 0 10.4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>',
   refresh: '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.3-5.6M20 3.5V8h-4.5" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  target: '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="7.5" stroke="currentColor" stroke-width="1.9"/><circle cx="12" cy="12" r="2.6" fill="currentColor"/></svg>',
   trash: '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 6.5h16M9.5 6V4.8A.8.8 0 0 1 10.3 4h3.4a.8.8 0 0 1 .8.8V6M6.5 6.5l.8 12.2a1.8 1.8 0 0 0 1.8 1.7h5.8a1.8 1.8 0 0 0 1.8-1.7l.8-12.2" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>',
   close: '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" stroke="currentColor" stroke-width="2.1" stroke-linecap="round"/></svg>',
   upload: '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 15V4.5M7.5 8.5 12 4l4.5 4.5M4.5 16.5v1.6A1.9 1.9 0 0 0 6.4 20h11.2a1.9 1.9 0 0 0 1.9-1.9v-1.6" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>',
@@ -69,6 +70,10 @@ const STR = {
     listeningNow: 'در حال خواندن فصل', estTime: 'زمان مطالعه',
     downloads: 'دانلودها', uiFontSize: 'اندازه فونت رابط کاربری', uiFsNames: ['ریز', 'معمولی', 'درشت'],
     changelog: 'لیست تغییرات', swReset: 'حذف سرویس‌ورکر و بارگذاری مجدد',
+    focusMode: 'تمرکز', autoCache: 'کش خودکار فصل‌های خوانده‌شده', verifyDl: 'بررسی سلامت دانلودها',
+    verifyOk: 'همه دانلودها سالم‌اند', verifyBad: 'فایل ناقص پیدا شد', repair: 'تعمیر دانلودها',
+    repairing: 'در حال تعمیر…', repaired: 'تعمیر کامل شد', checkingDl: 'در حال بررسی دانلودها…',
+    dlQueue: 'در حال دانلود', dlOf: 'از', courseComplete: 'دوره کامل شد', verifyNote: 'فصل‌ها و تصاویرشان در حافظه آفلاین بررسی می‌شوند.',
     swResetNote: 'اگر برنامه گیر کرد یا نسخه قدیم ماند، این دکمه سرویس‌ورکر و کش پوسته را پاک می‌کند و برنامه را از سرور تازه می‌گیرد. پیشرفت مطالعه و دانلودها پاک نمی‌شوند.',
     exportZip: 'خروجی ZIP از دانلودها', importZip: 'وارد کردن ZIP دانلودها',
     select: 'انتخاب', cancelSel: 'لغو انتخاب', deleteSelected: 'حذف انتخاب‌شده‌ها',
@@ -108,6 +113,10 @@ const STR = {
     listeningNow: 'Reading chapter', estTime: 'Reading time',
     downloads: 'Downloads', uiFontSize: 'Interface font size', uiFsNames: ['Small', 'Default', 'Large'],
     changelog: 'Changelog', swReset: 'Remove service worker & reload',
+    focusMode: 'Focus', autoCache: 'Auto-cache chapters I read', verifyDl: 'Verify downloads',
+    verifyOk: 'All downloads are intact', verifyBad: 'incomplete file(s) found', repair: 'Repair downloads',
+    repairing: 'Repairing…', repaired: 'Repair complete', checkingDl: 'Verifying downloads…',
+    dlQueue: 'Downloading', dlOf: 'of', courseComplete: 'Course complete', verifyNote: 'Chapters and their images are checked in offline storage.',
     swResetNote: 'If the app is stuck on an old version, this removes the service worker and shell cache and refetches the app. Study progress and downloads are kept.',
     exportZip: 'Export downloads as ZIP', importZip: 'Import downloads ZIP',
     select: 'Select', cancelSel: 'Cancel selection', deleteSelected: 'Delete selected',
@@ -141,6 +150,7 @@ if (!progress || !progress.done) {
   localStorage.setItem(PKEY2, JSON.stringify(progress));
 }
 if (settings.uiSize === undefined) { settings.uiSize = 1; localStorage.setItem(SKEY2, JSON.stringify(settings)); }
+if (settings.autoCache === undefined) { settings.autoCache = false; localStorage.setItem(SKEY2, JSON.stringify(settings)); }
 let downloads = loadJSON(DKEY, { keys: {} });
 // normalize: values are {at, size}; older entries were plain timestamps
 for (const k of Object.keys(downloads.keys)) {
@@ -461,6 +471,7 @@ function vSettings() {
   <div class="group">
     <div class="set-row"><span class="lbl">${T('downloadedChapters')}</span><span class="pct" id="dl-count" data-dl-count="all">${num(dlCount)}</span></div>
     <div class="set-row"><span class="lbl">${T('storageUsed')}</span><span class="pct" id="storage-est">…</span></div>
+    <div class="set-row"><span class="lbl">${T('autoCache')}</span>${segHTML('autoCache', [{ v: '1', l: settings.lang === 'en' ? 'On' : 'روشن' }, { v: '0', l: settings.lang === 'en' ? 'Off' : 'خاموش' }], settings.autoCache ? '1' : '0')}</div>
     <button type="button" class="row btn-danger" id="del-downloads" style="justify-content:center">${T('deleteAllDownloads')}</button>
   </div>
   <div class="section-label">${T('appSec')}</div>
@@ -485,6 +496,7 @@ function vSettings() {
     else if (name === 'fontSize') settings.fontSize = Number(val);
     else if (name === 'uiSize') settings.uiSize = Number(val);
     else if (name === 'density') settings.density = val;
+    else if (name === 'autoCache') settings.autoCache = val === '1';
     saveSettings(); applySettings();
     $$('button', seg).forEach((x) => x.classList.toggle('on', x === b));
   }));
@@ -548,20 +560,59 @@ function updateDlChrome() {
   });
   refreshDlButtons();
 }
+/* Background download queue: bulk downloads keep running while the user
+   navigates, with a floating progress pill and pause/resume. */
+let dlQueue = null; // { todo, idx, done, failed, paused, running, btns:Set }
+async function ensureSearchIndexCached(courseId) {
+  try {
+    const cache = await caches.open(OFFLINE_CACHE);
+    const url = new URL('data/search-' + courseId + '.json', location.href).href;
+    if (await cache.match(url)) return;
+    const r = await fetch('data/search-' + courseId + '.json');
+    if (r.ok) await cache.put(url, r);
+  } catch {}
+}
+function queuePill() {
+  let pill = $('#dl-queue');
+  if (!dlQueue) { if (pill) pill.remove(); return; }
+  if (!pill) {
+    pill = document.createElement('div');
+    pill.id = 'dl-queue';
+    pill.innerHTML = `<span class="q-ic">${I.download}</span><span class="q-txt"></span><span class="q-bar"><i></i></span><button type="button" class="q-btn" aria-label="pause"></button>`;
+    document.body.appendChild(pill);
+    pill.querySelector('.q-btn').onclick = () => { dlQueue.paused = !dlQueue.paused; queuePill(); };
+  }
+  const q = dlQueue;
+  pill.querySelector('.q-txt').textContent = `${T('dlQueue')}: ${num(q.done)} ${T('dlOf')} ${num(q.total)}`;
+  pill.querySelector('.q-bar i').style.width = (q.total ? Math.round((q.done / q.total) * 100) : 0) + '%';
+  pill.querySelector('.q-btn').innerHTML = q.paused ? I.play : I.pause;
+  pill.classList.toggle('paused', q.paused);
+}
 async function downloadScope(keys, btn) {
-  const todo = keys.filter((k) => !isDownloaded(k));
-  if (!todo.length) { toast(T('dlDoneToast')); return; }
-  if (btn) btn.classList.add('busy');
-  let failed = 0, i = 0;
+  const fresh = keys.filter((k) => !isDownloaded(k) && !(dlQueue && dlQueue.todo.includes(k)));
+  if (!fresh.length && !dlQueue) { toast(T('dlDoneToast')); return; }
+  if (!dlQueue) dlQueue = { todo: [], idx: 0, done: 0, failed: 0, total: 0, paused: false, running: false, btns: new Set(), courses: new Set() };
+  const q = dlQueue;
+  for (const k of fresh) { q.todo.push(k); q.total++; q.courses.add(k.split(':')[0]); }
+  if (btn) { q.btns.add(btn); btn.classList.add('busy'); }
+  queuePill();
+  if (q.running) return;
+  q.running = true;
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   async function worker() {
-    while (i < todo.length) {
-      const k = todo[i++];
-      try { const size = await downloadChapter(k); downloads.keys[k] = { at: Date.now(), size }; saveDownloads(); updateDlChrome(); }
-      catch { failed++; }
+    while (q.idx < q.todo.length) {
+      while (q.paused) await sleep(350);
+      const k = q.todo[q.idx++];
+      try { const size = await downloadChapter(k); downloads.keys[k] = { at: Date.now(), size }; saveDownloads(); q.done++; }
+      catch { q.failed++; q.done++; }
+      updateDlChrome(); queuePill();
     }
   }
   await Promise.all([worker(), worker(), worker()]);
-  if (btn) btn.classList.remove('busy');
+  const failed = q.failed, courses = [...q.courses];
+  q.btns.forEach((b) => b.classList.remove('busy'));
+  dlQueue = null; queuePill();
+  courses.forEach((c) => ensureSearchIndexCached(c));
   toast(failed ? T('dlError') : T('dlDoneToast'));
   const y = window.scrollY; router(); window.scrollTo(0, y);
 }
@@ -594,7 +645,7 @@ function bindDlButtons() {
     if (isDownloaded(key)) { await removeDownloads([key]); }
     else {
       b.classList.add('busy');
-      try { const size = await downloadChapter(key); downloads.keys[key] = { at: Date.now(), size }; saveDownloads(); toast(T('dlDoneToast')); }
+      try { const size = await downloadChapter(key); downloads.keys[key] = { at: Date.now(), size }; saveDownloads(); ensureSearchIndexCached(key.split(':')[0]); toast(T('dlDoneToast')); }
       catch { toast(T('dlError')); }
       b.classList.remove('busy');
     }
@@ -764,6 +815,7 @@ function vDownloads() {
     <button type="button" class="row" id="dl-export"><span class="row-ic">${I.share}</span><span class="grow"><span class="ttl">${T('exportZip')}</span></span><span class="chev">${I.chev}</span></button>
     <button type="button" class="row" id="dl-import"><span class="row-ic">${I.upload}</span><span class="grow"><span class="ttl">${T('importZip')}</span></span><span class="chev">${I.chev}</span></button>
     <button type="button" class="row" id="dl-select"><span class="row-ic">${I.list}</span><span class="grow"><span class="ttl">${dlSelectMode ? T('cancelSel') : T('select')}</span></span><span class="chev">${I.chev}</span></button>
+    ${keys.length ? `<button type="button" class="row" id="dl-verify"><span class="row-ic">${I.refresh}</span><span class="grow"><span class="ttl">${T('verifyDl')}</span></span><span class="chev">${I.chev}</span></button>` : ''}
     ${keys.length ? `<button type="button" class="row btn-danger" id="dl-delete-all" style="justify-content:center">${T('deleteAllDownloads')}</button>` : ''}
   </div>
   <input type="file" id="dl-file" accept=".zip,application/zip" hidden>
@@ -780,6 +832,25 @@ function vDownloads() {
       </div>`).join('')}</div>`).join('')}`;
   setupLargeTitle();
   $('#dl-export').onclick = exportDownloadsZip;
+  const vBtn = $('#dl-verify');
+  if (vBtn) vBtn.onclick = async () => {
+    vBtn.classList.add('busy');
+    const broken = await verifyDownloads();
+    vBtn.classList.remove('busy');
+    if (!broken.length) { toast('✓ ' + T('verifyOk')); return; }
+    openSheet(`<h3>${T('verifyDl')}</h3><p class="sheet-sub">${num(broken.length)} ${T('verifyBad')}</p><p class="sheet-sub">${T('verifyNote')}</p>
+    <div class="sheet-btns"><button type="button" class="btn-primary" id="dl-repair">${T('repair')}</button>
+    <button type="button" class="btn-ghost" id="dl-repair-x">${T('cancel')}</button></div>`);
+    $('#dl-repair-x').onclick = closeSheet;
+    $('#dl-repair').onclick = async (e) => {
+      const b = e.currentTarget; b.classList.add('busy'); b.textContent = T('repairing');
+      for (const k of broken) {
+        try { const size = await downloadChapter(k); downloads.keys[k] = { at: Date.now(), size }; } catch {}
+      }
+      saveDownloads();
+      closeSheet(); toast('✓ ' + T('repaired')); vDownloads();
+    };
+  };
   const fileInput = $('#dl-file');
   $('#dl-import').onclick = () => fileInput.click();
   fileInput.onchange = async () => { if (fileInput.files[0]) { try { await importDownloadsZip(fileInput.files[0]); } catch { toast(T('importError')); } vDownloads(); } };
@@ -808,6 +879,22 @@ function vDownloads() {
       if (changed) { saveDownloads(); if (location.hash === '#/downloads' && !dlSelectMode) vDownloads(); }
     } catch {}
   })();
+}
+async function verifyDownloads() {
+  const keys = Object.keys(downloads.keys).filter((k) => chapByKey.has(k));
+  const cache = await caches.open(OFFLINE_CACHE);
+  const broken = [];
+  for (const k of keys) {
+    const e = chapByKey.get(k);
+    const res = await cache.match(new URL(e.ch.file, location.href).href);
+    if (!res) { broken.push(k); continue; }
+    const text = await res.text();
+    const imgs = [...new Set([...text.matchAll(/src="((?:assets)\/[^"]+)"/g)].map((m) => m[1]))];
+    let bad = false;
+    for (const src of imgs) { if (!(await cache.match(new URL(src, location.href).href))) { bad = true; break; } }
+    if (bad) broken.push(k);
+  }
+  return broken;
 }
 async function exportDownloadsZip() {
   const keys = Object.keys(downloads.keys).filter((k) => chapByKey.has(k));
@@ -864,6 +951,7 @@ async function importDownloadsZip(file) {
 
 /* ---------------- changelog ---------------- */
 const CHANGELOG = [
+  { v: '2.2.0', fa: ['حالت تمرکز در صفحه مطلب: پاراگراف‌های اطراف کم‌نور می‌شوند', 'بررسی سلامت دانلودها و تعمیر فایل‌های ناقص از صفحه دانلودها', 'کش خودکار فصل‌های خوانده‌شده (از تنظیمات، بخش آفلاین)', 'صف دانلود در پس‌زمینه با نوار پیشرفت و دکمه مکث/ادامه', 'دانلودها همراه تصاویر فصل کامل می‌شوند و ایندکس جستجوی هر دوره هم آفلاین ذخیره می‌شود تا جستجو بدون اینترنت کار کند', 'جشن کانفتی وقتی یک دوره کامل تمام می‌شود'], en: ['Focus mode in chapters: surrounding paragraphs dim', 'Verify downloads and repair incomplete files from the Downloads page', 'Auto-cache chapters you read (Settings → Offline)', 'Background download queue with a progress pill and pause/resume', 'Downloads include chapter images, and each course search index is stored offline too', 'Confetti celebration when you finish a whole course'] },
   { v: '2.1.0', fa: ['دوره کامل TypeORM اضافه شد (۷۵ فصل)', 'صفحه «دانلودها» با حذف تکی، انتخابی و کلی + خروجی و ورودی ZIP', 'جستجو به سبک تلگرام: دوره‌ها دایره‌ای بالا، نتایج متنی پایین', 'آیکون واقعی هر دوره (NestJS، Prisma، TypeORM) نمایش داده می‌شود', 'خواندن صوتی (TTS) حذف شد', 'اندازه فونت رابط کاربری اضافه شد', 'صفحه «لیست تغییرات» در تنظیمات', 'دکمه حذف سرویس‌ورکر و بارگذاری مجدد در تنظیمات', 'بررسی به‌روزرسانی: وقتی برنامه به‌روز است دیگر مودال نمی‌آید', 'کدهای ترمینال رنگی شدند و تگ‌های اضافی در داک Prisma اصلاح شد', 'رفع مشکل کم‌نشدن حجم بعد از حذف دانلودها و سریع‌شدن شمارنده دانلود', 'ترنزیشن عنوان بزرگ نرم‌تر شد؛ توست تیره اصلاح شد؛ منوی بالای مطلب ثابت شد'], en: ['Complete TypeORM course added (75 chapters)', 'Downloads page with single, selective and delete-all, plus ZIP export/import', 'Telegram-style search: course stories on top, text results below', 'Real course logos (NestJS, Prisma, TypeORM)', 'Text-to-speech removed', 'Interface font size setting added', 'Changelog page in Settings', 'Remove-service-worker & reload button in Settings', 'Update check no longer shows the modal when up to date', 'Colored terminal code blocks; stray tags in Prisma docs fixed', 'Storage now actually frees up after deleting downloads; faster download counters', 'Smoother large-title transition; dark toast fixed; doc toolbar pinned'] },
   { v: '2.0.3', fa: ['به‌روزرسانی‌ها فوری اعمال می‌شوند: پوسته اپ در هر بار اجرا از شبکه تازه می‌شود'], en: ['Updates apply instantly: the app shell refreshes from the network on every load'] },
   { v: '2.0.2', fa: ['اعمال مطمئن‌تر به‌روزرسانی با دکمه آپدیت (رفرش پوسته)', 'رفع چند اشکال نمایشی نسخه قبل'], en: ['More reliable in-app updates (shell refresh)', 'Display fixes from the previous release'] },
@@ -944,9 +1032,29 @@ async function registerSW() {
 
 /* ---------------- doc view ---------------- */
 let docScrollFn = null;
+function confetti() {
+  if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  const c = document.createElement('canvas');
+  c.className = 'confetti-canvas';
+  document.body.appendChild(c);
+  const x = c.getContext('2d');
+  c.width = innerWidth; c.height = innerHeight;
+  const ps = Array.from({ length: 90 }, () => ({ x: Math.random() * c.width, y: -20 - Math.random() * 200, w: 5 + Math.random() * 6, h: 8 + Math.random() * 8, vy: 2 + Math.random() * 3, vx: -1 + Math.random() * 2, r: Math.random() * 3, col: ['#0A84FF', '#34C759', '#FF9F0A', '#BF5AF2', '#FF453A'][Math.floor(Math.random() * 5)] }));
+  let frames = 0;
+  (function tick() {
+    x.clearRect(0, 0, c.width, c.height);
+    for (const p of ps) { p.x += p.vx; p.y += p.vy; p.r += 0.05; x.save(); x.translate(p.x, p.y); x.rotate(p.r); x.fillStyle = p.col; x.fillRect(-p.w / 2, -p.h / 2, p.w, p.h); x.restore(); }
+    if (++frames < 130) requestAnimationFrame(tick); else c.remove();
+  })();
+}
 function setDone(key, on) {
+  const entry = chapByKey.get(key);
+  const before = entry ? courseStats(entry.course).pct : 0;
   if (on) progress.done[key] = Date.now(); else delete progress.done[key];
   saveProgress();
+  if (on && entry && before < 100 && courseStats(entry.course).pct >= 100) {
+    setTimeout(() => { confetti(); toast('🎉 ' + T('courseComplete') + ' — ' + entry.course.title); }, 300);
+  }
 }
 
 function vDoc(courseId, slugFrag) {
@@ -978,6 +1086,7 @@ function vDoc(courseId, slugFrag) {
     <button type="button" id="tool-mark">${I.check}<span>${T('markRead')}</span></button>
     <button type="button" id="tool-tr">${I.globe}<span>${T('translateBtn')}</span></button>
     <button type="button" id="tool-dl">${I.download}<span>${T('downloadAll').split(' ')[0] === 'دانلود' ? 'آفلاین' : 'Offline'}</span></button>
+    <button type="button" id="tool-focus">${I.target}<span>${T('focusMode')}</span></button>
   </div>
   <div class="article" id="article" dir="ltr" lang="en"><div class="empty">…</div></div>
   <div class="mark-zone">
@@ -1010,7 +1119,7 @@ function vDoc(courseId, slugFrag) {
     if (isDownloaded(key)) { await removeDownloads([key]); syncDl(); }
     else {
       toolDl.classList.add('busy');
-      try { const size = await downloadChapter(key); downloads.keys[key] = { at: Date.now(), size }; saveDownloads(); toast(T('dlDoneToast')); }
+      try { const size = await downloadChapter(key); downloads.keys[key] = { at: Date.now(), size }; saveDownloads(); ensureSearchIndexCached(courseId); toast(T('dlDoneToast')); }
       catch { toast(T('dlError')); }
       toolDl.classList.remove('busy'); syncDl();
     }
@@ -1108,10 +1217,29 @@ function vDoc(courseId, slugFrag) {
   }
   $('#tool-tr').onclick = () => { if (translate.active) translateRestore(); else translateRun(); };
 
+  /* ---- focus mode: dim everything outside the centre band ---- */
+  let focusIO = null;
+  const toolFocus = $('#tool-focus');
+  function setFocus(on) {
+    article.classList.toggle('focus-on', on);
+    toolFocus.classList.toggle('on', on);
+    if (focusIO) { focusIO.disconnect(); focusIO = null; }
+    if (on) {
+      focusIO = new IntersectionObserver((es) => { for (const e of es) e.target.classList.toggle('dim', !e.isIntersecting); }, { rootMargin: '-38% 0px -38% 0px' });
+      $$('#article p, #article li, #article h2, #article h3, #article h4, #article blockquote').forEach((el) => focusIO.observe(el));
+    } else {
+      $$('#article .dim').forEach((el) => el.classList.remove('dim'));
+    }
+  }
+  toolFocus.onclick = () => setFocus(!article.classList.contains('focus-on'));
+
   /* ---- load chapter ---- */
-  docCleanup = () => { docScrollFn = null; rp.style.opacity = '0'; };
+  docCleanup = () => { docScrollFn = null; rp.style.opacity = '0'; if (focusIO) { focusIO.disconnect(); focusIO = null; } };
   fetch(ch.file).then((r) => { if (!r.ok) throw new Error('load'); return r.text(); }).then((html) => {
     article.innerHTML = html;
+    if (settings.autoCache && !isDownloaded(key)) {
+      downloadChapter(key).then((size) => { downloads.keys[key] = { at: Date.now(), size }; saveDownloads(); syncDl(); updateDlChrome(); ensureSearchIndexCached(courseId); }).catch(() => {});
+    }
     requestAnimationFrame(() => {
       if (frag) { const t = document.getElementById(frag); if (t) { t.scrollIntoView(); return; } }
       const last = progress.last;
