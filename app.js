@@ -3,7 +3,7 @@
    Courses are built at build time (data/catalog.json). Progress, downloads,
    settings live locally in the browser. */
 
-const APP_VERSION = '2.6.0';
+const APP_VERSION = '2.6.1';
 const $ = (s, el) => (el || document).querySelector(s);
 const $$ = (s, el) => [...(el || document).querySelectorAll(s)];
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -424,15 +424,34 @@ function headerHTML({ title, sub, back, latin }) {
   <div class="lt-wrap"><h1 class="large-title ${latin ? 'lat' : ''}">${esc(title)}</h1>${sub ? `<p class="large-sub">${esc(sub)}</p>` : ''}</div>`;
 }
 let ltObserver = null;
+let ltEls = null; // {bar, wrap} — large title fades out as it slides under the glass top bar
+let ltRaf = 0, ltListening = false;
+function ltApplyFade() {
+  ltRaf = 0;
+  if (!ltEls || !document.contains(ltEls.wrap)) return;
+  const barBottom = ltEls.bar.getBoundingClientRect().bottom;
+  const r = ltEls.wrap.getBoundingClientRect();
+  const d = barBottom - r.top; // > 0 once the wrap starts sliding under the bar
+  const op = d <= 0 ? 1 : Math.max(0, 1 - d / ((r.height || 60) * 0.65));
+  ltEls.wrap.style.opacity = op.toFixed(3);
+  ltEls.wrap.style.visibility = op <= 0.01 ? 'hidden' : '';
+}
 function setupLargeTitle(backRoute) {
   const bar = $('.topbar');
   const backBtn = bar && $('[data-back]', bar);
   if (backBtn) backBtn.onclick = () => { location.hash = backRoute; };
   if (ltObserver) { ltObserver.disconnect(); ltObserver = null; }
+  ltEls = null;
   if (!bar) return;
   const wrap = $('.lt-wrap');
   if (!wrap) { bar.classList.add('collapsed'); return; }
   bar.classList.remove('collapsed');
+  ltEls = { bar, wrap };
+  if (!ltListening) {
+    ltListening = true;
+    window.addEventListener('scroll', () => { if (!ltRaf) ltRaf = requestAnimationFrame(ltApplyFade); }, { passive: true });
+  }
+  ltApplyFade();
   ltObserver = new IntersectionObserver((es) => {
     for (const e of es) bar.classList.toggle('collapsed', !e.isIntersecting);
   }, { rootMargin: '-54px 0px 0px 0px', threshold: 0 });
@@ -1193,6 +1212,7 @@ async function importDownloadsZip(file) {
 
 /* ---------------- changelog ---------------- */
 const CHANGELOG = [
+  { v: '2.6.1', fa: ['تایتل بزرگ صفحه‌ها هنگام اسکرول، وقتی به نوار بالایی می‌رسد محو و مخفی می‌شود و دیگر از زیر شیشه‌ی نوار دیده نمی‌شود'], en: ['The large page title now fades out and hides as it reaches the top bar, so it no longer shows through the glass bar'] },
   { v: '2.6.0', fa: ['دوره جدید Astro اضافه شد: ۴۲۶ فصل کامل از مستندات رسمی، با همان ترتیب و بخش‌بندی سایت اصلی', 'دوره جدید NestJS SSR اضافه شد: ۱۶ فصل کامل از داک رسمی پکیج nestjs-ssr', 'لینک‌های داخلی هر دو دوره داخل خود اپ باز می‌شوند'], en: ['New course: Astro — all 426 chapters from the official docs, in the site\u2019s own order and sections', 'New course: NestJS SSR — all 16 chapters from the official nestjs-ssr docs', 'Internal links in both courses open inside the app'] },
   { v: '2.5.1', fa: ['دکمه منوی صفحه مطلب به نوار بالا رفت', 'سبک Material حذف شد', 'آکاردئون‌های پیشرفت حالا تک‌فعال‌اند و درست باز و بسته می‌شوند', 'نمایش مدت‌زمان درس در صفحه مطلب اصلاح شد', 'پیش‌نمایش شیشه‌ای در تنظیمات مرتب و بازطراحی شد'], en: ['Chapter menu button moved to the top bar', 'Material style removed', 'Progress accordions are now single-open and toggle reliably', 'Fixed the duration display on chapter pages', 'Glass preview in Settings redesigned'] },
   { v: '2.5.0', fa: ['۵۰ تم رنگی جدید + انتخاب رنگ تأکیدی دلخواه', 'دو سبک طراحی مادر: iOS و Material با سوییچ از تنظیمات', 'شیشه‌ای بودن نوار بالا و پایین قابل تنظیم است و در تنظیمات پیش‌نمایش زنده دارد', 'عکس‌های داخل مطالب تمام‌صفحه باز می‌شوند و با دو انگشت زوم می‌شوند؛ بقیه اپ زوم نمی‌شود', 'کشیدن به پایین (Pull to Refresh) با استایل هماهنگ با تم اپ', 'صفحه پیشرفت: نمودار میله‌ای مطالعه هفتگی و کارت‌های آمار', 'فهرست دوره‌ها در صفحه پیشرفت آکاردئونی شد', 'ابزارهای صفحه مطلب به منوی سه‌نقطه کناری رفت و دکمه «صفحه درس» به آن اضافه شد', 'زمان‌های بالای ۶۰ دقیقه به ساعت نمایش داده می‌شوند', 'آیکون هر دوره کنار نامش در صفحه دوره دیده می‌شود'], en: ['50 new color themes + custom accent color picker', 'Two base design styles: iOS and Material, switchable in Settings', 'Top/bottom bar glass effect is adjustable with a live preview in Settings', 'Article images open fullscreen with pinch zoom; the rest of the app does not zoom', 'Pull to refresh restyled to match the app theme', 'Progress page: weekly study bar chart and stat cards', 'Course lists on the Progress page are now accordions', 'Chapter tools moved to a side three-dot menu with a Course page button', 'Durations over 60 minutes are shown in hours', 'Course icon shown next to its name on the course page'] },
