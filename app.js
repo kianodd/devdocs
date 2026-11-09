@@ -3,7 +3,7 @@
    Courses are built at build time (data/catalog.json). Progress, downloads,
    settings live locally in the browser. */
 
-const APP_VERSION = '2.8.0';
+const APP_VERSION = '2.9.0';
 const $ = (s, el) => (el || document).querySelector(s);
 const $$ = (s, el) => [...(el || document).querySelectorAll(s)];
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -1212,6 +1212,7 @@ async function importDownloadsZip(file) {
 
 /* ---------------- changelog ---------------- */
 const CHANGELOG = [
+  { v: '2.9.0', fa: ['شش دوره جدید از مستندات رسمی: C#‎ با ۱٬۰۰۰ فصل و ASP.NET Core با ۸۷۶ فصل از Microsoft Learn (با نمونه‌کدهای واقعی داخل متن)، Vue با ۱۰۵ فصل، Bootstrap با ۱۰۶ فصل، Go با ۹۱ فصل (از جمله Effective Go) و Node.js با ۷۰ فصل مرجع API', 'در مجموع ۳۰ دوره و ۹٬۴۵۰ فصل'], en: ['Six new courses from official docs: C# (1,000 chapters) and ASP.NET Core (876) from Microsoft Learn with real code samples inlined, Vue (105), Bootstrap (106), Go (91, including Effective Go) and the Node.js API reference (70)', '30 courses and 9,450 chapters in total'] },
   { v: '2.8.0', fa: ['شش دوره جدید از مستندات رسمی MDN اضافه شد: HTML با ۲۵۸ فصل، CSS با ۱٬۲۸۸ فصل، JavaScript با ۱٬۳۴۶ فصل، SVG با ۳۰۷ فصل، XML با ۱۱۷ فصل و Canvas API با ۱۵ فصل — هرکدام با بخش‌های راهنما (Guide) و مرجع (Reference) و به ترتیب خود MDN', 'لینک‌های داخلی MDN بین فصل‌ها و دوره‌ها داخل اپ باز می‌شوند و عکس‌های فصل‌ها هم داخل پکیج آفلاین هر دوره قرار می‌گیرند', 'در مجموع ۲۴ دوره و ۷٬۲۰۲ فصل'], en: ['Six new courses from the official MDN docs: HTML (258 chapters), CSS (1,288), JavaScript (1,346), SVG (307), XML (117) and Canvas API (15) — each with Guide and Reference sections in MDN\u2019s own order', 'MDN internal links between chapters and courses open in-app, and chapter images are included in each course\u2019s offline download', '24 courses and 7,202 chapters in total'] },
   { v: '2.7.0', fa: ['دوره جدید Next.js اضافه شد: ۴۷۹ فصل کامل از مستندات رسمی nextjs.org، با بخش‌های جدا برای App Router و Pages Router و دقیقاً به ترتیب سایت', 'بخش‌های مخصوص هر روتر (AppOnly/PagesOnly) در هر فصل فقط نسخه مربوط به همان روتر را نشان می‌دهند', 'نام فایل کدها حالا روی کارت کد نمایش داده می‌شود'], en: ['New course: Next.js — all 479 chapters from the official nextjs.org docs, with separate App Router and Pages Router sections in the site\u2019s own order', 'Router-specific blocks (AppOnly/PagesOnly) show only the relevant router\u2019s content in each chapter', 'Code cards now show the code file name'] },
   { v: '2.6.1', fa: ['تایتل بزرگ صفحه‌ها هنگام اسکرول، وقتی به نوار بالایی می‌رسد محو و مخفی می‌شود و دیگر از زیر شیشه‌ی نوار دیده نمی‌شود'], en: ['The large page title now fades out and hides as it reaches the top bar, so it no longer shows through the glass bar'] },
