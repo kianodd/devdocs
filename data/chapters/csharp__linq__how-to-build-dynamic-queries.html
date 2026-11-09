@@ -1,0 +1,264 @@
+<p>In most LINQ queries, the general shape of the query is set in code. You might filter items using a <code>where</code> clause, sort the output collection using <code>orderby</code>, group items, or perform some computation. Your code might provide parameters for the filter, or the sort key, or other expressions that are part of the query. However, the overall shape of the query can&#39;t change. In this article, you learn techniques to use <code>IQueryable1?displayProperty=fullName</code> interface and types that implement it to modify the shape of a query at run time.</p>
+<p>You use these techniques to build queries at run time, where some user input or run-time state changes the query methods you want to use as part of the query. You want to edit the query by adding, removing, or modifying query clauses.</p>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>Make sure you add <code>using System.Linq.Expressions;</code> and <code>using static System.Linq.Expressions.Expression;</code> at the top of your <em>.cs</em> file.</p>
+</div></aside>
+<p>Consider code that defines an <code>IQueryable</code> or an <code>IQueryable1</code> against a data source:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">string[] companyNames = [
+    &quot;Consolidated Messenger&quot;, &quot;Alpine Ski House&quot;, &quot;Southridge Video&quot;,
+    &quot;City Power &amp; Light&quot;, &quot;Coho Winery&quot;, &quot;Wide World Importers&quot;,
+    &quot;Graphic Design Institute&quot;, &quot;Adventure Works&quot;, &quot;Humongous Insurance&quot;,
+    &quot;Woodgrove Bank&quot;, &quot;Margie&#x27;s Travel&quot;, &quot;Northwind Traders&quot;,
+    &quot;Blue Yonder Airlines&quot;, &quot;Trey Research&quot;, &quot;The Phone Company&quot;,
+    &quot;Wingtip Toys&quot;, &quot;Lucerne Publishing&quot;, &quot;Fourth Coffee&quot;
+];
+
+// Use an in-memory array as the data source, but the IQueryable could have come
+// from anywhere -- an ORM backed by a database, a web request, or any other LINQ provider.
+IQueryable&lt;string&gt; companyNamesSource = companyNames.AsQueryable();
+var fixedQry = companyNames.OrderBy(x =&gt; x);</code></pre></div></figure>
+<p>Every time you run the preceding code, the same exact query is executed. Let&#39;s learn how to modify the query extend it or modify it. Fundamentally, an <code>IQueryable</code> has two components:</p>
+<ul>
+<li><code>Expression</code>&mdash;a language-agnostic and datasource-agnostic representation of the current query&#39;s components, in the form of an expression tree.</li>
+<li><code>Provider</code>&mdash;an instance of a LINQ provider, which knows how to materialize the current query into a value or set of values.</li>
+</ul>
+<p>In the context of dynamic querying, the provider usually remains the same; the expression tree of the query differs from query to query.</p>
+<p>Expression trees are immutable; if you want a different expression tree&mdash;and thus a different query&mdash;you need to translate the existing expression tree to a new one. The following sections describe specific techniques for querying differently in response to run-time state:</p>
+<ul>
+<li>Use run-time state from within the expression tree</li>
+<li>Call more LINQ methods</li>
+<li>Vary the expression tree passed into the LINQ methods</li>
+<li>Construct an <code>Expression1</code> expression tree using the factory methods at <code>Expression</code></li>
+<li>Add method call nodes to an <code>IQueryable</code>&#39;s expression tree</li>
+<li>Construct strings, and use the <a target="_blank" rel="noopener" href="https://dynamic-linq.net/">Dynamic LINQ library</a></li>
+</ul>
+<p>Each of techniques enables more capabilities, but at a cost of increased complexity.</p>
+<h2 id="use-run-time-state-from-within-the-expression-tree">Use run-time state from within the expression tree</h2>
+<p>The simplest way to query dynamically is to reference the run-time state directly in the query via a closed-over variable, such as <code>length</code> in the following code example:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">    var length = 1;
+    var qry = companyNamesSource
+        .Select(x =&gt; x.Substring(0, length))
+        .Distinct();
+
+    Console.WriteLine(string.Join(&quot;,&quot;, qry));
+    // prints: C, A, S, W, G, H, M, N, B, T, L, F
+
+    length = 2;
+    Console.WriteLine(string.Join(&quot;,&quot;, qry));
+    // prints: Co, Al, So, Ci, Wi, Gr, Ad, Hu, Wo, Ma, No, Bl, Tr, Th, Lu, Fo 
+    </code></pre></div></figure>
+<p>The internal expression tree&mdash;and thus the query&mdash;isn&#39;t modified; the query returns different values only because the value of <code>length</code> changed.</p>
+<h2 id="call-more-linq-methods">Call more LINQ methods</h2>
+<p>Generally, the <a target="_blank" rel="noopener" href="https://github.com/dotnet/runtime/blob/main/src/libraries/System.Linq.Queryable/src/System/Linq/Queryable.cs">built-in LINQ methods</a> at <code>Queryable</code> perform two steps:</p>
+<ul>
+<li>Wrap the current expression tree in a <code>MethodCallExpression</code> representing the method call.</li>
+<li>Pass the wrapped expression tree back to the provider, either to return a value via the provider&#39;s <code>Execute?displayProperty=nameWithType</code> method; or to return a translated query object via the <code>CreateQuery?displayProperty=nameWithType</code> method.</li>
+</ul>
+<p>You can replace the original query with the result of an <code>IQueryable1?displayProperty=nameWithType</code>-returning method, to get a new query. You can use run-time state, as in the following example:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">    // bool sortByLength = /* ... */;
+
+    var qry = companyNamesSource;
+    if (sortByLength)
+    {
+        qry = qry.OrderBy(x =&gt; x.Length);
+    }
+    </code></pre></div></figure>
+<h2 id="vary-the-expression-tree-passed-into-the-linq-methods">Vary the expression tree passed into the LINQ methods</h2>
+<p>You can pass in different expressions to the LINQ methods, depending on run-time state:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">    // string? startsWith = /* ... */;
+    // string? endsWith = /* ... */;
+
+    Expression&lt;Func&lt;string, bool&gt;&gt; expr = (startsWith, endsWith) switch
+    {
+        (&quot;&quot; or null, &quot;&quot; or null) =&gt; x =&gt; true,
+        (_, &quot;&quot; or null) =&gt; x =&gt; x.StartsWith(startsWith),
+        (&quot;&quot; or null, _) =&gt; x =&gt; x.EndsWith(endsWith),
+        (_, _) =&gt; x =&gt; x.StartsWith(startsWith) || x.EndsWith(endsWith)
+    };
+
+    var qry = companyNamesSource.Where(expr);
+    </code></pre></div></figure>
+<p>You might also want to compose the various subexpressions using another library such as <a target="_blank" rel="noopener" href="http://www.albahari.com/nutshell/linqkit.aspx">LinqKit</a>&#39;s <a target="_blank" rel="noopener" href="http://www.albahari.com/nutshell/predicatebuilder.aspx">PredicateBuilder</a>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">    // This is functionally equivalent to the previous example.
+
+    // using LinqKit;
+    // string? startsWith = /* ... */;
+    // string? endsWith = /* ... */;
+
+    Expression&lt;Func&lt;string, bool&gt;&gt;? expr = PredicateBuilder.New&lt;string&gt;(false);
+    var original = expr;
+    if (!string.IsNullOrEmpty(startsWith))
+    {
+        expr = expr.Or(x =&gt; x.StartsWith(startsWith));
+    }
+    if (!string.IsNullOrEmpty(endsWith))
+    {
+        expr = expr.Or(x =&gt; x.EndsWith(endsWith));
+    }
+    if (expr == original)
+    {
+        expr = x =&gt; true;
+    }
+
+    var qry = companyNamesSource.Where(expr);
+    </code></pre></div></figure>
+<h2 id="construct-expression-trees-and-queries-using-factory-methods">Construct expression trees and queries using factory methods</h2>
+<p>In all the examples up to this point, you know the element type at compile time&mdash;<code>string</code>&mdash;and thus the type of the query&mdash;<code>IQueryable&lt;string&gt;</code>. You might add components to a query of any element type, or to add different components, depending on the element type. You can create expression trees from the ground up, using the factory methods at <code>Expression?displayProperty=fullName</code>, and thus tailor the expression at run time to a specific element type.</p>
+<h2 id="constructing-an-expression">Constructing an Expression\</h2>
+<p>When you construct an expression to pass into one of the LINQ methods, you&#39;re actually constructing an instance of <code>Expression1?displayProperty=nameWithType</code>, where <code>TDelegate</code> is some delegate type such as <code>Func&lt;string, bool&gt;</code>, <code>Action</code>, or a custom delegate type.</p>
+<p><code>Expression1?displayProperty=nameWithType</code> inherits from <code>LambdaExpression</code>, which represents a complete lambda expression like the following example:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">Expression&lt;Func&lt;string, bool&gt;&gt; expr = x =&gt; x.StartsWith(&quot;a&quot;);</code></pre></div></figure>
+<p>A <code>LambdaExpression</code> has two components:</p>
+<ol>
+<li>A parameter list&mdash;<code>(string x)</code>&mdash;represented by the <code>Parameters</code> property.</li>
+<li>A body&mdash;<code>x.StartsWith(&quot;a&quot;)</code>&mdash;represented by the <code>Body</code> property.</li>
+</ol>
+<p>The basic steps in constructing an <code>Expression1</code> are as follows:</p>
+<ol>
+<li>Define <code>ParameterExpression</code> objects for each of the parameters (if any) in the lambda expression, using the <code>Parameter</code> factory method.</li>
+</ol>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">    ParameterExpression x = Parameter(typeof(string), &quot;x&quot;);
+    </code></pre></div></figure>
+<ol>
+<li>Construct the body of your <code>LambdaExpression</code>, using the <code>ParameterExpression</code> defined, and the factory methods at <code>Expression</code>. For instance, an expression representing <code>x.StartsWith(&quot;a&quot;)</code> could be constructed like this:</li>
+</ol>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">    Expression body = Call(
+        x,
+        typeof(string).GetMethod(&quot;StartsWith&quot;, [typeof(string)])!,
+        Constant(&quot;a&quot;)
+    );
+    </code></pre></div></figure>
+<ol>
+<li>Wrap the parameters and body in a compile-time-typed Expression, using the appropriate <code>Lambda</code> factory method overload:</li>
+</ol>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">    Expression&lt;Func&lt;string, bool&gt;&gt; expr = Lambda&lt;Func&lt;string, bool&gt;&gt;(body, x);
+    </code></pre></div></figure>
+<p>The following sections describe a scenario in which you might want to construct an <code>Expression1</code> to pass into a LINQ method. It provides a complete example of how to do so using the factory methods.</p>
+<h2 id="construct-a-full-query-at-run-time">Construct a full query at run time</h2>
+<p>You want to write queries that work with multiple entity types:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">record Person(string LastName, string FirstName, DateTime DateOfBirth);
+record Car(string Model, int Year);</code></pre></div></figure>
+<p>For any of these entity types, you want to filter and return only those entities that have a given text inside one of their <code>string</code> fields. For <code>Person</code>, you&#39;d want to search the <code>FirstName</code> and <code>LastName</code> properties:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">string term = /* ... */;
+var personsQry = new List()
+    .AsQueryable()
+    .Where(x =&gt; x.FirstName.Contains(term) || x.LastName.Contains(term));</code></pre></div></figure>
+<p>But for <code>Car</code>, you&#39;d want to search only the <code>Model</code> property:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">string term = /* ... */;
+var carsQry = new List()
+    .AsQueryable()
+    .Where(x =&gt; x.Model.Contains(term));</code></pre></div></figure>
+<p>While you could write one custom function for <code>IQueryable</code> and another for <code>IQueryable</code>, the following function adds this filtering to any existing query, irrespective of the specific element type.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">    // using static System.Linq.Expressions.Expression;
+
+    IQueryable TextFilter(IQueryable source, string term)
+    {
+        if (string.IsNullOrEmpty(term)) { return source; }
+
+        // T is a compile-time placeholder for the element type of the query.
+        Type elementType = typeof(T);
+
+        // Get all the string properties on this specific type.
+        PropertyInfo[] stringProperties = elementType
+            .GetProperties()
+            .Where(x =&gt; x.PropertyType == typeof(string))
+            .ToArray();
+        if (!stringProperties.Any()) { return source; }
+
+        // Get the right overload of String.Contains
+        MethodInfo containsMethod = typeof(string).GetMethod(&quot;Contains&quot;, [typeof(string)])!;
+
+        // Create a parameter for the expression tree:
+        // the &#x27;x&#x27; in &#x27;x =&gt; x.PropertyName.Contains(&quot;term&quot;)&#x27;
+        // The type of this parameter is the query&#x27;s element type
+        ParameterExpression prm = Parameter(elementType);
+
+        // Map each property to an expression tree node
+        IEnumerable expressions = stringProperties
+            .Select(prp =&gt;
+                // For each property, we have to construct an expression tree node like x.PropertyName.Contains(&quot;term&quot;)
+                Call(                  // .Contains(...) 
+                    Property(          // .PropertyName
+                        prm,           // x 
+                        prp
+                    ),
+                    containsMethod,
+                    Constant(term)     // &quot;term&quot; 
+                )
+            );
+
+        // Combine all the resultant expression nodes using ||
+        Expression body = expressions
+            .Aggregate((prev, current) =&gt; Or(prev, current));
+
+        // Wrap the expression body in a compile-time-typed lambda expression
+        Expression&lt;Func&lt;T, bool&gt;&gt; lambda = Lambda&lt;Func&lt;T, bool&gt;&gt;(body, prm);
+
+        // Because the lambda is compile-time-typed (albeit with a generic parameter), we can use it with the Where method
+        return source.Where(lambda);
+    }
+    </code></pre></div></figure>
+<p>Because the <code>TextFilter</code> function takes and returns an <code>IQueryable1</code> (and not just an <code>IQueryable</code>), you can add further compile-time-typed query elements after the text filter.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">    var qry = TextFilter(
+            new List().AsQueryable(),
+            &quot;abcd&quot;
+        )
+        .Where(x =&gt; x.DateOfBirth &lt; new DateTime(2001, 1, 1));
+
+    var qry1 = TextFilter(
+            new List().AsQueryable(),
+            &quot;abcd&quot;
+        )
+        .Where(x =&gt; x.Year == 2010);
+    </code></pre></div></figure>
+<h3 id="add-method-call-nodes-to-the-iqueryable39s-expression-tree">Add method call nodes to the IQueryable&#39;s expression tree</h3>
+<p>If you have an <code>IQueryable</code> instead of an <code>IQueryable1</code>, you can&#39;t directly call the generic LINQ methods. One alternative is to build the inner expression tree as shown in the previous example, and use reflection to invoke the appropriate LINQ method while passing in the expression tree.</p>
+<p>You could also duplicate the LINQ method&#39;s functionality, by wrapping the entire tree in a <code>MethodCallExpression</code> that represents a call to the LINQ method:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">    IQueryable TextFilter_Untyped(IQueryable source, string term)
+    {
+        if (string.IsNullOrEmpty(term)) { return source; }
+        Type elementType = source.ElementType;
+
+        // The logic for building the ParameterExpression and the LambdaExpression&#x27;s body is the same as in the previous example,
+        // but has been refactored into the constructBody function.
+        (Expression? body, ParameterExpression? prm) = constructBody(elementType, term);
+        if (body is null) { return source; }
+
+        Expression filteredTree = Call(
+            typeof(Queryable),
+            &quot;Where&quot;,
+            [elementType],
+            source.Expression,
+            Lambda(body, prm!)
+        );
+
+        return source.Provider.CreateQuery(filteredTree);
+    }
+    </code></pre></div></figure>
+<p>In this case, you don&#39;t have a compile-time <code>T</code> generic placeholder, so you use the <code>Lambda</code> overload that doesn&#39;t require compile-time type information, and which produces a <code>LambdaExpression</code> instead of an <code>Expression1</code>.</p>
+<h3 id="the-dynamic-linq-library">The Dynamic LINQ library</h3>
+<p>Constructing expression trees using factory methods is relatively complex; it&#39;s easier to compose strings. The <a target="_blank" rel="noopener" href="https://dynamic-linq.net/">Dynamic LINQ library</a> exposes a set of extension methods on <code>IQueryable</code> corresponding to the standard LINQ methods at <code>Queryable</code>, and which accept strings in a <a target="_blank" rel="noopener" href="https://dynamic-linq.net/expression-language">special syntax</a> instead of expression trees. The library generates the appropriate expression tree from the string, and can return the resultant translated <code>IQueryable</code>.</p>
+<p>For instance, the previous example could be rewritten as follows:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">    // using System.Linq.Dynamic.Core
+
+    IQueryable TextFilter_Strings(IQueryable source, string term)
+    {
+        if (string.IsNullOrEmpty(term)) { return source; }
+
+        var elementType = source.ElementType;
+
+        // Get all the string property names on this specific type.
+        var stringProperties =
+            elementType.GetProperties()
+                .Where(x =&gt; x.PropertyType == typeof(string))
+                .ToArray();
+        if (!stringProperties.Any()) { return source; }
+
+        // Build the string expression
+        string filterExpr = string.Join(
+            &quot; || &quot;,
+            stringProperties.Select(prp =&gt; $&quot;{prp.Name}.Contains(@0)&quot;)
+        );
+
+        return source.Where(filterExpr, term);
+    }
+    </code></pre></div></figure>
