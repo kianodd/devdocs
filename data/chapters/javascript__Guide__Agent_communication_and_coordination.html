@@ -1,0 +1,820 @@
+<p><strong>Agents</strong> is the JavaScript formal terminology for describing autonomous JavaScript executors. Most JavaScript you write gets executed in a single thread, but you may create more threads with specific platform APIs such as <a target="_blank" rel="noopener" href="https://developer.mozilla.org/en-US/docs/Web/API/Web_Workers_API">web workers</a>.</p>
+<p>This guide explains general computer science concepts related to thread coordination and how JavaScript implements them. It also introduces the APIs for enabling cross-thread communication: <code>postMessage()</code>, <code>SharedArrayBuffer</code>, and <code>Atomics</code>.</p>
+<p>It is recommended to understand <a href="#/doc/javascript/Guide/Typed_arrays">Typed arrays</a> before reading this. Afterwards, you can continue with the <a href="#/doc/javascript/Reference/Execution_model">Execution model</a> reference to dive into the technical details.</p>
+<blockquote>
+<p>[!NOTE]
+In this article, we will use &quot;thread&quot; and &quot;agent&quot; interchangeably. An agent is a JavaScript engine abstraction, while a thread is an implementation detail; an agent may or may not run in a separate operating system thread. Technically, we should have used &quot;agents&quot; everywhere because you can only interact with agents in JavaScript, but when talking about general computer science concepts like locks, it&#39;s much more natural to use &quot;threads&quot;.</p>
+<p>Also, this guide has nothing to do with <a target="_blank" rel="noopener" href="https://en.wikipedia.org/wiki/AI_agent">AI agents</a>.</p>
+</blockquote>
+<h2 id="communication-between-two-agents">Communication between two agents</h2>
+<p>The JavaScript language spec does not provide APIs for creating agents, getting a reference to another agent, or exchanging data between them. Although the concept of &quot;workers&quot; exists in both the web and in Node.js, their APIs are largely distinct. This guide uses <a target="_blank" rel="noopener" href="https://developer.mozilla.org/en-US/docs/Web/API/Web_Workers_API">web workers</a>.</p>
+<h3 id="creating-agents">Creating agents</h3>
+<p>A parent agent creates and holds a reference to a child agent using the <code>Worker()</code> constructor:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JavaScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript"><span class="hljs-comment">// -- main.js --</span>
+<span class="hljs-keyword">const</span> worker = <span class="hljs-keyword">new</span> <span class="hljs-title class_">Worker</span>(<span class="hljs-string">&quot;./worker.js&quot;</span>, { <span class="hljs-attr">type</span>: <span class="hljs-string">&quot;module&quot;</span> });</code></pre></div></figure>
+<p>The parent agent can be a window or another worker. For example, to run this example in a browser, you can reference <code>main.js</code> in an HTML file:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>HTML</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-xml"><span class="hljs-tag">&lt;<span class="hljs-name">script</span> <span class="hljs-attr">src</span>=<span class="hljs-string">&quot;main.js&quot;</span> <span class="hljs-attr">type</span>=<span class="hljs-string">&quot;module&quot;</span>&gt;</span><span class="hljs-tag">&lt;/<span class="hljs-name">script</span>&gt;</span></code></pre></div></figure>
+<h3 id="communication-via-messages">Communication via messages</h3>
+<p>Two agents communicate using <em>messages</em>. Messages are sent over <em>message channels</em>. The parent agent (<code>main.js</code> here) and its child agent (<code>worker.js</code> here) have a message channel by default, which routes to their default ports:</p>
+<ul>
+<li><code>main.js</code> sends messages using <code>worker.postMessage()</code>, and receives messages using the <code>message</code> event on the <code>worker</code> object.</li>
+<li><code>worker.js</code> sends messages using <code>self.postMessage()</code>, and receives messages using the <code>message</code> event on <code>self</code>.</li>
+</ul>
+<p>However, this is limited to communication between the creator and the agent it creates. When you want any two agents to communicate, you need to use a dedicated <code>MessageChannel</code>. You pass one of its <code>MessagePort</code> objects to the worker over the default channel, and then exclusively use that port:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JavaScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript"><span class="hljs-comment">// -- main.js --</span>
+<span class="hljs-keyword">const</span> worker = <span class="hljs-keyword">new</span> <span class="hljs-title class_">Worker</span>(<span class="hljs-string">&quot;./worker.js&quot;</span>, { <span class="hljs-attr">type</span>: <span class="hljs-string">&quot;module&quot;</span> });
+<span class="hljs-keyword">const</span> { port1, port2 } = <span class="hljs-keyword">new</span> <span class="hljs-title class_">MessageChannel</span>();
+
+<span class="hljs-comment">// We&#x27;ll explain the [port2] parameter soon</span>
+worker.<span class="hljs-title function_">postMessage</span>({ <span class="hljs-attr">hereIsYourPort</span>: port2 }, [port2]);
+
+<span class="hljs-comment">// Mark the port as ready for receiving messages</span>
+port1.<span class="hljs-title function_">start</span>();</code></pre></div></figure>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JavaScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript"><span class="hljs-comment">// -- worker.js --</span>
+<span class="hljs-comment">// Use top-level await (only available inside modules) so code following it</span>
+<span class="hljs-comment">// only evaluates when the port is received</span>
+<span class="hljs-keyword">const</span> port = <span class="hljs-keyword">await</span> <span class="hljs-keyword">new</span> <span class="hljs-title class_">Promise</span>(<span class="hljs-function">(<span class="hljs-params">resolve, reject</span>) =&gt;</span> {
+  <span class="hljs-variable language_">self</span>.<span class="hljs-title function_">addEventListener</span>(
+    <span class="hljs-string">&quot;message&quot;</span>,
+    <span class="hljs-function">(<span class="hljs-params">e</span>) =&gt;</span> {
+      <span class="hljs-keyword">const</span> port = e.<span class="hljs-property">data</span>.<span class="hljs-property">hereIsYourPort</span>;
+      <span class="hljs-keyword">if</span> (!(port <span class="hljs-keyword">instanceof</span> <span class="hljs-title class_">MessagePort</span>)) {
+        <span class="hljs-title function_">reject</span>(<span class="hljs-keyword">new</span> <span class="hljs-title class_">Error</span>(<span class="hljs-string">&quot;I&#x27;m expecting a dedicated port&quot;</span>));
+        <span class="hljs-keyword">return</span>;
+      }
+      <span class="hljs-title function_">resolve</span>(port);
+    },
+    { <span class="hljs-attr">once</span>: <span class="hljs-literal">true</span> },
+  );
+});
+
+<span class="hljs-comment">// Mark the port as ready for receiving messages</span>
+port.<span class="hljs-title function_">start</span>();</code></pre></div></figure>
+<blockquote>
+<p>[!NOTE]
+In all subsequent examples, we&#39;ll assume that these lines exist at the top of <code>main.js</code> and <code>worker.js</code>. We won&#39;t repeat them.</p>
+</blockquote>
+<p>Now, each agent can call <code>postMessage()</code> and listen for <code>message</code> events on the <code>MessagePort</code> object.</p>
+<p>Using message channels, you can also connect two agents that aren&#39;t in a parent-child relationship, such as two workers created by the same thread:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JavaScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript"><span class="hljs-keyword">const</span> { port1, port2 } = <span class="hljs-keyword">new</span> <span class="hljs-title class_">MessageChannel</span>();
+<span class="hljs-keyword">const</span> worker1 = <span class="hljs-keyword">new</span> <span class="hljs-title class_">Worker</span>(<span class="hljs-string">&quot;./worker1.js&quot;</span>, { <span class="hljs-attr">type</span>: <span class="hljs-string">&quot;module&quot;</span> });
+<span class="hljs-keyword">const</span> worker2 = <span class="hljs-keyword">new</span> <span class="hljs-title class_">Worker</span>(<span class="hljs-string">&quot;./worker2.js&quot;</span>, { <span class="hljs-attr">type</span>: <span class="hljs-string">&quot;module&quot;</span> });
+
+worker1.<span class="hljs-title function_">postMessage</span>({ <span class="hljs-attr">hereIsYourPort</span>: port1 }, [port1]);
+worker2.<span class="hljs-title function_">postMessage</span>({ <span class="hljs-attr">hereIsYourPort</span>: port2 }, [port2]);</code></pre></div></figure>
+<p>As a practical example, we implement a number-guessing game. <code>main.js</code> defines a secret number, and <code>worker.js</code> tries to guess it. Each time, <code>main.js</code> tells <code>worker.js</code> whether the guess is correct, too low, or too high, and the worker adjusts its guess. Here&#39;s how <code>main.js</code> can receive guesses from the worker using <code>MessageEvent.data</code>, and provide feedback using <code>port1.postMessage()</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JavaScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript"><span class="hljs-comment">// -- main.js --</span>
+<span class="hljs-keyword">const</span> secretNumber = <span class="hljs-number">63</span>;
+
+port1.<span class="hljs-title function_">addEventListener</span>(<span class="hljs-string">&quot;message&quot;</span>, <span class="hljs-function">(<span class="hljs-params">e</span>) =&gt;</span> {
+  <span class="hljs-keyword">const</span> workerGuess = e.<span class="hljs-property">data</span>;
+  <span class="hljs-variable language_">console</span>.<span class="hljs-title function_">log</span>(<span class="hljs-string">&quot;Worker guessed:&quot;</span>, workerGuess);
+  <span class="hljs-keyword">if</span> (workerGuess &lt; secretNumber) {
+    port1.<span class="hljs-title function_">postMessage</span>(<span class="hljs-string">&quot;Too low&quot;</span>);
+  } <span class="hljs-keyword">else</span> <span class="hljs-keyword">if</span> (workerGuess &gt; secretNumber) {
+    port1.<span class="hljs-title function_">postMessage</span>(<span class="hljs-string">&quot;Too high&quot;</span>);
+  } <span class="hljs-keyword">else</span> {
+    port1.<span class="hljs-title function_">postMessage</span>(<span class="hljs-string">&quot;Correct&quot;</span>);
+    <span class="hljs-variable language_">console</span>.<span class="hljs-title function_">log</span>(<span class="hljs-string">&quot;Worker successfully guessed the secret number!&quot;</span>);
+  }
+});</code></pre></div></figure>
+<p>And here&#39;s how the worker can submit guesses to <code>main.js</code> and adjust based on the feedback from it:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JavaScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript"><span class="hljs-comment">// -- worker.js --</span>
+<span class="hljs-keyword">let</span> low = <span class="hljs-number">0</span>;
+<span class="hljs-keyword">let</span> high = <span class="hljs-number">100</span>;
+<span class="hljs-keyword">let</span> lastGuess = <span class="hljs-title class_">Math</span>.<span class="hljs-title function_">floor</span>((low + high) / <span class="hljs-number">2</span>);
+
+<span class="hljs-comment">// First guess submitted immediately after initialization</span>
+port.<span class="hljs-title function_">postMessage</span>(lastGuess);
+port.<span class="hljs-title function_">addEventListener</span>(<span class="hljs-string">&quot;message&quot;</span>, <span class="hljs-function">(<span class="hljs-params">e</span>) =&gt;</span> {
+  <span class="hljs-keyword">const</span> feedback = e.<span class="hljs-property">data</span>;
+  <span class="hljs-keyword">if</span> (feedback === <span class="hljs-string">&quot;Correct&quot;</span>) {
+    <span class="hljs-variable language_">console</span>.<span class="hljs-title function_">log</span>(<span class="hljs-string">&quot;Yay&quot;</span>);
+    <span class="hljs-keyword">return</span>;
+  }
+  <span class="hljs-keyword">if</span> (feedback === <span class="hljs-string">&quot;Too low&quot;</span>) {
+    low = lastGuess + <span class="hljs-number">1</span>;
+  } <span class="hljs-keyword">else</span> <span class="hljs-keyword">if</span> (feedback === <span class="hljs-string">&quot;Too high&quot;</span>) {
+    high = lastGuess - <span class="hljs-number">1</span>;
+  }
+  <span class="hljs-keyword">if</span> (low &gt; high) {
+    <span class="hljs-keyword">throw</span> <span class="hljs-keyword">new</span> <span class="hljs-title class_">Error</span>(
+      <span class="hljs-string">&quot;Sorry, the feedback from main.js is inconsistent and I suspect main is cheating&quot;</span>,
+    );
+  }
+  lastGuess = <span class="hljs-title class_">Math</span>.<span class="hljs-title function_">floor</span>((low + high) / <span class="hljs-number">2</span>);
+  port.<span class="hljs-title function_">postMessage</span>(lastGuess);
+});
+
+port.<span class="hljs-title function_">start</span>();</code></pre></div></figure>
+<p>If you run this in a browser, both the worker and the main thread will output to the same DevTools console, so you will see the output as:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">Worker guessed: 50                              main.js
+Worker guessed: 75                              main.js
+Worker guessed: 62                              main.js
+Worker guessed: 68                              main.js
+Worker guessed: 65                              main.js
+Worker guessed: 63                              main.js
+Worker successfully guessed the secret number!  main.js
+Yay                                             worker.js</code></pre></div></figure>
+<h3 id="sending-messages-by-copying-or-transferring">Sending messages by copying or transferring</h3>
+<p>You can pass many kinds of JavaScript values to <code>postMessage</code>. In the number-guessing example, we pass numbers for guesses, strings for feedback, and objects for the <code>MessagePort</code>. By default, each agent has its own <a href="#/doc/javascript/Reference/Execution_model@agent_execution_model">memory space</a>, so when an object is sent from one heap to another, a copy of it is created in the target heap. The copy uses the <a target="_blank" rel="noopener" href="https://developer.mozilla.org/en-US/docs/Web/API/Web_Workers_API/Structured_clone_algorithm">structured clone algorithm</a>, which only supports a fixed set of data types. When you attempt to copy an unsupported object, a <code>DOMException</code> is thrown.</p>
+<p><img src="assets/mdn/javascript/guide/agent_communication_and_coordination/message-copy-diagram.svg" loading="lazy" alt="Two agents, an HTML page and a worker, each contain a heap with one object. An arrow labeled postMessage() points from the object in the page&#39;s heap to the object in the worker&#39;s heap."></p>
+<p>Copying an object allows the sender and the recipient to independently manipulate the object without affecting the other. The downside is that the object is re-constructed in the recipient&#39;s scope, which means:</p>
+<ul>
+<li>It&#39;s not tethered to the original creator, so <code>MessagePort</code> can&#39;t work (indeed, if you read the list of <a target="_blank" rel="noopener" href="https://developer.mozilla.org/en-US/docs/Web/API/Web_Workers_API/Structured_clone_algorithm">serializable objects</a>, you can see that <code>MessagePort</code> is not listed here).</li>
+<li>There are two copies of the same data, which increases memory usage.</li>
+</ul>
+<p>To solve these problems, instead of copying objects, you can pass them by <em>transferring</em> instead. Transferring an object uses a slightly different algorithm for constructing it in the target realm, and marks it as <em>detached</em> in the source realm. The source object still exists, but its transferred resource is now available through the new object in the target realm:</p>
+<p><img src="assets/mdn/javascript/guide/agent_communication_and_coordination/message-transfer-diagram.svg" loading="lazy" alt="An HTML page and a worker each contain a heap. The original object in the page&#39;s heap is gray with a dashed border and labeled Detached. An arrow labeled Transfer points to a green object in the worker&#39;s heap."></p>
+<p>To transfer an object, you still pass it (or other objects containing it) to <code>postMessage()</code>. The second parameter of <code>postMessage()</code> takes a list of objects inside the message that should be transferred instead of copied. This explains the following line in the number guessing game:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JavaScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript">worker.<span class="hljs-title function_">postMessage</span>({ <span class="hljs-attr">hereIsYourPort</span>: port2 }, [port2]);</code></pre></div></figure>
+<p>The whole object <code>{ hereIsYourPort: port2 }</code> is copied as usual and can be used in both agents, though it isn&#39;t assigned to a variable in the sender, so it will be immediately dropped over there. The <code>port2</code> resource is taken over by the new object in the worker agent, while the source instance is marked as detached. The effects of detachment depend on the object type, but generally operations either throw an error or do nothing. For a <code>MessagePort</code>, the original object loses its connection to the other port.</p>
+<p>Other than <code>MessagePort</code>, another widely-used transferable object is <code>ArrayBuffer</code>, which happens to be both copyable and transferable. When an <code>ArrayBuffer</code> is copied, the source and recipient each hold an independent copy, and mutations on one side do not affect the other. When an <code>ArrayBuffer</code> is transferred, it is again marked as <em>detached</em>. A detached array buffer still exists as an object, but no longer provides access to the underlying memory. This means that:</p>
+<ul>
+<li><code>byteLength</code> becomes <code>0</code> (in both the buffer and the associated typed array views).</li>
+<li>Methods, such as <code>resize()</code> and <code>slice()</code>, throw a <code>TypeError</code> when invoked. The associated typed array views&#39; methods also throw a <code>TypeError</code>.</li>
+</ul>
+<p>You can check whether an <code>ArrayBuffer</code> is detached via its <code>detached</code> property.</p>
+<p>In pure JavaScript, you can also transfer the ownership of memory from one <code>ArrayBuffer</code> to another using its <code>transfer()</code> or <code>transferToFixedLength()</code> method.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JavaScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript"><span class="hljs-keyword">const</span> buffer1 = <span class="hljs-keyword">new</span> <span class="hljs-title class_">ArrayBuffer</span>(<span class="hljs-number">1024</span>);
+<span class="hljs-variable language_">console</span>.<span class="hljs-title function_">log</span>(buffer1.<span class="hljs-property">detached</span>); <span class="hljs-comment">// false</span>
+<span class="hljs-variable language_">console</span>.<span class="hljs-title function_">log</span>(buffer1.<span class="hljs-property">byteLength</span>); <span class="hljs-comment">// 1024</span>
+
+<span class="hljs-keyword">const</span> buffer2 = buffer1.<span class="hljs-title function_">transfer</span>();
+<span class="hljs-variable language_">console</span>.<span class="hljs-title function_">log</span>(buffer1.<span class="hljs-property">detached</span>); <span class="hljs-comment">// true</span>
+<span class="hljs-variable language_">console</span>.<span class="hljs-title function_">log</span>(buffer1.<span class="hljs-property">byteLength</span>); <span class="hljs-comment">// 0</span>
+<span class="hljs-variable language_">console</span>.<span class="hljs-title function_">log</span>(buffer2.<span class="hljs-property">byteLength</span>); <span class="hljs-comment">// 1024</span></code></pre></div></figure>
+<h2 id="sharing-memory-with-sharedarraybuffer">Sharing memory with SharedArrayBuffer</h2>
+<p>Other than copying and transferring, there&#39;s a third model of data passing: <em>sharing</em>. In sharing, both sides hold an object that shares the underlying memory. Memory sharing is available only to the <code>SharedArrayBuffer</code> object. The sender and recipient still hold distinct instances of the <code>SharedArrayBuffer</code> object, but they represent pointers to the same memory span and mutations on one side are visible to the other side.</p>
+<p><img src="assets/mdn/javascript/guide/agent_communication_and_coordination/message-sharing-diagram.svg" loading="lazy" alt="An HTML page and a worker each contain a heap with a SharedArrayBuffer object. A dashed, double-headed arrow labeled Sharing connects the objects, which refer to the same underlying memory."></p>
+<h3 id="enabling-shared-memory">Enabling shared memory</h3>
+<p>Memory sharing isn&#39;t inherently risky; however, it allows implementing a high-precision clock (we won&#39;t go into the details here), which was revealed to enable <a target="_blank" rel="noopener" href="https://en.wikipedia.org/wiki/Spectre_(security_vulnerability)">Spectre</a> attacks. In response to this, browsers restrict shared memory access to <a target="_blank" rel="noopener" href="https://developer.mozilla.org/en-US/docs/Web/API/Window/crossOriginIsolated">cross-origin isolated</a> websites only.</p>
+<blockquote>
+<p>[!NOTE]
+If you are using Node.js for this tutorial (which means you had been adapting the previous examples to Node-specific APIs), you can ignore this section, because shared memory is available by default.</p>
+</blockquote>
+<p>If you are using a local HTTP server to experiment with these examples, you must make your website cross-origin isolated, for example by sending the following headers:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>HTTP</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-http"><span class="hljs-attribute">Cross-Origin-Embedder-Policy</span><span class="hljs-punctuation">: </span>require-corp
+<span class="hljs-attribute">Cross-Origin-Opener-Policy</span><span class="hljs-punctuation">: </span>same-origin</code></pre></div></figure>
+<p>After you do this, you can perform the following checks to confirm that shared memory is enabled:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JavaScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript"><span class="hljs-variable language_">console</span>.<span class="hljs-title function_">log</span>(<span class="hljs-variable language_">window</span>.<span class="hljs-property">crossOriginIsolated</span>); <span class="hljs-comment">// true</span>
+<span class="hljs-variable language_">console</span>.<span class="hljs-title function_">log</span>(<span class="hljs-string">&quot;SharedArrayBuffer&quot;</span> <span class="hljs-keyword">in</span> <span class="hljs-variable language_">window</span>); <span class="hljs-comment">// true</span></code></pre></div></figure>
+<p>Now you can share memory, but only within an <a href="#/doc/javascript/Reference/Execution_model@agent_clusters_and_memory_sharing">agent cluster</a>—you can&#39;t share memory with agents outside of its cluster, even when they have a message channel. A window and its dedicated worker are in the same cluster, so our examples will work fine.</p>
+<h3 id="using-a-shared-buffer">Using a shared buffer</h3>
+<p>The <code>SharedArrayBuffer</code> (SAB) interface is mostly identical to <code>ArrayBuffer</code>. You can construct a <code>SharedArrayBuffer</code>, which allocates the specified number of bytes.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JavaScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript"><span class="hljs-keyword">const</span> sab = <span class="hljs-keyword">new</span> <span class="hljs-title class_">SharedArrayBuffer</span>(<span class="hljs-number">1024</span>);</code></pre></div></figure>
+<p>You can read and write the memory contents by constructing a <a href="#/doc/javascript/Guide/Typed_arrays@views">view</a>, such as a <code>Int8Array</code>.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JavaScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript"><span class="hljs-keyword">const</span> int8 = <span class="hljs-keyword">new</span> <span class="hljs-title class_">Int8Array</span>(sab);
+int8[<span class="hljs-number">0</span>] = <span class="hljs-number">63</span>;</code></pre></div></figure>
+<p>You can create a <a href="#/doc/javascript/Reference/Global_Objects/SharedArrayBuffer/slice">slice</a> of the SAB, which allocates a new shared memory span and copies its contents.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JavaScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript"><span class="hljs-keyword">const</span> sab2 = sab.<span class="hljs-title function_">slice</span>();
+<span class="hljs-comment">// Entire sab is copied</span>
+<span class="hljs-keyword">const</span> int82 = <span class="hljs-keyword">new</span> <span class="hljs-title class_">Int8Array</span>(sab2);
+<span class="hljs-variable language_">console</span>.<span class="hljs-title function_">log</span>(int82[<span class="hljs-number">0</span>]); <span class="hljs-comment">// 63</span></code></pre></div></figure>
+<p>There are several differences between <code>SharedArrayBuffer</code> and <code>ArrayBuffer</code> (other than memory-sharing behavior, of course):</p>
+<ul>
+<li>Resizable SABs can only be <em>grown</em>, while normal resizable buffers can both be grown and shrunk.</li>
+<li>SABs cannot be transferred/detached.</li>
+</ul>
+<p>To create a resizable/growable SAB, pass the <code>maxByteLength</code> option specifying the maximum length it&#39;s allowed to grow to. Then, you can use <a href="#/doc/javascript/Reference/Global_Objects/SharedArrayBuffer/grow"><code>grow()</code></a>.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JavaScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript"><span class="hljs-keyword">const</span> sabResizable = <span class="hljs-keyword">new</span> <span class="hljs-title class_">SharedArrayBuffer</span>(<span class="hljs-number">1024</span>, { <span class="hljs-attr">maxByteLength</span>: <span class="hljs-number">2048</span> });
+<span class="hljs-variable language_">console</span>.<span class="hljs-title function_">log</span>(sabResizable.<span class="hljs-property">byteLength</span>); <span class="hljs-comment">// 1024</span>
+
+sabResizable.<span class="hljs-title function_">grow</span>(<span class="hljs-number">2000</span>);
+<span class="hljs-variable language_">console</span>.<span class="hljs-title function_">log</span>(sabResizable.<span class="hljs-property">byteLength</span>); <span class="hljs-comment">// 2000</span></code></pre></div></figure>
+<h3 id="posting-sharedarraybuffers">Posting SharedArrayBuffers</h3>
+<p><code>SharedArrayBuffer</code> objects are always shared when passed to <code>postMessage()</code> (as long as the security requirements are met); no extra options are necessary. Both sides can mutate this memory span and observe the other side&#39;s mutations. You can also pass a view of a <code>SharedArrayBuffer</code> directly—the view and the <code>buffer</code> object are both copied, but the underlying memory span is still shared.</p>
+<p>In the following examples, we&#39;ll share a buffer between <code>main.js</code> and <code>worker.js</code> together with the message port. Replace the line in <code>main.js</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JavaScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript">worker.<span class="hljs-title function_">postMessage</span>({ <span class="hljs-attr">hereIsYourPort</span>: port2 }, [port2]);</code></pre></div></figure>
+<p>With:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JavaScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript"><span class="hljs-keyword">const</span> sab = <span class="hljs-keyword">new</span> <span class="hljs-title class_">SharedArrayBuffer</span>(<span class="hljs-number">1024</span>);
+worker.<span class="hljs-title function_">postMessage</span>({ <span class="hljs-attr">hereIsYourPort</span>: port2, <span class="hljs-attr">andHereIsOurSAB</span>: sab }, [port2]);</code></pre></div></figure>
+<p>And inside <code>worker.js</code>, replace the initial reception code with:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JavaScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript"><span class="hljs-keyword">const</span> { port, sab } = <span class="hljs-keyword">await</span> <span class="hljs-keyword">new</span> <span class="hljs-title class_">Promise</span>(<span class="hljs-function">(<span class="hljs-params">resolve, reject</span>) =&gt;</span> {
+  <span class="hljs-variable language_">self</span>.<span class="hljs-title function_">addEventListener</span>(
+    <span class="hljs-string">&quot;message&quot;</span>,
+    <span class="hljs-function">(<span class="hljs-params">e</span>) =&gt;</span> {
+      <span class="hljs-keyword">const</span> port = e.<span class="hljs-property">data</span>.<span class="hljs-property">hereIsYourPort</span>;
+      <span class="hljs-keyword">if</span> (!(port <span class="hljs-keyword">instanceof</span> <span class="hljs-title class_">MessagePort</span>)) {
+        <span class="hljs-title function_">reject</span>(<span class="hljs-keyword">new</span> <span class="hljs-title class_">Error</span>(<span class="hljs-string">&quot;I&#x27;m expecting a dedicated port&quot;</span>));
+        <span class="hljs-keyword">return</span>;
+      }
+      <span class="hljs-keyword">const</span> sab = e.<span class="hljs-property">data</span>.<span class="hljs-property">andHereIsOurSAB</span>;
+      <span class="hljs-keyword">if</span> (!(sab <span class="hljs-keyword">instanceof</span> <span class="hljs-title class_">SharedArrayBuffer</span>)) {
+        <span class="hljs-title function_">reject</span>(<span class="hljs-keyword">new</span> <span class="hljs-title class_">Error</span>(<span class="hljs-string">&quot;I&#x27;m expecting a shared array buffer&quot;</span>));
+        <span class="hljs-keyword">return</span>;
+      }
+      <span class="hljs-title function_">resolve</span>({ port, sab });
+    },
+    { <span class="hljs-attr">once</span>: <span class="hljs-literal">true</span> },
+  );
+});</code></pre></div></figure>
+<p>To verify that this setup works, try coordinating a short write-read exchange using a message. The worker immediately updates the <code>SharedArrayBuffer</code> and posts a message to the main thread. The main thread receives that message and reads the new value. We&#39;ll talk about more efficient communications later.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JavaScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript"><span class="hljs-comment">// -- main.js --</span>
+<span class="hljs-keyword">const</span> int8 = <span class="hljs-keyword">new</span> <span class="hljs-title class_">Int8Array</span>(sab);
+
+port1.<span class="hljs-title function_">addEventListener</span>(<span class="hljs-string">&quot;message&quot;</span>, <span class="hljs-function">(<span class="hljs-params">e</span>) =&gt;</span> {
+  <span class="hljs-variable language_">console</span>.<span class="hljs-title function_">log</span>(int8[<span class="hljs-number">0</span>]); <span class="hljs-comment">// 63</span>
+});</code></pre></div></figure>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JavaScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript"><span class="hljs-comment">// -- worker.js --</span>
+<span class="hljs-keyword">const</span> int8 = <span class="hljs-keyword">new</span> <span class="hljs-title class_">Int8Array</span>(sab);
+int8[<span class="hljs-number">0</span>] = <span class="hljs-number">63</span>;
+port.<span class="hljs-title function_">postMessage</span>(<span class="hljs-string">&quot;I&#x27;ve modified the memory. Please check&quot;</span>);</code></pre></div></figure>
+<h2 id="accessing-shared-memory-with-atomics">Accessing shared memory with Atomics</h2>
+<p>In the example above, we use a message to force the following order:</p>
+<ol>
+<li>Worker writes to memory</li>
+<li>Worker posts message</li>
+<li>Main agent receives message and runs event listener</li>
+<li>Main agent reads memory</li>
+</ol>
+<p>The problem with event-based coordination is that events are asynchronous: the time between steps 2 and 3 is dependent on the browser&#39;s event loop. In this case, you might as well pass values back and forth without relying on shared memory. The advantage of shared memory is exactly that you can (mostly) communicate synchronously, without yielding the job queue to other async tasks.</p>
+<p>In a single agent, the <a href="#/doc/javascript/Reference/Execution_model@run-to-completion">run-to-completion</a> semantics ensure well-behaved effect ordering with respect to multiple synchronous jobs:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JavaScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript"><span class="hljs-keyword">const</span> promise = <span class="hljs-title class_">Promise</span>.<span class="hljs-title function_">resolve</span>();
+<span class="hljs-keyword">let</span> i = <span class="hljs-number">0</span>;
+promise.<span class="hljs-title function_">then</span>(<span class="hljs-function">() =&gt;</span> {
+  i += <span class="hljs-number">1</span>;
+  <span class="hljs-variable language_">console</span>.<span class="hljs-title function_">log</span>(i);
+});
+promise.<span class="hljs-title function_">then</span>(<span class="hljs-function">() =&gt;</span> {
+  i += <span class="hljs-number">1</span>;
+  <span class="hljs-variable language_">console</span>.<span class="hljs-title function_">log</span>(i);
+});</code></pre></div></figure>
+<p>Here, the overall order is always <code>i += 1; console.log(i); i += 1; console.log(i);</code> and never <code>i += 1; i += 1; console.log(i); console.log(i);</code>.</p>
+<p>There aren&#39;t such guarantees when the synchronous jobs belong to different agents. In the example below, the worker sends the main agent a <code>started</code> message and immediately starts incrementing the shared integer in a loop. Upon receipt of the message, the main agent runs the same loop at the same time. When the worker finishes, it sends a <code>finished</code> message, and the main agent logs the final value.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JavaScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript"><span class="hljs-comment">// -- main.js --</span>
+<span class="hljs-keyword">const</span> i = <span class="hljs-keyword">new</span> <span class="hljs-title class_">Int32Array</span>(sab, <span class="hljs-number">0</span>, <span class="hljs-number">1</span>);
+
+port1.<span class="hljs-title function_">addEventListener</span>(<span class="hljs-string">&quot;message&quot;</span>, <span class="hljs-function">(<span class="hljs-params">{ data }</span>) =&gt;</span> {
+  <span class="hljs-keyword">if</span> (data === <span class="hljs-string">&quot;started&quot;</span>) {
+    <span class="hljs-keyword">for</span> (<span class="hljs-keyword">let</span> n = <span class="hljs-number">0</span>; n &lt; <span class="hljs-number">10_000_000</span>; n++) {
+      i[<span class="hljs-number">0</span>] += <span class="hljs-number">1</span>;
+    }
+  } <span class="hljs-keyword">else</span> <span class="hljs-keyword">if</span> (data === <span class="hljs-string">&quot;finished&quot;</span>) {
+    <span class="hljs-variable language_">console</span>.<span class="hljs-title function_">log</span>(i[<span class="hljs-number">0</span>]); <span class="hljs-comment">// Usually less than 20000000</span>
+  }
+});</code></pre></div></figure>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JavaScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript"><span class="hljs-comment">// -- worker.js --</span>
+<span class="hljs-keyword">const</span> i = <span class="hljs-keyword">new</span> <span class="hljs-title class_">Int32Array</span>(sab, <span class="hljs-number">0</span>, <span class="hljs-number">1</span>);
+
+port.<span class="hljs-title function_">postMessage</span>(<span class="hljs-string">&quot;started&quot;</span>);
+<span class="hljs-keyword">for</span> (<span class="hljs-keyword">let</span> n = <span class="hljs-number">0</span>; n &lt; <span class="hljs-number">10_000_000</span>; n++) {
+  i[<span class="hljs-number">0</span>] += <span class="hljs-number">1</span>;
+}
+port.<span class="hljs-title function_">postMessage</span>(<span class="hljs-string">&quot;finished&quot;</span>);</code></pre></div></figure>
+<p>Because messages to a port are delivered in order, the <code>finished</code> handler always runs after the main agent&#39;s own loop has completed, so both agents have finished counting by the time the value is logged. Still, the logged value is probably less than <code>20000000</code>, and it differs between runs. This is because <code>i[0] += 1</code> is not a single step: it reads <code>i[0]</code>, adds 1, and writes the result back. There are at least two orders possible; the first one, which doesn&#39;t lose an increment, is:</p>
+<ol>
+<li><code>main.js</code> reads <code>i[0]</code> as <code>currentI</code></li>
+<li><code>main.js</code> writes <code>i[0] = currentI + 1</code></li>
+<li><code>worker.js</code> reads <code>i[0]</code> as <code>currentI + 1</code></li>
+<li><code>worker.js</code> writes <code>i[0] = currentI + 2</code></li>
+</ol>
+<p>The second one, which loses an increment, is:</p>
+<ol>
+<li><code>main.js</code> reads <code>i[0]</code> as <code>currentI</code></li>
+<li><code>worker.js</code> reads <code>i[0]</code> as <code>currentI</code></li>
+<li><code>main.js</code> writes <code>i[0] = currentI + 1</code></li>
+<li><code>worker.js</code> writes <code>i[0] = currentI + 1</code></li>
+</ol>
+<p>To solve this problem, we must use a mechanism to ensure execution order across agents, so a statement in <code>worker.js</code> cannot execute until a statement in <code>main.js</code> finishes and its effect becomes observable, and vice versa. Methods from the <code>Atomics</code> namespace provide this capability.</p>
+<h3 id="reading-and-writing">Reading and writing</h3>
+<p>The most basic <code>Atomics</code> primitives are <code>Atomics.load()</code> and <code>Atomics.store()</code>, which read and write at a particular index, respectively. They can be used with any signed or unsigned integer arrays (except <code>Uint8ClampedArray</code>).</p>
+<p>The problem with the index read/write syntax is that the effect of a write is not required to be observable immediately to other agents. Consider the following indexed read/write:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JavaScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript"><span class="hljs-comment">// -- main.js --</span>
+<span class="hljs-keyword">const</span> a = <span class="hljs-keyword">new</span> <span class="hljs-title class_">Int32Array</span>(sab);
+a[<span class="hljs-number">0</span>] = <span class="hljs-number">63</span>;
+<span class="hljs-variable language_">console</span>.<span class="hljs-title function_">log</span>(<span class="hljs-string">&quot;Main:&quot;</span>, a[<span class="hljs-number">1</span>]);</code></pre></div></figure>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JavaScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript"><span class="hljs-comment">// -- worker.js --</span>
+<span class="hljs-keyword">const</span> a = <span class="hljs-keyword">new</span> <span class="hljs-title class_">Int32Array</span>(sab);
+a[<span class="hljs-number">1</span>] = <span class="hljs-number">15</span>;
+<span class="hljs-variable language_">console</span>.<span class="hljs-title function_">log</span>(<span class="hljs-string">&quot;Worker:&quot;</span>, a[<span class="hljs-number">0</span>]);</code></pre></div></figure>
+<p>Theoretically, no matter how these operations are ordered, as long as each agent executes its code in order, at least one log entry must be non-<code>0</code> (try listing all possible orderings of the four statements, with the constraint that <code>a[0] = 63</code> is before <code>console.log(a[1])</code>, and <code>a[1] = 15</code> is before <code>console.log(a[0])</code>!). However, in reality, both logs may print 0. This may arise from the following order:</p>
+<ol>
+<li><code>main.js</code> reads <code>a[1]</code> as <code>0</code>.</li>
+<li><code>worker.js</code> reads <code>a[0]</code> as <code>0</code>.</li>
+<li><code>main.js</code> writes <code>a[0] = 63</code>.</li>
+<li><code>worker.js</code> writes <code>a[1] = 15</code>.</li>
+<li><code>main.js</code> and <code>worker.js</code> execute their <code>console.log</code> using already-retrieved <code>a[1]</code> and <code>a[0]</code> values, respectively.</li>
+</ol>
+<p>Note how the expressions that read <code>a[1]</code> and <code>a[0]</code>, which come towards the end of the source code, are reordered to be executed before the <code>a[0] = 63</code> and <code>a[1] = 15</code> statements. This kind of instruction reordering can happen in both the JavaScript compiler and the CPU in order to optimize consecutive memory operations. Within each single agent, this ordering perfectly preserves the sequential-execution guarantees you would expect. For example, for <code>main.js</code>, the <code>a[0] = 63</code> write is never read back, so it&#39;s perfectly fine to reorder it after the <code>a[1]</code> read. However, this causes problems with multiple agents.</p>
+<p>With <code>Atomics.load()</code> and <code>Atomics.store()</code>, you explicitly tell the compiler and the CPU that such reordering is not permitted, and the order of memory read/write must be consistent with the order of JavaScript code execution.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JavaScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript"><span class="hljs-comment">// -- main.js --</span>
+<span class="hljs-keyword">const</span> a = <span class="hljs-keyword">new</span> <span class="hljs-title class_">Int32Array</span>(sab);
+<span class="hljs-title class_">Atomics</span>.<span class="hljs-title function_">store</span>(a, <span class="hljs-number">0</span>, <span class="hljs-number">63</span>);
+<span class="hljs-variable language_">console</span>.<span class="hljs-title function_">log</span>(<span class="hljs-string">&quot;Main:&quot;</span>, <span class="hljs-title class_">Atomics</span>.<span class="hljs-title function_">load</span>(a, <span class="hljs-number">1</span>));</code></pre></div></figure>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JavaScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript"><span class="hljs-comment">// -- worker.js --</span>
+<span class="hljs-keyword">const</span> a = <span class="hljs-keyword">new</span> <span class="hljs-title class_">Int32Array</span>(sab);
+<span class="hljs-title class_">Atomics</span>.<span class="hljs-title function_">store</span>(a, <span class="hljs-number">1</span>, <span class="hljs-number">15</span>);
+<span class="hljs-variable language_">console</span>.<span class="hljs-title function_">log</span>(<span class="hljs-string">&quot;Worker:&quot;</span>, <span class="hljs-title class_">Atomics</span>.<span class="hljs-title function_">load</span>(a, <span class="hljs-number">0</span>));</code></pre></div></figure>
+<p>Here, although you may still see <code>0</code> in one of the logs (for example, because the main <code>load</code> happens before the worker <code>store</code>), they are guaranteed to never both be <code>0</code>.</p>
+<blockquote>
+<p>[!NOTE]
+If you want to go further and guarantee that both new values are observed, you need to make both agents <a href="#waiting_and_notifying">wait</a> before the <code>Atomics.load()</code> call, such as using a <code>while (Atomics.load(a, 1) === 0);</code> loop.</p>
+</blockquote>
+<p>Furthermore, atomic load/store operations establish a partial ordering for other <em>non-atomic</em> read/write operations. Specifically, if agent A runs <code>Atomics.store()</code>, and then agent B reads the same value with <code>Atomics.load()</code>, then all non-atomic writes executed by A before the atomic store must also become observable to all non-atomic reads executed by B after the atomic load. This essentially create a &quot;synchronization point&quot; between two threads, much like a <code>message</code> event. For example:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JavaScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript"><span class="hljs-comment">// -- main.js --</span>
+a[<span class="hljs-number">0</span>] = <span class="hljs-number">63</span>;
+<span class="hljs-comment">// Set a &quot;Ready&quot; flag in a[1]; assume initially it&#x27;s not 1.</span>
+<span class="hljs-title class_">Atomics</span>.<span class="hljs-title function_">store</span>(a, <span class="hljs-number">1</span>, <span class="hljs-number">1</span>);</code></pre></div></figure>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JavaScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript"><span class="hljs-comment">// -- worker.js --</span>
+<span class="hljs-comment">// Spin until a[1] receives the &quot;Ready&quot; flag</span>
+<span class="hljs-keyword">while</span> (<span class="hljs-title class_">Atomics</span>.<span class="hljs-title function_">load</span>(a, <span class="hljs-number">1</span>) !== <span class="hljs-number">1</span>);
+<span class="hljs-variable language_">console</span>.<span class="hljs-title function_">log</span>(a[<span class="hljs-number">0</span>]); <span class="hljs-comment">// 63</span></code></pre></div></figure>
+<blockquote>
+<p>[!NOTE]
+Within a single agent, the <code>worker.js</code> code would definitely be a bug because it&#39;s not possible for <code>a[1]</code> to have changed in the loop if the loop is never updating the value. Many synchronous infinite loops only make sense with shared memory!</p>
+<p>In <a href="#waiting_and_notifying">Waiting and notifying</a>, we&#39;ll see how to make this code slightly more performant and less like a bug.</p>
+</blockquote>
+<p>The only possible order is the following:</p>
+<ol>
+<li><code>main.js</code> writes <code>a[0] = 63</code>. <code>worker.js</code> keeps spinning in the <code>while</code> loop because <code>a[1]</code> isn&#39;t the right value.</li>
+<li><code>main.js</code> stores <code>a[1]</code> as <code>1</code>.</li>
+<li><code>worker.js</code> loads the new <code>a[1]</code> value and exits the <code>while</code> loop.</li>
+<li><code>worker.js</code> reads <code>a[0]</code> as <code>63</code>.</li>
+</ol>
+<p>We have successfully established an ordering from 1 to 4 with the help of the store/load pair, so <code>worker.js</code> can observe the new value of <code>a[0]</code> written by <code>main.js</code>, despite not using atomic operations.</p>
+<h3 id="atomic-updates">Atomic updates</h3>
+<p>The next set of operations directly replace several <a href="#/doc/javascript/Reference/Operators@assignment_operators">compound assignment</a> operators. As we already demonstrated, the <code>+=</code> operator is not atomic: other instructions may execute between the read and the write, causing the final write to not write the value you expect. To fix this, you can replace it with <code>Atomics.add()</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JavaScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript"><span class="hljs-comment">// -- main.js --</span>
+<span class="hljs-keyword">const</span> i = <span class="hljs-keyword">new</span> <span class="hljs-title class_">Int32Array</span>(sab, <span class="hljs-number">0</span>, <span class="hljs-number">1</span>);
+
+port1.<span class="hljs-title function_">addEventListener</span>(<span class="hljs-string">&quot;message&quot;</span>, <span class="hljs-function">(<span class="hljs-params">{ data }</span>) =&gt;</span> {
+  <span class="hljs-keyword">if</span> (data === <span class="hljs-string">&quot;started&quot;</span>) {
+    <span class="hljs-keyword">for</span> (<span class="hljs-keyword">let</span> n = <span class="hljs-number">0</span>; n &lt; <span class="hljs-number">10_000_000</span>; n++) {
+      <span class="hljs-title class_">Atomics</span>.<span class="hljs-title function_">add</span>(i, <span class="hljs-number">0</span>, <span class="hljs-number">1</span>);
+    }
+  } <span class="hljs-keyword">else</span> <span class="hljs-keyword">if</span> (data === <span class="hljs-string">&quot;finished&quot;</span>) {
+    <span class="hljs-variable language_">console</span>.<span class="hljs-title function_">log</span>(i[<span class="hljs-number">0</span>]); <span class="hljs-comment">// Guaranteed 20000000</span>
+  }
+});</code></pre></div></figure>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JavaScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript"><span class="hljs-comment">// -- worker.js --</span>
+<span class="hljs-keyword">const</span> i = <span class="hljs-keyword">new</span> <span class="hljs-title class_">Int32Array</span>(sab, <span class="hljs-number">0</span>, <span class="hljs-number">1</span>);
+
+port.<span class="hljs-title function_">postMessage</span>(<span class="hljs-string">&quot;started&quot;</span>);
+<span class="hljs-keyword">for</span> (<span class="hljs-keyword">let</span> n = <span class="hljs-number">0</span>; n &lt; <span class="hljs-number">10_000_000</span>; n++) {
+  <span class="hljs-title class_">Atomics</span>.<span class="hljs-title function_">add</span>(i, <span class="hljs-number">0</span>, <span class="hljs-number">1</span>);
+}
+port.<span class="hljs-title function_">postMessage</span>(<span class="hljs-string">&quot;finished&quot;</span>);</code></pre></div></figure>
+<p>The only difference from the previous data-race example is that we&#39;ve replaced both <code>i[0] += 1</code> statements with <code>Atomics.add(i, 0, 1)</code>. But now, not only does it have the same &quot;sequentially consistent&quot; guarantee of <code>load</code>/<code>store</code>, but each block of read-modify-write sequence is also guaranteed to be atomic, so there are two atomic blocks that can be freely ordered but never interleaved:</p>
+<ol>
+<li>Atomic block:<ol>
+<li><code>main.js</code> reads <code>i[0]</code> as <code>currentI</code></li>
+<li><code>main.js</code> writes <code>i[0] = currentI + 1</code></li>
+</ol>
+</li>
+<li>Atomic block:<ol>
+<li><code>worker.js</code> reads <code>i[0]</code> as <code>currentI + 1</code></li>
+<li><code>worker.js</code> writes <code>i[0] = currentI + 2</code></li>
+</ol>
+</li>
+</ol>
+<p>A few other compound assignment operators have their respective <code>Atomics</code> methods:</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Operator</th>
+<th>Method</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><a href="#/doc/javascript/Reference/Operators/Addition_assignment"><code>+=</code></a></td>
+<td><code>Atomics.add()</code></td>
+</tr>
+<tr>
+<td><a href="#/doc/javascript/Reference/Operators/Subtraction_assignment"><code>-=</code></a></td>
+<td><code>Atomics.sub()</code></td>
+</tr>
+<tr>
+<td><a href="#/doc/javascript/Reference/Operators/Bitwise_AND_assignment"><code>&amp;=</code></a></td>
+<td><code>Atomics.and()</code></td>
+</tr>
+<tr>
+<td><a href="#/doc/javascript/Reference/Operators/Bitwise_OR_assignment"><code>|=</code></a></td>
+<td><code>Atomics.or()</code></td>
+</tr>
+<tr>
+<td><a href="#/doc/javascript/Reference/Operators/Bitwise_XOR_assignment"><code>^=</code></a></td>
+<td><code>Atomics.xor()</code></td>
+</tr>
+</tbody></table></div>
+<p>If your operation does not correspond to one of the methods above, you can still use the general <code>Atomics.compareExchange()</code> method instead. This method is a replacement for the following sequence:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JavaScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript"><span class="hljs-keyword">const</span> oldValue = array[index];
+<span class="hljs-keyword">if</span> (oldValue === expectedValue) {
+  array[index] = newValue;
+}
+<span class="hljs-keyword">return</span> oldValue;</code></pre></div></figure>
+<p>For example, if you have an operation <code>array[index] *= multiplier</code>, you can make it atomic using the following:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JavaScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript"><span class="hljs-keyword">function</span> <span class="hljs-title function_">atomicMultiply</span>(<span class="hljs-params">array, index, multiplier</span>) {
+  <span class="hljs-keyword">let</span> oldValue = <span class="hljs-title class_">Atomics</span>.<span class="hljs-title function_">load</span>(array, index);
+
+  <span class="hljs-keyword">while</span> (<span class="hljs-literal">true</span>) {
+    <span class="hljs-keyword">const</span> observed = <span class="hljs-title class_">Atomics</span>.<span class="hljs-title function_">compareExchange</span>(
+      array,
+      index,
+      oldValue,
+      oldValue * multiplier,
+    );
+
+    <span class="hljs-keyword">if</span> (observed === oldValue) {
+      <span class="hljs-keyword">return</span> oldValue;
+    }
+
+    oldValue = observed;
+  }
+}</code></pre></div></figure>
+<p>This function spins in a loop. Each time, it tries to write <code>oldValue * multiplier</code>, on the condition that at the time of its atomic block, the value at that index is still <code>oldValue</code>. If the value has changed, it re-attempts with the new <code>oldValue</code>.</p>
+<p>There&#39;s also an unconditional exchange method, <code>Atomics.exchange()</code>. This method is a replacement for the following sequence:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JavaScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript"><span class="hljs-keyword">const</span> oldValue = array[index];
+array[index] = newValue;
+<span class="hljs-keyword">return</span> oldValue;</code></pre></div></figure>
+<p>Use this method when you want to reset some memory while obtaining its value at the time of reset. For example, it can be used for a clock:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JavaScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript"><span class="hljs-comment">// -- worker.js --</span>
+<span class="hljs-keyword">while</span> (<span class="hljs-literal">true</span>) {
+  <span class="hljs-title class_">Atomics</span>.<span class="hljs-title function_">add</span>(a, <span class="hljs-number">0</span>, <span class="hljs-number">1</span>);
+}</code></pre></div></figure>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JavaScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript"><span class="hljs-comment">// -- main.js --</span>
+<span class="hljs-keyword">const</span> ticksSinceLastCheck = <span class="hljs-title class_">Atomics</span>.<span class="hljs-title function_">exchange</span>(a, <span class="hljs-number">0</span>, <span class="hljs-number">0</span>);
+<span class="hljs-comment">// ticksSinceLastCheck records how many times the worker has spun.</span></code></pre></div></figure>
+<p>If you split this into a <code>load</code> and a <code>store</code> operation, then the worker may have performed another <code>add</code> in the meantime, which is silently dropped.</p>
+<h2 id="waiting-and-notifying">Waiting and notifying</h2>
+<p>In the examples above, wherever an agent is waiting on another agent to complete its operation, we use an infinite loop, like the <code>while (Atomics.load(a, 1) !== 1);</code> example. This is called <a target="_blank" rel="noopener" href="https://en.wikipedia.org/wiki/Busy_waiting">busy waiting</a>. Essentially, it blocks the entire thread from executing other jobs, until some other thread writes the value it expects. You can make this slightly more efficient by calling <code>Atomics.pause()</code> inside the <code>while</code> loop. This method may tell the CPU to allocate fewer resources because it&#39;s just waiting and not actually doing computation, without asking the CPU to be immediately yielded to other threads.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JavaScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript"><span class="hljs-comment">// -- worker.js --</span>
+<span class="hljs-keyword">while</span> (<span class="hljs-title class_">Atomics</span>.<span class="hljs-title function_">load</span>(a, <span class="hljs-number">1</span>) !== <span class="hljs-number">1</span>) {
+  <span class="hljs-title class_">Atomics</span>.<span class="hljs-title function_">pause</span>();
+}</code></pre></div></figure>
+<p>Alternatively, you can change it to an explicit notification-based system while still keeping it sync. The <code>Atomics.wait()</code> and <code>Atomics.notify()</code> methods allow you to do so—the waiting thread doesn&#39;t have to keep checking the value; the writing thread notifies it whenever the writing is done.</p>
+<blockquote>
+<p>[!NOTE]
+Unlike the previously-introduced methods, <code>wait()</code>, <code>waitAsync()</code>, and <code>notify()</code> can only operate on <code>Int32Array</code> and <code>BigInt64Array</code> views.</p>
+</blockquote>
+<p>Here, the <code>worker.js</code> thread is halted if <code>a[1] === 0</code>.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JavaScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript"><span class="hljs-comment">// -- worker.js --</span>
+<span class="hljs-title class_">Atomics</span>.<span class="hljs-title function_">wait</span>(a, <span class="hljs-number">1</span>, <span class="hljs-number">0</span>);
+<span class="hljs-variable language_">console</span>.<span class="hljs-title function_">log</span>(a[<span class="hljs-number">0</span>]);</code></pre></div></figure>
+<p>It stays halted until another thread—in our case, <code>main.js</code>—notifies it:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JavaScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript"><span class="hljs-comment">// -- main.js --</span>
+a[<span class="hljs-number">0</span>] = <span class="hljs-number">63</span>;
+<span class="hljs-title class_">Atomics</span>.<span class="hljs-title function_">store</span>(a, <span class="hljs-number">1</span>, <span class="hljs-number">1</span>);
+<span class="hljs-title class_">Atomics</span>.<span class="hljs-title function_">notify</span>(a, <span class="hljs-number">1</span>);</code></pre></div></figure>
+<p>Some important notes to call out:</p>
+<ul>
+<li><code>Atomics.wait()</code> also blocks the thread from executing other jobs. On the web, the main thread cannot be blocked, so calling <code>Atomics.wait()</code> throws an error there.</li>
+<li><code>Atomics.wait()</code> returns whenever it has been notified, regardless of whether <code>a[1]</code> has actually changed.</li>
+<li>Other than checking the initial value, the memory index that <code>store</code> and <code>wait</code> operate on is entirely arbitrary: they do not care what that value actually represents. The index serves as the ID of the list of waiting agents. The initial flag check ensures that if the worker <code>wait</code> happens after <code>notify</code> is already called, the <code>wait</code> continues immediately instead of sleeping forever, so you should set and only set <code>a[1]</code> to <code>1</code> (representing &quot;Ready&quot; in our case) immediately before calling <code>notify</code>.</li>
+</ul>
+<p>You can also specify a <code>timeout</code>, after which the thread resumes despite not receiving a notification:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JavaScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript"><span class="hljs-comment">// -- worker.js --</span>
+<span class="hljs-keyword">const</span> result = <span class="hljs-title class_">Atomics</span>.<span class="hljs-title function_">wait</span>(a, <span class="hljs-number">1</span>, <span class="hljs-number">0</span>, <span class="hljs-number">100</span>); <span class="hljs-comment">// Wait about 100ms</span>
+<span class="hljs-keyword">if</span> (result === <span class="hljs-string">&quot;timed-out&quot;</span>) {
+  <span class="hljs-comment">// Decide what to do here: wait again? Throw an error?</span>
+  <span class="hljs-comment">// Change to an asynchronous wait instead?</span>
+} <span class="hljs-keyword">else</span> {
+  <span class="hljs-comment">// result can be either &quot;not-equal&quot; - i.e., a[1] is already &quot;Ready&quot;</span>
+  <span class="hljs-comment">// without waiting or &quot;ok&quot; - i.e., some other thread notified it</span>
+  <span class="hljs-variable language_">console</span>.<span class="hljs-title function_">log</span>(a[<span class="hljs-number">0</span>]);
+}</code></pre></div></figure>
+<p>The <code>Atomics.waitAsync()</code> method provides the same functionality as <code>wait()</code>, but in the form of a promise, thus allowing other asynchronous jobs to proceed in the meantime.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JavaScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript"><span class="hljs-comment">// -- main.js --</span>
+<span class="hljs-keyword">const</span> result = <span class="hljs-title class_">Atomics</span>.<span class="hljs-title function_">waitAsync</span>(a, <span class="hljs-number">1</span>, <span class="hljs-number">0</span>, <span class="hljs-number">100</span>); <span class="hljs-comment">// Wait about 100ms</span>
+<span class="hljs-keyword">if</span> (!result.<span class="hljs-property">async</span>) {
+  <span class="hljs-comment">// Already ready</span>
+  <span class="hljs-comment">// (Note: because timeout is not 0, result.value is always &quot;not-equal&quot;)</span>
+  <span class="hljs-variable language_">console</span>.<span class="hljs-title function_">log</span>(a[<span class="hljs-number">0</span>]);
+} <span class="hljs-keyword">else</span> {
+  <span class="hljs-keyword">const</span> resultValue = <span class="hljs-keyword">await</span> result.<span class="hljs-property">value</span>;
+  <span class="hljs-keyword">if</span> (resultValue === <span class="hljs-string">&quot;ok&quot;</span>) {
+    <span class="hljs-variable language_">console</span>.<span class="hljs-title function_">log</span>(a[<span class="hljs-number">0</span>]);
+  } <span class="hljs-keyword">else</span> {
+    <span class="hljs-comment">// resultValue is &quot;timed-out&quot; here; decide what to do</span>
+  }
+}</code></pre></div></figure>
+<p>You must carefully weigh the impacts of the three waiting mechanisms:</p>
+<ul>
+<li>Busy waiting blocks the thread without yielding the CPU. When it finishes, the CPU can immediately resume without <a target="_blank" rel="noopener" href="https://en.wikipedia.org/wiki/Context_switch">context switching</a>, but while it&#39;s spinning, this core is occupied and cannot take other jobs (although the operating system may decide to schedule in some other thread if the current thread has used the CPU for too long). This is the fastest mechanism when you expect the wait to be very short, even shorter than the time taken by two context switches.</li>
+<li>Synchronous <code>Atomics.wait()</code> blocks the thread but yields the CPU. The CPU core can take other threads and may need to context switch when this thread continues. This is the most efficient mechanism when you expect the wait to be longer than two context switches and it might be better to let other threads use the CPU in the meantime, but you prefer to keep the code synchronous.</li>
+<li>Asynchronous <code>Atomics.waitAsync()</code> uses normal promise semantics: the code that waits for its completion comes back as another job in the agent, but other code in the same thread keeps executing. This is useful when the current thread has other jobs that are equally important and must proceed in the meantime, such as the main thread, which needs to render the page and respond to user interactions.</li>
+</ul>
+<h2 id="useful-shared-memory-patterns">Useful shared memory patterns</h2>
+<p>Let&#39;s look at a few common techniques and concepts for ensuring the performance and correctness of multi-threading.</p>
+<p>A shared memory protocol needs to answer these questions:</p>
+<ul>
+<li>Who may access each part of the memory?</li>
+<li>Which operations must happen together without interleaving operations from other threads?</li>
+<li>How does an agent know that data is ready to read or safe to overwrite?</li>
+<li>How much work does the protocol require when an agent is working alone, and what happens when many agents compete for access?</li>
+</ul>
+<h3 id="locks-and-mutexes">Locks and mutexes</h3>
+<p>A <a target="_blank" rel="noopener" href="https://en.wikipedia.org/wiki/Lock_(computer_science)"><em>lock</em></a>, also called a <em>mutex</em> (for &quot;mutual exclusion&quot;), is a mechanism that ensures that while a thread has access to a particular resource, no other thread can have access to the same resource. Each thread acquires the lock before accessing protected data and releases it afterwards. The code between acquisition and release is called a <em>critical section</em>.</p>
+<blockquote>
+<p>[!NOTE]
+A <a target="_blank" rel="noopener" href="https://en.wikipedia.org/wiki/Futex"><em>futex</em></a> is short for a &quot;fast user-space mutex&quot;, but somewhat confusingly, it is not a mutex—it is a waiting mechanism that can be used to implement a mutex. In JavaScript, futexes are the only built-in waiting mechanism, provided by <code>Atomics.wait()</code>/<code>Atomics.waitAsync()</code> and <code>Atomics.notify()</code>; our mutex examples build upon this mechanism.</p>
+</blockquote>
+<p>A mutex is merely a protocol and does not physically prevent another thread from accessing the memory. As long as the protocol is upheld, different threads will never have overlapping critical sections, thus protecting a whole sequence of operations without making each individual read and write atomic.</p>
+<p>For example, create a buffer with space for a lock and a value. In our protocol, each participating agent will create an <code>Int32Array</code> view where the first element represents the lock (<code>1</code> means unlocked, <code>0</code> means locked) and the second holds the protected data.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JavaScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript"><span class="hljs-keyword">const</span> sab = <span class="hljs-keyword">new</span> <span class="hljs-title class_">SharedArrayBuffer</span>(<span class="hljs-number">8</span>);
+<span class="hljs-keyword">const</span> shared = <span class="hljs-keyword">new</span> <span class="hljs-title class_">Int32Array</span>(sab);
+shared[<span class="hljs-number">0</span>] = <span class="hljs-number">1</span>;</code></pre></div></figure>
+<p>Here&#39;s how one participating agent may implement that protocol. When an agent calls <code>lock()</code> to try to acquire the lock:</p>
+<ul>
+<li><code>Atomics.compareExchange()</code> is called, attempting to set the first element to <code>0</code> (locked), but only if it&#39;s currently <code>1</code> (available).</li>
+<li>If that fails—i.e., when it&#39;s already <code>0</code> because another agent is holding the lock—<code>Atomics.wait()</code> puts the caller to sleep, provided the lock still contains <code>0</code> (the lock may have been released between <code>compareExchange()</code> and <code>wait()</code>).</li>
+<li>The agent will only wake up when the agent currently holding the lock calls <code>unlock()</code>, which both resets the lock element to <code>1</code> and wakes the earliest waiting agent in the queue with <code>Atomics.notify()</code>.</li>
+<li>After waking, the agent tries to acquire the lock again, but it may still fail if there&#39;s a newcomer (for example, if the releasing agent immediately calls <code>lock()</code> again) who got the lock first, in which case this agent goes back to sleep again due to the <code>while()</code> loop.</li>
+<li>The loop only exits when lock acquisition succeeds.</li>
+</ul>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JavaScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript"><span class="hljs-keyword">function</span> <span class="hljs-title function_">lock</span>(<span class="hljs-params"></span>) {
+  <span class="hljs-keyword">while</span> (<span class="hljs-title class_">Atomics</span>.<span class="hljs-title function_">compareExchange</span>(shared, <span class="hljs-number">0</span>, <span class="hljs-number">1</span>, <span class="hljs-number">0</span>) !== <span class="hljs-number">1</span>) {
+    <span class="hljs-title class_">Atomics</span>.<span class="hljs-title function_">wait</span>(shared, <span class="hljs-number">0</span>, <span class="hljs-number">0</span>);
+  }
+}
+
+<span class="hljs-keyword">function</span> <span class="hljs-title function_">unlock</span>(<span class="hljs-params"></span>) {
+  <span class="hljs-title class_">Atomics</span>.<span class="hljs-title function_">store</span>(shared, <span class="hljs-number">0</span>, <span class="hljs-number">1</span>);
+  <span class="hljs-title class_">Atomics</span>.<span class="hljs-title function_">notify</span>(shared, <span class="hljs-number">0</span>, <span class="hljs-number">1</span>);
+}</code></pre></div></figure>
+<p>Here&#39;s how the lock-unlock pair can be called. The critical section must be wrapped in a <code>try...finally</code> block, with <code>unlock()</code> called in <code>finally</code>, so the lock is released even if the critical section throws an exception:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JavaScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript"><span class="hljs-title function_">lock</span>();
+<span class="hljs-keyword">try</span> {
+  shared[<span class="hljs-number">1</span>] *= <span class="hljs-number">2</span>;
+  shared[<span class="hljs-number">1</span>] += <span class="hljs-number">1</span>;
+} <span class="hljs-keyword">finally</span> {
+  <span class="hljs-title function_">unlock</span>();
+}</code></pre></div></figure>
+<p>Although the critical section uses ordinary indexed read/write, other agents will never observe stale values, because the atomic operations in <code>lock()</code>/<code>unlock()</code> establish a sequentially-consistent ordering.</p>
+<p>One mutex around all shared data is a straightforward starting point, but it serializes all protected work. If agents can operate on independent regions, giving those regions separate locks—or assigning each region to a single writer—can allow more concurrency.</p>
+<p>This simple mutex has multiple opportunities for improvement:</p>
+<ul>
+<li><p>What if an agent accidentally calls <code>unlock()</code> when the lock wasn&#39;t actually held by it?</p>
+<ul>
+<li>: We can solve this by replacing the boolean flag with a unique ID for each agent, so <code>unlock()</code> only proceeds if the ID in the lock matches the agent ID.</li>
+</ul>
+</li>
+<li><p>What if an agent accidentally calls <code>lock()</code> when it&#39;s already holding the lock (this is called <em>re-entry</em>)? This would cause it to wait on itself indefinitely, and all other agents waiting for the lock will also never get it.</p>
+<ul>
+<li><p>: We can solve this by making <code>lock()</code> only wait if the owner ID in the lock doesn&#39;t match the current ID.</p>
+<blockquote>
+<p>[!NOTE]
+Re-entry is commonly seen in nested function calls; for example if a critical section calls another function that also tries to establish a critical section using the same lock. If the lock is non-reentrant (it doesn&#39;t implement this mechanism), then each agent must ensure that the critical section is never re-entered.</p>
+</blockquote>
+</li>
+</ul>
+</li>
+<li><p>What if the agent that re-enters the lock calls <code>unlock()</code>? This would cause the lock to be released early, despite there being another <code>lock()</code> call that expects the lock to still be held.</p>
+<ul>
+<li>: We need to add a counter that increments on each <code>lock()</code> and decrements on each <code>unlock()</code>, and only actually release the lock when the counter reaches zero.</li>
+</ul>
+</li>
+<li><p>What if the waiting agent always loses to a newcomer and never gets the lock?</p>
+<ul>
+<li>: We need some scheduling mechanism to ensure that the newcomer doesn&#39;t jump the queue.</li>
+</ul>
+</li>
+</ul>
+<h3 id="spinlocks">Spinlocks</h3>
+<p>In the example above, an agent waiting for the lock goes to sleep and requires the other agent to notify it with <code>unlock()</code>. This is efficient when contention is high, because the lock may not be acquired quickly and it&#39;s best to yield the CPU to other processes not needing the lock. But when contention is low, scheduling the thread in and out of the CPU creates extra overhead compared to just occupying the CPU while waiting.</p>
+<p>A <em>spinlock</em> uses busy waiting instead of putting contenders to sleep. To turn the previous mutex into a spinlock, replace its functions with:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JavaScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript"><span class="hljs-keyword">function</span> <span class="hljs-title function_">lock</span>(<span class="hljs-params"></span>) {
+  <span class="hljs-keyword">while</span> (<span class="hljs-title class_">Atomics</span>.<span class="hljs-title function_">compareExchange</span>(shared, <span class="hljs-number">0</span>, <span class="hljs-number">1</span>, <span class="hljs-number">0</span>) !== <span class="hljs-number">1</span>) {
+    <span class="hljs-title class_">Atomics</span>.<span class="hljs-title function_">pause</span>();
+  }
+}
+
+<span class="hljs-keyword">function</span> <span class="hljs-title function_">unlock</span>(<span class="hljs-params"></span>) {
+  <span class="hljs-title class_">Atomics</span>.<span class="hljs-title function_">store</span>(shared, <span class="hljs-number">0</span>, <span class="hljs-number">1</span>);
+}</code></pre></div></figure>
+<p>The <code>Atomics.pause()</code> here is just a performance hint to the CPU. You can remove it and still keep the same functionality.</p>
+<blockquote>
+<p>[!WARNING]
+Using spinlocking on the main thread is not recommended, as it will freeze the entire page. In general, unless designed very carefully, spinlocks may not actually be more performant than a regular wait.</p>
+</blockquote>
+<p>Sometimes, whether contention is high or low is not for you to decide while writing the code. The same code may run when there are only two contenders and busy-waiting is more efficient, or when there are a thousand contenders and it must use a regular wait. In this case, you can use a hybrid approach, which is to first spin for a little while (say, 10 iterations), and if the lock is still not acquired, then call <code>Atomics.wait()</code>. There&#39;s an example on the <code>Atomics.pause()</code> page.</p>
+<h3 id="semaphores">Semaphores</h3>
+<p>A mutex only allows one agent to access the resource at a time; a <a target="_blank" rel="noopener" href="https://en.wikipedia.org/wiki/Semaphore_(programming)"><em>semaphore</em></a>, on the other hand, generalizes that to allow up to a specified number of simultaneous agents.</p>
+<p>To implement this, the shared memory maintains a count of available <em>permits</em>: acquiring a permit decrements the count, releasing one increments it, and an agent waits if no permits are available.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JavaScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript"><span class="hljs-keyword">const</span> sab = <span class="hljs-keyword">new</span> <span class="hljs-title class_">SharedArrayBuffer</span>(<span class="hljs-number">4</span>);
+<span class="hljs-keyword">const</span> permits = <span class="hljs-keyword">new</span> <span class="hljs-title class_">Int32Array</span>(sab);
+permits[<span class="hljs-number">0</span>] = <span class="hljs-number">3</span>;</code></pre></div></figure>
+<p>Each worker creates its own view of that buffer and uses the following functions:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JavaScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript"><span class="hljs-keyword">const</span> permits = <span class="hljs-keyword">new</span> <span class="hljs-title class_">Int32Array</span>(sab);
+
+<span class="hljs-keyword">function</span> <span class="hljs-title function_">acquire</span>(<span class="hljs-params"></span>) {
+  <span class="hljs-keyword">while</span> (<span class="hljs-literal">true</span>) {
+    <span class="hljs-keyword">const</span> available = <span class="hljs-title class_">Atomics</span>.<span class="hljs-title function_">load</span>(permits, <span class="hljs-number">0</span>);
+    <span class="hljs-keyword">if</span> (available === <span class="hljs-number">0</span>) {
+      <span class="hljs-title class_">Atomics</span>.<span class="hljs-title function_">wait</span>(permits, <span class="hljs-number">0</span>, <span class="hljs-number">0</span>);
+    } <span class="hljs-keyword">else</span> <span class="hljs-keyword">if</span> (
+      <span class="hljs-title class_">Atomics</span>.<span class="hljs-title function_">compareExchange</span>(permits, <span class="hljs-number">0</span>, available, available - <span class="hljs-number">1</span>) ===
+      available
+    ) {
+      <span class="hljs-keyword">return</span>;
+    }
+  }
+}
+
+<span class="hljs-keyword">function</span> <span class="hljs-title function_">release</span>(<span class="hljs-params"></span>) {
+  <span class="hljs-title class_">Atomics</span>.<span class="hljs-title function_">add</span>(permits, <span class="hljs-number">0</span>, <span class="hljs-number">1</span>);
+  <span class="hljs-title class_">Atomics</span>.<span class="hljs-title function_">notify</span>(permits, <span class="hljs-number">0</span>, <span class="hljs-number">1</span>);
+}
+
+<span class="hljs-title function_">acquire</span>();
+<span class="hljs-keyword">try</span> {
+  <span class="hljs-comment">// Perform a task that requires one permit.</span>
+} <span class="hljs-keyword">finally</span> {
+  <span class="hljs-title function_">release</span>();
+}</code></pre></div></figure>
+<p>You might notice that if we set the maximum number of permits to <code>1</code>, we arrive at essentially the same code as the mutex example—indeed, our simple mutex is just a <em>binary semaphore</em> (at most 1 permit).</p>
+<p>A semaphore with multiple permits (called a <em>counting semaphore</em>) still runs into problems when the concurrent agents try to access the same resource. The goal of a semaphore is to moderate access to a limited resource pool (for example, if there are only 4 available buffers). You still need a separate mechanism to assign these resources to the agents to avoid simultaneous access.</p>
+<h3 id="avoiding-deadlocks">Avoiding deadlocks</h3>
+<p>A <em>deadlock</em> occurs when agents wait on each other in a cycle, so none can make progress. For example:</p>
+<ol>
+<li>Agent A acquires lock X.</li>
+<li>Agent B acquires lock Y.</li>
+<li>Agent A waits to acquire Y, while still holding X.</li>
+<li>Agent B waits to acquire X, while still holding Y.</li>
+</ol>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JavaScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript"><span class="hljs-comment">// -- a.js --</span>
+lockX.<span class="hljs-title function_">lock</span>();
+<span class="hljs-keyword">try</span> {
+  lockY.<span class="hljs-title function_">lock</span>(); <span class="hljs-comment">// Waiting for lockY.unlock() in b.js...</span>
+  <span class="hljs-keyword">try</span> {
+    <span class="hljs-comment">// Work requiring both locks</span>
+  } <span class="hljs-keyword">finally</span> {
+    lockY.<span class="hljs-title function_">unlock</span>();
+  }
+} <span class="hljs-keyword">finally</span> {
+  lockX.<span class="hljs-title function_">unlock</span>();
+}</code></pre></div></figure>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JavaScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript"><span class="hljs-comment">// -- b.js --</span>
+lockY.<span class="hljs-title function_">lock</span>();
+<span class="hljs-keyword">try</span> {
+  lockX.<span class="hljs-title function_">lock</span>(); <span class="hljs-comment">// Waiting for lockX.unlock() in a.js...</span>
+  <span class="hljs-keyword">try</span> {
+    <span class="hljs-comment">// Work requiring both locks</span>
+  } <span class="hljs-keyword">finally</span> {
+    lockX.<span class="hljs-title function_">unlock</span>();
+  }
+} <span class="hljs-keyword">finally</span> {
+  lockY.<span class="hljs-title function_">unlock</span>();
+}</code></pre></div></figure>
+<p>Neither agent can reach the code that releases its lock.</p>
+<p>Waiting on a lock is just one way to enter a deadlock: two agents may also wait on a message from the other agent, etc.</p>
+<p>Preventing deadlocks requires very high discipline within each agent. For example, when an operation needs multiple locks, the protocol must specify the order in which these locks are acquired. Each agent must make sure that locks are eventually released, especially in case of errors (by using <code>try...finally</code>). How such protocols can be enforced at the compiler or static checker level is an active area of research.</p>
+<h3 id="lock-free-algorithms">Lock-free algorithms</h3>
+<p>Locks are powerful and convenient (when implemented correctly), but they are also a bit heavyweight, especially when there&#39;s no contention. For every critical section—which may be as short as a single read/write operation—the mutex above incurs the overhead of an <code>Atomics.compareExchange()</code>, an <code>Atomics.store()</code>, and—except when using spinlocks—an <code>Atomics.notify()</code>.</p>
+<p>In fact, even something as simple as <code>Atomics.load(uint16, 0)</code> might need an internal lock! If you think about it, an element in a <code>Uint16Array</code> is comprised of two bytes. If an extremely simple CPU only allows reading memory byte-by-byte, it would look like the following (assuming little-endian byte order):</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JavaScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript"><span class="hljs-keyword">const</span> firstByte = uint8[<span class="hljs-number">0</span>]; <span class="hljs-comment">// uint8 is the same memory span viewed as Uint8Array</span>
+<span class="hljs-keyword">const</span> secondByte = uint8[<span class="hljs-number">1</span>];
+
+<span class="hljs-keyword">const</span> value = firstByte + (secondByte &lt;&lt; <span class="hljs-number">8</span>);</code></pre></div></figure>
+<p>If another agent writes a new two-byte value between the first and second statements, the final read may combine bytes from the old and new values, rather than being a coherent <code>uint16</code> value. This is called a <em>torn read</em>. Atomic reads and writes of the same element never tear, because the engine either puts a lock on the bytes of interest or uses native CPU instructions that provide the required atomicity. Locking involves two extra steps (acquisition and release) and can be much slower than a lock-free implementation; whether the former or the latter is used depends on the operating system, CPU architecture, JavaScript engine, etc., as well as the byte size of the operation. To know if atomic operations on a specific byte size in your current environment are implemented without locks, use <code>Atomics.isLockFree()</code>.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JavaScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript"><span class="hljs-title class_">Atomics</span>.<span class="hljs-title function_">isLockFree</span>(<span class="hljs-number">4</span>); <span class="hljs-comment">// true: required for 4-byte atomic operations</span>
+<span class="hljs-title class_">Atomics</span>.<span class="hljs-title function_">isLockFree</span>(<span class="hljs-number">7</span>); <span class="hljs-comment">// false: not a supported atomic element size</span></code></pre></div></figure>
+<p>Not all operations are <em>tear-free</em>. Read/write on <code>Int16</code>, <code>Uint16</code>, <code>Int32</code>, <code>Uint32</code> types never tear, whether using <code>Atomics</code> or indexed access. Other data types may tear if you use indexed access, so you need to use <code>Atomics</code> to avoid tears, or—for unsupported types like floating point—implement a lock yourself. <code>Atomics.isLockFree</code> tells you whether such tear-free guarantee comes from a lock or a native instruction.</p>
+<p>You can also avoid locks in your own code. Recall the atomic multiplication code from above:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JavaScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript"><span class="hljs-keyword">function</span> <span class="hljs-title function_">atomicMultiply</span>(<span class="hljs-params">array, index, multiplier</span>) {
+  <span class="hljs-keyword">let</span> oldValue = <span class="hljs-title class_">Atomics</span>.<span class="hljs-title function_">load</span>(array, index);
+
+  <span class="hljs-keyword">while</span> (<span class="hljs-literal">true</span>) {
+    <span class="hljs-keyword">const</span> observed = <span class="hljs-title class_">Atomics</span>.<span class="hljs-title function_">compareExchange</span>(
+      array,
+      index,
+      oldValue,
+      oldValue * multiplier,
+    );
+
+    <span class="hljs-keyword">if</span> (observed === oldValue) {
+      <span class="hljs-keyword">return</span> oldValue;
+    }
+
+    oldValue = observed;
+  }
+}</code></pre></div></figure>
+<p>There&#39;s no explicit lock here. The agent doesn&#39;t actively enforce a critical section; it just repeatedly retries the read-write sequence until there turns out to be no contender in between. This makes the no-contender case as fast as possible, but may retry many times when contention is high.</p>
+<h3 id="producerconsumer-handoff">Producer–consumer handoff</h3>
+<p>A common case where two threads need to access the same memory is when one is a <em>producer</em> and the other is a <em>consumer</em>. With a normal lock, each time, both agents compete for the lock, and if the data isn&#39;t ready yet (for example, the producer finds that the consumer hasn&#39;t read it, or the consumer finds that the producer hasn&#39;t written it; you also need a separate readiness flag to track this), that agent goes back to sleep and lets the other agent take the lock; this is inefficient. The <em>handoff</em> pattern lets two agents take turns, coalescing the lock and the readiness flag into the same protocol.</p>
+<p>Again, we start with a 2-element shared memory. The first element is a state flag: <code>0</code> means empty and <code>1</code> means full. The second element holds one value.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JavaScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript"><span class="hljs-keyword">const</span> sab = <span class="hljs-keyword">new</span> <span class="hljs-title class_">SharedArrayBuffer</span>(<span class="hljs-number">8</span>);
+<span class="hljs-keyword">const</span> shared = <span class="hljs-keyword">new</span> <span class="hljs-title class_">Int32Array</span>(sab);</code></pre></div></figure>
+<p>The producer waits while the value slot is &quot;full&quot; (i.e., the consumer has not read it). When the slot is &quot;empty&quot;, it writes the new value and notifies the consumer.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JavaScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript"><span class="hljs-comment">// -- producer.js --</span>
+<span class="hljs-keyword">function</span> <span class="hljs-title function_">produce</span>(<span class="hljs-params">value</span>) {
+  <span class="hljs-keyword">while</span> (<span class="hljs-title class_">Atomics</span>.<span class="hljs-title function_">load</span>(shared, <span class="hljs-number">0</span>) !== <span class="hljs-number">0</span>) {
+    <span class="hljs-title class_">Atomics</span>.<span class="hljs-title function_">wait</span>(shared, <span class="hljs-number">0</span>, <span class="hljs-number">1</span>);
+  }
+
+  shared[<span class="hljs-number">1</span>] = value;
+  <span class="hljs-title class_">Atomics</span>.<span class="hljs-title function_">store</span>(shared, <span class="hljs-number">0</span>, <span class="hljs-number">1</span>);
+  <span class="hljs-title class_">Atomics</span>.<span class="hljs-title function_">notify</span>(shared, <span class="hljs-number">0</span>, <span class="hljs-number">1</span>);
+}
+
+<span class="hljs-title function_">produce</span>(<span class="hljs-number">63</span>);
+<span class="hljs-title function_">produce</span>(<span class="hljs-number">64</span>);</code></pre></div></figure>
+<p>Conversely, the consumer waits while the value slot is &quot;empty&quot;, and reads the new value when it becomes &quot;full&quot;.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JavaScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript"><span class="hljs-comment">// -- consumer.js --</span>
+<span class="hljs-keyword">function</span> <span class="hljs-title function_">consume</span>(<span class="hljs-params"></span>) {
+  <span class="hljs-keyword">while</span> (<span class="hljs-title class_">Atomics</span>.<span class="hljs-title function_">load</span>(shared, <span class="hljs-number">0</span>) !== <span class="hljs-number">1</span>) {
+    <span class="hljs-title class_">Atomics</span>.<span class="hljs-title function_">wait</span>(shared, <span class="hljs-number">0</span>, <span class="hljs-number">0</span>);
+  }
+
+  <span class="hljs-keyword">const</span> value = shared[<span class="hljs-number">1</span>];
+  <span class="hljs-title class_">Atomics</span>.<span class="hljs-title function_">store</span>(shared, <span class="hljs-number">0</span>, <span class="hljs-number">0</span>);
+  <span class="hljs-title class_">Atomics</span>.<span class="hljs-title function_">notify</span>(shared, <span class="hljs-number">0</span>, <span class="hljs-number">1</span>);
+  <span class="hljs-keyword">return</span> value;
+}
+
+<span class="hljs-variable language_">console</span>.<span class="hljs-title function_">log</span>(<span class="hljs-title function_">consume</span>()); <span class="hljs-comment">// 63</span>
+<span class="hljs-variable language_">console</span>.<span class="hljs-title function_">log</span>(<span class="hljs-title function_">consume</span>()); <span class="hljs-comment">// 64</span></code></pre></div></figure>
+<p>This protocol depends on having exactly one producer and one consumer. With multiple producers, two agents could both see an empty slot and overwrite each other&#39;s data, so you would still need a mutex among the producers. The same goes for consumers. This is still an improvement over a shared lock among all producers and consumers though: it lets control alternate between the <em>groups</em> of producers and consumers without competition.</p>
+<h2 id="number-guessing-game-using-shared-memory">Number-guessing game using shared memory</h2>
+<p>To close off this guide, let&#39;s re-implement our <a href="#communication_via_messages">number-guessing game</a> with this handoff pattern. Both agents alternate between producing and consuming: the worker produces a guess, and the main thread consumes it and produces feedback. They share two integers:</p>
+<ul>
+<li><code>shared[0]</code> indicates whose turn it is: <code>0</code> for the worker and <code>1</code> for the main thread.</li>
+<li><code>shared[1]</code> holds either the guess or the feedback, depending on whose turn it is. Feedback is <code>-1</code> for &quot;Too low&quot;, <code>1</code> for &quot;Too high&quot;, and <code>0</code> for &quot;Correct&quot;.</li>
+</ul>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JavaScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript"><span class="hljs-comment">// -- main.js --</span>
+<span class="hljs-keyword">const</span> worker = <span class="hljs-keyword">new</span> <span class="hljs-title class_">Worker</span>(<span class="hljs-string">&quot;./worker.js&quot;</span>, { <span class="hljs-attr">type</span>: <span class="hljs-string">&quot;module&quot;</span> });
+<span class="hljs-keyword">const</span> sab = <span class="hljs-keyword">new</span> <span class="hljs-title class_">SharedArrayBuffer</span>(<span class="hljs-number">8</span>);
+<span class="hljs-keyword">const</span> shared = <span class="hljs-keyword">new</span> <span class="hljs-title class_">Int32Array</span>(sab);
+<span class="hljs-keyword">const</span> secretNumber = <span class="hljs-number">63</span>;
+
+<span class="hljs-comment">// The turn flag is initially 0, so the worker takes the first turn</span>
+worker.<span class="hljs-title function_">postMessage</span>(sab);
+
+<span class="hljs-comment">// Wait until the worker has started. The browser may not start the</span>
+<span class="hljs-comment">// worker until the main thread returns to the event loop.</span>
+<span class="hljs-keyword">await</span> <span class="hljs-keyword">new</span> <span class="hljs-title class_">Promise</span>(<span class="hljs-function">(<span class="hljs-params">resolve</span>) =&gt;</span> {
+  worker.<span class="hljs-title function_">addEventListener</span>(<span class="hljs-string">&quot;message&quot;</span>, resolve, { <span class="hljs-attr">once</span>: <span class="hljs-literal">true</span> });
+});
+
+<span class="hljs-keyword">while</span> (<span class="hljs-literal">true</span>) {
+  <span class="hljs-comment">// Wait until the worker finishes its turn</span>
+  <span class="hljs-keyword">while</span> (<span class="hljs-title class_">Atomics</span>.<span class="hljs-title function_">load</span>(shared, <span class="hljs-number">0</span>) !== <span class="hljs-number">1</span>) {
+    <span class="hljs-comment">// We use busy waiting here because we expect the worker to come</span>
+    <span class="hljs-comment">// back very quickly and the main thread can&#x27;t use Atomics.wait().</span>
+    <span class="hljs-comment">// In more complex scenarios, you probably want to use Atomics.waitAsync()</span>
+    <span class="hljs-comment">// to avoid blocking the main thread.</span>
+    <span class="hljs-title class_">Atomics</span>.<span class="hljs-title function_">pause</span>();
+  }
+
+  <span class="hljs-keyword">const</span> workerGuess = shared[<span class="hljs-number">1</span>];
+  <span class="hljs-variable language_">console</span>.<span class="hljs-title function_">log</span>(<span class="hljs-string">&quot;Worker guessed:&quot;</span>, workerGuess);
+  <span class="hljs-keyword">const</span> feedback =
+    workerGuess &lt; secretNumber ? -<span class="hljs-number">1</span> : workerGuess &gt; secretNumber ? <span class="hljs-number">1</span> : <span class="hljs-number">0</span>;
+
+  shared[<span class="hljs-number">1</span>] = feedback;
+  <span class="hljs-title class_">Atomics</span>.<span class="hljs-title function_">store</span>(shared, <span class="hljs-number">0</span>, <span class="hljs-number">0</span>);
+  <span class="hljs-title class_">Atomics</span>.<span class="hljs-title function_">notify</span>(shared, <span class="hljs-number">0</span>, <span class="hljs-number">1</span>);
+
+  <span class="hljs-keyword">if</span> (feedback === <span class="hljs-number">0</span>) {
+    <span class="hljs-variable language_">console</span>.<span class="hljs-title function_">log</span>(<span class="hljs-string">&quot;Worker successfully guessed the secret number!&quot;</span>);
+    <span class="hljs-keyword">break</span>;
+  }
+}</code></pre></div></figure>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JavaScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript"><span class="hljs-comment">// -- worker.js --</span>
+<span class="hljs-keyword">const</span> sab = <span class="hljs-keyword">await</span> <span class="hljs-keyword">new</span> <span class="hljs-title class_">Promise</span>(<span class="hljs-function">(<span class="hljs-params">resolve</span>) =&gt;</span> {
+  <span class="hljs-variable language_">self</span>.<span class="hljs-title function_">addEventListener</span>(<span class="hljs-string">&quot;message&quot;</span>, <span class="hljs-function">(<span class="hljs-params">e</span>) =&gt;</span> <span class="hljs-title function_">resolve</span>(e.<span class="hljs-property">data</span>), { <span class="hljs-attr">once</span>: <span class="hljs-literal">true</span> });
+});
+<span class="hljs-keyword">const</span> shared = <span class="hljs-keyword">new</span> <span class="hljs-title class_">Int32Array</span>(sab);
+<span class="hljs-keyword">let</span> low = <span class="hljs-number">0</span>;
+<span class="hljs-keyword">let</span> high = <span class="hljs-number">100</span>;
+
+<span class="hljs-comment">// Tell the main thread that the worker has started</span>
+<span class="hljs-variable language_">self</span>.<span class="hljs-title function_">postMessage</span>(<span class="hljs-string">&quot;ready&quot;</span>);
+
+<span class="hljs-keyword">while</span> (<span class="hljs-literal">true</span>) {
+  <span class="hljs-keyword">const</span> lastGuess = <span class="hljs-title class_">Math</span>.<span class="hljs-title function_">floor</span>((low + high) / <span class="hljs-number">2</span>);
+  <span class="hljs-comment">// Worker initiates the handoff here by making a guess</span>
+  shared[<span class="hljs-number">1</span>] = lastGuess;
+  <span class="hljs-title class_">Atomics</span>.<span class="hljs-title function_">store</span>(shared, <span class="hljs-number">0</span>, <span class="hljs-number">1</span>);
+  <span class="hljs-title class_">Atomics</span>.<span class="hljs-title function_">notify</span>(shared, <span class="hljs-number">0</span>, <span class="hljs-number">1</span>);
+
+  <span class="hljs-comment">// Wait until the main agent writes the feedback</span>
+  <span class="hljs-keyword">while</span> (<span class="hljs-title class_">Atomics</span>.<span class="hljs-title function_">load</span>(shared, <span class="hljs-number">0</span>) !== <span class="hljs-number">0</span>) {
+    <span class="hljs-title class_">Atomics</span>.<span class="hljs-title function_">wait</span>(shared, <span class="hljs-number">0</span>, <span class="hljs-number">1</span>);
+  }
+
+  <span class="hljs-keyword">const</span> feedback = shared[<span class="hljs-number">1</span>];
+  <span class="hljs-keyword">if</span> (feedback === <span class="hljs-number">0</span>) {
+    <span class="hljs-variable language_">console</span>.<span class="hljs-title function_">log</span>(<span class="hljs-string">&quot;Yay&quot;</span>);
+    <span class="hljs-keyword">break</span>;
+  }
+  <span class="hljs-keyword">if</span> (feedback === -<span class="hljs-number">1</span>) {
+    low = lastGuess + <span class="hljs-number">1</span>;
+  } <span class="hljs-keyword">else</span> <span class="hljs-keyword">if</span> (feedback === <span class="hljs-number">1</span>) {
+    high = lastGuess - <span class="hljs-number">1</span>;
+  }
+  <span class="hljs-keyword">if</span> (low &gt; high) {
+    <span class="hljs-keyword">throw</span> <span class="hljs-keyword">new</span> <span class="hljs-title class_">Error</span>(
+      <span class="hljs-string">&quot;Sorry, the feedback from main.js is inconsistent and I suspect main is cheating&quot;</span>,
+    );
+  }
+}</code></pre></div></figure>
+<p>This implements the same functionality, and note how both loops are synchronous—this should be much more efficient than passing messages back and forth!</p>
+<h2 id="see-also">See also</h2>
+<ul>
+<li><a href="#/doc/javascript/Reference/Execution_model">JavaScript execution model</a></li>
+<li><a target="_blank" rel="noopener" href="https://developer.mozilla.org/en-US/docs/Web/API/Web_Workers_API">Web workers API</a></li>
+<li><code>SharedArrayBuffer</code></li>
+<li><code>Atomics</code></li>
+<li><code>Worker.postMessage()</code></li>
+</ul>
