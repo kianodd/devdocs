@@ -1,0 +1,115 @@
+<p>During incremental migration, new endpoints are brought over to a <a target="_blank" rel="noopener" href="https://dotnet.github.io/yarp/">YARP</a> enabled ASP.NET Core app. With the default setup, these endpoints are automatically served for all requests once deployed. In order to test these endpoints, or be able to turn them off if needed, additional setup is needed.</p>
+<p>This document describes how to setup a conditional endpoint selection system to enable A/B testing during incremental migration. It assumes a setup as described in <a href="#/doc/aspnet/migration/fx-to-core/index">incremental migration overview</a> as a starting point.</p>
+<h2 id="conditional-endpoint-selection">Conditional endpoint selection</h2>
+<p>To enable conditional endpoint selection, a few services need to be defined:</p>
+<ol>
+<li><p>Metadata that can be added to an endpoint to turn on any conditional related logic. Endpoints include controllers, Minimal APIs, Razor Page, etc. If this metadata isn&#39;t added to an endpoint, no conditional checks are performed for it.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">[AttributeUsage(AttributeTargets.Class | AttributeTargets.Method)]
+public sealed class ConditionalRouteAttribute : Attribute
+{
+    public bool IsConditional { get; set; } = true;
+}</code></pre></div></figure>
+<p> The property <code>IsConditional</code> is useful to set it <code>true</code> at a global level, and then allow lower levels, such as controllers or routes, to turn off the conditional checks.</p>
+</li>
+<li><p>The API we want to implement to make a decision per request and endpoint selection:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">public interface IConditionalEndpointSelector
+{
+    ValueTask&lt;bool&gt; IsEnabledAsync(HttpContext context, Endpoint candidate);
+}</code></pre></div></figure>
+</li>
+<li><p>A <code>MatcherPolicy</code> that is used to hook into routing and call the custom selector:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">public static class ConditionalEndpointExtensions
+{
+    /// &lt;summary&gt;
+    /// Registers a &lt;see cref=&quot;IConditionalEndpointSelector&quot;/&gt; that is called when selecting
+    /// an endpoint that has been marked as conditional by &lt;see cref=&quot;WithConditionalRoute{TBuilder}(TBuilder)&quot;/&gt;.
+    /// &lt;/summary&gt;
+    /// &lt;typeparam name=&quot;T&quot;&gt;Type of selector&lt;/typeparam&gt;
+    /// &lt;param name=&quot;services&quot;&gt;Service collection to add to.&lt;/param&gt;
+    public static void AddConditionalEndpoints(this IServiceCollection services)
+        where T : class, IConditionalEndpointSelector
+    {
+        services.AddTransient&lt;IConditionalEndpointSelector, T&gt;();
+        services.TryAddEnumerable(ServiceDescriptor.Singleton&lt;MatcherPolicy, ConditionalEndpointMatcherPolicy&gt;());
+    }
+
+    /// &lt;summary&gt;
+    /// Enable conditional behavior for supplied endpoints. An implementation of &lt;see cref=&quot;IConditionalEndpointSelector&quot;/&gt; must be registered as a service for this to be enabled at runtime.
+    /// &lt;/summary&gt;
+    /// &lt;param name=&quot;builder&quot;&gt;The endpoint convention builder&lt;/param&gt;
+    /// &lt;returns&gt;The original convention builder.&lt;/returns&gt;
+    public static TBuilder WithConditionalRoute(this TBuilder builder)
+        where TBuilder : IEndpointConventionBuilder
+    {
+        ArgumentNullException.ThrowIfNull(builder);
+
+        return builder.WithMetadata(new ConditionalRouteAttribute());
+    }
+
+    private sealed class ConditionalEndpointMatcherPolicy : MatcherPolicy, IEndpointSelectorPolicy
+    {
+        private readonly IConditionalEndpointSelector _selector;
+
+        public ConditionalEndpointMatcherPolicy(IConditionalEndpointSelector selector)
+        {
+            _selector = selector;
+        }
+
+        public override int Order =&gt; 0;
+
+        public bool AppliesToEndpoints(IReadOnlyList endpoints)
+            =&gt; endpoints.Any(e =&gt; e.Metadata.GetMetadata() is { IsConditional: true });
+
+        public async Task ApplyAsync(HttpContext httpContext, CandidateSet candidates)
+        {
+            for (int i = 0; i &lt; candidates.Count; i++)
+            {
+                var endpoint = candidates[i].Endpoint;
+
+                if (endpoint.Metadata.GetMetadata() is { IsConditional: true })
+                {
+                    if (await _selector.IsEnabledAsync(httpContext, endpoint) == false)
+                    {
+                        candidates.SetValidity(i, false);
+                    }
+                }
+            }
+        }
+    }
+}</code></pre></div></figure>
+</li>
+<li><p>Implement a custom selector. As an example, this defines a check for the presence of a query parameter (<code>IgnoreLocal</code>) that turns off the local endpoint and uses the YARP endpoint instead.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">public class QueryConditionalSelector : IConditionalEndpointSelector
+{
+    public ValueTask&lt;bool&gt; IsEnabledAsync(HttpContext context, Endpoint candidate)
+    {
+        var result = context.Request.Query.TryGetValue(&quot;IgnoreLocal&quot;, out var values) &amp;&amp;
+            values is { Count: 1 } &amp;&amp;
+            bool.TryParse(values[0], out var skip)
+            &amp;&amp; skip;
+
+        return ValueTask.FromResult(result);
+    }</code></pre></div></figure>
+</li>
+<li><p>Register the services in the program startup and mark the controllers for conditional selection. This marking can also be done using attribute marking on controllers or routes if needed.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Diff</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-diff">using Microsoft.AspNetCore.SystemWebAdapters;
+
+var builder = WebApplication.CreateBuilder();
+builder.Services.AddReverseProxy().LoadFromConfig(builder.Configuration.GetSection(&quot;ReverseProxy&quot;));
+
+// Add services to the container.
+builder.Services.AddControllersWithViews();
+builder.Services.AddSystemWebAdapters();
+<span class="hljs-addition">+ builder.Services.AddConditionalEndpoint();</span>
+
+var app = builder.Build();
+
+app.UseSystemWebAdapters();
+
+<span class="hljs-deletion">- app.MapDefaultControllerRoute();</span>
+<span class="hljs-addition">+ app.MapDefaultControllerRoute().WithConditionalRoute();</span>
+app.MapReverseProxy();
+
+app.Run();</code></pre></div></figure>
+</li>
+</ol>

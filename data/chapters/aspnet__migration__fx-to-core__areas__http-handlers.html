@@ -1,0 +1,70 @@
+<p>This article shows how to migrate existing ASP.NET <a href="/iis/configuration/system.webserver/">HTTP handlers from system.webserver</a> to ASP.NET Core <a href="#/doc/aspnet/fundamentals/middleware/index">middleware</a>.</p>
+<h2 id="handlers-revisited">Handlers revisited</h2>
+<p>Before proceeding to ASP.NET Core middleware, let&#39;s first recap how HTTP handlers work:</p>
+<p><img src="_static/moduleshandlers.png" alt="Modules Handler"></p>
+<p><strong>Handlers are:</strong></p>
+<ul>
+<li><p>Classes that implement <code>IHttpHandler</code></p>
+</li>
+<li><p>Used to handle requests with a given file name or extension, such as <em>.report</em></p>
+</li>
+<li><p><a href="/iis/configuration/system.webserver/handlers/">Configured</a> in <em>Web.config</em></p>
+</li>
+</ul>
+<h2 id="from-handlers-to-middleware">From handlers to middleware</h2>
+<p><strong>Middleware are simpler than HTTP handlers:</strong></p>
+<ul>
+<li><p>Handlers, <em>Web.config</em> (except for IIS configuration) and the application life cycle are gone</p>
+</li>
+<li><p>The roles of handlers have been taken over by middleware</p>
+</li>
+<li><p>Middleware are configured using code rather than in <em>Web.config</em></p>
+</li>
+</ul>
+<p>:::moniker range=&quot;&gt;= aspnetcore-3.0&quot;</p>
+<ul>
+<li><a href="#/doc/aspnet/fundamentals/middleware/index@branch-the-middleware-pipeline">Pipeline branching</a> lets you send requests to specific middleware, based on not only the URL but also on request headers, query strings, etc.</li>
+</ul>
+<p>:::moniker-end
+:::moniker range=&quot;&lt; aspnetcore-3.0&quot;</p>
+<ul>
+<li><a href="#/doc/aspnet/fundamentals/middleware/index@branch-the-middleware-pipeline">Pipeline branching</a> lets you send requests to specific middleware, based on not only the URL but also on request headers, query strings, etc.</li>
+</ul>
+<p>:::moniker-end</p>
+<p><strong>Middleware are very similar to handlers:</strong></p>
+<ul>
+<li>Able to create their own HTTP response</li>
+</ul>
+<p><img src="_static/middleware.png" alt="Authorization middleware short-circuits a request for a user who isn&#39;t authorized. A request for the Index page is permitted and processed by MVC middleware. A request for a sales report is permitted and processed by a custom report middleware."></p>
+<h2 id="migrating-handler-code-to-middleware">Migrating handler code to middleware</h2>
+<p>An HTTP handler looks something like this:</p>
+<p>[!code-csharp<a href="./samples/Asp.Net4/Asp.Net4/HttpHandlers/ReportHandler.cs?highlight=5,7,13,14,15,16"></a>]</p>
+<p>In your ASP.NET Core project, you would translate this to a middleware similar to this:</p>
+<p>[!code-csharp<a href="./samples/Asp.Net.Core/Middleware/ReportHandlerMiddleware.cs?highlight=7,9,13,20,21,22,23,40,42,44"></a>]</p>
+<p>This middleware is very similar to the middleware corresponding to modules. The only real difference is that here there&#39;s no call to <code>_next.Invoke(context)</code>. That makes sense, because the handler is at the end of the request pipeline, so there will be no next middleware to invoke.</p>
+<h2 id="migrating-handler-insertion-into-the-request-pipeline">Migrating handler insertion into the request pipeline</h2>
+<p>Configuring an HTTP handler is done in <em>Web.config</em> and looks something like this:</p>
+<p>[!code-xml<a href="./samples/Asp.Net4/Asp.Net4/Web.config?highlight=6&amp;range=1-3,32,46-48,50,101"></a>]</p>
+<p>You could convert this by adding your new handler middleware to the request pipeline in your <code>Startup</code> class, similar to middleware converted from modules. The problem with that approach is that it would send all requests to your new handler middleware. However, you only want requests with a given extension to reach your middleware. That would give you the same functionality you had with your HTTP handler.</p>
+<p>One solution is to branch the pipeline for requests with a given extension, using the <code>MapWhen</code> extension method. You do this in the same <code>Configure</code> method where you add the other middleware:</p>
+<p>[!code-csharp<a href="./samples/Asp.Net.Core/Startup.cs?name=snippet_Configure&amp;highlight=27-34"></a>]</p>
+<p><code>MapWhen</code> takes these parameters:</p>
+<ol>
+<li><p>A lambda that takes the <code>HttpContext</code> and returns <code>true</code> if the request should go down the branch. This means you can branch requests not just based on their extension, but also on request headers, query string parameters, etc.</p>
+</li>
+<li><p>A lambda that takes an <code>IApplicationBuilder</code> and adds all the middleware for the branch. This means you can add additional middleware to the branch in front of your handler middleware.</p>
+</li>
+</ol>
+<p>Middleware added to the pipeline before the branch will be invoked on all requests; the branch will have no impact on them.</p>
+<p>For additional details, see the <a href="#/doc/aspnet/fundamentals/middleware/index">middleware documentation</a> for additional ways to use middleware to replace your usage of handlers. </p>
+<h2 id="migrating-to-the-new-httpcontext">Migrating to the new HttpContext</h2>
+<p>The <code>Invoke</code> method in your middleware takes a parameter of type <code>HttpContext</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">public async Task Invoke(HttpContext context)</code></pre></div></figure>
+<p><code>HttpContext</code> has significantly changed in ASP.NET Core. For detailed information on how to translate the most commonly used properties of <code>System.Web.HttpContext</code> to the new <code>Microsoft.AspNetCore.Http.HttpContext</code>, see <a href="#/doc/aspnet/migration/fx-to-core/areas/http-context">Migrate from ASP.NET Framework HttpContext to ASP.NET Core</a>.</p>
+<h2 id="related-content">Related content</h2>
+<ul>
+<li><a href="/iis/configuration/system.webserver/">HTTP Handlers and HTTP Modules Overview</a></li>
+<li><a href="#/doc/aspnet/fundamentals/startup">Application Startup</a></li>
+<li><a href="#/doc/aspnet/fundamentals/middleware/index">Middleware</a></li>
+<li><a href="#/doc/aspnet/migration/fx-to-core/areas/http-context">Migrate from ASP.NET Framework HttpContext to ASP.NET Core</a></li>
+</ul>

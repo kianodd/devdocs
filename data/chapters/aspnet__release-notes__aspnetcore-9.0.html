@@ -1,0 +1,936 @@
+<p>This article highlights the most significant changes in ASP.NET Core in .NET 9 with links to relevant documentation.</p>
+<h2 id="static-asset-delivery-optimization">Static asset delivery optimization</h2>
+<p><code>MapStaticAssets</code> routing endpoint conventions is a new feature that optimizes the delivery of static assets in ASP.NET Core apps.</p>
+<p>For information on static asset delivery for Blazor apps, see <a href="../blazor/fundamentals/static-files.md?view=aspnetcore-9.0&amp;preserve-view=true">ASP.NET Core Blazor static files</a>.</p>
+<p>Following production best practices for serving static assets requires a significant amount of work and technical expertise. Without optimizations like compression, caching, and <a target="_blank" rel="noopener" href="https://en.wikipedia.org/wiki/Fingerprint_(computing)">fingerprints</a>:</p>
+<ul>
+<li>The browser has to make additional requests on every page load.</li>
+<li>More bytes than necessary are transferred through the network.</li>
+<li>Sometimes stale versions of files are served to clients.</li>
+</ul>
+<p>Creating performant web apps requires optimizing asset delivery to the browser. Possible optimizations include:</p>
+<ul>
+<li>Serve a given asset once until the file changes or the browser clears its cache. Set the <a target="_blank" rel="noopener" href="https://developer.mozilla.org/docs/Web/HTTP/Headers/ETag">ETag</a> header.</li>
+<li>Prevent the browser from using old or stale assets after an app is updated. Set the <a target="_blank" rel="noopener" href="https://developer.mozilla.org/docs/Web/HTTP/Headers/Last-Modified">Last-Modified</a> header.</li>
+<li>Set up proper <a target="_blank" rel="noopener" href="https://developer.mozilla.org/docs/Web/HTTP/Headers/Cache-Control">caching headers</a>.</li>
+<li>Use <a href="#/doc/aspnet/performance/caching/middleware">caching middleware</a>.</li>
+<li>Serve <a href="/aspnet/core/performance/response-compression">compressed</a> versions of the assets when possible.</li>
+<li>Use a <a href="/microsoft-365/enterprise/content-delivery-networks?view=o365-worldwide&amp;preserve-view=true">CDN</a> to serve the assets closer to the user.</li>
+<li>Minimize the size of assets served to the browser. This optimization doesn&#39;t include minification.</li>
+</ul>
+<p><code>MapStaticAssets</code> is a new feature that optimizes the delivery of static assets in an app. It&#39;s designed to work with all UI frameworks, including Blazor, Razor Pages, and MVC. It&#39;s typically a drop-in replacement for <a href="/dotnet/api/microsoft.aspnetcore.builder.staticfileextensions.usestaticfiles"><code>UseStaticFiles</code></a>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Diff</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-diff">var builder = WebApplication.CreateBuilder(args);
+
+builder.Services.AddRazorPages();
+
+var app = builder.Build();
+
+if (!app.Environment.IsDevelopment())
+{
+    app.UseExceptionHandler(&quot;/Error&quot;);
+    app.UseHsts();
+}
+
+app.UseHttpsRedirection();
+
+app.UseRouting();
+
+app.UseAuthorization();
+
+<span class="hljs-addition">+app.MapStaticAssets();</span>
+<span class="hljs-deletion">-app.UseStaticFiles();</span>
+app.MapRazorPages();
+
+app.Run();</code></pre></div></figure>
+<p><code>MapStaticAssets</code> operates by combining build and publish-time processes to collect information about all the static resources in an app. This information is then utilized by the runtime library to efficiently serve these files to the browser.</p>
+<p><code>MapStaticAssets</code> can replace <a href="/dotnet/api/microsoft.aspnetcore.builder.staticfileextensions.usestaticfiles"><code>UseStaticFiles</code></a> in most situations, however, it&#39;s optimized for serving the assets that the app has knowledge of at build and publish time. If the app serves assets from other locations, such as disk or embedded resources, <code>UseStaticFiles</code> should be used.</p>
+<p><code>MapStaticAssets</code> provides the following benefits not found with <code>UseStaticFiles</code>:</p>
+<ul>
+<li>Build time compression for all the assets in the app:<ul>
+<li><code>gzip</code> during development and <code>gzip + brotli</code> during publish.</li>
+<li>All assets are compressed with the goal of reducing the size of the assets to the minimum.</li>
+</ul>
+</li>
+<li>Content based <code>ETags</code>: The <code>Etags</code> for each resource are the <a target="_blank" rel="noopener" href="https://developer.mozilla.org/docs/Glossary/Base64">Base64</a> encoded string of the <a href="/dotnet/api/system.security.cryptography.sha256?view=net-8.0&amp;preserve-view=true">SHA-256</a> hash of the content. This ensures that the browser only redownloads a file if its contents have changed.</li>
+</ul>
+<p>The following table shows the original and compressed sizes of the CSS and JS files in the default Razor Pages template.</p>
+<p>File | Original | Compressed | % Reduction
+-- | -- | --
+bootstrap.min.css | 163 | 17.5 | 89.26%
+jquery.js | 89.6 | 28 | 68.75%
+bootstrap.min.js | 78.5 | 20 | 74.52%
+<strong>Total</strong> | 331.1 | 65.5 | 80.20%</p>
+<p>The following table shows the original and compressed sizes using the <a target="_blank" rel="noopener" href="https://www.fluentui-blazor.net/">Fluent UI Blazor components library</a>.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>File</th>
+<th>Original</th>
+<th>Compressed</th>
+<th>% Reduction</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>fluent.js</td>
+<td>384</td>
+<td>73</td>
+<td>80.99%</td>
+</tr>
+<tr>
+<td>fluent.css</td>
+<td>94</td>
+<td>11</td>
+<td>88.30%</td>
+</tr>
+<tr>
+<td><strong>Total</strong></td>
+<td>478</td>
+<td>84</td>
+<td>82.43%</td>
+</tr>
+</tbody></table></div>
+<p>For a total of 478 KB uncompressed to 84 KB compressed.</p>
+<p>The following table shows the original and compressed sizes using the <a target="_blank" rel="noopener" href="https://mudblazor.com">MudBlazor</a> Blazor components library.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>File</th>
+<th>Original</th>
+<th>Compressed</th>
+<th>Reduction</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>MudBlazor.min.css</td>
+<td>541</td>
+<td>37.5</td>
+<td>93.07%</td>
+</tr>
+<tr>
+<td>MudBlazor.min.js</td>
+<td>47.4</td>
+<td>9.2</td>
+<td>80.59%</td>
+</tr>
+<tr>
+<td><strong>Total</strong></td>
+<td>588.4</td>
+<td>46.7</td>
+<td>92.07%</td>
+</tr>
+</tbody></table></div>
+<p>Optimization happens automatically when using <code>MapStaticAssets</code>. When a library is added or updated, for example with new JavaScript or CSS, the assets are optimized as part of the build. Optimization is especially beneficial to mobile environments that can have a lower bandwidth or an unreliable connections.</p>
+<p>For more information on the new file delivery features, see the following resources:</p>
+<ul>
+<li><a href="../../../fundamentals/static-files.md?view=aspnetcore-9.0&amp;preserve-view=true">Serve static files in ASP.NET Core apps</a></li>
+<li><a href="../../../blazor/fundamentals/static-files.md?view=aspnetcore-9.0&amp;preserve-view=true">ASP.NET Core Blazor static files</a></li>
+</ul>
+<h3 id="customize-build-time-compression-with-msbuild-properties">Customize build-time compression with MSBuild properties</h3>
+<p>Several MSBuild properties can be used to customize or disable build-time compression behavior:</p>
+<ul>
+<li><code>CompressionEnabled</code>: Completely disables compression when set to <code>false</code>.</li>
+<li><code>CompressionExcludePatterns</code>: Semicolon-delimited list of glob patterns (for example, <code>**\*.js</code>) to exclude specific files from being considered for compression.</li>
+</ul>
+<p>The following example excludes JavaScript files from compression:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>HTML</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">
+  $(CompressionExcludePatterns);**\*.js</code></pre></div></figure>
+<p>To completely disable compression:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>HTML</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">
+  false</code></pre></div></figure>
+<p>For more information, see <a href="../../../fundamentals/static-files.md?view=aspnetcore-9.0&amp;preserve-view=true#msbuild-properties">Serve static files in ASP.NET Core apps</a>.</p>
+<h3 id="enabling-dynamic-compression-on-the-server-vs-using-mapstaticassets">Enabling dynamic compression on the server vs using <code>MapStaticAssets</code></h3>
+<p><code>MapStaticAssets</code> has the following advantages over dynamic compression on the server:</p>
+<!--
+I'm confused about the following:
+If we take MudBlazor as an example, IIS will compress the CSS bundle at around 90Kb, while brotli with max settings will result in 37Kb. That is still a whopping 59% size reduction or 41% of its dynamically compressed size --><ul>
+<li>Is simpler because there is no server specific configuration.</li>
+<li>Is more performant because the assets are compressed at build time. <!-- IIS can do static compression --></li>
+<li>Allows the developer to spend extra time during the build process to ensure that the assets are the minimum size.</li>
+</ul>
+<p>Consider the following table comparing MudBlazor compression with IIS dynamic compression and <code>MapStaticAssets</code>.</p>
+<!-- MapStaticAssets uses brotli max so it's the same as IIS brotli max is the same as --><div class="table-wrap"><table>
+<thead>
+<tr>
+<th>IIS gzip</th>
+<th><code>MapStaticAssets</code></th>
+<th><code>MapStaticAssets</code> reduction</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>≅ 90</td>
+<td>37.5</td>
+<td>59%</td>
+</tr>
+</tbody></table></div>
+<!--  “always flush” does not work with IIS Brotli AND might degrade Zlib compression ratio. See https://microsoft.sharepoint.com/:p:/r/teams/GlobalDAS/WebApps/_layouts/15/Doc.aspx?sourcedoc=%7BDC4A0B9B-6A27-498F-BC7D-6B6647AAC39F%7D&file=IIS_Compression_new_API.pptx --><h2 id="blazor">Blazor</h2>
+<p>This section describes new features for Blazor.</p>
+<h3 id="net-maui-blazor-hybrid-and-web-app-solution-template">.NET MAUI Blazor Hybrid and Web App solution template</h3>
+<p>A new solution template makes it easier to create .NET MAUI native and Blazor web client apps that share the same UI. This template shows how to create client apps that maximize code reuse and target Android, iOS, Mac, Windows, and Web.</p>
+<p>Key features of this template include:</p>
+<ul>
+<li>The ability to choose a Blazor interactive render mode for the web app.</li>
+<li>Automatic creation of the appropriate projects, including a Blazor Web App (global Interactive Auto rendering) and a .NET MAUI Blazor Hybrid app.</li>
+<li>The created projects use a shared Razor class library (RCL) to maintain the UI&#39;s Razor components.</li>
+<li>Sample code is included that demonstrates how to use dependency injection to provide different interface implementations for the Blazor Hybrid app and the Blazor Web App.</li>
+</ul>
+<p>To get started, install the <a target="_blank" rel="noopener" href="https://dotnet.microsoft.com/download/dotnet/9.0">.NET 9 SDK</a> and install the .NET MAUI workload, which contains the template:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">dotnet workload install maui</code></pre></div></figure>
+<p>Create a solution from the project template in a command shell using the following command:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">dotnet new maui-blazor-web</code></pre></div></figure>
+<p>The template is also available in Visual Studio.</p>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>Currently, an exception occurs if Blazor rendering modes are defined at the per-page/component level. For more information, see <a target="_blank" rel="noopener" href="https://github.com/dotnet/aspnetcore/issues/51235">BlazorWebView needs a way to enable overriding ResolveComponentForRenderMode (<code>dotnet/aspnetcore</code> #51235)</a>.</p>
+</div></aside>
+<p>For more information, see <a href="../../../blazor/hybrid/tutorials/maui-blazor-web-app.md?view=aspnetcore-9.0&amp;preserve-view=true">Build a .NET MAUI Blazor Hybrid app with a Blazor Web App</a>.</p>
+<h3 id="detect-rendering-location-interactivity-and-assigned-render-mode-at-runtime">Detect rendering location, interactivity, and assigned render mode at runtime</h3>
+<p>We&#39;ve introduced a new API designed to simplify the process of querying component states at runtime. This API provides the following capabilities:</p>
+<ul>
+<li><strong>Determine the current execution location of the component</strong>: This can be useful for debugging and optimizing component performance.</li>
+<li><strong>Check if the component is running in an interactive environment</strong>: This can be helpful for components that have different behaviors based on the interactivity of their environment.</li>
+<li><strong>Retrieve the assigned render mode for the component</strong>: Understanding the render mode can help in optimizing the rendering process and improving the overall performance of a component.</li>
+</ul>
+<p>For more information, see <a href="../../../blazor/components/render-modes.md?view=aspnetcore-9.0&amp;preserve-view=true#detect-rendering-location-interactivity-and-assigned-render-mode-at-runtime">ASP.NET Core Blazor render modes</a>.</p>
+<h3 id="improved-server-side-reconnection-experience">Improved server-side reconnection experience:</h3>
+<p>The following enhancements have been made to the default server-side reconnection experience:</p>
+<ul>
+<li><p>When the user navigates back to an app with a disconnected circuit, reconnection is attempted immediately rather than waiting for the duration of the next reconnect interval. This improves the user experience when navigating to an app in a browser tab that has gone to sleep.</p>
+</li>
+<li><p>When a reconnection attempt reaches the server but the server has already released the circuit, a page refresh occurs automatically. This prevents the user from having to manually refresh the page if it&#39;s likely going to result in a successful reconnection.</p>
+</li>
+<li><p>Reconnect timing uses a computed backoff strategy. By default, the first several reconnection attempts occur in rapid succession without a retry interval before computed delays are introduced between attempts. You can customize the retry interval behavior by specifying a function to compute the retry interval, as the following exponential backoff example demonstrates:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JavaScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript"><span class="hljs-title class_">Blazor</span>.<span class="hljs-title function_">start</span>({
+  <span class="hljs-attr">circuit</span>: {
+    <span class="hljs-attr">reconnectionOptions</span>: {
+      <span class="hljs-attr">retryIntervalMilliseconds</span>: <span class="hljs-function">(<span class="hljs-params">previousAttempts, maxRetries</span>) =&gt;</span> 
+        previousAttempts &gt;= maxRetries ? <span class="hljs-literal">null</span> : previousAttempts * <span class="hljs-number">1000</span>
+    },
+  },
+});</code></pre></div></figure>
+</li>
+<li><p>The styling of the default reconnect UI has been modernized.</p>
+</li>
+</ul>
+<p>For more information, see <a href="../../../blazor/fundamentals/signalr.md?view=aspnetcore-9.0&amp;preserve-view=true#adjust-the-server-side-reconnection-retry-count-and-interval">ASP.NET Core Blazor SignalR guidance</a>.</p>
+<h3 id="simplified-authentication-state-serialization-for-blazor-web-apps">Simplified authentication state serialization for Blazor Web Apps</h3>
+<p>New APIs make it easier to add authentication to an existing Blazor Web App. When you create a new Blazor Web App with authentication using <strong>Individual Accounts</strong> and you enable WebAssembly-based interactivity, the project includes a custom <code>AuthenticationStateProvider</code> in both the server and client projects. </p>
+<p>These providers flow the user&#39;s authentication state to the browser. Authenticating on the server rather than the client allows the app to access authentication state during prerendering and before the .NET WebAssembly runtime is initialized.</p>
+<p>The custom <code>AuthenticationStateProvider</code> implementations use the <a href="../../../blazor/state-management/prerendered-state-persistence.md?view=aspnetcore-9.0&amp;preserve-view=true">Persistent Component State service</a> (<code>PersistentComponentState</code>) to serialize the authentication state into HTML comments and read it back from WebAssembly to create a new <code>AuthenticationState</code> instance.</p>
+<p>This works well if you&#39;ve started from the Blazor Web App project template and selected the <strong>Individual Accounts</strong> option, but it&#39;s a lot of code to implement yourself or copy if you&#39;re trying to add authentication to an existing project. There are now APIs, which are now part of the Blazor Web App project template, that can be called in the server and client projects to add this functionality:</p>
+<ul>
+<li><code>AddAuthenticationStateSerialization</code>: Adds the necessary services to serialize the authentication state on the server.</li>
+<li><code>AddAuthenticationStateDeserialization</code>: Adds the necessary services to deserialize the authentication state in the browser.</li>
+</ul>
+<p>By default, the API only serializes the server-side name and role claims for access in the browser. An option can be passed to <code>AddAuthenticationStateSerialization</code> to include all claims.</p>
+<p>For more information, see the following sections of <a href="../../../blazor/security/index.md?view=aspnetcore-9.0&amp;preserve-view=true">ASP.NET Core Blazor authentication and authorization</a>:</p>
+<ul>
+<li><a href="../../../blazor/security/index.md?view=aspnetcore-9.0&amp;preserve-view=true#blazor-identity-ui-individual-accounts">Blazor Identity UI (Individual Accounts)</a></li>
+<li><a href="../../../blazor/security/index.md?view=aspnetcore-9.0&amp;preserve-view=true#manage-authentication-state-in-blazor-web-apps">Manage authentication state in Blazor Web Apps</a></li>
+</ul>
+<h3 id="add-static-server-side-rendering-ssr-pages-to-a-globally-interactive-blazor-web-app">Add static server-side rendering (SSR) pages to a globally-interactive Blazor Web App</h3>
+<p>With the release of .NET 9, it&#39;s now simpler to add static SSR pages to apps that adopt global interactivity.</p>
+<p>This approach is only useful when the app has specific pages that can&#39;t work with interactive Server or WebAssembly rendering. For example, adopt this approach for pages that depend on reading/writing HTTP cookies and can only work in a request/response cycle instead of interactive rendering. For pages that work with interactive rendering, you shouldn&#39;t force them to use static SSR rendering, as it&#39;s less efficient and less responsive for the end user.</p>
+<p>Mark any Razor component page with the new <a href="xref:Microsoft.AspNetCore.Components.ExcludeFromInteractiveRoutingAttribute"><code>[ExcludeFromInteractiveRouting]</code> attribute</a> assigned with the <code>@attribute</code> Razor directive:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">@attribute [ExcludeFromInteractiveRouting]</code></pre></div></figure>
+<p>Applying the attribute causes navigation to the page to exit from interactive routing. Inbound navigation is forced to perform a full-page reload instead resolving the page via interactive routing. The full-page reload forces the top-level root component, typically the <code>App</code> component (<code>App.razor</code>), to rerender from the server, allowing the app to switch to a different top-level render mode.</p>
+<p>The <code>AcceptsInteractiveRouting?displayProperty=nameWithType</code> extension method allows the component to detect whether the <a href="xref:Microsoft.AspNetCore.Components.ExcludeFromInteractiveRoutingAttribute"><code>[ExcludeFromInteractiveRouting]</code> attribute</a> is applied to the current page.</p>
+<p>In the <code>App</code> component, use the pattern in the following example:</p>
+<ul>
+<li>Pages that aren&#39;t annotated with the <a href="xref:Microsoft.AspNetCore.Components.ExcludeFromInteractiveRoutingAttribute"><code>[ExcludeFromInteractiveRouting]</code> attribute</a> default to the <code>InteractiveServer</code> render mode with global interactivity. You can replace <code>InteractiveServer</code> with <code>InteractiveWebAssembly</code> or <code>InteractiveAuto</code> to specify a different default global render mode.</li>
+<li>Pages annotated with the <a href="xref:Microsoft.AspNetCore.Components.ExcludeFromInteractiveRoutingAttribute"><code>[ExcludeFromInteractiveRouting]</code> attribute</a> adopt static SSR (<code>PageRenderMode</code> is assigned <code>null</code>).</li>
+</ul>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">&lt;!DOCTYPE html&gt;
+&lt;html&gt;
+&lt;head&gt;
+    ...
+    
+&lt;/head&gt;
+&lt;body&gt;
+    
+    ...
+&lt;/body&gt;
+&lt;/html&gt;
+
+@code {
+    [CascadingParameter]
+    private HttpContext HttpContext { get; set; } = default!;
+
+    private IComponentRenderMode? PageRenderMode
+        =&gt; HttpContext.AcceptsInteractiveRouting() ? InteractiveServer : null;
+}</code></pre></div></figure>
+<p>An alternative to using the <code>AcceptsInteractiveRouting?displayProperty=nameWithType</code> extension method is to read endpoint metadata manually using <code>HttpContext.GetEndpoint()?.Metadata</code>.</p>
+<p>This feature is covered by the reference documentation in <a href="../../../blazor/components/render-modes.md?view=aspnetcore-9.0&amp;preserve-view=true#static-ssr-pages-in-an-interactive-app">ASP.NET Core Blazor render modes</a>.</p>
+<h3 id="constructor-injection">Constructor injection</h3>
+<p>Razor components support constructor injection.</p>
+<p>In the following example, the partial (code-behind) class injects the <code>NavigationManager</code> service using a <a href="/dotnet/csharp/whats-new/tutorials/primary-constructors">primary constructor</a>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">public partial class ConstructorInjection(NavigationManager navigation)
+{
+    private void HandleClick()
+    {
+        navigation.NavigateTo(&quot;/counter&quot;);
+    }
+}</code></pre></div></figure>
+<p>For more information, see <a href="../../../blazor/fundamentals/dependency-injection.md?view=aspnetcore-9.0&amp;preserve-view=true#request-a-service-in-a-component">ASP.NET Core Blazor dependency injection</a>.</p>
+<h3 id="websocket-compression-for-interactive-server-components">Websocket compression for Interactive Server components</h3>
+<p>By default, Interactive Server components enable compression for <a href="#/doc/aspnet/fundamentals/websockets">WebSocket connections</a> and set a <code>frame-ancestors</code> <a target="_blank" rel="noopener" href="https://developer.mozilla.org/docs/Web/HTTP/Guides/CSP">Content Security Policy (CSP)</a> directive set to <code>&#39;self&#39;</code> (<a target="_blank" rel="noopener" href="https://developer.mozilla.org/docs/Web/HTTP/Headers/Content-Security-Policy">MDN&#39;s CSP reference guidance</a>), which only permits embedding the app in an <code>&lt;iframe&gt;</code> of the origin from which the app is served when compression is enabled or when a configuration for the WebSocket context is provided.</p>
+<p>Compression can be disabled by setting <code>ConfigureWebSocketOptions</code> to <code>null</code>, which reduces the <a href="#/doc/aspnet/blazor/security/interactive-server-side-rendering@interactive-server-components-with-websocket-compression-enabled">vulnerability of the app to attack</a> but may result in reduced performance:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">.AddInteractiveServerRenderMode(o =&gt; o.ConfigureWebSocketOptions = null)</code></pre></div></figure>
+<p>Configure a stricter <code>frame-ancestors</code> CSP with a value of <code>&#39;none&#39;</code> (single quotes required), which allows WebSocket compression but prevents browsers from embedding the app into any <code>&lt;iframe&gt;</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">.AddInteractiveServerRenderMode(o =&gt; o.ContentSecurityFrameAncestorsPolicy = &quot;&#x27;none&#x27;&quot;)</code></pre></div></figure>
+<p>For more information, see the following resources:</p>
+<ul>
+<li><a href="../../../blazor/fundamentals/signalr.md?view=aspnetcore-9.0&amp;preserve-view=true#websocket-compression-for-interactive-server-components">ASP.NET Core Blazor SignalR guidance</a></li>
+<li><a href="../../../blazor/security/interactive-server-side-rendering.md?view=aspnetcore-9.0&amp;preserve-view=true#interactive-server-components-with-websocket-compression-enabled">Threat mitigation guidance for ASP.NET Core Blazor interactive server-side rendering</a></li>
+</ul>
+<h3 id="handle-keyboard-composition-events-in-blazor">Handle keyboard composition events in Blazor</h3>
+<p>The new <code>KeyboardEventArgs.IsComposing</code> property indicates if the keyboard event <a target="_blank" rel="noopener" href="https://w3c.github.io/uievents/#dom-keyboardevent-iscomposing">is part of a composition session</a>. Tracking the composition state of keyboard events is crucial for handling international character input methods.</p>
+<h3 id="added-overscancount-parameter-to-quickgrid">Added <code>OverscanCount</code> parameter to <code>QuickGrid</code></h3>
+<p>The <code>QuickGrid</code> component now exposes an <code>OverscanCount</code> property that specifies how many additional rows are rendered before and after the visible region when virtualization is enabled.</p>
+<p>The default <code>OverscanCount</code> is 3. The following example increases the <code>OverscanCount</code> to 4:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">
+    ...</code></pre></div></figure>
+<h3 id="inputnumber-component-supports-the-typerange-attribute"><code>InputNumber</code> component supports the <code>type=&quot;range&quot;</code> attribute</h3>
+<p>The <code>InputNumber1</code> component now supports the <a target="_blank" rel="noopener" href="https://developer.mozilla.org/docs/Web/HTML/Element/input/range"><code>type=&quot;range&quot;</code> attribute</a>, which creates a range input that supports model binding and form validation, typically rendered as a slider or dial control rather than a text box:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">
+    &lt;div&gt;
+        &lt;label&gt;
+            Nacelle Count (2-6): 
+            
+        &lt;/label&gt;
+    &lt;/div&gt;
+    &lt;div&gt;
+        &lt;button type=&quot;submit&quot;&gt;Submit&lt;/button&gt;
+    &lt;/div&gt;
+
+
+@code {
+    [SupplyParameterFromForm]
+    private EngineSpecifications? Model { get; set; }
+
+    protected override void OnInitialized() =&gt; Model ??= new();
+
+    private void Submit() {}
+
+    public class EngineSpecifications
+    {
+        [Required, Range(minimum: 2, maximum: 6)]
+        public int NacelleCount { get; set; }
+    }
+}</code></pre></div></figure>
+<h3 id="new-enhanced-navigation-events">New enhanced navigation events</h3>
+<p>Trigger JavaScript callbacks either before or after enhanced navigation with new event listeners:</p>
+<ul>
+<li><code>blazor.addEventListener(&quot;enhancednavigationstart&quot;, {CALLBACK})</code></li>
+<li><code>blazor.addEventListener(&quot;enhancednavigationend&quot;, {CALLBACK})</code></li>
+</ul>
+<p>For more information, see <a href="../../../blazor/javascript-interoperability/static-server-rendering.md?view=aspnetcore-9.0&amp;preserve-view=true">ASP.NET Core Blazor JavaScript with static server-side rendering (static SSR)</a>.</p>
+<h3 id="client-side-request-streaming">Client-side request streaming</h3>
+<p>Interactive WebAssembly rendering in Blazor now supports client-side request streaming using the <code>request.SetBrowserRequestStreamingEnabled(true)</code> option on <code>HttpRequestMessage</code>. </p>
+<p>For more information, see the following resources:</p>
+<ul>
+<li><a href="../../../blazor/call-web-api.md?view=aspnetcore-9.0&amp;preserve-view=true#client-side-request-streaming">Call a web API from an ASP.NET Core Blazor app</a></li>
+<li><a href="../../../blazor/file-uploads.md?view=aspnetcore-9.0&amp;preserve-view=true#file-size-read-and-upload-limits">ASP.NET Core Blazor file uploads</a></li>
+</ul>
+<h2 id="signalr">SignalR</h2>
+<p>This section describes new features for SignalR.</p>
+<h3 id="polymorphic-type-support-in-signalr-hubs">Polymorphic type support in SignalR Hubs</h3>
+<p>Hub methods can now accept a base class instead of the derived class to enable polymorphic scenarios. The base type needs to be <a href="/dotnet/standard/serialization/system-text-json/polymorphism">annotated to allow polymorphism</a>.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">public class MyHub : Hub
+{
+    public void Method(JsonPerson person)
+    {
+        if (person is JsonPersonExtended)
+        {
+        }
+        else if (person is JsonPersonExtended2)
+        {
+        }
+        else
+        {
+        }
+    }
+}
+
+[JsonPolymorphic]
+[JsonDerivedType(typeof(JsonPersonExtended), nameof(JsonPersonExtended))]
+[JsonDerivedType(typeof(JsonPersonExtended2), nameof(JsonPersonExtended2))]
+private class JsonPerson
+{
+    public string Name { get; set; }
+    public Person Child { get; set; }
+    public Person Parent { get; set; }
+}
+
+private class JsonPersonExtended : JsonPerson
+{
+    public int Age { get; set; }
+}
+
+private class JsonPersonExtended2 : JsonPerson
+{
+    public string Location { get; set; }
+}</code></pre></div></figure>
+<h3 id="improved-activities-for-signalr">Improved Activities for SignalR</h3>
+<p>SignalR now has an ActivitySource for both the hub server and client.</p>
+<h4 id="net-signalr-server-activitysource">.NET SignalR server ActivitySource</h4>
+<p>The SignalR ActivitySource named <code>Microsoft.AspNetCore.SignalR.Server</code> emits events for hub method calls:</p>
+<ul>
+<li>Every method is its own activity, so anything that emits an activity during the hub method call is under the hub method activity.</li>
+<li>Hub method activities don&#39;t have a parent. This means they are not bundled under the long-running SignalR connection.</li>
+</ul>
+<p>The following example uses the <a href="/dotnet/aspire/fundamentals/dashboard/overview?tabs=bash#use-the-dashboard-with-aspire-projects">Aspire dashboard</a> and the <a target="_blank" rel="noopener" href="https://www.nuget.org/packages/OpenTelemetry.Extensions.Hosting">OpenTelemetry</a> packages:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>HTML</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext"></code></pre></div></figure>
+<p>Add the following startup code to the <code>Program.cs</code> file:</p>
+<p>[!code-csharp<a href="~/release-notes/aspnetcore-9/samples/SignalRChatTraceExample/Program.cs?name=snippet_trace_signalr_server&amp;highlight=1,10-23"></a>]</p>
+<p>The following is example output from the Aspire Dashboard:</p>
+<p><img src="assets/ms/aspnet/release-notes/aspnetcore-9/_static/signalr-activities-events.png" loading="lazy" alt="image"></p>
+<h4 id="net-signalr-client-activitysource">.NET SignalR client ActivitySource</h4>
+<p>The SignalR ActivitySource named <code>Microsoft.AspNetCore.SignalR.Client</code> emits events for a SignalR client:</p>
+<ul>
+<li>The .NET SignalR client has an <code>ActivitySource</code> named <code>Microsoft.AspNetCore.SignalR.Client</code>. Hub invocations now create a client span. Note that other SignalR clients, such as the JavaScript client, don&#39;t support tracing. This feature will be added to more clients in future releases.</li>
+<li>Hub invocations on the client and server support <a target="_blank" rel="noopener" href="https://opentelemetry.io/docs/concepts/context-propagation/">context propagation</a>. Propagating the trace context enables true distributed tracing. It&#39;s now possible to see invocations flow from the client to the server and back.</li>
+</ul>
+<p>Here&#39;s how these new activities look in the <a href="/dotnet/aspire/fundamentals/dashboard/overview?tabs=bash#standalone-mode">Aspire dashboard</a>:</p>
+<p><img src="~/release-notes/aspnetcore-9/_static/signalr-distributed-tracing-aspire-dashboard.png" alt="SignalR distributed tracing in Aspire dashboard"> </p>
+<h3 id="signalr-supports-trimming-and-native-aot">SignalR supports trimming and Native AOT</h3>
+<p>Continuing the <a href="#/doc/aspnet/fundamentals/native-aot">Native AOT journey</a> started in .NET 8, we have enabled trimming and native ahead-of-time (AOT) compilation support for both SignalR client and server scenarios. You can now take advantage of the performance benefits of using Native AOT in applications that use SignalR for real-time web communications.</p>
+<h4 id="getting-started">Getting started</h4>
+<p>Install the latest <a target="_blank" rel="noopener" href="https://dotnet.microsoft.com/download/dotnet/9.0">.NET 9 SDK</a>.</p>
+<p>Create a solution from the <code>webapiaot</code> template in a command shell using the following command:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">dotnet new webapiaot -o SignalRChatAOTExample</code></pre></div></figure>
+<p>Replace the contents of the <code>Program.cs</code> file with the following SignalR code:</p>
+<p>[!code-csharp<a href="~/release-notes/aspnetcore-9/samples/SignalRChatAOTExample/Program.cs"></a>]</p>
+<p>The preceding example produces a native Windows executable of 10 MB and a Linux executable of 10.9 MB.</p>
+<h4 id="limitations">Limitations</h4>
+<ul>
+<li>Only the JSON protocol is currently supported:<ul>
+<li>As shown in the preceding code, apps that use JSON serialization and Native AOT must use the <code>System.Text.Json</code> Source Generator. </li>
+<li>This follows the same approach as Minimal APIs.</li>
+</ul>
+</li>
+<li>On the SignalR server, Hub method parameters of type <code>IAsyncEnumerable</code> and <code>ChannelReader</code> where <code>T</code> is a ValueType (<code>struct</code>) aren&#39;t supported. Using these types results in a runtime exception at startup in development and in the published app. For more information, see <a target="_blank" rel="noopener" href="https://github.com/dotnet/aspnetcore/issues/56179">SignalR: Using IAsyncEnumerable&lt;T&gt; and ChannelReader&lt;T&gt; with ValueTypes in native AOT (<code>dotnet/aspnetcore</code> #56179)</a>.</li>
+<li><a href="#/doc/aspnet/signalr/hubs@use-strongly-typed-hubs">Strongly typed hubs</a> aren&#39;t supported with Native AOT (<code>PublishAot</code>). Using strongly typed hubs with Native AOT will result in warnings during build and publish, and a runtime exception. Using strongly typed hubs with trimming (<code>PublishedTrimmed</code>) is supported.<ul>
+<li>Make sure to copy the names from <code>[HubMethodName(...)]</code> applied to the strongly typed hub interface methods into the <code>SendAsync</code> calls.</li>
+</ul>
+</li>
+<li>Only <code>Task</code>, <code>Task</code>, <code>ValueTask</code>, or <code>ValueTask</code> are supported for async return types.</li>
+</ul>
+<h2 id="minimal-apis">Minimal APIs</h2>
+<p>This section describes new features for Minimal APIs.</p>
+<h3 id="added-internalservererror-and-internalservererror-to-typedresults">Added <code>InternalServerError</code> and <code>InternalServerError</code> to <code>TypedResults</code></h3>
+<p>The <code>TypedResults</code> class is a helpful vehicle for returning strongly-typed HTTP status code-based responses from a Minimal API.  <code>TypedResults</code> now includes factory methods and types for returning &quot;500 Internal Server Error&quot; responses from endpoints. Here&#39;s an example that returns a 500 response:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">var app = WebApplication.Create();
+
+app.MapGet(&quot;/&quot;, () =&gt; TypedResults.InternalServerError(&quot;Something went wrong!&quot;));
+
+app.Run();</code></pre></div></figure>
+<h3 id="call-producesproblem-and-producesvalidationproblem-on-route-groups">Call <code>ProducesProblem</code> and <code>ProducesValidationProblem</code> on route groups</h3>
+<p>The <code>ProducesProblem</code> and <code>ProducesValidationProblem</code> extension methods have been updated to support their use on route groups. These methods indicate that all endpoints in a route group can return <code>ProblemDetails</code> or <code>ValidationProblemDetails</code> responses for the purposes of OpenAPI metadata.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">var app = WebApplication.Create();
+
+var todos = app.MapGroup(&quot;/todos&quot;)
+    .ProducesProblem();
+
+todos.MapGet(&quot;/&quot;, () =&gt; new Todo(1, &quot;Create sample app&quot;, false));
+todos.MapPost(&quot;/&quot;, (Todo todo) =&gt; Results.Ok(todo));
+
+app.Run();
+
+record Todo(int Id, string Title, bool IsCompleted);</code></pre></div></figure>
+<h3 id="problem-and-validationproblem-result-types-support-construction-with-ienumerablekeyvaluepairstring-object-values"><code>Problem</code> and <code>ValidationProblem</code> result types support construction with <code>IEnumerable&lt;KeyValuePair&lt;string, object?&gt;&gt;</code> values</h3>
+<p>Prior to .NET 9, constructing <a href="/dotnet/api/microsoft.aspnetcore.http.typedresults.problem">Problem</a> and <a href="/dotnet/api/microsoft.aspnetcore.http.typedresults.validationproblem">ValidationProblem</a> result types in Minimal APIs required that the <code>errors</code> and <code>extensions</code> properties be initialized with an implementation of <code>IDictionary&lt;string, object?&gt;</code>. In this release, these construction APIs support overloads that consume <code>IEnumerable&lt;KeyValuePair&lt;string, object?&gt;&gt;</code>.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">var app = WebApplication.Create();
+
+app.MapGet(&quot;/&quot;, () =&gt;
+{
+    var extensions = new List&lt;KeyValuePair&lt;string, object?&gt;&gt; { new(&quot;test&quot;, &quot;value&quot;) };
+    return TypedResults.Problem(&quot;This is an error with extensions&quot;,
+                                                       extensions: extensions);
+});</code></pre></div></figure>
+<p>Thanks to Joseph Goldman for this contribution!</p>
+<h2 id="openapi">OpenAPI</h2>
+<p>This section describes new features for OpenAPI</p>
+<h3 id="built-in-support-for-openapi-document-generation">Built-in support for OpenAPI document generation</h3>
+<p>The <a target="_blank" rel="noopener" href="https://www.openapis.org/">OpenAPI specification</a> is a standard for describing HTTP APIs. The standard allows developers to define the shape of APIs that can be plugged into client generators, server generators, testing tools, documentation, and more. In .NET 9, ASP.NET Core provides built-in support for generating OpenAPI documents representing controller-based or Minimal APIs via the <a target="_blank" rel="noopener" href="https://nuget.org/packages/Microsoft.AspNetCore.OpenApi">Microsoft.AspNetCore.OpenApi</a> package.</p>
+<p>The following highlighted code calls:</p>
+<ul>
+<li><code>AddOpenApi</code> to register the required dependencies into the app&#39;s DI container.</li>
+<li><code>MapOpenApi</code> to register the required OpenAPI endpoints in the app&#39;s routes.</li>
+</ul>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">var builder = WebApplication.CreateBuilder();
+
+builder.Services.AddOpenApi();
+
+var app = builder.Build();
+
+app.MapOpenApi();
+
+app.MapGet(&quot;/hello/{name}&quot;, (string name) =&gt; $&quot;Hello {name}&quot;!);
+
+app.Run();</code></pre></div></figure>
+<p>Install the <a target="_blank" rel="noopener" href="https://www.nuget.org/packages/Microsoft.AspNetCore.OpenApi"><code>Microsoft.AspNetCore.OpenApi</code></a> package in the project using the following command:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">dotnet add package Microsoft.AspNetCore.OpenApi</code></pre></div></figure>
+<p>Run the app and navigate to <code>openapi/v1.json</code> to view the generated OpenAPI document:</p>
+<p><img src="~/release-notes/aspnetcore-9/_static/OpenApiDoc.png" alt="OpenAPI document"></p>
+<p>OpenAPI documents can also be generated at build-time by adding the <a target="_blank" rel="noopener" href="https://www.nuget.org/packages/Microsoft.Extensions.ApiDescription.Server"><code>Microsoft.Extensions.ApiDescription.Server</code></a> package:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">dotnet add package Microsoft.Extensions.ApiDescription.Server</code></pre></div></figure>
+<p>To modify the location of the emitted OpenAPI documents, set the target path in the OpenApiDocumentsDirectory property in the app&#39;s project file:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>HTML</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">
+
+  
+    net9.0
+    enable
+    enable
+  
+
+  
+    $(MSBuildProjectDirectory)
+  
+
+  
+    
+  </code></pre></div></figure>
+<p>Run <code>dotnet build</code> and inspect the generated JSON file in the project directory.</p>
+<p><img src="~/release-notes/aspnetcore-9/_static/openapidoc2.png" alt="OpenAPI document generation at build-time"></p>
+<p>ASP.NET Core&#39;s built-in OpenAPI document generation provides support for various customizations and options. It provides document, operation, and schema transformers and has the ability to manage multiple OpenAPI documents for the same application.</p>
+<p>To learn more about ASP.NET Core&#39;s new OpenAPI document capabilities, see <a target="_blank" rel="noopener" href="https://aka.ms/aspnet/openapi">the new Microsoft.AspNetCore.OpenApi docs</a>.</p>
+<h3 id="microsoftaspnetcoreopenapi-supports-trimming-and-native-aot">Microsoft.AspNetCore.OpenApi supports trimming and Native AOT</h3>
+<p>OpenAPI in ASP.NET Core supports trimming and native AOT. The following steps create and publish an OpenAPI app with trimming and native AOT:</p>
+<p>Create a new ASP.NET Core Web API (Native AOT) project.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Terminal</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-bash"><span class="tk-cmd">dotnet</span> new webapiaot</code></pre></div></figure>
+<p>Add the Microsoft.AspNetCore.OpenAPI package.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Terminal</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-bash"><span class="tk-cmd">dotnet</span> add package Microsoft.AspNetCore.OpenApi</code></pre></div></figure>
+<p>Update <code>Program.cs</code> to enable generating OpenAPI documents.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Diff</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-diff"><span class="hljs-addition">+ builder.Services.AddOpenApi();</span>
+
+var app = builder.Build();
+
+<span class="hljs-addition">+ app.MapOpenApi();</span></code></pre></div></figure>
+<p>Publish the app.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Terminal</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-bash"><span class="tk-cmd">dotnet</span> publish</code></pre></div></figure>
+<h2 id="authentication-and-authorization">Authentication and authorization</h2>
+<p>This section describes new features for authentication and authorization.</p>
+<h3 id="openidconnecthandler-adds-support-for-pushed-authorization-requests-par">OpenIdConnectHandler adds support for Pushed Authorization Requests (PAR)</h3>
+<p>We&#39;d like to thank <a target="_blank" rel="noopener" href="https://github.com/josephdecock">Joe DeCock</a> from <a target="_blank" rel="noopener" href="https://github.com/DuendeSoftware">Duende Software</a> for adding Pushed Authorization Requests (PAR) to ASP.NET Core&#39;s <a href="/dotnet/api/microsoft.aspnetcore.authentication.openidconnect.openidconnecthandler">OpenIdConnectHandler</a>. Joe described the background and motivation for enabling PAR in <a target="_blank" rel="noopener" href="https://github.com/dotnet/aspnetcore/issues/51686">his API proposal</a> as follows:</p>
+<blockquote>
+<p>Pushed Authorization Requests (PAR) is a relatively new <a target="_blank" rel="noopener" href="https://datatracker.ietf.org/doc/html/rfc9126">OAuth standard</a> that improves the security of OAuth and OIDC flows by moving authorization parameters from the front channel to the back channel. That is, moving authorization parameters from redirect URLs in the browser to direct machine to machine http calls on the back end.</p>
+<p>This prevents a cyberattacker in the browser from:</p>
+<ul>
+<li>Seeing authorization parameters, which could leak PII.</li>
+<li>Tampering with those parameters. For example, the cyberattacker could change the scope of access being requested.</li>
+</ul>
+<p>Pushing the authorization parameters also keeps request URLs short. Authorize parameters can get very long when using more complex OAuth and OIDC features such as <a target="_blank" rel="noopener" href="https://oauth.net/2/rich-authorization-requests/">Rich Authorization Requests</a>. URLs that are long cause issues in many browsers and networking infrastructures.</p>
+<p>The use of PAR is encouraged by the <a target="_blank" rel="noopener" href="https://openid.net/wg/fapi/">FAPI working group</a> within the OpenID Foundation. For example, <a target="_blank" rel="noopener" href="https://openid.bitbucket.io/fapi/fapi-2_0-security-profile.html">the FAPI2.0 Security Profile</a> requires the use of PAR. This security profile is used by many of the groups working on open banking (primarily in Europe), in health care, and in other industries with high security requirements.</p>
+<p>PAR is supported by a number of identity providers, including</p>
+<ul>
+<li><a target="_blank" rel="noopener" href="https://duendesoftware.com/products/identityserver">Duende IdentityServer</a></li>
+<li><a target="_blank" rel="noopener" href="https://curity.io/product/">Curity</a></li>
+<li><a target="_blank" rel="noopener" href="https://www.keycloak.org/">Keycloak</a></li>
+<li><a target="_blank" rel="noopener" href="https://www.authlete.com/developers/tutorial/oidc/">Authlete</a></li>
+</ul>
+</blockquote>
+<p>For .NET 9, we have decided to enable PAR by default if the identity provider&#39;s discovery document advertises support for PAR, since it should provide enhanced security for providers that support it. The identity provider&#39;s discovery document is usually found at <code>.well-known/openid-configuration</code>. If this causes problems, you can disable PAR via <!--keep--> <a target="_blank" rel="noopener" href="https://source.dot.net/#Microsoft.AspNetCore.Authentication.OpenIdConnect/OpenIdConnectOptions.cs,99014cc0333b1603">OpenIdConnectOptions.PushedAuthorizationBehavior</a> as follows:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext"> builder.Services
+     .AddAuthentication(options =&gt;
+     {
+         options.DefaultScheme = CookieAuthenticationDefaults.AuthenticationScheme;
+         options.DefaultChallengeScheme = OpenIdConnectDefaults.AuthenticationScheme;
+     })
+     .AddCookie()
+     .AddOpenIdConnect(&quot;oidc&quot;, oidcOptions =&gt;
+     {
+         // Other provider-specific configuration goes here.
+ 
+         // The default value is PushedAuthorizationBehavior.UseIfAvailable.
+ 
+         // &#x27;OpenIdConnectOptions&#x27; does not contain a definition for &#x27;PushedAuthorizationBehavior&#x27;
+         // and no accessible extension method &#x27;PushedAuthorizationBehavior&#x27; accepting a first argument
+         // of type &#x27;OpenIdConnectOptions&#x27; could be found
+         oidcOptions.PushedAuthorizationBehavior = PushedAuthorizationBehavior.Disable;
+     });</code></pre></div></figure>
+<p>To ensure that authentication only succeeds if PAR is used, use <!--keep-->  <a target="_blank" rel="noopener" href="https://source.dot.net/#Microsoft.AspNetCore.Authentication.OpenIdConnect/PushedAuthorizationBehavior.cs,3af73de8f33b70c5">PushedAuthorizationBehavior.Require</a> instead. This change also introduces a new <a target="_blank" rel="noopener" href="https://source.dot.net/#Microsoft.AspNetCore.Authentication.OpenIdConnect/Events/OpenIdConnectEvents.cs,6a21c8f3a90753c1">OnPushAuthorization</a> event to <a href="/dotnet/api/microsoft.aspnetcore.authentication.openidconnect.openidconnectevents">OpenIdConnectEvents</a> which can be used customize the pushed authorization request or handle it manually. See the <a target="_blank" rel="noopener" href="https://github.com/dotnet/aspnetcore/issues/51686">API proposal</a> for more details.</p>
+<h3 id="oidc-and-oauth-parameter-customization">OIDC and OAuth Parameter Customization</h3>
+<p>The OAuth and OIDC authentication handlers now have an <code>AdditionalAuthorizationParameters</code> option to make it easier to customize authorization message parameters that are usually included as part of the redirect query string. In .NET 8 or earlier, this requires a custom <code>OnRedirectToIdentityProvider</code> callback or overridden <code>BuildChallengeUrl</code> method in a custom handler. Here&#39;s an example of .NET 8 code:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">builder.Services.AddAuthentication().AddOpenIdConnect(options =&gt;
+{
+    options.Events.OnRedirectToIdentityProvider = context =&gt;
+    {
+        context.ProtocolMessage.SetParameter(&quot;prompt&quot;, &quot;login&quot;);
+        context.ProtocolMessage.SetParameter(&quot;audience&quot;, &quot;https://api.example.com&quot;);
+        return Task.CompletedTask;
+    };
+});</code></pre></div></figure>
+<p>The preceding example can now be simplified to the following code:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">builder.Services.AddAuthentication().AddOpenIdConnect(options =&gt;
+{
+    options.AdditionalAuthorizationParameters.Add(&quot;prompt&quot;, &quot;login&quot;);
+    options.AdditionalAuthorizationParameters.Add(&quot;audience&quot;, &quot;https://api.example.com&quot;);
+});</code></pre></div></figure>
+<h3 id="configure-httpsys-extended-authentication-flags">Configure HTTP.sys extended authentication flags</h3>
+<p>You can now configure the <a href="/windows/win32/api/http/ns-http-http_server_authentication_info"><code>HTTP_AUTH_EX_FLAG_ENABLE_KERBEROS_CREDENTIAL_CACHING</code></a> and <a href="/windows/win32/api/http/ns-http-http_server_authentication_info"><code>HTTP_AUTH_EX_FLAG_CAPTURE_CREDENTIAL</code></a> HTTP.sys flags by using the new <code>EnableKerberosCredentialCaching</code> and <code>CaptureCredentials</code> properties on the HTTP.sys <code>AuthenticationManager</code> to optimize how Windows authentication is handled. For example:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">webBuilder.UseHttpSys(options =&gt;
+{
+    options.Authentication.Schemes = AuthenticationSchemes.Negotiate;
+    options.Authentication.EnableKerberosCredentialCaching = true;
+    options.Authentication.CaptureCredentials = true;
+});</code></pre></div></figure>
+<h2 id="miscellaneous">Miscellaneous</h2>
+<p>The following sections describe miscellaneous new features.</p>
+<h3 id="new-hybridcache-library">New <code>HybridCache</code> library</h3>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p><code>HybridCache</code> is currently still in preview but will be fully released <em>after</em> .NET 9 in a future minor release of .NET Extensions.</p>
+</div></aside>
+<p>The <code>HybridCache</code> API bridges some gaps in the existing <code>IDistributedCache</code> and <code>IMemoryCache</code> APIs. It also adds new capabilities, such as:</p>
+<ul>
+<li><strong>&quot;Stampede&quot; protection</strong> to prevent parallel fetches of the same work.</li>
+<li>Configurable serialization.</li>
+</ul>
+<p><code>HybridCache</code> is designed to be a drop-in replacement for existing <code>IDistributedCache</code> and <code>IMemoryCache</code> usage, and it provides a simple API for adding new caching code. It provides a unified API for both in-process and out-of-process caching.</p>
+<p>To see how the <code>HybridCache</code> API is simplified, compare it to code that uses <code>IDistributedCache</code>. Here&#39;s an example of what using <code>IDistributedCache</code> looks like:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">public class SomeService(IDistributedCache cache)
+{
+    public async Task GetSomeInformationAsync
+        (string name, int id, CancellationToken token = default)
+    {
+        var key = $&quot;someinfo:{name}:{id}&quot;; // Unique key for this combination.
+        var bytes = await cache.GetAsync(key, token); // Try to get from cache.
+        SomeInformation info;
+        if (bytes is null)
+        {
+            // Cache miss; get the data from the real source.
+            info = await SomeExpensiveOperationAsync(name, id, token);
+
+            // Serialize and cache it.
+            bytes = SomeSerializer.Serialize(info);
+            await cache.SetAsync(key, bytes, token);
+        }
+        else
+        {
+            // Cache hit; deserialize it.
+            info = SomeSerializer.Deserialize(bytes);
+        }
+        return info;
+    }
+
+    // This is the work we&#x27;re trying to cache.
+    private async Task SomeExpensiveOperationAsync(string name, int id,
+        CancellationToken token = default)
+    { /* ... */ }
+}</code></pre></div></figure>
+<p>That&#39;s a lot of work to get right each time, including things like serialization. And in the cache miss scenario, you could end up with multiple concurrent threads, all getting a cache miss, all fetching the underlying data, all serializing it, and all sending that data to the cache.</p>
+<p>To simplify and improve this code with <code>HybridCache</code>, we first need to add the new library <code>Microsoft.Extensions.Caching.Hybrid</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>HTML</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext"></code></pre></div></figure>
+<p>Register the <code>HybridCache</code> service, like you would register an <code>IDistributedCache</code> implementation:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">builder.Services.AddHybridCache(); // Not shown: optional configuration API.</code></pre></div></figure>
+<p>Now most caching concerns can be offloaded to <code>HybridCache</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">public class SomeService(HybridCache cache)
+{
+    public async Task GetSomeInformationAsync
+        (string name, int id, CancellationToken token = default)
+    {
+        return await cache.GetOrCreateAsync(
+            $&quot;someinfo:{name}:{id}&quot;, // Unique key for this combination.
+            async cancel =&gt; await SomeExpensiveOperationAsync(name, id, cancel),
+            token: token
+        );
+    }
+}</code></pre></div></figure>
+<p>We provide a concrete implementation of the <code>HybridCache</code> abstract class via dependency injection, but it&#39;s intended that developers can provide custom implementations of the API. The <code>HybridCache</code> implementation deals with everything related to caching, including concurrent operation handling. The <code>cancel</code> token here represents the combined cancellation of <em>all</em> concurrent callers&mdash;not just the cancellation of the caller we can see (that is, <code>token</code>).</p>
+<p>High throughput scenarios can be further optimized by using the <code>TState</code> pattern, to avoid some overhead from captured variables and per-instance callbacks:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">public class SomeService(HybridCache cache)
+{
+    public async Task GetSomeInformationAsync(string name, int id, CancellationToken token = default)
+    {
+        return await cache.GetOrCreateAsync(
+            $&quot;someinfo:{name}:{id}&quot;, // unique key for this combination
+            (name, id), // all of the state we need for the final call, if needed
+            static async (state, token) =&gt;
+                await SomeExpensiveOperationAsync(state.name, state.id, token),
+            token: token
+        );
+    }
+}</code></pre></div></figure>
+<p><code>HybridCache</code> uses the configured <code>IDistributedCache</code> implementation, if any, for secondary out-of-process caching, for example, using
+Redis. But even without an <code>IDistributedCache</code>, the <code>HybridCache</code> service will still provide in-process caching and &quot;stampede&quot; protection.</p>
+<h4 id="a-note-on-object-reuse">A note on object reuse</h4>
+<p>In typical existing code that uses <code>IDistributedCache</code>, every retrieval of an object from the cache results in deserialization. This behavior means that each concurrent caller gets a separate instance of the object, which cannot interact with other instances. The result is thread safety, as there&#39;s no risk of concurrent modifications to the same object instance.</p>
+<p>Because a lot of <code>HybridCache</code> usage will be adapted from existing <code>IDistributedCache</code> code, <code>HybridCache</code> preserves this behavior by default to avoid introducing concurrency bugs. However, a given use case is inherently thread-safe:</p>
+<ul>
+<li>If the types being cached are immutable.</li>
+<li>If the code doesn&#39;t modify them.</li>
+</ul>
+<p>In such cases, inform <code>HybridCache</code> that it&#39;s safe to reuse instances by making both of the following changes:</p>
+<ul>
+<li>Marking the type as <code>sealed</code>. The <code>sealed</code> keyword in C# means that the class can&#39;t be inherited.</li>
+<li>Applying the <code>[ImmutableObject(true)]</code> attribute to it. The <code>[ImmutableObject(true)]</code> attribute indicates that the object&#39;s state can&#39;t be changed after it&#39;s created.</li>
+</ul>
+<p>By reusing instances, <code>HybridCache</code> can reduce the overhead of CPU and object allocations associated with per-call deserialization. This can lead to performance improvements in scenarios where the cached objects are large or accessed frequently.</p>
+<h4 id="other-hybridcache-features">Other <code>HybridCache</code> features</h4>
+<p>Like <code>IDistributedCache</code>, <code>HybridCache</code> supports removal by key with a <code>RemoveKeyAsync</code> method.</p>
+<p><code>HybridCache</code> also provides optional APIs for <code>IDistributedCache</code> implementations, to avoid <code>byte[]</code> allocations. This feature is implemented
+by the preview versions of the <code>Microsoft.Extensions.Caching.StackExchangeRedis</code>,  <code>Microsoft.Extensions.Caching.SqlServer</code>, and <code>Microsoft.Extensions.Caching.Postgres</code> packages.</p>
+<p>Serialization is configured as part of registering the service, with support for type-specific and generalized serializers via the
+<code>WithSerializer</code> and <code>.WithSerializerFactory</code> methods, chained from the <code>AddHybridCache</code> call. By default, the library
+handles <code>string</code> and <code>byte[]</code> internally, and uses <code>System.Text.Json</code> for everything else, but you can use protobuf, xml, or anything
+else.</p>
+<p><code>HybridCache</code> supports older .NET runtimes, down to .NET Framework 4.7.2 and .NET Standard 2.0.</p>
+<p>For more information about <code>HybridCache</code>, see <a href="#/doc/aspnet/performance/caching/hybrid">HybridCache library in ASP.NET Core</a></p>
+<h3 id="developer-exception-page-improvements">Developer exception page improvements</h3>
+<p>The <a href="#/doc/aspnet/fundamentals/error-handling@developer-exception-page">ASP.NET Core developer exception page</a> is displayed when an app throws an unhandled exception during development. The developer exception page provides detailed information about the exception and request.</p>
+<p>Preview 3 added endpoint metadata to the developer exception page. ASP.NET Core uses endpoint metadata to control endpoint behavior, such as routing, response caching, rate limiting, OpenAPI generation, and more. The following image shows the new metadata information in the <code>Routing</code> section of the developer exception page:</p>
+<p><img src="assets/ms/aspnet/release-notes/aspnetcore-9/_static/endpoint-metadata.png" loading="lazy" alt="image"></p>
+<p>While testing the developer exception page, small quality of life improvements were identified. They shipped in Preview 4:</p>
+<ul>
+<li>Better text wrapping. Long cookies, query string values, and method names no longer add horizontal browser scroll bars.</li>
+<li>Bigger text which is found in modern designs.</li>
+<li>More consistent table sizes.</li>
+</ul>
+<p>The following animated image shows the new developer exception page:</p>
+<p><img src="assets/ms/aspnet/release-notes/aspnetcore-9/_static/aspnetcore-developer-page-improvements.gif" loading="lazy" alt="image"></p>
+<h3 id="dictionary-debugging-improvements">Dictionary debugging improvements</h3>
+<p>The debugging display of dictionaries and other key-value collections has an improved layout. The key is displayed in the debugger&#39;s key column instead of being concatenated with the value. The following images show the old and new display of a dictionary in the debugger.</p>
+<p>Before:</p>
+<p><img src="assets/ms/aspnet/release-notes/aspnetcore-9/_static/debugger-before.png" loading="lazy" alt="image"></p>
+<p>After:</p>
+<p><img src="assets/ms/aspnet/release-notes/aspnetcore-9/_static/debugger-after.png" loading="lazy" alt="image"></p>
+<p>ASP.NET Core has many key-value collections. This improved debugging experience applies to:</p>
+<ul>
+<li>HTTP headers</li>
+<li>Query strings</li>
+<li>Forms</li>
+<li>Cookies</li>
+<li>View data</li>
+<li>Route data</li>
+<li>Features</li>
+</ul>
+<h3 id="fix-for-50339s-during-app-recycle-in-iis">Fix for 503&#39;s during app recycle in IIS</h3>
+<p>By default there is now a 1 second delay between when IIS is notified of a recycle or shutdown and when ANCM tells the managed server to start shutting down. The delay is configurable via the <code>ANCM_shutdownDelay</code> environment variable or by setting the <code>shutdownDelay</code> handler setting. Both values are in milliseconds. The delay is mainly to reduce the likelihood of a race where:</p>
+<ul>
+<li>IIS hasn&#39;t started queuing requests to go to the new app.</li>
+<li>ANCM starts rejecting new requests that come into the old app.</li>
+</ul>
+<p>Slower machines or machines with heavier CPU usage may want to adjust this value to reduce 503 likelihood.</p>
+<p>Example of setting <code>shutdownDelay</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>HTML</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">&lt;aspNetCore processPath=&quot;dotnet&quot; arguments=&quot;myapp.dll&quot; stdoutLogEnabled=&quot;false&quot; stdoutLogFile=&quot;.logsstdout&quot;&gt;
+  &lt;handlerSettings&gt;
+    &lt;!-- Milliseconds to delay shutdown by.
+    this doesn&#x27;t mean incoming requests will be delayed by this amount,
+    but the old app instance will start shutting down after this timeout occurs --&gt;
+    &lt;handlerSetting name=&quot;shutdownDelay&quot; value=&quot;5000&quot; /&gt;
+  &lt;/handlerSettings&gt;
+&lt;/aspNetCore&gt;</code></pre></div></figure>
+<p>The fix is in the globally installed ANCM module that comes from the hosting bundle.</p>
+<h3 id="asp0026-analyzer-to-warn-when-authorize-is-overridden-by-allowanonymous-from-farther-away">ASP0026: Analyzer to warn when [Authorize] is overridden by [AllowAnonymous] from &quot;farther away&quot;</h3>
+<p>It seems intuitive that an <code>[Authorize]</code> attribute placed &quot;closer&quot; to an MVC action than an <code>[AllowAnonymous]</code> attribute would override the <code>[AllowAnonymous]</code> attribute and force authorization. However, this is not necessarily the case. What does matter is the relative order of the attributes.</p>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>The <code>[AllowAnonymous]</code> attribute doesn&#39;t disable authentication entirely. When credentials are sent to an endpoint with <code>[AllowAnonymous]</code>, the endpoint still authenticates those credentials and establishes the user&#39;s identity. The <code>[AllowAnonymous]</code> attribute only means that authentication is <strong>not required</strong>—the endpoint will run as anonymous only when no credentials are provided. This behavior can be useful for endpoints that need to work for both authenticated and anonymous users.</p>
+</div></aside>
+<p>The following code shows examples where a closer <code>[Authorize]</code> attribute gets overridden by an <code>[AllowAnonymous]</code> attribute that is farther away.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">[AllowAnonymous]
+public class MyController
+{
+    [Authorize] // Overridden by the [AllowAnonymous] attribute on the class
+    public IActionResult Private() =&gt; null;
+}</code></pre></div></figure>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">[AllowAnonymous]
+public class MyControllerAnon : ControllerBase
+{
+}
+
+[Authorize] // Overridden by the [AllowAnonymous] attribute on MyControllerAnon
+public class MyControllerInherited : MyControllerAnon
+{
+}
+
+public class MyControllerInherited2 : MyControllerAnon
+{
+    [Authorize] // Overridden by the [AllowAnonymous] attribute on MyControllerAnon
+    public IActionResult Private() =&gt; null;
+}</code></pre></div></figure>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">[AllowAnonymous]
+[Authorize] // Overridden by the preceding [AllowAnonymous]
+public class MyControllerMultiple : ControllerBase
+{
+}</code></pre></div></figure>
+<p>In .NET 9 Preview 6, we&#39;ve introduced an analyzer that will highlight instances like these where a closer <code>[Authorize]</code> attribute gets overridden by an <code>[AllowAnonymous]</code> attribute that is farther away from an MVC action. The warning points to the overridden <code>[Authorize]</code> attribute with the following message:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">ASP0026 [Authorize] overridden by [AllowAnonymous] from farther away</code></pre></div></figure>
+<p>The correct action to take if you see this warning depends on the intention behind the attributes. The farther away <code>[AllowAnonymous]</code> attribute should be removed if it&#39;s unintentionally exposing the endpoint to anonymous users. If the <code>[AllowAnonymous]</code> attribute was intended to override a closer <code>[Authorize]</code> attribute, you can repeat the <code>[AllowAnonymous]</code> attribute after the <code>[Authorize]</code> attribute to clarify the intent.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">[AllowAnonymous]
+public class MyController
+{
+    // This produces no warning because the second, &quot;closer&quot; [AllowAnonymous]
+    // clarifies that [Authorize] is intentionally overridden.
+    // Specifying AuthenticationSchemes can be useful for endpoints that
+    // allow but don&#x27;t require authenticated users. When credentials are sent,
+    // they will be authenticated; when no credentials are sent, the endpoint
+    // allows anonymous access.
+    [Authorize(AuthenticationSchemes = &quot;Cookies&quot;)]
+    [AllowAnonymous]
+    public IActionResult Privacy() =&gt; null;
+}</code></pre></div></figure>
+<h3 id="improved-kestrel-connection-metrics">Improved Kestrel connection metrics</h3>
+<p>We&#39;ve made a significant improvement to Kestrel&#39;s connection metrics by including metadata about why a connection failed. The <a href="/dotnet/core/diagnostics/built-in-metrics-aspnetcore#metric-kestrelconnectionduration"><code>kestrel.connection.duration</code></a> metric now includes the connection close reason in the <code>error.type</code> attribute.</p>
+<p>Here is a small sample of the <code>error.type</code> values:</p>
+<ul>
+<li><code>tls_handshake_failed</code> - The connection requires TLS, and the TLS handshake failed.</li>
+<li><code>connection_reset</code> - The connection was unexpectedly closed by the client while requests were in progress.</li>
+<li><code>request_headers_timeout</code> - Kestrel closed the connection because it didn&#39;t receive request headers in time.</li>
+<li><code>max_request_body_size_exceeded</code> - Kestrel closed the connection because uploaded data exceeded max size.</li>
+</ul>
+<p>Previously, diagnosing Kestrel connection issues required a server to record detailed, low-level logging. However, logs can be expensive to generate and store, and it can be difficult to find the right information among the noise.</p>
+<p>Metrics are a much cheaper alternative that can be left on in a production environment with minimal impact. Collected metrics can <a href="#/doc/aspnet/metrics/overview@show-metrics-on-a-grafana-dashboard">drive dashboards and alerts</a>. Once a problem is identified at a high-level with metrics, further investigation using logging and other tooling can begin.</p>
+<p>We expect improved connection metrics to be useful in many scenarios:</p>
+<ul>
+<li>Investigating performance issues caused by short connection lifetimes.</li>
+<li>Observing ongoing external attacks on Kestrel that impact performance and stability.</li>
+<li>Recording attempted external attacks on Kestrel that Kestrel&#39;s built-in security hardening prevented.</li>
+</ul>
+<p>For more information, see <a href="#/doc/aspnet/metrics/overview">ASP.NET Core metrics</a>.</p>
+<h3 id="customize-kestrel-named-pipe-endpoints">Customize Kestrel named pipe endpoints</h3>
+<p>Kestrel&#39;s named pipe support has been improved with advanced customization options. The new <code>CreateNamedPipeServerStream</code> method on the named pipe options allows pipes to be customized per-endpoint.</p>
+<p>An example of where this is useful is a Kestrel app that requires two pipe endpoints with different <a href="/windows/win32/ipc/named-pipe-security-and-access-rights">access security</a>. The <code>CreateNamedPipeServerStream</code> option can be used to create pipes with custom security settings, depending on the pipe name.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">var builder = WebApplication.CreateBuilder();
+
+builder.WebHost.ConfigureKestrel(options =&gt;
+{
+    options.ListenNamedPipe(&quot;pipe1&quot;);
+    options.ListenNamedPipe(&quot;pipe2&quot;);
+});
+
+builder.WebHost.UseNamedPipes(options =&gt;
+{
+    options.CreateNamedPipeServerStream = (context) =&gt;
+    {
+        var pipeSecurity = CreatePipeSecurity(context.NamedPipeEndpoint.PipeName);
+
+        return NamedPipeServerStreamAcl.Create(context.NamedPipeEndPoint.PipeName, PipeDirection.InOut,
+            NamedPipeServerStream.MaxAllowedServerInstances, PipeTransmissionMode.Byte,
+            context.PipeOptions, inBufferSize: 0, outBufferSize: 0, pipeSecurity);
+    };
+});</code></pre></div></figure>
+<h3 id="exceptionhandlermiddleware-option-to-choose-the-status-code-based-on-the-exception-type"><code>ExceptionHandlerMiddleware</code> option to choose the status code based on the exception type</h3>
+<p>A new option when configuring the <code>ExceptionHandlerMiddleware</code> enables app developers to choose what status code to return when an exception occurs during request handling. The new option changes the status code being set in the <code>ProblemDetails</code> response from the <code>ExceptionHandlerMiddleware</code>.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">app.UseExceptionHandler(new ExceptionHandlerOptions
+{
+    StatusCodeSelector = ex =&gt; ex is TimeoutException
+        ? StatusCodes.Status503ServiceUnavailable
+        : StatusCodes.Status500InternalServerError,
+});</code></pre></div></figure>
+<h3 id="opt-out-of-http-metrics-on-certain-endpoints-and-requests">Opt-out of HTTP metrics on certain endpoints and requests</h3>
+<p>.NET 9 introduces the ability to opt-out of HTTP metrics for specific endpoints and requests. Opting out of recording metrics is beneficial for endpoints frequently called by automated systems, such as health checks. Recording metrics for these requests is generally unnecessary.</p>
+<p>HTTP requests to an endpoint can be excluded from metrics by adding metadata. Either:</p>
+<ul>
+<li>Add the <a href="xref:Microsoft.AspNetCore.Http.DisableHttpMetricsAttribute"><code>[DisableHttpMetrics]</code> attribute</a> to the Web API controller, SignalR hub or gRPC service.</li>
+<li>Call <code>DisableHttpMetrics</code> when mapping endpoints in app startup:</li>
+</ul>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">var builder = WebApplication.CreateBuilder(args);
+builder.Services.AddHealthChecks();
+
+var app = builder.Build();
+app.MapHealthChecks(&quot;/healthz&quot;).DisableHttpMetrics();
+app.Run();</code></pre></div></figure>
+<p>The <code>MetricsDisabled</code> property has been added to <code>IHttpMetricsTagsFeature</code> for:</p>
+<ul>
+<li>Advanced scenarios where a request doesn&#39;t map to an endpoint.</li>
+<li>Dynamically disabling metrics collection for specific HTTP requests.</li>
+</ul>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">// Middleware that conditionally opts-out HTTP requests.
+app.Use(async (context, next) =&gt;
+{
+    var metricsFeature = context.Features.Get();
+    if (metricsFeature != null &amp;&amp;
+        context.Request.Headers.ContainsKey(&quot;x-disable-metrics&quot;))
+    {
+        metricsFeature.MetricsDisabled = true;
+    }
+
+    await next(context);
+});</code></pre></div></figure>
+<h3 id="data-protection-support-for-deleting-keys">Data Protection support for deleting keys</h3>
+<p>Prior to .NET 9, data protection keys were <em><strong>not</strong></em> deletable by design, to prevent data loss. Deleting a key renders its protected data irretrievable. Given their small size, the accumulation of these keys generally posed minimal impact. However, to accommodate extremely long-running services, we have introduced the option to delete keys. Generally, only old keys should be deleted. Only delete keys when you can accept the risk of data loss in exchange for storage savings. We recommend data protection keys should <em><strong>not</strong></em> be deleted.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">﻿using Microsoft.AspNetCore.DataProtection.KeyManagement;
+
+var services = new ServiceCollection();
+services.AddDataProtection();
+
+var serviceProvider = services.BuildServiceProvider();
+
+var keyManager = serviceProvider.GetService();
+
+if (keyManager is IDeletableKeyManager deletableKeyManager)
+{
+    var utcNow = DateTimeOffset.UtcNow;
+    var yearAgo = utcNow.AddYears(-1);
+
+    if (!deletableKeyManager.DeleteKeys(key =&gt; key.ExpirationDate &lt; yearAgo))
+    {
+        Console.WriteLine(&quot;Failed to delete keys.&quot;);
+    }
+    else
+    {
+        Console.WriteLine(&quot;Old keys deleted successfully.&quot;);
+    }
+}
+else
+{
+    Console.WriteLine(&quot;Key manager does not support deletion.&quot;);
+}</code></pre></div></figure>
+<h3 id="middleware-supports-keyed-di">Middleware supports Keyed DI</h3>
+<p>Middleware now supports <a href="/aspnet/core/fundamentals/dependency-injection?view=aspnetcore-9.0&amp;preserve-view=true#keyed-services">Keyed DI</a> in both the constructor and the <code>Invoke</code>/<code>InvokeAsync</code> method:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">var builder = WebApplication.CreateBuilder(args);
+builder.Services.AddKeyedSingleton(&quot;test&quot;);
+builder.Services.AddKeyedScoped(&quot;test2&quot;);
+
+var app = builder.Build();
+app.UseMiddleware();
+app.Run();
+
+internal class MyMiddleware
+{
+    private readonly RequestDelegate _next;
+
+    public MyMiddleware(RequestDelegate next,
+        [FromKeyedServices(&quot;test&quot;)] MySingletonClass service)
+    {
+        _next = next;
+    }
+
+    public Task Invoke(HttpContext context,
+        [FromKeyedServices(&quot;test2&quot;)]
+            MyScopedClass scopedService) =&gt; _next(context);
+}</code></pre></div></figure>
+<h4 id="trust-the-aspnet-core-https-development-certificate-on-linux">Trust the ASP.NET Core HTTPS development certificate on Linux</h4>
+<p>On Ubuntu and Fedora based Linux distros, <code>dotnet dev-certs https --trust</code> now configures ASP.NET Core HTTPS development certificate as a trusted certificate for:</p>
+<ul>
+<li>Chromium browsers, for example, Google Chrome, Microsoft Edge, and Chromium.</li>
+<li>Mozilla Firefox and Mozilla derived browsers.</li>
+<li>.NET APIs, for example, <a href="/dotnet/api/system.net.http.httpclient">HttpClient</a></li>
+</ul>
+<p>Previously, <code>--trust</code> only worked on Windows and macOS. Certificate trust is applied per-user.</p>
+<p>To establish trust in OpenSSL, the <code>dev-certs</code> tool:</p>
+<ul>
+<li>Puts the certificate in <code>~/.aspnet/dev-certs/trust</code></li>
+<li>Runs a simplified version of OpenSSL&#39;s <a target="_blank" rel="noopener" href="https://docs.openssl.org/1.0.2/man1/c_rehash/">c_rehash tool</a> on the directory.</li>
+<li>Asks the user to update the <code>SSL_CERT_DIR</code> environment variable.</li>
+</ul>
+<p>To establish trust in dotnet, the tool puts the certificate in the <code>My/Root</code> certificate store.</p>
+<p>To establish trust in <a target="_blank" rel="noopener" href="https://docs.redhat.com/en/documentation/red_hat_enterprise_linux/6/html/developer_guide/che-nsslib">NSS databases</a>, if any, the tool searches the home directory for Firefox profiles, <code>~/.pki/nssdb</code>, and <code>~/snap/chromium/current/.pki/nssdb</code>. For each directory found, the tool adds an entry to the <code>nssdb</code>.</p>
+<h3 id="templates-updated-to-latest-bootstrap-jquery-and-jquery-validation-versions">Templates updated to latest Bootstrap, jQuery, and jQuery Validation versions</h3>
+<p>The ASP.NET Core project templates and libraries have been updated to use the latest versions of Bootstrap, jQuery, and jQuery Validation, specifically:</p>
+<ul>
+<li>Bootstrap 5.3.3</li>
+<li>jQuery 3.7.1</li>
+<li>jQuery Validation 1.21.0</li>
+</ul>
+<h3 id="keep-alive-timeout-for-websockets">Keep-Alive Timeout for WebSockets</h3>
+<p>The <a href="#/doc/aspnet/fundamentals/websockets@configure-the-middleware">WebSockets middleware</a> can now be configured for keep-alive timeouts.</p>
+<p>The keep-alive timeout aborts the WebSocket connection and throws an exception from <code>WebSocket.ReceiveAsync</code> if both of the following conditions are met:</p>
+<ul>
+<li>The server sends a ping frame using the websocket protocol.</li>
+<li>The client doesn&#39;t reply with a pong frame within the specified timeout.</li>
+</ul>
+<p>The server automatically sends the ping frame and configures it with <code>KeepAliveInterval</code>. </p>
+<p>The keep-alive timeout setting is useful for detecting connections that might be slow or ungracefully disconnected.</p>
+<p>The keep-alive timeout can be configured globally for the WebSocket middleware:</p>
+<p>[!code-csharp<a href="~/release-notes/aspnetcore-9/samples/WebSocketsKeepAliveTimeoutExample/Program.cs?name=snippet_WebSocket_KeepAliveTimeout_Global"></a>]</p>
+<p>Alternatively, configure the timeout per accepted WebSocket:</p>
+<p>[!code-csharp<a href="~/release-notes/aspnetcore-9/samples/WebSocketsKeepAliveTimeoutExample/Program.cs?name=snippet_KeepAliveTimeout_Per_Accepted_WebSocket"></a>]</p>
+<p>For more information, see <a href="#/doc/aspnet/fundamentals/websockets@keep-alive-timeout">WebSockets support in ASP.NET Core</a>.</p>
+<h2 id="breaking-changes">Breaking changes</h2>
+<p>Use the articles in <a href="/dotnet/core/compatibility/breaking-changes">Breaking changes in .NET</a> to find breaking changes that might apply when upgrading an app to a newer version of .NET.</p>

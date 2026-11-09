@@ -1,0 +1,1528 @@
+<p>:::moniker range=&quot;&gt;= aspnetcore-6.0&quot;</p>
+<p><code>Microsoft.AspNetCore.Authentication.Certificate</code> contains an implementation similar to <a target="_blank" rel="noopener" href="https://datatracker.ietf.org/doc/html/rfc5246#section-7.4.4">Certificate Authentication</a> for ASP.NET Core. Certificate authentication happens at the TLS level before it ever gets to ASP.NET Core. More accurately, this functionality is an authentication handler that validates the certificate and then gives you an event where you can resolve that certificate to a <code>ClaimsPrincipal</code>.</p>
+<p>You <strong>must</strong> <a href="#configure-your-server-to-require-certificates">configure your server</a> for certificate authentication with IIS, Kestrel, Azure Web Apps, or your preferred solution.</p>
+<p>This article describes how to configure certificate authentication in ASP.NET Core for IIS and HTTP.sys, and provides examples for calling various methods and working with properties.</p>
+<h2 id="review-proxy-and-load-balancer-scenarios">Review proxy and load balancer scenarios</h2>
+<p>Certificate authentication is a stateful scenario primarily used where a proxy or load balancer doesn&#39;t handle traffic between clients and servers. If a proxy or load balancer is used, certificate authentication only works if the proxy or load balancer:</p>
+<ul>
+<li>Handles the authentication.</li>
+<li>Passes the user authentication information to the app (for example, in a request header), which acts on the authentication information.</li>
+</ul>
+<p>An alternative to certificate authentication in environments where proxies and load balancers are used is Active Directory Federated Services (ADFS) with OpenID Connect (OIDC).</p>
+<h2 id="get-started">Get started</h2>
+<p>Acquire an HTTPS certificate, apply it, and <a href="#configure-your-server-to-require-certificates">configure your server</a> to require certificates.</p>
+<p>In the web app:</p>
+<ul>
+<li><p>Add a reference to the <a target="_blank" rel="noopener" href="https://www.nuget.org/packages/Microsoft.AspNetCore.Authentication.Certificate">Microsoft.AspNetCore.Authentication.Certificate</a> NuGet package.</p>
+</li>
+<li><p>In the <em>Program.cs</em> file, call the
+<code>builder.Services.AddAuthentication(CertificateAuthenticationDefaults.AuthenticationScheme).AddCertificate(...);</code> method. Provide a delegate for the <code>OnCertificateValidated</code> event handler to complete any supplementary validation on the client certificate sent with requests. Turn that information into a <code>ClaimsPrincipal</code> value and set it on the <code>context.Principal</code> property.</p>
+</li>
+</ul>
+<p>If authentication fails, this handler returns a <code>403 (Forbidden)</code> response rather than a <code>401 (Unauthorized)</code>, as you might expect. The handler returns a different response because it expects authentication to occur during the initial TLS connection. By the time it reaches the handler, it&#39;s too late. There&#39;s no way to upgrade the connection from an anonymous connection to one with a certificate.</p>
+<p>The <code>UseAuthentication</code> method is required to set <code>HttpContext.User</code> to a <code>ClaimsPrincipal</code> value created from the certificate. For example:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">        var builder = WebApplication.CreateBuilder(args);
+
+        builder.Services.AddAuthentication(
+                CertificateAuthenticationDefaults.AuthenticationScheme)
+            .AddCertificate();
+
+        var app = builder.Build();
+
+        app.UseAuthentication();
+
+        app.MapGet(&quot;/&quot;, () =&gt; &quot;Hello World!&quot;);
+
+        app.Run();
+        </code></pre></div></figure>
+<p>The preceding example demonstrates the default way to add certificate authentication. The handler constructs a user principal by using the common certificate properties.</p>
+<h2 id="configure-certificate-validation">Configure certificate validation</h2>
+<p>The <code>CertificateAuthenticationOptions</code> handler has some built-in validations that are the minimum validations you should perform on a certificate. Each of these settings is enabled by default. The following sections describe how to work with the settings.</p>
+<h3 id="allowedcertificatetypes-chained-selfsigned-or-all-chained-selfsigned">AllowedCertificateTypes = Chained, SelfSigned, or All (Chained | SelfSigned)</h3>
+<p>Default value: <code>CertificateTypes.Chained</code></p>
+<p>This check validates that only the appropriate certificate type is allowed. If the app is using self-signed certificates, this option needs to be set to <code>CertificateTypes.All</code> or <code>CertificateTypes.SelfSigned</code>.</p>
+<h3 id="chaintrustvalidationmode">ChainTrustValidationMode</h3>
+<p>Default value: X509ChainTrustMode.System</p>
+<p>The certificate presented by the client must chain to a trusted root certificate. This check controls which trust store contains these root certificates.</p>
+<p>By default, the handler uses the system trust store. If the presented client certificate needs to chain to a root certificate that doesn&#39;t appear in the system trust store, you can set the option to X509ChainTrustMode.CustomRootTrust so the handler uses the <code>CustomTrustStore</code> property.</p>
+<h3 id="customtruststore">CustomTrustStore</h3>
+<p>Default value: Empty <code>X509Certificate2Collection</code></p>
+<p>If the handler&#39;s <code>ChainTrustValidationMode</code> property is set to <code>X509ChainTrustMode.CustomRootTrust</code>, this <code>X509Certificate2Collection</code> object contains every certificate used to validate the client certificate up to a trusted root, including the trusted root.</p>
+<p>When the client presents a certificate that&#39;s part of a multi-level certificate chain, the <code>CustomTrustStore</code> property must contain every issuing certificate in the chain.</p>
+<h3 id="validatecertificateuse">ValidateCertificateUse</h3>
+<p>Default value: <code>true</code></p>
+<p>This check validates that the certificate presented by the client has the Client Authentication extended key use (EKU), or no EKUs at all. As the specifications say, if no EKU is specified, then all EKUs are deemed valid.</p>
+<h3 id="validatevalidityperiod">ValidateValidityPeriod</h3>
+<p>Default value: <code>true</code></p>
+<p>This check validates that the certificate is within its validity period. On each request, the handler ensures that a certificate that was valid when it was presented hasn&#39;t expired during its current session.</p>
+<h3 id="revocationflag">RevocationFlag</h3>
+<p>Default value: <code>X509RevocationFlag.ExcludeRoot</code></p>
+<p>A flag that specifies which certificates in the chain are checked for revocation.</p>
+<p>Revocation checks are only performed when the certificate is chained to a root certificate.</p>
+<h3 id="revocationmode">RevocationMode</h3>
+<p>Default value: <code>X509RevocationMode.Online</code></p>
+<p>A flag that specifies how revocation checks are performed.</p>
+<p>Specifying an online check can result in a long delay while the certificate authority is contacted.</p>
+<p>Revocation checks are performed only when the certificate is chained to a root certificate.</p>
+<h3 id="faq-can-i-configure-my-app-to-require-a-certificate-only-on-certain-paths">FAQ: Can I configure my app to require a certificate only on certain paths?</h3>
+<p>This approach isn&#39;t possible. The certificate exchange is completed at the start of the HTTPS conversation. The operation is done by the server before the first request is received on that connection, so it isn&#39;t possible to scope based on any request fields.</p>
+<h2 id="process-handler-events">Process handler events</h2>
+<p>The handler has two events:</p>
+<ul>
+<li><p><code>OnAuthenticationFailed</code>: Called if an exception happens during authentication and allows you to react.</p>
+</li>
+<li><p><code>OnCertificateValidated</code>: Called after the certificate is validated, passed validation, and a default principal is created. This event allows you to perform your own validation and augment or replace the principal. Examples include:</p>
+<ul>
+<li>Determining if the certificate is known to your services.</li>
+<li>Constructing your own principal, such as in the following example:</li>
+</ul>
+</li>
+</ul>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">        builder.Services.AddAuthentication(
+                CertificateAuthenticationDefaults.AuthenticationScheme)
+            .AddCertificate(options =&gt;
+            {
+                options.Events = new CertificateAuthenticationEvents
+                {
+                    OnCertificateValidated = context =&gt;
+                    {
+                        var claims = new[]
+                        {
+                            new Claim(
+                                ClaimTypes.NameIdentifier,
+                                context.ClientCertificate.Subject,
+                                ClaimValueTypes.String, context.Options.ClaimsIssuer),
+                            new Claim(
+                                ClaimTypes.Name,
+                                context.ClientCertificate.Subject,
+                                ClaimValueTypes.String, context.Options.ClaimsIssuer)
+                        };
+
+                        context.Principal = new ClaimsPrincipal(
+                            new ClaimsIdentity(claims, context.Scheme.Name));
+                        context.Success();
+
+                        return Task.CompletedTask;
+                    }
+                };
+            });
+        </code></pre></div></figure>
+<p>If the inbound certificate doesn&#39;t satisfy your extra validation, call <code>context.Fail(&quot;failure reason&quot;)</code> with a failure reason.</p>
+<p>For better functionality, call a service registered in dependency injection that connects to a database or other type of user store. Access the service by using the context passed into the delegate. Consider the following example:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">        builder.Services.AddAuthentication(
+                CertificateAuthenticationDefaults.AuthenticationScheme)
+            .AddCertificate(options =&gt;
+            {
+                options.Events = new CertificateAuthenticationEvents
+                {
+                    OnCertificateValidated = context =&gt;
+                    {
+                        var validationService = context.HttpContext.RequestServices
+                            .GetRequiredService();
+
+                        if (validationService.ValidateCertificate(context.ClientCertificate))
+                        {
+                            var claims = new[]
+                            {
+                                new Claim(
+                                    ClaimTypes.NameIdentifier,
+                                    context.ClientCertificate.Subject,
+                                    ClaimValueTypes.String, context.Options.ClaimsIssuer),
+                                new Claim(
+                                    ClaimTypes.Name,
+                                    context.ClientCertificate.Subject,
+                                    ClaimValueTypes.String, context.Options.ClaimsIssuer)
+                            };
+
+                            context.Principal = new ClaimsPrincipal(
+                                new ClaimsIdentity(claims, context.Scheme.Name));
+                            context.Success();
+                        }
+
+                        return Task.CompletedTask;
+                    }
+                };
+            });
+        </code></pre></div></figure>
+<p>Conceptually, the validation of the certificate is an authorization concern. For example, you can add a check on an issuer or thumbprint in an authorization policy rather than inside the <code>OnCertificateValidated</code> handler.</p>
+<h2 id="configure-your-server-to-require-certificates">Configure your server to require certificates</h2>
+<p>The following sections describe how to configure your server to require certificates for a specific solution, including Kestrel, IIS, Azure, custom web proxies, and Azure Web Apps.</p>
+<h3 id="kestrel">Kestrel</h3>
+<p>In the <em>Program.cs</em> file, configure Kestrel as follows:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">var builder = WebApplication.CreateBuilder(args);
+
+builder.Services.Configure(options =&gt;
+{
+    options.ConfigureHttpsDefaults(options =&gt;
+        options.ClientCertificateMode = ClientCertificateMode.RequireCertificate);
+});</code></pre></div></figure>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>When an endpoint is created by calling the <code>Listen</code> method <strong>before</strong> calling the <code>ConfigureHttpsDefaults</code> method, the endpoint doesn&#39;t have the defaults applied.</p>
+</div></aside>
+<h3 id="iis">IIS</h3>
+<p>Complete the following steps in IIS Manager:</p>
+<ol>
+<li>In the <strong>Connections</strong> tab, select your site.</li>
+<li>In the <strong>Features View</strong> window, double-click <strong>SSL Settings</strong>.</li>
+<li>Select the <strong>Require SSL</strong> checkbox.</li>
+<li>For the <strong>Client certificates</strong> option, select <strong>Require</strong>.</li>
+</ol>
+<p><img src="assets/ms/aspnet/security/authentication/certauth/_static/README-IISConfig.png" loading="lazy" alt="image"></p>
+<h3 id="azure-and-custom-web-proxies">Azure and custom web proxies</h3>
+<p>For more information on how to configure the certificate forwarding middleware, see the <a href="#/doc/aspnet/host-and-deploy/proxy-load-balancer@certificate-forwarding">host and deploy documentation</a>.</p>
+<h3 id="certificate-authentication-in-azure-web-apps">Certificate authentication in Azure Web Apps</h3>
+<p>No forwarding configuration is required for Azure. The certificate-forwarding middleware sets up the configuration.</p>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>Certificate-forwarding middleware is required for this scenario.</p>
+</div></aside>
+<p>For more information, see <a href="/azure/app-service/configure-ssl-certificate-in-code">Use TLS/SSL certificates in your app code (Azure documentation)</a>.</p>
+<h3 id="certificate-authentication-in-custom-web-proxies">Certificate authentication in custom web proxies</h3>
+<p>The <code>AddCertificateForwarding</code> method is used to specify:</p>
+<ul>
+<li>The client header name.</li>
+<li>How to load the certificate (via the <code>HeaderConverter</code> property).</li>
+</ul>
+<p>In custom web proxies, the certificate is passed as a custom request header, for example <code>X-SSL-CERT</code>. To use the certificate, configure certificate forwarding in the <em>Program.cs</em> file:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">        builder.Services.AddCertificateForwarding(options =&gt;
+        {
+            options.CertificateHeader = &quot;X-SSL-CERT&quot;;
+
+            options.HeaderConverter = headerValue =&gt;
+            {
+                X509Certificate2? clientCertificate = null;
+
+                if (!string.IsNullOrWhiteSpace(headerValue))
+                {
+                    clientCertificate = new X509Certificate2(StringToByteArray(headerValue));
+                }
+
+                return clientCertificate!;
+
+                static byte[] StringToByteArray(string hex)
+                {
+                    var numberChars = hex.Length;
+                    var bytes = new byte[numberChars / 2];
+
+                    for (int i = 0; i &lt; numberChars; i += 2)
+                    {
+                        bytes[i / 2] = Convert.ToByte(hex.Substring(i, 2), 16);
+                    }
+
+                    return bytes;
+                }
+            };
+        });
+        </code></pre></div></figure>
+<p>If NGINX is used with the configuration <code>proxy_set_header ssl-client-cert $ssl_client_escaped_cert</code> to reverse proxy the app, or the app is deployed on Kubernetes by using NGINX Ingress, the client certificate is passed to the app in <a target="_blank" rel="noopener" href="https://developer.mozilla.org/docs/Glossary/percent-encoding">URL-encoded form</a>. To use the certificate, decode it as follows:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">        builder.Services.AddCertificateForwarding(options =&gt;
+        {
+            options.CertificateHeader = &quot;ssl-client-cert&quot;;
+
+            options.HeaderConverter = (headerValue) =&gt;
+            {
+                X509Certificate2? clientCertificate = null;
+
+                if (!string.IsNullOrWhiteSpace(headerValue))
+                {
+                    clientCertificate = X509Certificate2.CreateFromPem(
+                        WebUtility.UrlDecode(headerValue));
+                }
+
+                return clientCertificate!;
+            };
+        });
+        </code></pre></div></figure>
+<p>Add the middleware in the <em>Program.cs</em> file. The <code>UseCertificateForwarding</code> method is called before the calls to the <code>UseAuthentication</code> and <code>UseAuthorization</code> methods:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">        var app = builder.Build();
+
+        app.UseCertificateForwarding();
+
+        app.UseAuthentication();
+        app.UseAuthorization();
+        </code></pre></div></figure>
+<p>A separate class can be used to implement validation logic. Because the same self-signed certificate is used in this example, ensure that only your certificate can be used. Validate that the thumbprints of both the client certificate and the server certificate match. Otherwise, any certificate can be used and be sufficient for authentication. The certificate is then used inside the <code>AddCertificate</code> method. You can also validate the subject or the issuer here if you use intermediate or child certificates.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">using System.Security.Cryptography.X509Certificates;
+
+namespace CertAuthSample.Snippets;
+
+public class SampleCertificateValidationService : ICertificateValidationService
+{
+    public bool ValidateCertificate(X509Certificate2 clientCertificate)
+    {
+        // Don&#x27;t hardcode passwords in production code.
+        // Use a certificate thumbprint or Azure Key Vault.
+        var expectedCertificate = new X509Certificate2(
+            Path.Combine(&quot;/path/to/pfx&quot;), &quot;1234&quot;);
+
+        return clientCertificate.Thumbprint == expectedCertificate.Thumbprint;
+    }
+}</code></pre></div></figure>
+<h4 id="implement-an-httpclient-with-a-certificate-and-ihttpclientfactory">Implement an HttpClient with a certificate and IHttpClientFactory</h4>
+<p>In the following example, a client certificate is added to a <code>HttpClientHandler</code> by using the <code>ClientCertificates</code> property from the handler. This handler can then be used in a named instance of an <code>HttpClient</code> with the <code>ConfigurePrimaryHttpMessageHandler</code> method. This scenario is configured in the <em>Program.cs</em> file:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">        var clientCertificate =
+            new X509Certificate2(
+              Path.Combine(_environment.ContentRootPath, &quot;sts_dev_cert.pfx&quot;), &quot;1234&quot;);
+
+        builder.Services.AddHttpClient(&quot;namedClient&quot;, c =&gt;
+        {
+        }).ConfigurePrimaryHttpMessageHandler(() =&gt;
+        {
+            var handler = new HttpClientHandler();
+            handler.ClientCertificates.Add(clientCertificate);
+            return handler;
+        });
+        </code></pre></div></figure>
+<p>The <code>IHttpClientFactory</code> can then be used to get the named instance with the handler and the certificate. The <code>CreateClient</code> method with the name of the client defined in the <em>Program.cs</em> file is used to get the instance. The HTTP request can be sent by using the client as required:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">public class SampleHttpService
+{
+    private readonly IHttpClientFactory _httpClientFactory;
+
+    public SampleHttpService(IHttpClientFactory httpClientFactory)
+        =&gt; _httpClientFactory = httpClientFactory;
+
+    public async Task GetAsync()
+    {
+        var httpClient = _httpClientFactory.CreateClient(&quot;namedClient&quot;);
+        var httpResponseMessage = await httpClient.GetAsync(&quot;https://example.com&quot;);
+
+        if (httpResponseMessage.IsSuccessStatusCode)
+        {
+            return JsonDocument.Parse(
+                await httpResponseMessage.Content.ReadAsStringAsync());
+        }
+
+        throw new ApplicationException($&quot;Status code: {httpResponseMessage.StatusCode}&quot;);
+    }
+}</code></pre></div></figure>
+<p>If the correct certificate is sent to the server, the data is returned. If no certificate or the wrong certificate is sent, the server returns an HTTP 403 status code.</p>
+<h3 id="certificates-in-powershell">Certificates in PowerShell</h3>
+<p>Creating the certificates is the hardest part in setting up this flow. You can create a root certificate by using the <code>New-SelfSignedCertificate</code> PowerShell cmdlet. When you create the certificate, use a strong password. It&#39;s important to add the <code>KeyUsageProperty</code> parameter and the <code>KeyUsage</code> parameter as shown in the examples.</p>
+<h4 id="create-root-certificate-authority">Create root certificate authority</h4>
+<p>The following code shows how to create a certificate authority (CA) at the root:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">New-SelfSignedCertificate -DnsName &quot;root_ca_dev_damienbod.com&quot;, &quot;root_ca_dev_damienbod.com&quot; -CertStoreLocation &quot;cert:\LocalMachine\My&quot; -NotAfter (Get-Date).AddYears(20) -FriendlyName &quot;root_ca_dev_damienbod.com&quot; -KeyUsageProperty All -KeyUsage CertSign, CRLSign, DigitalSignature
+
+$mypwd = ConvertTo-SecureString -String &quot;1234&quot; -Force -AsPlainText
+
+Get-ChildItem -Path cert:\localMachine\my\&quot;The thumbprint...&quot; | Export-PfxCertificate -FilePath C:\git\root_ca_dev_damienbod.pfx -Password $mypwd
+
+Export-Certificate -Cert cert:\localMachine\my\&quot;The thumbprint...&quot; -FilePath root_ca_dev_damienbod.crt</code></pre></div></figure>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>The <code>-DnsName</code> parameter value must match the deployment target of the app. For example, &quot;localhost&quot; for development.</p>
+</div></aside>
+<h4 id="install-in-the-trusted-root">Install in the trusted root</h4>
+<p>The root certificate must be trusted on your host system. Only root certificates created by a certificate authority are trusted by default. For information on how to trust the root certificate on Windows, see <a href="/windows-hardware/drivers/install/trusted-root-certification-authorities-certificate-store">the Windows documentation</a> or the <a href="/powershell/module/pki/import-certificate">Import-Certificate</a> PowerShell cmdlet.</p>
+<h4 id="use-an-intermediate-certificate">Use an intermediate certificate</h4>
+<p>An intermediate certificate can now be created from the root certificate. This approach isn&#39;t required for all use cases, but you might need to create many certificates or need to activate or disable groups of certificates. The <code>TextExtension</code> parameter is required to set the path length in the basic constraints of the certificate.</p>
+<p>The intermediate certificate can then be added to the trusted intermediate certificate in the Windows host system.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">$mypwd = ConvertTo-SecureString -String &quot;1234&quot; -Force -AsPlainText
+
+$parentcert = ( Get-ChildItem -Path cert:\LocalMachine\My\&quot;The thumbprint of the root...&quot; )
+
+New-SelfSignedCertificate -certstorelocation cert:\localmachine\my -dnsname &quot;intermediate_dev_damienbod.com&quot; -Signer $parentcert -NotAfter (Get-Date).AddYears(20) -FriendlyName &quot;intermediate_dev_damienbod.com&quot; -KeyUsageProperty All -KeyUsage CertSign, CRLSign, DigitalSignature -TextExtension @(&quot;2.5.29.19={text}CA=1&amp;pathlength=1&quot;)
+
+Get-ChildItem -Path cert:\localMachine\my\&quot;The thumbprint...&quot; | Export-PfxCertificate -FilePath C:\git\AspNetCoreCertificateAuth\Certs\intermediate_dev_damienbod.pfx -Password $mypwd
+
+Export-Certificate -Cert cert:\localMachine\my\&quot;The thumbprint...&quot; -FilePath intermediate_dev_damienbod.crt</code></pre></div></figure>
+<h4 id="create-child-certificate-from-intermediate-certificate">Create child certificate from intermediate certificate</h4>
+<p>A child certificate can be created from the intermediate certificate. This child certificate is the end entity. You don&#39;t need to create more child certificates.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">$parentcert = ( Get-ChildItem -Path cert:\LocalMachine\My\&quot;The thumbprint from the Intermediate certificate...&quot; )
+
+New-SelfSignedCertificate -certstorelocation cert:\localmachine\my -dnsname &quot;child_a_dev_damienbod.com&quot; -Signer $parentcert -NotAfter (Get-Date).AddYears(20) -FriendlyName &quot;child_a_dev_damienbod.com&quot;
+
+$mypwd = ConvertTo-SecureString -String &quot;1234&quot; -Force -AsPlainText
+
+Get-ChildItem -Path cert:\localMachine\my\&quot;The thumbprint...&quot; | Export-PfxCertificate -FilePath C:\git\AspNetCoreCertificateAuth\Certs\child_a_dev_damienbod.pfx -Password $mypwd
+
+Export-Certificate -Cert cert:\localMachine\my\&quot;The thumbprint...&quot; -FilePath child_a_dev_damienbod.crt</code></pre></div></figure>
+<h4 id="create-child-certificate-from-root-certificate">Create child certificate from root certificate</h4>
+<p>A child certificate can also be created from the root certificate directly.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">$rootcert = ( Get-ChildItem -Path cert:\LocalMachine\My\&quot;The thumbprint from the root cert...&quot; )
+
+New-SelfSignedCertificate -certstorelocation cert:\localmachine\my -dnsname &quot;child_a_dev_damienbod.com&quot; -Signer $rootcert -NotAfter (Get-Date).AddYears(20) -FriendlyName &quot;child_a_dev_damienbod.com&quot;
+
+$mypwd = ConvertTo-SecureString -String &quot;1234&quot; -Force -AsPlainText
+
+Get-ChildItem -Path cert:\localMachine\my\&quot;The thumbprint...&quot; | Export-PfxCertificate -FilePath C:\git\AspNetCoreCertificateAuth\Certs\child_a_dev_damienbod.pfx -Password $mypwd
+
+Export-Certificate -Cert cert:\localMachine\my\&quot;The thumbprint...&quot; -FilePath child_a_dev_damienbod.crt</code></pre></div></figure>
+<h4 id="example-root---intermediate-certificate---certificate">Example: root - intermediate certificate - certificate</h4>
+<p>The following example shows configuration of the root CA, the intermediate certificate, and the child certificate:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">$mypwdroot = ConvertTo-SecureString -String &quot;1234&quot; -Force -AsPlainText
+$mypwd = ConvertTo-SecureString -String &quot;1234&quot; -Force -AsPlainText
+
+New-SelfSignedCertificate -DnsName &quot;root_ca_dev_damienbod.com&quot;, &quot;root_ca_dev_damienbod.com&quot; -CertStoreLocation &quot;cert:\LocalMachine\My&quot; -NotAfter (Get-Date).AddYears(20) -FriendlyName &quot;root_ca_dev_damienbod.com&quot; -KeyUsageProperty All -KeyUsage CertSign, CRLSign, DigitalSignature
+
+Get-ChildItem -Path cert:\localMachine\my\0C89639E4E2998A93E423F919B36D4009A0F9991 | Export-PfxCertificate -FilePath C:\git\root_ca_dev_damienbod.pfx -Password $mypwdroot
+
+Export-Certificate -Cert cert:\localMachine\my\0C89639E4E2998A93E423F919B36D4009A0F9991 -FilePath root_ca_dev_damienbod.crt
+
+$rootcert = ( Get-ChildItem -Path cert:\LocalMachine\My\0C89639E4E2998A93E423F919B36D4009A0F9991 )
+
+New-SelfSignedCertificate -certstorelocation cert:\localmachine\my -dnsname &quot;child_a_dev_damienbod.com&quot; -Signer $rootcert -NotAfter (Get-Date).AddYears(20) -FriendlyName &quot;child_a_dev_damienbod.com&quot; -KeyUsageProperty All -KeyUsage CertSign, CRLSign, DigitalSignature -TextExtension @(&quot;2.5.29.19={text}CA=1&amp;pathlength=1&quot;)
+
+Get-ChildItem -Path cert:\localMachine\my\BA9BF91ED35538A01375EFC212A2F46104B33A44 | Export-PfxCertificate -FilePath C:\git\AspNetCoreCertificateAuth\Certs\child_a_dev_damienbod.pfx -Password $mypwd
+
+Export-Certificate -Cert cert:\localMachine\my\BA9BF91ED35538A01375EFC212A2F46104B33A44 -FilePath child_a_dev_damienbod.crt
+
+$parentcert = ( Get-ChildItem -Path cert:\LocalMachine\My\BA9BF91ED35538A01375EFC212A2F46104B33A44 )
+
+New-SelfSignedCertificate -certstorelocation cert:\localmachine\my -dnsname &quot;child_b_from_a_dev_damienbod.com&quot; -Signer $parentcert -NotAfter (Get-Date).AddYears(20) -FriendlyName &quot;child_b_from_a_dev_damienbod.com&quot;
+
+Get-ChildItem -Path cert:\localMachine\my\141594A0AE38CBBECED7AF680F7945CD51D8F28A | Export-PfxCertificate -FilePath C:\git\AspNetCoreCertificateAuth\Certs\child_b_from_a_dev_damienbod.pfx -Password $mypwd
+
+Export-Certificate -Cert cert:\localMachine\my\141594A0AE38CBBECED7AF680F7945CD51D8F28A -FilePath child_b_from_a_dev_damienbod.crt</code></pre></div></figure>
+<p>When you use the root, intermediate, or child certificates, the certificates can be validated by using the Thumbprint or PublicKey as required:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">using System.Security.Cryptography.X509Certificates;
+
+namespace CertAuthSample.Snippets;
+
+public class SampleCertificateThumbprintsValidationService : ICertificateValidationService
+{
+    private readonly string[] validThumbprints = new[]
+    {
+        &quot;141594A0AE38CBBECED7AF680F7945CD51D8F28A&quot;,
+        &quot;0C89639E4E2998A93E423F919B36D4009A0F9991&quot;,
+        &quot;BA9BF91ED35538A01375EFC212A2F46104B33A44&quot;
+    };
+
+    public bool ValidateCertificate(X509Certificate2 clientCertificate)
+        =&gt; validThumbprints.Contains(clientCertificate.Thumbprint);
+}</code></pre></div></figure>
+<p><a name="occ"></a></p>
+<h2 id="cache-certificate-validation-results">Cache certificate validation results</h2>
+<p>.NET 5 and later versions support the ability to enable caching of validation results. The caching dramatically improves performance of certificate authentication because validation is an expensive operation.</p>
+<p>By default, certificate authentication disables caching. To enable caching, call the <code>AddCertificateCache</code> method in the <em>Program.cs</em> file:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">        builder.Services.AddAuthentication(
+                CertificateAuthenticationDefaults.AuthenticationScheme)
+            .AddCertificate()
+            .AddCertificateCache(options =&gt;
+            {
+                options.CacheSize = 1024;
+                options.CacheEntryExpiration = TimeSpan.FromMinutes(2);
+            });
+        </code></pre></div></figure>
+<p>When <code>AddCertificateCache</code> is enabled, the result produced by <code>OnCertificateValidated</code> must be a pure function of the authentication scheme and certificate. Don&#39;t base the result on request context because the cached result is reused for subsequent requests. Place request-context-dependent decisions in an authorization policy or provide a context-aware implementation of <code>ICertificateValidationCache</code>.</p>
+<p>The cache stores both successful and failed validation results for the configured cache entry lifetime.</p>
+<p>The default caching implementation stores results in memory. You can provide your own cache by implementing <code>ICertificateValidationCache</code> and registering it with dependency injection. For example, <code>services.AddSingleton&lt;ICertificateValidationCache, YourCache&gt;()</code>.</p>
+<h2 id="use-optional-client-certificates">Use optional client certificates</h2>
+<p>This section provides information for apps that must protect a subset of the app with a certificate. For example, a Razor Page or controller in the app might require client certificates. This scenario presents some challenges:</p>
+<ul>
+<li>Client certificates are a TLS feature, not an HTTP feature.</li>
+<li>Client certificates are negotiated per-connection and usually at the start of the connection before any HTTP data is available.</li>
+</ul>
+<p>There are two approaches for implementing optional client certificates:</p>
+<ul>
+<li>Option 1: Use separate host names (SNI) and redirection. While this option involves more work to configure, the approach is recommended because it works in most environments and protocols.</li>
+<li>Option 2: Renegotiation during an HTTP request. This approach has several limitations and isn&#39;t recommended.</li>
+</ul>
+<h3 id="separate-hosts-sni">Separate hosts (SNI)</h3>
+<p>At the start of the connection, only the Server Name Indication (SNI)&dagger; is known. Client certificates can be configured per host name so one host requires the certificates and another doesn&#39;t.</p>
+<ul>
+<li><p>Set up binding for the domain and subdomain.</p>
+<p> For example, set up bindings on <code>contoso.com</code> and <code>myClient.contoso.com</code>. The <code>contoso.com</code> host doesn&#39;t require a client certificate but <code>myClient.contoso.com</code> does.</p>
+<p> For more information, see the following resources:</p>
+<ul>
+<li><p><a href="#/doc/aspnet/fundamentals/servers/kestrel">Kestrel web server</a></p>
+<ul>
+<li><a href="#/doc/aspnet/fundamentals/servers/kestrel/endpoints@configure-https-in-code">Configure HTTPS in code (listenOptions.UseHttps)</a></li>
+<li><code>ClientCertificateMode</code> property</li>
+</ul>
+</li>
+<li><p>IIS</p>
+<ul>
+<li><a href="#/doc/aspnet/tutorials/publish-to-iis@create-the-iis-site">Create the IIS site</a></li>
+<li><a href="/iis/manage/configuring-security/how-to-set-up-ssl-on-iis#configure-ssl-settings-2">Configure security on IIS</a></li>
+</ul>
+</li>
+<li><p>HTTP.sys</p>
+<ul>
+<li><a href="#/doc/aspnet/fundamentals/servers/httpsys@configure-windows-server">Configure Windows Server</a></li>
+</ul>
+</li>
+</ul>
+<p> .NET 5 and later offers more convenient support for redirecting to acquire optional client certificates. For more information, see the <a target="_blank" rel="noopener" href="https://github.com/dotnet/aspnetcore/tree/9ce4a970a21bace3fb262da9591ed52359309592/src/Security/Authentication/Certificate/samples/Certificate.Optional.Sample">Optional certificates sample</a>.</p>
+</li>
+<li><p>For requests to the web app that require a client certificate and don&#39;t have one, redirect to the same page by using the client certificate protected subdomain.</p>
+<p> For example, redirect to <code>myClient.contoso.com/requestedPage</code>. Because the request to <code>myClient.contoso.com/requestedPage</code> is a different hostname than <code>contoso.com/requestedPage</code>, the client establishes a different connection and the client certificate is provided.</p>
+<p> For more information, see <a href="#/doc/aspnet/security/authorization/introduction">Introduction to authorization in ASP.NET Core</a>.</p>
+</li>
+</ul>
+<p>&dagger; Server Name Indication (SNI) is a TLS extension that&#39;s used to include a virtual domain as a part of SSL negotiation. This approach effectively means the virtual domain name, or a hostname, can be used to identify the network end point.</p>
+<h3 id="tls-renegotiation">TLS renegotiation</h3>
+<p>TLS renegotiation is a process by which the client and server can reassess the encryption requirements for an individual connection, including requesting a client certificate if not previously provided. TLS renegotiation is a security risk and isn&#39;t recommended because:</p>
+<ul>
+<li>In HTTP/1.1, the server must first buffer or consume any in-flight HTTP data such as POST request bodies to make sure the connection is clear for the renegotiation. Otherwise, the renegotiation can stop responding or fail.</li>
+<li>HTTP/2 and HTTP/3 <a target="_blank" rel="noopener" href="https://datatracker.ietf.org/doc/html/rfc7540#section-9.2.1">explicitly prohibit</a> renegotiation.</li>
+<li>There are security risks associated with renegotiation. TLS 1.3 removed renegotiation of the whole connection and replaced it with a new extension for requesting only the client certificate after the start of the connection. This mechanism is exposed via the same APIs and is still subject to the prior constraints of buffering and HTTP protocol versions.</li>
+</ul>
+<p>The implementation and configuration of this feature varies by server and framework version, as described in the following sections.</p>
+<h4 id="iis">IIS</h4>
+<p>IIS manages the client certificate negotiation on your behalf. A subsection of the application can enable the <code>SslRequireCert</code> option to negotiate the client certificate for those requests. For more information, see <a href="/iis/configuration/system.webserver/security/access#configuration">Configuration in the IIS documentation</a>.</p>
+<p>IIS automatically buffers any request body data up to a configured size limit before renegotiating. Requests that exceed the limit are rejected with a 413 response. This limit defaults to 48 KB and is configurable by setting the <a href="/iis/configuration/system.webserver/serverruntime#attributes">uploadReadAheadSize</a> property.</p>
+<h4 id="httpsys">HttpSys</h4>
+<p>HttpSys has two settings that control the client certificate negotiation and both should be set. The first is in the <em>netsh.exe</em> file under <code>http add sslcert clientcertnegotiation=enable/disable</code>. This flag indicates whether to negotiate the client certificate at the start of a connection. Set the value to <code>disable</code> for optional client certificates. For more information, see the <code>http add sslcert</code> parameter usage in the <a href="/windows-server/administration/windows-commands/netsh-http#parameters">netsh docs</a>.</p>
+<p>The other setting is the <code>ClientCertificateMethod</code> property. When set to <code>AllowRenegotation</code>, the client certificate can be renegotiated during a request.</p>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>The application should buffer or consume any request body data before attempting the renegotiation. Otherwise, the request might become unresponsive.</p>
+</div></aside>
+<p>An application can first check the <code>ClientCertificate</code> property to see if the certificate is available. If it isn&#39;t available, ensure the request body is consumed before calling the <code>GetClientCertificateAsync</code> method to negotiate one. <code>GetClientCertificateAsync</code> can return a null certificate if the client declines to provide one.</p>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>The behavior of the <code>ClientCertificate</code> property changed in .NET 6. For more information, see <a target="_blank" rel="noopener" href="https://github.com/aspnet/Announcements/issues/466">GitHub issue #466</a>.</p>
+</div></aside>
+<h4 id="kestrel">Kestrel</h4>
+<p>Kestrel controls client certificate negotiation with the <code>ClientCertificateMode</code> property.</p>
+<p>.NET 6 and later provides the <code>DelayCertificate</code> option for the <code>ClientCertificateMode</code> property. When this option is set, an app can check the <code>ClientCertificate</code> property to see if the certificate is available. If it isn&#39;t available, ensure the request body is consumed before calling the <code>GetClientCertificateAsync</code> method to negotiate one. <code>GetClientCertificateAsync</code> can return a null certificate if the client declines to provide one.</p>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>The application should buffer or consume any request body data before attempting the renegotiation. Otherwise, <code>GetClientCertificateAsync</code> might throw the exception, <em>InvalidOperationException: Client stream needs to be drained before renegotiation</em>.</p>
+</div></aside>
+<p>If you programmatically configure the TLS settings per SNI host name, call the <a href="#/doc/aspnet/fundamentals/servers/kestrel/endpoints@configure-https-in-code">UseHttps</a>
+overload (.NET 6 or later) that takes a <code>TlsHandshakeCallbackOptions</code> class object. This option controls client certificate renegotiation via the <code>AllowDelayedClientCertificateNegotation</code> property. For more information, see the <a href="/dotnet/api/microsoft.aspnetcore.hosting.listenoptionshttpsextensions.usehttps">ListenOptionsHttpsExtensions.UseHttps</a> method.</p>
+<p>:::moniker-end</p>
+<p>:::moniker range=&quot;&gt;= aspnetcore-5.0 &lt; aspnetcore-6.0&quot;</p>
+<p><code>Microsoft.AspNetCore.Authentication.Certificate</code> contains an implementation similar to <a target="_blank" rel="noopener" href="https://tools.ietf.org/html/rfc5246#section-7.4.4">Certificate Authentication</a> for ASP.NET Core. Certificate authentication happens at the TLS level, which occurs long before it ever gets to ASP.NET Core. More accurately, this authentication handler validates the certificate and gives you an event where you can resolve the certificate to a <code>ClaimsPrincipal</code> value.</p>
+<p><a href="#configure-your-server-to-require-certificates">Configure your server</a> for certificate authentication, be it IIS, Kestrel, Azure Web Apps, or whatever else you&#39;re using.</p>
+<h2 id="proxy-and-load-balancer-scenarios">Proxy and load balancer scenarios</h2>
+<p>Certificate authentication is a stateful scenario primarily used where a proxy or load balancer doesn&#39;t handle traffic between clients and servers. If a proxy or load balancer is used, certificate authentication only works if the proxy or load balancer:</p>
+<ul>
+<li>Handles the authentication.</li>
+<li>Passes the user authentication information to the app (for example, in a request header), which acts on the authentication information.</li>
+</ul>
+<p>An alternative to certificate authentication in environments where proxies and load balancers are used is Active Directory Federated Services (ADFS) with OpenID Connect (OIDC).</p>
+<h2 id="get-started">Get started</h2>
+<p>Acquire an HTTPS certificate, apply it, and <a href="#configure-your-server-to-require-certificates">configure your server</a> to require certificates.</p>
+<p>In your web app, add a reference to the <a target="_blank" rel="noopener" href="https://www.nuget.org/packages/Microsoft.AspNetCore.Authentication.Certificate">Microsoft.AspNetCore.Authentication.Certificate</a> package. Then in the <code>Startup.ConfigureServices</code> method, call
+<code>services.AddAuthentication(CertificateAuthenticationDefaults.AuthenticationScheme).AddCertificate(...);</code> with your options, providing a delegate for <code>OnCertificateValidated</code> to do any supplementary validation on the client certificate sent with requests. Turn that information into a <code>ClaimsPrincipal</code> and set it on the <code>context.Principal</code> property.</p>
+<p>If authentication fails, this handler returns a <code>403 (Forbidden)</code> response rather a <code>401 (Unauthorized)</code>, as you might expect. The reasoning is that the authentication should happen during the initial TLS connection. By the time it reaches the handler, it&#39;s too late. There&#39;s no way to upgrade the connection from an anonymous connection to one with a certificate.</p>
+<p>Also add <code>app.UseAuthentication();</code> in the <code>Startup.Configure</code> method. Otherwise, the <code>HttpContext.User</code> will not be set to <code>ClaimsPrincipal</code> created from the certificate. For example:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">public void ConfigureServices(IServiceCollection services)
+{
+    services.AddAuthentication(
+        CertificateAuthenticationDefaults.AuthenticationScheme)
+        .AddCertificate()
+        // Adding an ICertificateValidationCache results in certificate auth caching the results.
+        // The default implementation uses a memory cache.
+        .AddCertificateCache();
+
+    // All other service configuration
+}
+
+public void Configure(IApplicationBuilder app, IHostingEnvironment env)
+{
+    app.UseAuthentication();
+
+    // All other app configuration
+}</code></pre></div></figure>
+<p>The preceding example demonstrates the default way to add certificate authentication. The handler constructs a user principal using the common certificate properties.</p>
+<h2 id="configure-certificate-validation">Configure certificate validation</h2>
+<p>The <code>CertificateAuthenticationOptions</code> handler has some built-in validations that are the minimum validations you should perform on a certificate. Each of these settings is enabled by default.</p>
+<h3 id="allowedcertificatetypes-chained-selfsigned-or-all-chained-selfsigned">AllowedCertificateTypes = Chained, SelfSigned, or All (Chained | SelfSigned)</h3>
+<p>Default value: <code>CertificateTypes.Chained</code></p>
+<p>This check validates that only the appropriate certificate type is allowed. If the app is using self-signed certificates, this option needs to be set to <code>CertificateTypes.All</code> or <code>CertificateTypes.SelfSigned</code>.</p>
+<h3 id="validatecertificateuse">ValidateCertificateUse</h3>
+<p>Default value: <code>true</code></p>
+<p>This check validates that the certificate presented by the client has the Client Authentication extended key use (EKU), or no EKUs at all. As the specifications say, if no EKU is specified, then all EKUs are deemed valid.</p>
+<h3 id="validatevalidityperiod">ValidateValidityPeriod</h3>
+<p>Default value: <code>true</code></p>
+<p>This check validates that the certificate is within its validity period. On each request, the handler ensures that a certificate that was valid when it was presented hasn&#39;t expired during its current session.</p>
+<h3 id="revocationflag">RevocationFlag</h3>
+<p>Default value: <code>X509RevocationFlag.ExcludeRoot</code></p>
+<p>A flag that specifies which certificates in the chain are checked for revocation.</p>
+<p>Revocation checks are only performed when the certificate is chained to a root certificate.</p>
+<h3 id="revocationmode">RevocationMode</h3>
+<p>Default value: <code>X509RevocationMode.Online</code></p>
+<p>A flag that specifies how revocation checks are performed.</p>
+<p>Specifying an online check can result in a long delay while the certificate authority is contacted.</p>
+<p>Revocation checks are only performed when the certificate is chained to a root certificate.</p>
+<h3 id="can-i-configure-my-app-to-require-a-certificate-only-on-certain-paths">Can I configure my app to require a certificate only on certain paths?</h3>
+<p>This isn&#39;t possible. Remember the certificate exchange is done at the start of the HTTPS conversation, it&#39;s done by the server before the first request is received on that connection so it&#39;s not possible to scope based on any request fields.</p>
+<h2 id="handler-events">Handler events</h2>
+<p>The handler has two events:</p>
+<ul>
+<li><code>OnAuthenticationFailed</code>: Called if an exception happens during authentication and allows you to react.</li>
+<li><code>OnCertificateValidated</code>: Called after the certificate has been validated, passed validation and a default principal has been created. This event allows you to perform your own validation and augment or replace the principal. For examples include:<ul>
+<li><p>Determining if the certificate is known to your services.</p>
+</li>
+<li><p>Constructing your own principal. Consider the following example in <code>Startup.ConfigureServices</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">services.AddAuthentication(
+    CertificateAuthenticationDefaults.AuthenticationScheme)
+    .AddCertificate(options =&gt;
+    {
+        options.Events = new CertificateAuthenticationEvents
+        {
+            OnCertificateValidated = context =&gt;
+            {
+                var claims = new[]
+                {
+                    new Claim(
+                        ClaimTypes.NameIdentifier,
+                        context.ClientCertificate.Subject,
+                        ClaimValueTypes.String,
+                        context.Options.ClaimsIssuer),
+                    new Claim(ClaimTypes.Name,
+                        context.ClientCertificate.Subject,
+                        ClaimValueTypes.String,
+                        context.Options.ClaimsIssuer)
+                };
+
+                context.Principal = new ClaimsPrincipal(
+                    new ClaimsIdentity(claims, context.Scheme.Name));
+                context.Success();
+
+                return Task.CompletedTask;
+            }
+        };
+    });</code></pre></div></figure>
+</li>
+</ul>
+</li>
+</ul>
+<p>If you find the inbound certificate doesn&#39;t meet your extra validation, call <code>context.Fail(&quot;failure reason&quot;)</code> with a failure reason.</p>
+<p>For real functionality, you&#39;ll probably want to call a service registered in dependency injection that connects to a database or other type of user store. Access your service by using the context passed into your delegate. Consider the following example in <code>Startup.ConfigureServices</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">services.AddAuthentication(
+    CertificateAuthenticationDefaults.AuthenticationScheme)
+    .AddCertificate(options =&gt;
+    {
+        options.Events = new CertificateAuthenticationEvents
+        {
+            OnCertificateValidated = context =&gt;
+            {
+                var validationService =
+                    context.HttpContext.RequestServices
+                        .GetRequiredService();
+
+                if (validationService.ValidateCertificate(
+                    context.ClientCertificate))
+                {
+                    var claims = new[]
+                    {
+                        new Claim(
+                            ClaimTypes.NameIdentifier,
+                            context.ClientCertificate.Subject,
+                            ClaimValueTypes.String,
+                            context.Options.ClaimsIssuer),
+                        new Claim(
+                            ClaimTypes.Name,
+                            context.ClientCertificate.Subject,
+                            ClaimValueTypes.String,
+                            context.Options.ClaimsIssuer)
+                    };
+
+                    context.Principal = new ClaimsPrincipal(
+                        new ClaimsIdentity(claims, context.Scheme.Name));
+                    context.Success();
+                }
+
+                return Task.CompletedTask;
+            }
+        };
+    });</code></pre></div></figure>
+<p>Conceptually, the validation of the certificate is an authorization concern. Adding a check on, for example, an issuer or thumbprint in an authorization policy, rather than inside <code>OnCertificateValidated</code>, is perfectly acceptable.</p>
+<h2 id="configure-your-server-to-require-certificates">Configure your server to require certificates</h2>
+<h3 id="kestrel">Kestrel</h3>
+<p>In <code>Program.cs</code>, configure Kestrel as follows:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">public static void Main(string[] args)
+{
+    CreateHostBuilder(args).Build().Run();
+}
+
+public static IHostBuilder CreateHostBuilder(string[] args)
+{
+    return Host.CreateDefaultBuilder(args)
+        .ConfigureWebHostDefaults(webBuilder =&gt;
+        {
+            webBuilder.UseStartup();
+            webBuilder.ConfigureKestrel(o =&gt;
+            {
+                o.ConfigureHttpsDefaults(o =&gt;
+                    o.ClientCertificateMode =  ClientCertificateMode.RequireCertificate);
+            });
+        });
+}</code></pre></div></figure>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>Endpoints created by calling <code>Listen</code> <strong>before</strong> calling <code>ConfigureHttpsDefaults</code> won&#39;t have the defaults applied.</p>
+</div></aside>
+<h3 id="iis">IIS</h3>
+<p>Complete the following steps in IIS Manager:</p>
+<ol>
+<li>Select your site from the <strong>Connections</strong> tab.</li>
+<li>Double-click the <strong>SSL Settings</strong> option in the <strong>Features View</strong> window.</li>
+<li>Check the <strong>Require SSL</strong> checkbox, and select the <strong>Require</strong> radio button in the <strong>Client certificates</strong> section.</li>
+</ol>
+<p><img src="assets/ms/aspnet/security/authentication/certauth/_static/README-IISConfig.png" loading="lazy" alt="image"></p>
+<h3 id="azure-and-custom-web-proxies">Azure and custom web proxies</h3>
+<p>See the <a href="#/doc/aspnet/host-and-deploy/proxy-load-balancer@certificate-forwarding">host and deploy documentation</a> for how to configure the certificate forwarding middleware.</p>
+<h3 id="use-certificate-authentication-in-azure-web-apps">Use certificate authentication in Azure Web Apps</h3>
+<p>No forwarding configuration is required for Azure. Forwarding configuration is set up by the certificate-forwarding middleware.</p>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>Certificate-forwarding middleware is required for this scenario.</p>
+</div></aside>
+<p>For more information, see <a href="/azure/app-service/configure-ssl-certificate-in-code">Use a TLS/SSL certificate in your code in Azure App Service (Azure documentation)</a>.</p>
+<h3 id="use-certificate-authentication-in-custom-web-proxies">Use certificate authentication in custom web proxies</h3>
+<p>The <code>AddCertificateForwarding</code> method is used to specify:</p>
+<ul>
+<li>The client header name.</li>
+<li>How the certificate is to be loaded (using the <code>HeaderConverter</code> property).</li>
+</ul>
+<p>In custom web proxies, the certificate is passed as a custom request header, for example <code>X-SSL-CERT</code>. To use it, configure certificate forwarding in <code>Startup.ConfigureServices</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">public void ConfigureServices(IServiceCollection services)
+{
+    services.AddCertificateForwarding(options =&gt;
+    {
+        options.CertificateHeader = &quot;X-SSL-CERT&quot;;
+        options.HeaderConverter = (headerValue) =&gt;
+        {
+            X509Certificate2 clientCertificate = null;
+
+            if(!string.IsNullOrWhiteSpace(headerValue))
+            {
+                byte[] bytes = StringToByteArray(headerValue);
+                clientCertificate = new X509Certificate2(bytes);
+            }
+
+            return clientCertificate;
+        };
+    });
+}
+
+private static byte[] StringToByteArray(string hex)
+{
+    int NumberChars = hex.Length;
+    byte[] bytes = new byte[NumberChars / 2];
+
+    for (int i = 0; i &lt; NumberChars; i += 2)
+    {
+        bytes[i / 2] = Convert.ToByte(hex.Substring(i, 2), 16);
+    }
+
+    return bytes;
+}</code></pre></div></figure>
+<p>If the app is reverse proxied by NGINX with the configuration <code>proxy_set_header ssl-client-cert $ssl_client_escaped_cert</code> or deployed on Kubernetes using NGINX Ingress, the client certificate is passed to the app in <a target="_blank" rel="noopener" href="https://developer.mozilla.org/docs/Glossary/percent-encoding">URL-encoded form</a>. To use the certificate, decode it as follows:</p>
+<p>In <code>Startup.ConfigureServices</code> (<code>Startup.cs</code>):</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">services.AddCertificateForwarding(options =&gt;
+{
+    options.CertificateHeader = &quot;ssl-client-cert&quot;;
+    options.HeaderConverter = (headerValue) =&gt;
+    {
+        X509Certificate2 clientCertificate = null;
+
+        if (!string.IsNullOrWhiteSpace(headerValue))
+        {
+            string certPem = WebUtility.UrlDecode(headerValue);
+            clientCertificate = X509Certificate2.CreateFromPem(certPem);
+        }
+
+        return clientCertificate;
+    };
+});</code></pre></div></figure>
+<p>The <code>Startup.Configure</code> method then adds the middleware. <code>UseCertificateForwarding</code> is called before the calls to <code>UseAuthentication</code> and <code>UseAuthorization</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">public void Configure(IApplicationBuilder app, IWebHostEnvironment env)
+{
+    ...
+
+    app.UseRouting();
+
+    app.UseCertificateForwarding();
+    app.UseAuthentication();
+    app.UseAuthorization();
+
+    app.UseEndpoints(endpoints =&gt;
+    {
+        endpoints.MapControllers();
+    });
+}</code></pre></div></figure>
+<p>A separate class can be used to implement validation logic. Because the same self-signed certificate is used in this example, ensure that only your certificate can be used. Validate that the thumbprints of both the client certificate and the server certificate match, otherwise any certificate can be used and will be enough to authenticate. This would be used inside the <code>AddCertificate</code> method. You could also validate the subject or the issuer here if you&#39;re using intermediate or child certificates.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">using System.IO;
+using System.Security.Cryptography.X509Certificates;
+
+namespace AspNetCoreCertificateAuthApi
+{
+    public class MyCertificateValidationService
+    {
+        public bool ValidateCertificate(X509Certificate2 clientCertificate)
+        {
+            // Do not hardcode passwords in production code
+            // Use thumbprint or key vault
+            var cert = new X509Certificate2(
+                Path.Combine(&quot;sts_dev_cert.pfx&quot;), &quot;1234&quot;);
+
+            if (clientCertificate.Thumbprint == cert.Thumbprint)
+            {
+                return true;
+            }
+
+            return false;
+        }
+    }
+}</code></pre></div></figure>
+<h4 id="implement-an-httpclient-using-a-certificate-and-the-httpclienthandler">Implement an HttpClient using a certificate and the HttpClientHandler</h4>
+<p>The <code>HttpClientHandler</code> could be added directly in the constructor of the <code>HttpClient</code> class. Care should be taken when creating instances of the <code>HttpClient</code>. The <code>HttpClient</code> will then send the certificate with each request.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">private async Task GetApiDataUsingHttpClientHandler()
+{
+    var cert = new X509Certificate2(Path.Combine(_environment.ContentRootPath, &quot;sts_dev_cert.pfx&quot;), &quot;1234&quot;);
+    var handler = new HttpClientHandler();
+    handler.ClientCertificates.Add(cert);
+    var client = new HttpClient(handler);
+
+    var request = new HttpRequestMessage()
+    {
+        RequestUri = new Uri(&quot;https://localhost:44379/api/values&quot;),
+        Method = HttpMethod.Get,
+    };
+    var response = await client.SendAsync(request);
+    if (response.IsSuccessStatusCode)
+    {
+        var responseContent = await response.Content.ReadAsStringAsync();
+        var data = JsonDocument.Parse(responseContent);
+        return data;
+    }
+
+    throw new ApplicationException($&quot;Status code: {response.StatusCode}, Error: {response.ReasonPhrase}&quot;);
+}</code></pre></div></figure>
+<h4 id="implement-an-httpclient-using-a-certificate-and-a-named-httpclient-from-ihttpclientfactory">Implement an HttpClient using a certificate and a named HttpClient from IHttpClientFactory</h4>
+<p>In the following example, a client certificate is added to a <code>HttpClientHandler</code> using the <code>ClientCertificates</code> property from the handler. This handler can then be used in a named instance of an <code>HttpClient</code> using the <code>ConfigurePrimaryHttpMessageHandler</code> method. This is setup in <code>Startup.ConfigureServices</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">var clientCertificate =
+    new X509Certificate2(
+      Path.Combine(_environment.ContentRootPath, &quot;sts_dev_cert.pfx&quot;), &quot;1234&quot;);
+
+services.AddHttpClient(&quot;namedClient&quot;, c =&gt;
+{
+}).ConfigurePrimaryHttpMessageHandler(() =&gt;
+{
+    var handler = new HttpClientHandler();
+    handler.ClientCertificates.Add(clientCertificate);
+    return handler;
+});</code></pre></div></figure>
+<p>The <code>IHttpClientFactory</code> can then be used to get the named instance with the handler and the certificate. The <code>CreateClient</code> method with the name of the client defined in the <code>Startup</code> class is used to get the instance. The HTTP request can be sent using the client as required.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">private readonly IHttpClientFactory _clientFactory;
+
+public ApiService(IHttpClientFactory clientFactory)
+{
+    _clientFactory = clientFactory;
+}
+
+private async Task GetApiDataWithNamedClient()
+{
+    var client = _clientFactory.CreateClient(&quot;namedClient&quot;);
+
+    var request = new HttpRequestMessage()
+    {
+        RequestUri = new Uri(&quot;https://localhost:44379/api/values&quot;),
+        Method = HttpMethod.Get,
+    };
+    var response = await client.SendAsync(request);
+    if (response.IsSuccessStatusCode)
+    {
+        var responseContent = await response.Content.ReadAsStringAsync();
+        var data = JsonDocument.Parse(responseContent);
+        return data;
+    }
+
+    throw new ApplicationException($&quot;Status code: {response.StatusCode}, Error: {response.ReasonPhrase}&quot;);
+}</code></pre></div></figure>
+<p>If the correct certificate is sent to the server, the data is returned. If no certificate or the wrong certificate is sent, an HTTP 403 status code is returned.</p>
+<h3 id="create-certificates-in-powershell">Create certificates in PowerShell</h3>
+<p>Creating the certificates is the hardest part in setting up this flow. A root certificate can be created using the <code>New-SelfSignedCertificate</code> PowerShell cmdlet. When creating the certificate, use a strong password. It&#39;s important to add the <code>KeyUsageProperty</code> parameter and the <code>KeyUsage</code> parameter as shown.</p>
+<h4 id="create-root-ca">Create root CA</h4>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">New-SelfSignedCertificate -DnsName &quot;root_ca_dev_damienbod.com&quot;, &quot;root_ca_dev_damienbod.com&quot; -CertStoreLocation &quot;cert:\LocalMachine\My&quot; -NotAfter (Get-Date).AddYears(20) -FriendlyName &quot;root_ca_dev_damienbod.com&quot; -KeyUsageProperty All -KeyUsage CertSign, CRLSign, DigitalSignature
+
+$mypwd = ConvertTo-SecureString -String &quot;1234&quot; -Force -AsPlainText
+
+Get-ChildItem -Path cert:\localMachine\my\&quot;The thumbprint...&quot; | Export-PfxCertificate -FilePath C:\git\root_ca_dev_damienbod.pfx -Password $mypwd
+
+Export-Certificate -Cert cert:\localMachine\my\&quot;The thumbprint...&quot; -FilePath root_ca_dev_damienbod.crt</code></pre></div></figure>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>The <code>-DnsName</code> parameter value must match the deployment target of the app. For example, &quot;localhost&quot; for development.</p>
+</div></aside>
+<h4 id="install-in-the-trusted-root">Install in the trusted root</h4>
+<p>The root certificate needs to be trusted on your host system. A root certificate which was not created by a certificate authority won&#39;t be trusted by default.</p>
+<h4 id="intermediate-certificate">Intermediate certificate</h4>
+<p>An intermediate certificate can now be created from the root certificate. This isn&#39;t required for all use cases, but you might need to create many certificates or need to activate or disable groups of certificates. The <code>TextExtension</code> parameter is required to set the path length in the basic constraints of the certificate.</p>
+<p>The intermediate certificate can then be added to the trusted intermediate certificate in the Windows host system.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">$mypwd = ConvertTo-SecureString -String &quot;1234&quot; -Force -AsPlainText
+
+$parentcert = ( Get-ChildItem -Path cert:\LocalMachine\My\&quot;The thumbprint of the root...&quot; )
+
+New-SelfSignedCertificate -certstorelocation cert:\localmachine\my -dnsname &quot;intermediate_dev_damienbod.com&quot; -Signer $parentcert -NotAfter (Get-Date).AddYears(20) -FriendlyName &quot;intermediate_dev_damienbod.com&quot; -KeyUsageProperty All -KeyUsage CertSign, CRLSign, DigitalSignature -TextExtension @(&quot;2.5.29.19={text}CA=1&amp;pathlength=1&quot;)
+
+Get-ChildItem -Path cert:\localMachine\my\&quot;The thumbprint...&quot; | Export-PfxCertificate -FilePath C:\git\AspNetCoreCertificateAuth\Certs\intermediate_dev_damienbod.pfx -Password $mypwd
+
+Export-Certificate -Cert cert:\localMachine\my\&quot;The thumbprint...&quot; -FilePath intermediate_dev_damienbod.crt</code></pre></div></figure>
+<h4 id="create-child-certificate-from-intermediate-certificate">Create child certificate from intermediate certificate</h4>
+<p>A child certificate can be created from the intermediate certificate. This is the end entity and doesn&#39;t need to create more child certificates.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">$parentcert = ( Get-ChildItem -Path cert:\LocalMachine\My\&quot;The thumbprint from the Intermediate certificate...&quot; )
+
+New-SelfSignedCertificate -certstorelocation cert:\localmachine\my -dnsname &quot;child_a_dev_damienbod.com&quot; -Signer $parentcert -NotAfter (Get-Date).AddYears(20) -FriendlyName &quot;child_a_dev_damienbod.com&quot;
+
+$mypwd = ConvertTo-SecureString -String &quot;1234&quot; -Force -AsPlainText
+
+Get-ChildItem -Path cert:\localMachine\my\&quot;The thumbprint...&quot; | Export-PfxCertificate -FilePath C:\git\AspNetCoreCertificateAuth\Certs\child_a_dev_damienbod.pfx -Password $mypwd
+
+Export-Certificate -Cert cert:\localMachine\my\&quot;The thumbprint...&quot; -FilePath child_a_dev_damienbod.crt</code></pre></div></figure>
+<h4 id="create-child-certificate-from-root-certificate">Create child certificate from root certificate</h4>
+<p>A child certificate can also be created from the root certificate directly.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">$rootcert = ( Get-ChildItem -Path cert:\LocalMachine\My\&quot;The thumbprint from the root cert...&quot; )
+
+New-SelfSignedCertificate -certstorelocation cert:\localmachine\my -dnsname &quot;child_a_dev_damienbod.com&quot; -Signer $rootcert -NotAfter (Get-Date).AddYears(20) -FriendlyName &quot;child_a_dev_damienbod.com&quot;
+
+$mypwd = ConvertTo-SecureString -String &quot;1234&quot; -Force -AsPlainText
+
+Get-ChildItem -Path cert:\localMachine\my\&quot;The thumbprint...&quot; | Export-PfxCertificate -FilePath C:\git\AspNetCoreCertificateAuth\Certs\child_a_dev_damienbod.pfx -Password $mypwd
+
+Export-Certificate -Cert cert:\localMachine\my\&quot;The thumbprint...&quot; -FilePath child_a_dev_damienbod.crt</code></pre></div></figure>
+<h4 id="example-root---intermediate-certificate---certificate">Example root - intermediate certificate - certificate</h4>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">$mypwdroot = ConvertTo-SecureString -String &quot;1234&quot; -Force -AsPlainText
+$mypwd = ConvertTo-SecureString -String &quot;1234&quot; -Force -AsPlainText
+
+New-SelfSignedCertificate -DnsName &quot;root_ca_dev_damienbod.com&quot;, &quot;root_ca_dev_damienbod.com&quot; -CertStoreLocation &quot;cert:\LocalMachine\My&quot; -NotAfter (Get-Date).AddYears(20) -FriendlyName &quot;root_ca_dev_damienbod.com&quot; -KeyUsageProperty All -KeyUsage CertSign, CRLSign, DigitalSignature
+
+Get-ChildItem -Path cert:\localMachine\my\0C89639E4E2998A93E423F919B36D4009A0F9991 | Export-PfxCertificate -FilePath C:\git\root_ca_dev_damienbod.pfx -Password $mypwdroot
+
+Export-Certificate -Cert cert:\localMachine\my\0C89639E4E2998A93E423F919B36D4009A0F9991 -FilePath root_ca_dev_damienbod.crt
+
+$rootcert = ( Get-ChildItem -Path cert:\LocalMachine\My\0C89639E4E2998A93E423F919B36D4009A0F9991 )
+
+New-SelfSignedCertificate -certstorelocation cert:\localmachine\my -dnsname &quot;child_a_dev_damienbod.com&quot; -Signer $rootcert -NotAfter (Get-Date).AddYears(20) -FriendlyName &quot;child_a_dev_damienbod.com&quot; -KeyUsageProperty All -KeyUsage CertSign, CRLSign, DigitalSignature -TextExtension @(&quot;2.5.29.19={text}CA=1&amp;pathlength=1&quot;)
+
+Get-ChildItem -Path cert:\localMachine\my\BA9BF91ED35538A01375EFC212A2F46104B33A44 | Export-PfxCertificate -FilePath C:\git\AspNetCoreCertificateAuth\Certs\child_a_dev_damienbod.pfx -Password $mypwd
+
+Export-Certificate -Cert cert:\localMachine\my\BA9BF91ED35538A01375EFC212A2F46104B33A44 -FilePath child_a_dev_damienbod.crt
+
+$parentcert = ( Get-ChildItem -Path cert:\LocalMachine\My\BA9BF91ED35538A01375EFC212A2F46104B33A44 )
+
+New-SelfSignedCertificate -certstorelocation cert:\localmachine\my -dnsname &quot;child_b_from_a_dev_damienbod.com&quot; -Signer $parentcert -NotAfter (Get-Date).AddYears(20) -FriendlyName &quot;child_b_from_a_dev_damienbod.com&quot;
+
+Get-ChildItem -Path cert:\localMachine\my\141594A0AE38CBBECED7AF680F7945CD51D8F28A | Export-PfxCertificate -FilePath C:\git\AspNetCoreCertificateAuth\Certs\child_b_from_a_dev_damienbod.pfx -Password $mypwd
+
+Export-Certificate -Cert cert:\localMachine\my\141594A0AE38CBBECED7AF680F7945CD51D8F28A -FilePath child_b_from_a_dev_damienbod.crt</code></pre></div></figure>
+<p>When using the root, intermediate, or child certificates, the certificates can be validated using the Thumbprint or PublicKey as required.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">using System.Collections.Generic;
+using System.IO;
+using System.Security.Cryptography.X509Certificates;
+
+namespace AspNetCoreCertificateAuthApi
+{
+    public class MyCertificateValidationService
+    {
+        public bool ValidateCertificate(X509Certificate2 clientCertificate)
+        {
+            return CheckIfThumbprintIsValid(clientCertificate);
+        }
+
+        private bool CheckIfThumbprintIsValid(X509Certificate2 clientCertificate)
+        {
+            var listOfValidThumbprints = new List&lt;string&gt;
+            {
+                &quot;141594A0AE38CBBECED7AF680F7945CD51D8F28A&quot;,
+                &quot;0C89639E4E2998A93E423F919B36D4009A0F9991&quot;,
+                &quot;BA9BF91ED35538A01375EFC212A2F46104B33A44&quot;
+            };
+
+            if (listOfValidThumbprints.Contains(clientCertificate.Thumbprint))
+            {
+                return true;
+            }
+
+            return false;
+        }
+    }
+}</code></pre></div></figure>
+<p><a name="occ"></a></p>
+<h2 id="certificate-validation-caching">Certificate validation caching</h2>
+<p>.NET 5 or later versions support the ability to enable caching of validation results. The caching dramatically improves performance of certificate authentication, as validation is an expensive operation.</p>
+<p>By default, certificate authentication disables caching. To enable caching, call <code>AddCertificateCache</code> in <code>Startup.ConfigureServices</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">public void ConfigureServices(IServiceCollection services)
+{
+    services.AddAuthentication(
+        CertificateAuthenticationDefaults.AuthenticationScheme)
+            .AddCertificate()
+            .AddCertificateCache(options =&gt;
+            {
+                options.CacheSize = 1024;
+                options.CacheEntryExpiration = TimeSpan.FromMinutes(2);
+            });
+}</code></pre></div></figure>
+<p>When <code>AddCertificateCache</code> is enabled, the result produced by <code>OnCertificateValidated</code> must be a pure function of the authentication scheme and certificate. Don&#39;t base the result on request context because the cached result is reused for subsequent requests. Place request-context-dependent decisions in an authorization policy or provide a context-aware implementation of <code>ICertificateValidationCache</code>.</p>
+<p>The cache stores both successful and failed validation results for the configured cache entry lifetime.</p>
+<p>The default caching implementation stores results in memory. You can provide your own cache by implementing <code>ICertificateValidationCache</code> and registering it with dependency injection. For example, <code>services.AddSingleton&lt;ICertificateValidationCache, YourCache&gt;()</code>.</p>
+<h2 id="optional-client-certificates">Optional client certificates</h2>
+<p>This section provides information for apps that must protect a subset of the app with a certificate. For example, a Razor Page or controller in the app might require client certificates. This presents challenges as client certificates:</p>
+<ul>
+<li>Are a TLS feature, not an HTTP feature.</li>
+<li>Are negotiated per-connection and usually at the start of the connection before any HTTP data is available.</li>
+</ul>
+<p>There are two approaches to implementing optional client certificates:</p>
+<ol>
+<li>Using separate host names (SNI) and redirecting. While more work to configure, this is recommended because it works in most environments and protocols.</li>
+<li>Renegotiation during an HTTP request. This has several limitations and is not recommended.</li>
+</ol>
+<h3 id="separate-hosts-sni">Separate Hosts (SNI)</h3>
+<p>At the start of the connection, only the Server Name Indication (SNI)&dagger; is known. Client certificates can be configured per host name so that one host requires them and another does not.</p>
+<ul>
+<li>Set up binding for the domain and subdomain:<ul>
+<li>For example, set up bindings on <code>contoso.com</code> and <code>myClient.contoso.com</code>. The <code>contoso.com</code> host doesn&#39;t require a client certificate but <code>myClient.contoso.com</code> does.</li>
+<li>For more information, see:<ul>
+<li><a href="#/doc/aspnet/fundamentals/servers/kestrel">Kestrel web server in ASP.NET Core</a>:<ul>
+<li><a href="#/doc/aspnet/fundamentals/servers/kestrel/endpoints@listenoptionsusehttps">ListenOptions.UseHttps</a></li>
+<li><code>ClientCertificateMode</code></li>
+</ul>
+</li>
+<li>IIS<ul>
+<li><a href="#/doc/aspnet/host-and-deploy/iis/index@create-the-iis-site">Hosting IIS</a></li>
+<li><a href="/iis/manage/configuring-security/how-to-set-up-ssl-on-iis#configure-ssl-settings-2">Configure security on IIS</a></li>
+</ul>
+</li>
+<li>HTTP.sys: <a href="#/doc/aspnet/fundamentals/servers/httpsys@configure-windows-server">Configure Windows Server</a></li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+<p>.NET 5 or later adds more convenient support for redirecting to acquire optional client certificates. For more information, see the <a target="_blank" rel="noopener" href="https://github.com/dotnet/aspnetcore/tree/9ce4a970a21bace3fb262da9591ed52359309592/src/Security/Authentication/Certificate/samples/Certificate.Optional.Sample">Optional certificates sample</a>.</p>
+<ul>
+<li>For requests to the web app that require a client certificate and don&#39;t have one:<ul>
+<li>Redirect to the same page using the client certificate protected subdomain.</li>
+<li>For example, redirect to <code>myClient.contoso.com/requestedPage</code>. Because the request to <code>myClient.contoso.com/requestedPage</code> is a different hostname than <code>contoso.com/requestedPage</code>, the client establishes a different connection and the client certificate is provided.</li>
+<li>For more information, see <a href="#/doc/aspnet/security/authorization/introduction">Introduction to authorization in ASP.NET Core</a>.</li>
+</ul>
+</li>
+</ul>
+<p>&dagger; Server Name Indication (SNI) is a TLS extension to include a virtual domain as a part of SSL negotiation. This effectively means the virtual domain name, or a hostname, can be used to identify the network end point.</p>
+<h3 id="renegotiation">Renegotiation</h3>
+<p>TLS renegotiation is a process by which the client and server can re-assess the encryption requirements for an individual connection, including requesting a client certificate if not previously provided. TLS renegotiation is a security risk and isn&#39;t recommended because:</p>
+<ul>
+<li>In HTTP/1.1 the server must first buffer or consume any HTTP data that is in flight such as POST request bodies to make sure the connection is clear for the renegotiation. Otherwise the renegotiation can stop responding or fail.</li>
+<li>HTTP/2 and HTTP/3 <a target="_blank" rel="noopener" href="https://tools.ietf.org/html/rfc7540#section-9.2.1">explicitly prohibit</a> renegotiation.</li>
+<li>There are security risks associated with renegotiation. TLS 1.3 removed renegotiation of the whole connection and replaced it with a new extension for requesting only the client certificate after the start of the connection. This mechanism is exposed via the same APIs and is still subject to the prior constraints of buffering and HTTP protocol versions.</li>
+</ul>
+<p>The implementation and configuration of this feature varies by server and framework version.</p>
+<h4 id="iis">IIS</h4>
+<p>IIS manages the client certificate negotiation on your behalf. A subsection of the application can enable the <code>SslRequireCert</code> option to negotiate the client certificate for those requests. See <a href="/iis/configuration/system.webserver/security/access#configuration">Configuration in the IIS documentation</a> for details.</p>
+<p>IIS will automatically buffer any request body data up to a configured size limit before renegotiating. Requests that exceed the limit are rejected with a 413 response. This limit defaults to 48KB and is configurable by setting the <a href="/iis/configuration/system.webserver/serverruntime">uploadReadAheadSize</a>.</p>
+<h4 id="httpsys">HttpSys</h4>
+<p>HttpSys has two settings which control the client certificate negotiation and both should be set. The first is in netsh.exe under <code>http add sslcert clientcertnegotiation=enable/disable</code>. This flag indicates if the client certificate should be negotiated at the start of a connection and it should be set to <code>disable</code> for optional client certificates. See the <a href="/windows-server/networking/technologies/netsh/netsh-http#add-sslcert">netsh docs</a> for details.</p>
+<p>The other setting is <code>ClientCertificateMethod</code>. When set to <code>AllowRenegotation</code>, the client certificate can be renegotiated during a request.</p>
+<p><em>NOTE</em> The application should buffer or consume any request body data before attempting the renegotiation, otherwise the request may become unresponsive.</p>
+<p>There is a <a target="_blank" rel="noopener" href="https://github.com/dotnet/aspnetcore/issues/33586">known issue</a> where enabling <code>AllowRenegotation</code> can cause the renegotiation to happen synchronously when accessing the <code>ClientCertificate</code> property. Call the <code>GetClientCertificateAsync</code> method to avoid this. This has been addressed in .NET 6. For more information, see <a target="_blank" rel="noopener" href="https://github.com/aspnet/Announcements/issues/466">this GitHub issue</a>. Note <code>GetClientCertificateAsync</code> can return a null certificate if the client declines to provide one.</p>
+<h4 id="kestrel">Kestrel</h4>
+<p>Kestrel controls client certificate negotiation with the <code>ClientCertificateMode</code> option.</p>
+<p>For .NET 5 or earlier Kestrel does not support renegotiating after the start of a connection to acquire a client certificate. This feature has been added in .NET 6.</p>
+<p>:::moniker-end</p>
+<p>:::moniker range=&quot;&lt; aspnetcore-5.0&quot;</p>
+<p><code>Microsoft.AspNetCore.Authentication.Certificate</code> contains an implementation similar to <a target="_blank" rel="noopener" href="https://tools.ietf.org/html/rfc5246#section-7.4.4">Certificate Authentication</a> for ASP.NET Core. Certificate authentication happens at the TLS level, long before it ever gets to ASP.NET Core. More accurately, this is an authentication handler that validates the certificate and then gives you an event where you can resolve that certificate to a <code>ClaimsPrincipal</code>.</p>
+<p><a href="#configure-your-server-to-require-certificates">Configure your server</a> for certificate authentication, be it IIS, Kestrel, Azure Web Apps, or whatever else you&#39;re using.</p>
+<h2 id="proxy-and-load-balancer-scenarios">Proxy and load balancer scenarios</h2>
+<p>Certificate authentication is a stateful scenario primarily used where a proxy or load balancer doesn&#39;t handle traffic between clients and servers. If a proxy or load balancer is used, certificate authentication only works if the proxy or load balancer:</p>
+<ul>
+<li>Handles the authentication.</li>
+<li>Passes the user authentication information to the app (for example, in a request header), which acts on the authentication information.</li>
+</ul>
+<p>An alternative to certificate authentication in environments where proxies and load balancers are used is Active Directory Federated Services (ADFS) with OpenID Connect (OIDC).</p>
+<h2 id="get-started">Get started</h2>
+<p>Acquire an HTTPS certificate, apply it, and <a href="#configure-your-server-to-require-certificates">configure your server</a> to require certificates.</p>
+<p>In your web app, add a reference to the <a target="_blank" rel="noopener" href="https://www.nuget.org/packages/Microsoft.AspNetCore.Authentication.Certificate">Microsoft.AspNetCore.Authentication.Certificate</a> package. Then in the <code>Startup.ConfigureServices</code> method, call
+<code>services.AddAuthentication(CertificateAuthenticationDefaults.AuthenticationScheme).AddCertificate(...);</code> with your options, providing a delegate for <code>OnCertificateValidated</code> to do any supplementary validation on the client certificate sent with requests. Turn that information into a <code>ClaimsPrincipal</code> and set it on the <code>context.Principal</code> property.</p>
+<p>If authentication fails, this handler returns a <code>403 (Forbidden)</code> response rather a <code>401 (Unauthorized)</code>, as you might expect. The reasoning is that the authentication should happen during the initial TLS connection. By the time it reaches the handler, it&#39;s too late. There&#39;s no way to upgrade the connection from an anonymous connection to one with a certificate.</p>
+<p>Also add <code>app.UseAuthentication();</code> in the <code>Startup.Configure</code> method. Otherwise, the <code>HttpContext.User</code> will not be set to <code>ClaimsPrincipal</code> created from the certificate. For example:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">public void ConfigureServices(IServiceCollection services)
+{
+    services.AddAuthentication(
+        CertificateAuthenticationDefaults.AuthenticationScheme)
+        .AddCertificate();
+
+    // All other service configuration
+}
+
+public void Configure(IApplicationBuilder app, IHostingEnvironment env)
+{
+    app.UseAuthentication();
+
+    // All other app configuration
+}</code></pre></div></figure>
+<p>The preceding example demonstrates the default way to add certificate authentication. The handler constructs a user principal using the common certificate properties.</p>
+<h2 id="configure-certificate-validation">Configure certificate validation</h2>
+<p>The <code>CertificateAuthenticationOptions</code> handler has some built-in validations that are the minimum validations you should perform on a certificate. Each of these settings is enabled by default.</p>
+<h3 id="allowedcertificatetypes-chained-selfsigned-or-all-chained-selfsigned">AllowedCertificateTypes = Chained, SelfSigned, or All (Chained | SelfSigned)</h3>
+<p>Default value: <code>CertificateTypes.Chained</code></p>
+<p>This check validates that only the appropriate certificate type is allowed. If the app is using self-signed certificates, this option needs to be set to <code>CertificateTypes.All</code> or <code>CertificateTypes.SelfSigned</code>.</p>
+<h3 id="validatecertificateuse">ValidateCertificateUse</h3>
+<p>Default value: <code>true</code></p>
+<p>This check validates that the certificate presented by the client has the Client Authentication extended key use (EKU), or no EKUs at all. As the specifications say, if no EKU is specified, then all EKUs are deemed valid.</p>
+<h3 id="validatevalidityperiod">ValidateValidityPeriod</h3>
+<p>Default value: <code>true</code></p>
+<p>This check validates that the certificate is within its validity period. On each request, the handler ensures that a certificate that was valid when it was presented hasn&#39;t expired during its current session.</p>
+<h3 id="revocationflag">RevocationFlag</h3>
+<p>Default value: <code>X509RevocationFlag.ExcludeRoot</code></p>
+<p>A flag that specifies which certificates in the chain are checked for revocation.</p>
+<p>Revocation checks are only performed when the certificate is chained to a root certificate.</p>
+<h3 id="revocationmode">RevocationMode</h3>
+<p>Default value: <code>X509RevocationMode.Online</code></p>
+<p>A flag that specifies how revocation checks are performed.</p>
+<p>Specifying an online check can result in a long delay while the certificate authority is contacted.</p>
+<p>Revocation checks are only performed when the certificate is chained to a root certificate.</p>
+<h3 id="can-i-configure-my-app-to-require-a-certificate-only-on-certain-paths">Can I configure my app to require a certificate only on certain paths?</h3>
+<p>This isn&#39;t possible. Remember the certificate exchange is done at the start of the HTTPS conversation, it&#39;s done by the server before the first request is received on that connection so it&#39;s not possible to scope based on any request fields.</p>
+<h2 id="handler-events">Handler events</h2>
+<p>The handler has two events:</p>
+<ul>
+<li><code>OnAuthenticationFailed</code>: Called if an exception happens during authentication and allows you to react.</li>
+<li><code>OnCertificateValidated</code>: Called after the certificate has been validated, passed validation and a default principal has been created. This event allows you to perform your own validation and augment or replace the principal. For examples include:<ul>
+<li><p>Determining if the certificate is known to your services.</p>
+</li>
+<li><p>Constructing your own principal. Consider the following example in <code>Startup.ConfigureServices</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">services.AddAuthentication(
+    CertificateAuthenticationDefaults.AuthenticationScheme)
+    .AddCertificate(options =&gt;
+    {
+        options.Events = new CertificateAuthenticationEvents
+        {
+            OnCertificateValidated = context =&gt;
+            {
+                var claims = new[]
+                {
+                    new Claim(
+                        ClaimTypes.NameIdentifier,
+                        context.ClientCertificate.Subject,
+                        ClaimValueTypes.String,
+                        context.Options.ClaimsIssuer),
+                    new Claim(ClaimTypes.Name,
+                        context.ClientCertificate.Subject,
+                        ClaimValueTypes.String,
+                        context.Options.ClaimsIssuer)
+                };
+
+                context.Principal = new ClaimsPrincipal(
+                    new ClaimsIdentity(claims, context.Scheme.Name));
+                context.Success();
+
+                return Task.CompletedTask;
+            }
+        };
+    });</code></pre></div></figure>
+</li>
+</ul>
+</li>
+</ul>
+<p>If you find the inbound certificate doesn&#39;t meet your extra validation, call <code>context.Fail(&quot;failure reason&quot;)</code> with a failure reason.</p>
+<p>For real functionality, you&#39;ll probably want to call a service registered in dependency injection that connects to a database or other type of user store. Access your service by using the context passed into your delegate. Consider the following example in <code>Startup.ConfigureServices</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">services.AddAuthentication(
+    CertificateAuthenticationDefaults.AuthenticationScheme)
+    .AddCertificate(options =&gt;
+    {
+        options.Events = new CertificateAuthenticationEvents
+        {
+            OnCertificateValidated = context =&gt;
+            {
+                var validationService =
+                    context.HttpContext.RequestServices
+                        .GetRequiredService();
+
+                if (validationService.ValidateCertificate(
+                    context.ClientCertificate))
+                {
+                    var claims = new[]
+                    {
+                        new Claim(
+                            ClaimTypes.NameIdentifier,
+                            context.ClientCertificate.Subject,
+                            ClaimValueTypes.String,
+                            context.Options.ClaimsIssuer),
+                        new Claim(
+                            ClaimTypes.Name,
+                            context.ClientCertificate.Subject,
+                            ClaimValueTypes.String,
+                            context.Options.ClaimsIssuer)
+                    };
+
+                    context.Principal = new ClaimsPrincipal(
+                        new ClaimsIdentity(claims, context.Scheme.Name));
+                    context.Success();
+                }
+
+                return Task.CompletedTask;
+            }
+        };
+    });</code></pre></div></figure>
+<p>Conceptually, the validation of the certificate is an authorization concern. Adding a check on, for example, an issuer or thumbprint in an authorization policy, rather than inside <code>OnCertificateValidated</code>, is perfectly acceptable.</p>
+<h2 id="configure-your-server-to-require-certificates">Configure your server to require certificates</h2>
+<h3 id="kestrel">Kestrel</h3>
+<p>In <code>Program.cs</code>, configure Kestrel as follows:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">public static void Main(string[] args)
+{
+    CreateHostBuilder(args).Build().Run();
+}
+
+public static IHostBuilder CreateHostBuilder(string[] args)
+{
+    return Host.CreateDefaultBuilder(args)
+        .ConfigureWebHostDefaults(webBuilder =&gt;
+        {
+            webBuilder.UseStartup();
+            webBuilder.ConfigureKestrel(o =&gt;
+            {
+                o.ConfigureHttpsDefaults(o =&gt;
+                    o.ClientCertificateMode =  ClientCertificateMode.RequireCertificate);
+            });
+        });
+}</code></pre></div></figure>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>Endpoints created by calling <code>Listen</code> <strong>before</strong> calling <code>ConfigureHttpsDefaults</code> won&#39;t have the defaults applied.</p>
+</div></aside>
+<h3 id="iis">IIS</h3>
+<p>Complete the following steps in IIS Manager:</p>
+<ol>
+<li>Select your site from the <strong>Connections</strong> tab.</li>
+<li>Double-click the <strong>SSL Settings</strong> option in the <strong>Features View</strong> window.</li>
+<li>Check the <strong>Require SSL</strong> checkbox, and select the <strong>Require</strong> radio button in the <strong>Client certificates</strong> section.</li>
+</ol>
+<p><img src="assets/ms/aspnet/security/authentication/certauth/_static/README-IISConfig.png" loading="lazy" alt="image"></p>
+<h3 id="azure-and-custom-web-proxies">Azure and custom web proxies</h3>
+<p>See the <a href="#/doc/aspnet/host-and-deploy/proxy-load-balancer@certificate-forwarding">host and deploy documentation</a> for how to configure the certificate forwarding middleware.</p>
+<h3 id="use-certificate-authentication-in-azure-web-apps">Use certificate authentication in Azure Web Apps</h3>
+<p>No forwarding configuration is required for Azure. Forwarding configuration is set up by the certificate-forwarding middleware.</p>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>Certificate-forwarding middleware is required for this scenario.</p>
+</div></aside>
+<p>For more information, see <a href="/azure/app-service/configure-ssl-certificate-in-code">Use a TLS/SSL certificate in your code in Azure App Service (Azure documentation)</a>.</p>
+<h3 id="use-certificate-authentication-in-custom-web-proxies">Use certificate authentication in custom web proxies</h3>
+<p>The <code>AddCertificateForwarding</code> method is used to specify:</p>
+<ul>
+<li>The client header name.</li>
+<li>How the certificate is to be loaded (using the <code>HeaderConverter</code> property).</li>
+</ul>
+<p>In custom web proxies, the certificate is passed as a custom request header, for example <code>X-SSL-CERT</code>. To use it, configure certificate forwarding in <code>Startup.ConfigureServices</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">public void ConfigureServices(IServiceCollection services)
+{
+    services.AddCertificateForwarding(options =&gt;
+    {
+        options.CertificateHeader = &quot;X-SSL-CERT&quot;;
+        options.HeaderConverter = (headerValue) =&gt;
+        {
+            X509Certificate2 clientCertificate = null;
+
+            if(!string.IsNullOrWhiteSpace(headerValue))
+            {
+                byte[] bytes = StringToByteArray(headerValue);
+                clientCertificate = new X509Certificate2(bytes);
+            }
+
+            return clientCertificate;
+        };
+    });
+}
+
+private static byte[] StringToByteArray(string hex)
+{
+    int NumberChars = hex.Length;
+    byte[] bytes = new byte[NumberChars / 2];
+
+    for (int i = 0; i &lt; NumberChars; i += 2)
+    {
+        bytes[i / 2] = Convert.ToByte(hex.Substring(i, 2), 16);
+    }
+
+    return bytes;
+}</code></pre></div></figure>
+<p>If the app is reverse proxied by NGINX with the configuration <code>proxy_set_header ssl-client-cert $ssl_client_escaped_cert</code> or deployed on Kubernetes using NGINX Ingress, the client certificate is passed to the app in <a target="_blank" rel="noopener" href="https://developer.mozilla.org/docs/Glossary/percent-encoding">URL-encoded form</a>. To use the certificate, decode it as follows:</p>
+<p>Add the namespace for <code>Net?displayProperty=fullName</code> to the top of <code>Startup.cs</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">using System.Net;</code></pre></div></figure>
+<p>In <code>Startup.ConfigureServices</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">services.AddCertificateForwarding(options =&gt;
+{
+    options.CertificateHeader = &quot;ssl-client-cert&quot;;
+    options.HeaderConverter = (headerValue) =&gt;
+    {
+        X509Certificate2 clientCertificate = null;
+
+        if (!string.IsNullOrWhiteSpace(headerValue))
+        {
+            var bytes = UrlEncodedPemToByteArray(headerValue);
+            clientCertificate = new X509Certificate2(bytes);
+        }
+
+        return clientCertificate;
+    };
+});</code></pre></div></figure>
+<p>Add the <code>UrlEncodedPemToByteArray</code> method:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">private static byte[] UrlEncodedPemToByteArray(string urlEncodedBase64Pem)
+{
+    var base64Pem = WebUtility.UrlDecode(urlEncodedBase64Pem);
+    var base64Cert = base64Pem
+        .Replace(&quot;-----BEGIN CERTIFICATE-----&quot;, string.Empty)
+        .Replace(&quot;-----END CERTIFICATE-----&quot;, string.Empty)
+        .Trim();
+
+    return Convert.FromBase64String(base64Cert);
+}</code></pre></div></figure>
+<p>The <code>Startup.Configure</code> method then adds the middleware. <code>UseCertificateForwarding</code> is called before the calls to <code>UseAuthentication</code> and <code>UseAuthorization</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">public void Configure(IApplicationBuilder app, IWebHostEnvironment env)
+{
+    ...
+
+    app.UseRouting();
+
+    app.UseCertificateForwarding();
+    app.UseAuthentication();
+    app.UseAuthorization();
+
+    app.UseEndpoints(endpoints =&gt;
+    {
+        endpoints.MapControllers();
+    });
+}</code></pre></div></figure>
+<p>A separate class can be used to implement validation logic. Because the same self-signed certificate is used in this example, ensure that only your certificate can be used. Validate that the thumbprints of both the client certificate and the server certificate match, otherwise any certificate can be used and will be enough to authenticate. This would be used inside the <code>AddCertificate</code> method. You could also validate the subject or the issuer here if you&#39;re using intermediate or child certificates.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">using System.IO;
+using System.Security.Cryptography.X509Certificates;
+
+namespace AspNetCoreCertificateAuthApi
+{
+    public class MyCertificateValidationService
+    {
+        public bool ValidateCertificate(X509Certificate2 clientCertificate)
+        {
+            // Do not hardcode passwords in production code
+            // Use thumbprint or key vault
+            var cert = new X509Certificate2(
+                Path.Combine(&quot;sts_dev_cert.pfx&quot;), &quot;1234&quot;);
+
+            if (clientCertificate.Thumbprint == cert.Thumbprint)
+            {
+                return true;
+            }
+
+            return false;
+        }
+    }
+}</code></pre></div></figure>
+<h4 id="implement-an-httpclient-using-a-certificate-and-the-httpclienthandler">Implement an HttpClient using a certificate and the HttpClientHandler</h4>
+<p>The <code>HttpClientHandler</code> could be added directly in the constructor of the <code>HttpClient</code> class. Care should be taken when creating instances of the <code>HttpClient</code>. The <code>HttpClient</code> will then send the certificate with each request.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">private async Task GetApiDataUsingHttpClientHandler()
+{
+    var cert = new X509Certificate2(Path.Combine(_environment.ContentRootPath, &quot;sts_dev_cert.pfx&quot;), &quot;1234&quot;);
+    var handler = new HttpClientHandler();
+    handler.ClientCertificates.Add(cert);
+    var client = new HttpClient(handler);
+
+    var request = new HttpRequestMessage()
+    {
+        RequestUri = new Uri(&quot;https://localhost:44379/api/values&quot;),
+        Method = HttpMethod.Get,
+    };
+    var response = await client.SendAsync(request);
+    if (response.IsSuccessStatusCode)
+    {
+        var responseContent = await response.Content.ReadAsStringAsync();
+        var data = JsonDocument.Parse(responseContent);
+        return data;
+    }
+
+    throw new ApplicationException($&quot;Status code: {response.StatusCode}, Error: {response.ReasonPhrase}&quot;);
+}</code></pre></div></figure>
+<h4 id="implement-an-httpclient-using-a-certificate-and-a-named-httpclient-from-ihttpclientfactory">Implement an HttpClient using a certificate and a named HttpClient from IHttpClientFactory</h4>
+<p>In the following example, a client certificate is added to a <code>HttpClientHandler</code> using the <code>ClientCertificates</code> property from the handler. This handler can then be used in a named instance of an <code>HttpClient</code> using the <code>ConfigurePrimaryHttpMessageHandler</code> method. This is setup in <code>Startup.ConfigureServices</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">var clientCertificate =
+    new X509Certificate2(
+      Path.Combine(_environment.ContentRootPath, &quot;sts_dev_cert.pfx&quot;), &quot;1234&quot;);
+
+services.AddHttpClient(&quot;namedClient&quot;, c =&gt;
+{
+}).ConfigurePrimaryHttpMessageHandler(() =&gt;
+{
+    var handler = new HttpClientHandler();
+    handler.ClientCertificates.Add(clientCertificate);
+    return handler;
+});</code></pre></div></figure>
+<p>The <code>IHttpClientFactory</code> can then be used to get the named instance with the handler and the certificate. The <code>CreateClient</code> method with the name of the client defined in the <code>Startup</code> class is used to get the instance. The HTTP request can be sent using the client as required.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">private readonly IHttpClientFactory _clientFactory;
+
+public ApiService(IHttpClientFactory clientFactory)
+{
+    _clientFactory = clientFactory;
+}
+
+private async Task GetApiDataWithNamedClient()
+{
+    var client = _clientFactory.CreateClient(&quot;namedClient&quot;);
+
+    var request = new HttpRequestMessage()
+    {
+        RequestUri = new Uri(&quot;https://localhost:44379/api/values&quot;),
+        Method = HttpMethod.Get,
+    };
+    var response = await client.SendAsync(request);
+    if (response.IsSuccessStatusCode)
+    {
+        var responseContent = await response.Content.ReadAsStringAsync();
+        var data = JsonDocument.Parse(responseContent);
+        return data;
+    }
+
+    throw new ApplicationException($&quot;Status code: {response.StatusCode}, Error: {response.ReasonPhrase}&quot;);
+}</code></pre></div></figure>
+<p>If the correct certificate is sent to the server, the data is returned. If no certificate or the wrong certificate is sent, an HTTP 403 status code is returned.</p>
+<h3 id="create-certificates-in-powershell">Create certificates in PowerShell</h3>
+<p>Creating the certificates is the hardest part in setting up this flow. A root certificate can be created using the <code>New-SelfSignedCertificate</code> PowerShell cmdlet. When creating the certificate, use a strong password. It&#39;s important to add the <code>KeyUsageProperty</code> parameter and the <code>KeyUsage</code> parameter as shown.</p>
+<h4 id="create-root-ca">Create root CA</h4>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">New-SelfSignedCertificate -DnsName &quot;root_ca_dev_damienbod.com&quot;, &quot;root_ca_dev_damienbod.com&quot; -CertStoreLocation &quot;cert:\LocalMachine\My&quot; -NotAfter (Get-Date).AddYears(20) -FriendlyName &quot;root_ca_dev_damienbod.com&quot; -KeyUsageProperty All -KeyUsage CertSign, CRLSign, DigitalSignature
+
+$mypwd = ConvertTo-SecureString -String &quot;1234&quot; -Force -AsPlainText
+
+Get-ChildItem -Path cert:\localMachine\my\&quot;The thumbprint...&quot; | Export-PfxCertificate -FilePath C:\git\root_ca_dev_damienbod.pfx -Password $mypwd
+
+Export-Certificate -Cert cert:\localMachine\my\&quot;The thumbprint...&quot; -FilePath root_ca_dev_damienbod.crt</code></pre></div></figure>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>The <code>-DnsName</code> parameter value must match the deployment target of the app. For example, &quot;localhost&quot; for development.</p>
+</div></aside>
+<h4 id="install-in-the-trusted-root">Install in the trusted root</h4>
+<p>The root certificate needs to be trusted on your host system. A root certificate which was not created by a certificate authority won&#39;t be trusted by default.</p>
+<h4 id="intermediate-certificate">Intermediate certificate</h4>
+<p>An intermediate certificate can now be created from the root certificate. This isn&#39;t required for all use cases, but you might need to create many certificates or need to activate or disable groups of certificates. The <code>TextExtension</code> parameter is required to set the path length in the basic constraints of the certificate.</p>
+<p>The intermediate certificate can then be added to the trusted intermediate certificate in the Windows host system.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">$mypwd = ConvertTo-SecureString -String &quot;1234&quot; -Force -AsPlainText
+
+$parentcert = ( Get-ChildItem -Path cert:\LocalMachine\My\&quot;The thumbprint of the root...&quot; )
+
+New-SelfSignedCertificate -certstorelocation cert:\localmachine\my -dnsname &quot;intermediate_dev_damienbod.com&quot; -Signer $parentcert -NotAfter (Get-Date).AddYears(20) -FriendlyName &quot;intermediate_dev_damienbod.com&quot; -KeyUsageProperty All -KeyUsage CertSign, CRLSign, DigitalSignature -TextExtension @(&quot;2.5.29.19={text}CA=1&amp;pathlength=1&quot;)
+
+Get-ChildItem -Path cert:\localMachine\my\&quot;The thumbprint...&quot; | Export-PfxCertificate -FilePath C:\git\AspNetCoreCertificateAuth\Certs\intermediate_dev_damienbod.pfx -Password $mypwd
+
+Export-Certificate -Cert cert:\localMachine\my\&quot;The thumbprint...&quot; -FilePath intermediate_dev_damienbod.crt</code></pre></div></figure>
+<h4 id="create-child-certificate-from-intermediate-certificate">Create child certificate from intermediate certificate</h4>
+<p>A child certificate can be created from the intermediate certificate. This is the end entity and doesn&#39;t need to create more child certificates.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">$parentcert = ( Get-ChildItem -Path cert:\LocalMachine\My\&quot;The thumbprint from the Intermediate certificate...&quot; )
+
+New-SelfSignedCertificate -certstorelocation cert:\localmachine\my -dnsname &quot;child_a_dev_damienbod.com&quot; -Signer $parentcert -NotAfter (Get-Date).AddYears(20) -FriendlyName &quot;child_a_dev_damienbod.com&quot;
+
+$mypwd = ConvertTo-SecureString -String &quot;1234&quot; -Force -AsPlainText
+
+Get-ChildItem -Path cert:\localMachine\my\&quot;The thumbprint...&quot; | Export-PfxCertificate -FilePath C:\git\AspNetCoreCertificateAuth\Certs\child_a_dev_damienbod.pfx -Password $mypwd
+
+Export-Certificate -Cert cert:\localMachine\my\&quot;The thumbprint...&quot; -FilePath child_a_dev_damienbod.crt</code></pre></div></figure>
+<h4 id="create-child-certificate-from-root-certificate">Create child certificate from root certificate</h4>
+<p>A child certificate can also be created from the root certificate directly.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">$rootcert = ( Get-ChildItem -Path cert:\LocalMachine\My\&quot;The thumbprint from the root cert...&quot; )
+
+New-SelfSignedCertificate -certstorelocation cert:\localmachine\my -dnsname &quot;child_a_dev_damienbod.com&quot; -Signer $rootcert -NotAfter (Get-Date).AddYears(20) -FriendlyName &quot;child_a_dev_damienbod.com&quot;
+
+$mypwd = ConvertTo-SecureString -String &quot;1234&quot; -Force -AsPlainText
+
+Get-ChildItem -Path cert:\localMachine\my\&quot;The thumbprint...&quot; | Export-PfxCertificate -FilePath C:\git\AspNetCoreCertificateAuth\Certs\child_a_dev_damienbod.pfx -Password $mypwd
+
+Export-Certificate -Cert cert:\localMachine\my\&quot;The thumbprint...&quot; -FilePath child_a_dev_damienbod.crt</code></pre></div></figure>
+<h4 id="example-root---intermediate-certificate---certificate">Example root - intermediate certificate - certificate</h4>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">$mypwdroot = ConvertTo-SecureString -String &quot;1234&quot; -Force -AsPlainText
+$mypwd = ConvertTo-SecureString -String &quot;1234&quot; -Force -AsPlainText
+
+New-SelfSignedCertificate -DnsName &quot;root_ca_dev_damienbod.com&quot;, &quot;root_ca_dev_damienbod.com&quot; -CertStoreLocation &quot;cert:\LocalMachine\My&quot; -NotAfter (Get-Date).AddYears(20) -FriendlyName &quot;root_ca_dev_damienbod.com&quot; -KeyUsageProperty All -KeyUsage CertSign, CRLSign, DigitalSignature
+
+Get-ChildItem -Path cert:\localMachine\my\0C89639E4E2998A93E423F919B36D4009A0F9991 | Export-PfxCertificate -FilePath C:\git\root_ca_dev_damienbod.pfx -Password $mypwdroot
+
+Export-Certificate -Cert cert:\localMachine\my\0C89639E4E2998A93E423F919B36D4009A0F9991 -FilePath root_ca_dev_damienbod.crt
+
+$rootcert = ( Get-ChildItem -Path cert:\LocalMachine\My\0C89639E4E2998A93E423F919B36D4009A0F9991 )
+
+New-SelfSignedCertificate -certstorelocation cert:\localmachine\my -dnsname &quot;child_a_dev_damienbod.com&quot; -Signer $rootcert -NotAfter (Get-Date).AddYears(20) -FriendlyName &quot;child_a_dev_damienbod.com&quot; -KeyUsageProperty All -KeyUsage CertSign, CRLSign, DigitalSignature -TextExtension @(&quot;2.5.29.19={text}CA=1&amp;pathlength=1&quot;)
+
+Get-ChildItem -Path cert:\localMachine\my\BA9BF91ED35538A01375EFC212A2F46104B33A44 | Export-PfxCertificate -FilePath C:\git\AspNetCoreCertificateAuth\Certs\child_a_dev_damienbod.pfx -Password $mypwd
+
+Export-Certificate -Cert cert:\localMachine\my\BA9BF91ED35538A01375EFC212A2F46104B33A44 -FilePath child_a_dev_damienbod.crt
+
+$parentcert = ( Get-ChildItem -Path cert:\LocalMachine\My\BA9BF91ED35538A01375EFC212A2F46104B33A44 )
+
+New-SelfSignedCertificate -certstorelocation cert:\localmachine\my -dnsname &quot;child_b_from_a_dev_damienbod.com&quot; -Signer $parentcert -NotAfter (Get-Date).AddYears(20) -FriendlyName &quot;child_b_from_a_dev_damienbod.com&quot;
+
+Get-ChildItem -Path cert:\localMachine\my\141594A0AE38CBBECED7AF680F7945CD51D8F28A | Export-PfxCertificate -FilePath C:\git\AspNetCoreCertificateAuth\Certs\child_b_from_a_dev_damienbod.pfx -Password $mypwd
+
+Export-Certificate -Cert cert:\localMachine\my\141594A0AE38CBBECED7AF680F7945CD51D8F28A -FilePath child_b_from_a_dev_damienbod.crt</code></pre></div></figure>
+<p>When using the root, intermediate, or child certificates, the certificates can be validated using the Thumbprint or PublicKey as required.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">using System.Collections.Generic;
+using System.IO;
+using System.Security.Cryptography.X509Certificates;
+
+namespace AspNetCoreCertificateAuthApi
+{
+    public class MyCertificateValidationService
+    {
+        public bool ValidateCertificate(X509Certificate2 clientCertificate)
+        {
+            return CheckIfThumbprintIsValid(clientCertificate);
+        }
+
+        private bool CheckIfThumbprintIsValid(X509Certificate2 clientCertificate)
+        {
+            var listOfValidThumbprints = new List&lt;string&gt;
+            {
+                &quot;141594A0AE38CBBECED7AF680F7945CD51D8F28A&quot;,
+                &quot;0C89639E4E2998A93E423F919B36D4009A0F9991&quot;,
+                &quot;BA9BF91ED35538A01375EFC212A2F46104B33A44&quot;
+            };
+
+            if (listOfValidThumbprints.Contains(clientCertificate.Thumbprint))
+            {
+                return true;
+            }
+
+            return false;
+        }
+    }
+}</code></pre></div></figure>
+<p><a name="occ"></a></p>
+<h2 id="optional-client-certificates">Optional client certificates</h2>
+<p>This section provides information for apps that must protect a subset of the app with a certificate. For example, a Razor Page or controller in the app might require client certificates. This presents challenges as client certificates:</p>
+<ul>
+<li>Are a TLS feature, not an HTTP feature.</li>
+<li>Are negotiated per-connection and usually at the start of the connection before any HTTP data is available.</li>
+</ul>
+<p>There are two approaches to implementing optional client certificates:</p>
+<ol>
+<li>Using separate host names (SNI) and redirecting. While more work to configure, this is recommended because it works in most environments and protocols.</li>
+<li>Renegotiation during an HTTP request. This has several limitations and is not recommended.</li>
+</ol>
+<h3 id="separate-hosts-sni">Separate Hosts (SNI)</h3>
+<p>At the start of the connection, only the Server Name Indication (SNI)&dagger; is known. Client certificates can be configured per host name so that one host requires them and another does not.</p>
+<ul>
+<li>Set up binding for the domain and subdomain:<ul>
+<li>For example, set up bindings on <code>contoso.com</code> and <code>myClient.contoso.com</code>. The <code>contoso.com</code> host doesn&#39;t require a client certificate but <code>myClient.contoso.com</code> does.</li>
+<li>For more information, see:<ul>
+<li><a href="#/doc/aspnet/fundamentals/servers/kestrel">Kestrel web server in ASP.NET Core</a>:<ul>
+<li><a href="#/doc/aspnet/fundamentals/servers/kestrel@listenoptionsusehttps">ListenOptions.UseHttps</a></li>
+<li><code>ClientCertificateMode</code></li>
+<li>Note Kestrel does not currently support multiple TLS configurations on one binding, you&#39;ll need two bindings with unique IPs or ports. For more information, see <a target="_blank" rel="noopener" href="https://github.com/dotnet/runtime/issues/31097">this GitHub issue</a>.</li>
+</ul>
+</li>
+<li>IIS<ul>
+<li><a href="#/doc/aspnet/host-and-deploy/iis/index@create-the-iis-site">Hosting IIS</a></li>
+<li><a href="/iis/manage/configuring-security/how-to-set-up-ssl-on-iis#configure-ssl-settings-2">Configure security on IIS</a></li>
+</ul>
+</li>
+<li>HTTP.sys: <a href="#/doc/aspnet/fundamentals/servers/httpsys@configure-windows-server">Configure Windows Server</a></li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+<p>.NET 5 or later adds more convenient support for redirecting to acquire optional client certificates. For more information, see the <a target="_blank" rel="noopener" href="https://github.com/dotnet/aspnetcore/tree/9ce4a970a21bace3fb262da9591ed52359309592/src/Security/Authentication/Certificate/samples/Certificate.Optional.Sample">Optional certificates sample</a>.</p>
+<ul>
+<li>For requests to the web app that require a client certificate and don&#39;t have one:<ul>
+<li>Redirect to the same page using the client certificate protected subdomain.</li>
+<li>For example, redirect to <code>myClient.contoso.com/requestedPage</code>. Because the request to <code>myClient.contoso.com/requestedPage</code> is a different hostname than <code>contoso.com/requestedPage</code>, the client establishes a different connection and the client certificate is provided.</li>
+<li>For more information, see <a href="#/doc/aspnet/security/authorization/introduction">Introduction to authorization in ASP.NET Core</a>.</li>
+</ul>
+</li>
+</ul>
+<p>&dagger; Server Name Indication (SNI) is a TLS extension to include a virtual domain as a part of SSL negotiation. This effectively means the virtual domain name, or a hostname, can be used to identify the network end point.</p>
+<h3 id="renegotiation">Renegotiation</h3>
+<p>TLS renegotiation is a process by which the client and server can re-assess the encryption requirements for an individual connection, including requesting a client certificate if not previously provided. TLS renegotiation is a security risk and isn&#39;t recommended because:</p>
+<ul>
+<li>In HTTP/1.1 the server must first buffer or consume any HTTP data that is in flight such as POST request bodies to make sure the connection is clear for the renegotiation. Otherwise the renegotiation can stop responding or fail.</li>
+<li>HTTP/2 and HTTP/3 <a target="_blank" rel="noopener" href="https://tools.ietf.org/html/rfc7540#section-9.2.1">explicitly prohibit</a> renegotiation.</li>
+<li>There are security risks associated with renegotiation. TLS 1.3 removed renegotiation of the whole connection and replaced it with a new extension for requesting only the client certificate after the start of the connection. This mechanism is exposed via the same APIs and is still subject to the prior constraints of buffering and HTTP protocol versions.</li>
+</ul>
+<p>The implementation and configuration of this feature varies by server and framework version.</p>
+<h4 id="iis">IIS</h4>
+<p>IIS manages the client certificate negotiation on your behalf. A subsection of the application can enable the <code>SslRequireCert</code> option to negotiate the client certificate for those requests. See <a href="/iis/configuration/system.webserver/security/access#configuration">Configuration in the IIS documentation</a> for details.</p>
+<p>IIS will automatically buffer any request body data up to a configured size limit before renegotiating. Requests that exceed the limit are rejected with a 413 response. This limit defaults to 48KB and is configurable by setting the <a href="/iis/configuration/system.webserver/serverruntime">uploadReadAheadSize</a>.</p>
+<h4 id="httpsys">HttpSys</h4>
+<p>HttpSys has two settings which control the client certificate negotiation and both should be set. The first is in netsh.exe under <code>http add sslcert clientcertnegotiation=enable/disable</code>. This flag indicates if the client certificate should be negotiated at the start of a connection and it should be set to <code>disable</code> for optional client certificates. See the <a href="/windows-server/networking/technologies/netsh/netsh-http#add-sslcert">netsh docs</a> for details.</p>
+<p>The other setting is <code>ClientCertificateMethod</code>. When set to <code>AllowRenegotation</code>, the client certificate can be renegotiated during a request.</p>
+<p><em>NOTE</em> The application should buffer or consume any request body data before attempting the renegotiation, otherwise the request may become unresponsive.</p>
+<p>There is a <a target="_blank" rel="noopener" href="https://github.com/dotnet/aspnetcore/issues/33586">known issue</a> where enabling <code>AllowRenegotation</code> can cause the renegotiation to happen synchronously when accessing the <code>ClientCertificate</code> property. Call the <code>GetClientCertificateAsync</code> method to avoid this. This has been addressed in .NET 6. For more information, see <a target="_blank" rel="noopener" href="https://github.com/aspnet/Announcements/issues/466">this GitHub issue</a>. Note <code>GetClientCertificateAsync</code> can return a null certificate if the client declines to provide one.</p>
+<h4 id="kestrel">Kestrel</h4>
+<p>Kestrel controls client certificate negotiation with the <code>ClientCertificateMode</code> option.</p>
+<p>For .NET 5 or earlier Kestrel does not support renegotiating after the start of a connection to acquire a client certificate. This feature has been added in .NET 6.</p>
+<p>:::moniker-end</p>
+<p>Leave questions, comments, and other feedback on optional client certificates in the discussion thread for <a target="_blank" rel="noopener" href="https://github.com/dotnet/AspNetCore.Docs/issues/18720">GitHub issue #18720</a>.</p>
+<h2 id="related-content">Related content</h2>
+<ul>
+<li><a href="#/doc/aspnet/security/authentication/index">Overview of ASP.NET Core authentication</a></li>
+<li><a href="#/doc/aspnet/security/authorization/introduction">Introduction to authorization in ASP.NET Core</a></li>
+<li><a href="/azure/app-service/configure-ssl-certificate-in-code">Use TLS/SSL certificates in your app code (Azure documentation)</a></li>
+<li><a target="_blank" rel="noopener" href="https://techcommunity.microsoft.com/blog/appsonazureblog/follow-up-to-%E2%80%98important-changes-to-app-service-managed-certificates%E2%80%99-november-20/4466120">Important changes to App Service managed certificates (Blog, November 2025)</a></li>
+</ul>

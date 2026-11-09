@@ -1,0 +1,724 @@
+<p>By <a target="_blank" rel="noopener" href="https://twitter.com/RickAndMSFT">Rick Anderson</a>, <a target="_blank" rel="noopener" href="https://github.com/JunTaoLuo">John Luo</a>, and <a target="_blank" rel="noopener" href="https://ardalis.com/">Steve Smith</a></p>
+<p>:::moniker range=&quot;&gt;= aspnetcore-6.0&quot;</p>
+<p>Caching can significantly improve the performance and scalability of an app by reducing the work required to generate content. Caching works best with data that changes infrequently <strong>and</strong> is expensive to generate. Caching makes a copy of data that can be returned much faster than from the source. Apps should be written and tested to <strong>never</strong> depend on cached data.</p>
+<p>ASP.NET Core supports several different caches. The simplest cache is based on the <code>IMemoryCache</code> interface. <code>IMemoryCache</code> represents a cache stored in the memory of the web server. Apps running on a server farm (multiple servers) should ensure sessions are sticky when using the in-memory cache. Sticky sessions ensure that requests from a client all go to the same server. For example, an Azure web app uses <a href="/iis/extensions/planning-for-arr/application-request-routing-version-2-overview">Microsoft Application Request Routing (ARR)</a> to route all requests to the same server.</p>
+<p>Nonsticky sessions in a web farm require a <a href="#/doc/aspnet/performance/caching/distributed">distributed cache</a> to avoid cache consistency problems. For some apps, a distributed cache can support higher scale-out than an in-memory cache. Using a distributed cache offloads the cache memory to an external process.</p>
+<p>The in-memory cache can store any object. The distributed cache interface is limited to <code>byte[]</code>. The in-memory and distributed cache store cache items as key-value pairs.</p>
+<h2 id="use-systemruntimecachingmemorycache">Use System.Runtime.Caching/MemoryCache</h2>
+<p><code>Caching</code>/<code>MemoryCache</code> (<a target="_blank" rel="noopener" href="https://www.nuget.org/packages/System.Runtime.Caching/">NuGet package</a>) can be used with:</p>
+<ul>
+<li>.NET Standard 2.0 or later</li>
+<li>Any <a href="/dotnet/standard/net-standard#net-implementation-support">.NET implementation</a> that targets .NET Standard 2.0 or later (such as ASP.NET Core 3.1 or later)</li>
+<li>.NET Framework 4.5 or later</li>
+</ul>
+<p><a target="_blank" rel="noopener" href="https://www.nuget.org/packages/Microsoft.Extensions.Caching.Memory/">Microsoft.Extensions.Caching.Memory</a>/<code>IMemoryCache</code> (described in this article) is recommended over <code>System.Runtime.Caching</code>/<code>MemoryCache</code> because it offers better integration with ASP.NET Core. For example, <code>IMemoryCache</code> works natively with ASP.NET Core <a href="#/doc/aspnet/fundamentals/dependency-injection">dependency injection</a>.</p>
+<p>Use <code>System.Runtime.Caching</code>/<code>MemoryCache</code> as a compatibility bridge when porting code from ASP.NET 4.x to ASP.NET Core.</p>
+<h2 id="review-guidelines-for-in-memory-caching">Review guidelines for in-memory caching</h2>
+<p>The following guidelines apply to in-memory caching:</p>
+<ul>
+<li><p>Code should always have a fallback option to fetch data and <strong>not</strong> depend on the availability of a cached value.</p>
+</li>
+<li><p>The cache uses memory, which is a scarce resource. Limit cache growth:</p>
+<ul>
+<li><p><strong>Don&#39;t</strong> insert external input into the cache. As an example, using arbitrary user-provided input as a cache key isn&#39;t recommended because the input might consume an unpredictable amount of memory.</p>
+</li>
+<li><p>Use expirations to limit cache growth.</p>
+</li>
+<li><p><a href="#use-setsize-size-and-sizelimit-to-limit-cache-size">Use SetSize, Size, and SizeLimit to limit cache size</a>. The ASP.NET Core runtime <strong>doesn&#39;t</strong> limit cache size based on memory pressure. The developer is responsible for limiting the cache size.</p>
+</li>
+</ul>
+</li>
+</ul>
+<h2 id="create-an-instance-of-imemorycache">Create an instance of IMemoryCache</h2>
+<p>In-memory caching is a <em>service</em> that an app references by using <a href="#/doc/aspnet/fundamentals/dependency-injection">dependency injection</a>.</p>
+<aside class="callout callout-warning"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 4 2.8 20h18.4L12 4z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M12 10v4.4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="17" r="1.3" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Warning</p><p>If the same cache is used by multiple frameworks or libraries, it&#39;s a <em>shared</em> cache. If you use a shared memory cache from <a href="#/doc/aspnet/fundamentals/dependency-injection">dependency injection</a> and also use <code>SetSize</code>, <code>Size</code>, and <code>SizeLimit</code> to limit the cache size, the app can fail.</p>
+<p>When a size limit is set on a cache, all entries must specify a size when they&#39;re added. This approach can lead to issues because developers might not have full control over what uses the shared cache.</p>
+<p>To limit the cache size with the <code>SetSize</code> method, the <code>Size</code> property, or the <code>SizeLimit</code> property, create a cache singleton for caching. For more information and an example, see <a href="#use-setsize-size-and-sizelimit-to-limit-cache-size">Use SetSize, Size, and SizeLimit to limit cache size</a>.</p>
+</div></aside>
+<p>Request the <code>IMemoryCache</code> instance in the constructor:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">public class IndexModel : PageModel
+{
+    private readonly IMemoryCache _memoryCache;
+
+    public IndexModel(IMemoryCache memoryCache) =&gt;
+        _memoryCache = memoryCache;
+
+    // ...
+    </code></pre></div></figure>
+<p>The following code uses the <code>TryGetValue</code> method to check if a time is in the cache. If a time isn&#39;t cached, a new entry is created and added to the cache with the <code>Set</code> method: </p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">    public void OnGet()
+    {
+        CurrentDateTime = DateTime.Now;
+
+        if (!_memoryCache.TryGetValue(CacheKeys.Entry, out DateTime cacheValue))
+        {
+            cacheValue = CurrentDateTime;
+
+            var cacheEntryOptions = new MemoryCacheEntryOptions()
+                .SetSlidingExpiration(TimeSpan.FromSeconds(3));
+
+            _memoryCache.Set(CacheKeys.Entry, cacheValue, cacheEntryOptions);
+        }
+
+        CacheCurrentDateTime = cacheValue;
+    }
+    </code></pre></div></figure>
+<p>In the preceding code, the cache entry is configured with a sliding expiration of 3 seconds. If the cache entry isn&#39;t accessed for more than 3 seconds, the entry is evicted from the cache. Each time the cache entry is accessed, it remains in the cache for a further 3 seconds. The <code>CacheKeys</code> class is part of the download sample.</p>
+<p>The current time and the cached time are displayed:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">&lt;ul&gt;
+	&lt;li&gt;Current Time: @Model.CurrentDateTime&lt;/li&gt;
+	&lt;li&gt;Cached Time: @Model.CacheCurrentDateTime&lt;/li&gt;
+&lt;/ul&gt;</code></pre></div></figure>
+<p>The following code uses the <code>Set</code> extension method to cache data for a relative time without <code>MemoryCacheEntryOptions</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">        _memoryCache.Set(CacheKeys.Entry, DateTime.Now, TimeSpan.FromDays(1));
+        </code></pre></div></figure>
+<p>In the preceding code, the cache entry is configured with a relative expiration of one day. The cache entry is evicted from the cache after one day, even if the entry is accessed during the timeout period.</p>
+<p>The following code uses the <code>GetOrCreate</code> and <code>GetOrCreateAsync</code> methods to cache data.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">    public void OnGetCacheGetOrCreate()
+    {
+        var cachedValue = _memoryCache.GetOrCreate(
+            CacheKeys.Entry,
+            cacheEntry =&gt;
+            {
+                cacheEntry.SlidingExpiration = TimeSpan.FromSeconds(3);
+                return DateTime.Now;
+            });
+
+        // ...
+    }
+
+    public async Task OnGetCacheGetOrCreateAsync()
+    {
+        var cachedValue = await _memoryCache.GetOrCreateAsync(
+            CacheKeys.Entry,
+            cacheEntry =&gt;
+            {
+                cacheEntry.SlidingExpiration = TimeSpan.FromSeconds(3);
+                return Task.FromResult(DateTime.Now);
+            });
+
+        // ...
+    }
+    </code></pre></div></figure>
+<p>The following code calls the <code>Get</code> method to fetch the cached time:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">        var cacheEntry = _memoryCache.Get&lt;DateTime?&gt;(CacheKeys.Entry);
+        </code></pre></div></figure>
+<p>The following code gets or creates a cached item with absolute expiration:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">        var cachedValue = _memoryCache.GetOrCreate(
+            CacheKeys.Entry,
+            cacheEntry =&gt;
+            {
+                cacheEntry.AbsoluteExpirationRelativeToNow = TimeSpan.FromSeconds(20);
+                return DateTime.Now;
+            });
+        </code></pre></div></figure>
+<p>A cached item set with only a sliding expiration is at risk of never expiring. If the cached item is repeatedly accessed within the sliding expiration interval, the item never expires. Combining a sliding expiration with an absolute expiration guarantees the item expires. The absolute expiration sets an upper bound on how long the item can be cached. It still allows the item to expire earlier, if the item isn&#39;t requested within the sliding expiration interval. If either the sliding expiration interval <em>or</em> the absolute expiration time passes, the item is evicted from the cache.</p>
+<p>The following code gets or creates a cached item with both sliding <em>and</em> absolute expiration:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">        var cachedValue = _memoryCache.GetOrCreate(
+            CacheKeys.CallbackEntry,
+            cacheEntry =&gt;
+            {
+                cacheEntry.SlidingExpiration = TimeSpan.FromSeconds(3);
+                cacheEntry.AbsoluteExpirationRelativeToNow = TimeSpan.FromSeconds(20);
+                return DateTime.Now;
+            });
+        </code></pre></div></figure>
+<p>The preceding code guarantees the data isn&#39;t cached longer than the absolute time.</p>
+<p><code>GetOrCreate</code>, <code>GetOrCreateAsync</code>, and <code>Get</code> are extension methods in the <code>CacheExtensions</code> class. These methods extend the capability of <code>IMemoryCache</code>.</p>
+<h2 id="create-memorycacheentryoptions-for-an-entry">Create MemoryCacheEntryOptions for an entry</h2>
+<p>The following example demonstrates how to create <code>MemoryCacheEntryOptions</code> for an entry. The code completes the following tasks:</p>
+<ul>
+<li><p>Sets the cache priority to <code>NeverRemove?displayProperty=nameWithType</code>.</p>
+</li>
+<li><p>Sets a <code>PostEvictionDelegate</code> to call after the entry is evicted from the cache. The callback runs on a different thread from the code that removes the item from the cache.</p>
+</li>
+</ul>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">    public void OnGetCacheRegisterPostEvictionCallback()
+    {
+        var memoryCacheEntryOptions = new MemoryCacheEntryOptions()
+            .SetPriority(CacheItemPriority.NeverRemove)
+            .RegisterPostEvictionCallback(PostEvictionCallback, _memoryCache);
+
+        _memoryCache.Set(CacheKeys.CallbackEntry, DateTime.Now, memoryCacheEntryOptions);
+    }
+
+    private static void PostEvictionCallback(
+        object cacheKey, object cacheValue, EvictionReason evictionReason, object state)
+    {
+        var memoryCache = (IMemoryCache)state;
+
+        memoryCache.Set(
+            CacheKeys.CallbackMessage,
+            $&quot;Entry {cacheKey} was evicted: {evictionReason}.&quot;);
+    }
+    </code></pre></div></figure>
+<h2 id="limit-cache-size-with-setsize-size-and-sizelimit">Limit cache size with SetSize, Size, and SizeLimit</h2>
+<p>A <code>MemoryCache</code> instance can optionally specify and enforce a size limit. The cache size limit doesn&#39;t have a defined unit of measure because the cache has no mechanism to measure the size of entries. If the cache size limit is set, all entries must specify size. The ASP.NET Core runtime doesn&#39;t limit cache size based on memory pressure. It&#39;s up to the developer to limit cache size. The size specified is in units the developer chooses.</p>
+<p>For example:</p>
+<ul>
+<li>If the web app primarily caches strings, each cache entry size might be the string length.</li>
+<li>The app can specify the size of all entries as 1, and the size limit is the count of entries.</li>
+</ul>
+<p>If the <code>SizeLimit</code> property isn&#39;t set, the cache grows without bound. The ASP.NET Core runtime doesn&#39;t trim the cache when system memory is low. Apps must be architected to:</p>
+<ul>
+<li>Limit cache growth.</li>
+<li>Call the <code>Compact</code> or <code>Remove</code> method when available memory is limited.</li>
+</ul>
+<p>The following code creates a unitless fixed-size <code>MemoryCache</code> instance that&#39;s accessible by <a href="#/doc/aspnet/fundamentals/dependency-injection">dependency injection</a>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">public class MyMemoryCache
+{
+    public MemoryCache Cache { get; } = new MemoryCache(
+        new MemoryCacheOptions
+        {
+            SizeLimit = 1024
+        });
+}</code></pre></div></figure>
+<p>The <code>SizeLimit</code> property doesn&#39;t have units. Cached entries must specify size in whatever units they consider most appropriate when the cache size limit is set. All users of a cache instance should use the same unit system. An entry isn&#39;t cached if the sum of the cached entry sizes exceeds the value specified by <code>SizeLimit</code>. If no cache size limit is set, the cache size set on the entry is ignored.</p>
+<p>The following code registers the <code>MyMemoryCache</code> instance with the <a href="#/doc/aspnet/fundamentals/dependency-injection">dependency injection</a> container:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">        var builder = WebApplication.CreateBuilder(args);
+
+        // Add services to the container.
+        builder.Services.AddSingleton();
+        </code></pre></div></figure>
+<p><code>MyMemoryCache</code> is created as an independent memory cache for components that are aware of this size-limited cache and know how to set cache entry size appropriately.</p>
+<p>The size of the cache entry can be set by using the <code>SetSize</code> extension method or the <code>Size</code> property:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">        if (!_myMemoryCache.Cache.TryGetValue(CacheKeys.Entry, out DateTime cacheValue))
+        {
+            var cacheEntryOptions = new MemoryCacheEntryOptions()
+                .SetSize(1);
+
+            // cacheEntryOptions.Size = 1;
+
+            _myMemoryCache.Cache.Set(CacheKeys.Entry, cacheValue, cacheEntryOptions);
+        }
+        </code></pre></div></figure>
+<p>In the preceding code, the two highlighted lines achieve the same result of setting the size of the cache entry. The <code>SetSize</code> method is provided for convenience when chaining calls onto <code>new MemoryCacheOptions()</code>.</p>
+<h3 id="remove-cache-items-with-memorycachecompact">Remove cache items with MemoryCache.Compact</h3>
+<p>The <code>MemoryCache.Compact</code> method attempts to remove the specified percentage of the cache in the following order:</p>
+<ul>
+<li>All expired items</li>
+<li>Items by priority, where lowest priority items are removed first</li>
+<li>Least recently used objects</li>
+<li>Items with the earliest absolute expiration</li>
+<li>Items with the earliest sliding expiration</li>
+</ul>
+<p>Pinned items with priority <code>NeverRemove</code> are <a target="_blank" rel="noopener" href="https://github.com/dotnet/runtime/blob/release/6.0/src/libraries/Microsoft.Extensions.Caching.Memory/src/MemoryCache.cs#L415-L430">never removed</a>. The following code removes a cache item and calls the <code>Compact</code> method to remove 25% of cached entries:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">        _myMemoryCache.Cache.Remove(CacheKeys.Entry);
+        _myMemoryCache.Cache.Compact(.25);
+        </code></pre></div></figure>
+<p>For more information, see the <a target="_blank" rel="noopener" href="https://github.com/dotnet/runtime/blob/release/6.0/src/libraries/Microsoft.Extensions.Caching.Memory/src/MemoryCache.cs#L382-L393">Compact source on GitHub</a>.</p>
+<h2 id="evict-a-cache-entry-with-expired-dependencies">Evict a cache entry with expired dependencies</h2>
+<p>The following sample shows how to expire a cache entry if a dependent entry expires. A <code>CancellationChangeToken</code> is added to the cached item. When the <code>Cancel</code> method is called on the <code>CancellationTokenSource</code> object, both cache entries are evicted:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">    public void OnGetCacheCreateDependent()
+    {
+        var cancellationTokenSource = new CancellationTokenSource();
+
+        _memoryCache.Set(
+            CacheKeys.DependentCancellationTokenSource,
+            cancellationTokenSource);
+
+        using var parentCacheEntry = _memoryCache.CreateEntry(CacheKeys.Parent);
+
+        parentCacheEntry.Value = DateTime.Now;
+
+        _memoryCache.Set(
+            CacheKeys.Child,
+            DateTime.Now,
+            new CancellationChangeToken(cancellationTokenSource.Token));
+    }
+
+    public void OnGetCacheRemoveDependent()
+    {
+        var cancellationTokenSource = _memoryCache.Get(
+            CacheKeys.DependentCancellationTokenSource);
+
+        cancellationTokenSource.Cancel();
+    }
+    </code></pre></div></figure>
+<p>When you use a <code>CancellationTokenSource</code> object, you can evict multiple cache entries as a group. With the <code>using</code> pattern in the preceding code, cache entries created inside the <code>using</code> scope inherit triggers and expiration settings.</p>
+<h2 id="review-notes-about-in-memory-caching">Review notes about in-memory caching</h2>
+<p>The following notes apply to in-memory caching:</p>
+<ul>
+<li><p>Expiration doesn&#39;t happen in the background.</p>
+<p>There&#39;s no timer that actively scans the cache for expired items. Any activity on the cache (via <code>Get</code>, <code>TryGetValue</code>, <code>Set</code>, or <code>Remove</code>) can trigger a background scan for expired items. A timer set on the <code>CancellationTokenSource</code> object (by using the <code>CancelAfter</code> method) also removes the entry and triggers a scan for expired items.</p>
+<p>The following example uses the <code>TimeSpan)</code> overloaded constructor for the registered token. When this token fires, it removes the entry immediately and fires the eviction callbacks:</p>
+</li>
+</ul>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">        if (!_memoryCache.TryGetValue(CacheKeys.Entry, out DateTime cacheValue))
+        {
+            cacheValue = DateTime.Now;
+
+            var cancellationTokenSource = new CancellationTokenSource(
+                TimeSpan.FromSeconds(10));
+
+            var cacheEntryOptions = new MemoryCacheEntryOptions()
+                .AddExpirationToken(
+                    new CancellationChangeToken(cancellationTokenSource.Token))
+                .RegisterPostEvictionCallback((key, value, reason, state) =&gt;
+                {
+                    ((CancellationTokenSource)state).Dispose();
+                }, cancellationTokenSource);
+
+            _memoryCache.Set(CacheKeys.Entry, cacheValue, cacheEntryOptions);
+        }
+        </code></pre></div></figure>
+<ul>
+<li><p>When you use a callback to repopulate a cache item:</p>
+<ul>
+<li>Multiple requests might discover the cached key value is empty because the callback isn&#39;t finished.</li>
+<li>This approach can result in several threads repopulating the cached item.</li>
+</ul>
+</li>
+<li><p>When one cache entry (the parent) creates another entry (the child), the child copies the parent entry&#39;s expiration tokens and time-based expiration settings. The child doesn&#39;t expire by manual removal or updating of the parent entry.</p>
+</li>
+<li><p>Use the <code>PostEvictionCallbacks</code> property to specify which callbacks should fire after a cache entry is evicted from the cache. </p>
+</li>
+<li><p>For most apps, <code>IMemoryCache</code> is enabled. For example, calling <code>AddMvc</code>, <code>AddControllersWithViews</code>, <code>AddRazorPages</code>, <code>AddMvcCore().AddRazorViewEngine</code>, and many other <code>Add{Service}</code> methods in the <em>Program.cs</em> file enables <code>IMemoryCache</code>.</p>
+<p>For apps that don&#39;t call one of the mentioned <code>Add{Service}</code> methods, you might need to call the <code>AddMemoryCache</code> method in the <em>Program.cs</em> file.</p>
+</li>
+<li><p><code>MemoryCache</code> is thread-safe and can be used concurrently across multiple threads.</p>
+</li>
+<li><p>Accessing the <code>Count</code> property is computationally expensive under high concurrency because it requires aggregating items across internal partitions. Avoid accessing <code>Count</code> frequently in performance-sensitive request paths.</p>
+</li>
+<li><p><code>GetOrCreate</code> and <code>GetOrCreateAsync</code> aren&#39;t atomic. When several requests miss the same key at the same time, each request runs the factory, and the last value written is the one that stays in the cache. For an expensive data source, this can cause a burst of duplicate calls. To run the factory only once per key, use <a href="#/doc/aspnet/performance/caching/hybrid"><code>HybridCache</code></a>, which provides stampede protection.</p>
+</li>
+<li><p>The cache stores references to objects, not copies. If code changes an object after reading it from the cache, every caller that reads that entry sees the change. Cache immutable objects, or copy an object before changing it.</p>
+</li>
+</ul>
+<h2 id="use-a-background-cache-update">Use a background cache update</h2>
+<p>Use a <a href="#/doc/aspnet/fundamentals/host/hosted-services">background service</a> such as the <code>IHostedService</code> interface to update the cache. The background service can recompute the entries and assign them to the cache only after they&#39;re ready.</p>
+<h2 id="related-content">Related content</h2>
+<ul>
+<li><a target="_blank" rel="noopener" href="https://github.com/dotnet/AspNetCore.Docs/tree/main/aspnetcore/performance/caching/memory/samples/">View or download sample code</a> (<a href="#/doc/aspnet/fundamentals/index@how-to-download-a-sample">how to download</a>)</li>
+<li><a href="#/doc/aspnet/fundamentals/change-tokens">Detect changes with change tokens in ASP.NET Core</a></li>
+<li><a href="#/doc/aspnet/performance/caching/response">Response caching in ASP.NET Core</a></li>
+</ul>
+<p>:::moniker-end</p>
+<p>:::moniker range=&quot;&lt; aspnetcore-6.0&quot;</p>
+<p><a target="_blank" rel="noopener" href="https://github.com/dotnet/AspNetCore.Docs/tree/main/aspnetcore/performance/caching/memory/samples/">View or download sample code</a> (<a href="#/doc/aspnet/fundamentals/index@how-to-download-a-sample">how to download</a>)</p>
+<h2 id="caching-basics">Caching basics</h2>
+<p>Caching can significantly improve the performance and scalability of an app by reducing the work required to generate content. Caching works best with data that changes infrequently <strong>and</strong> is expensive to generate. Caching makes a copy of data that can be returned much faster than from the source. Apps should be written and tested to <strong>never</strong> depend on cached data.</p>
+<p>ASP.NET Core supports several different caches. The simplest cache is based on the <code>IMemoryCache</code>. <code>IMemoryCache</code> represents a cache stored in the memory of the web server. Apps running on a server farm (multiple servers) should ensure sessions are sticky when using the in-memory cache. Sticky sessions ensure that subsequent requests from a client all go to the same server. For example, Azure Web apps use <a href="/iis/extensions/planning-for-arr/application-request-routing-version-2-overview">Application Request Routing</a> (ARR) to route all subsequent requests to the same server.</p>
+<p>Non-sticky sessions in a web farm require a <a href="#/doc/aspnet/performance/caching/distributed">distributed cache</a> to avoid cache consistency problems. For some apps, a distributed cache can support higher scale-out than an in-memory cache. Using a distributed cache offloads the cache memory to an external process.</p>
+<p>The in-memory cache can store any object. The distributed cache interface is limited to <code>byte[]</code>. The in-memory and distributed cache store cache items as key-value pairs.</p>
+<h2 id="systemruntimecachingmemorycache">System.Runtime.Caching/MemoryCache</h2>
+<p><code>Caching</code>/<code>MemoryCache</code> (<a target="_blank" rel="noopener" href="https://www.nuget.org/packages/System.Runtime.Caching/">NuGet package</a>) can be used with:</p>
+<ul>
+<li>.NET Standard 2.0 or later.</li>
+<li>Any <a href="/dotnet/standard/net-standard#net-implementation-support">.NET implementation</a> that targets .NET Standard 2.0 or later. For example, ASP.NET Core 3.1 or later.</li>
+<li>.NET Framework 4.5 or later.</li>
+</ul>
+<p><a target="_blank" rel="noopener" href="https://www.nuget.org/packages/Microsoft.Extensions.Caching.Memory/">Microsoft.Extensions.Caching.Memory</a>/<code>IMemoryCache</code> (described in this article) is recommended over <code>System.Runtime.Caching</code>/<code>MemoryCache</code> because it&#39;s better integrated into ASP.NET Core. For example, <code>IMemoryCache</code> works natively with ASP.NET Core <a href="#/doc/aspnet/fundamentals/dependency-injection">dependency injection</a>.</p>
+<p>Use <code>System.Runtime.Caching</code>/<code>MemoryCache</code> as a compatibility bridge when porting code from ASP.NET 4.x to ASP.NET Core.</p>
+<h2 id="cache-guidelines">Cache guidelines</h2>
+<ul>
+<li>Code should always have a fallback option to fetch data and <strong>not</strong> depend on a cached value being available.</li>
+<li>The cache uses a scarce resource, memory. Limit cache growth:<ul>
+<li>Do <strong>not</strong> use external input as cache keys.</li>
+<li>Use expirations to limit cache growth.</li>
+<li><a href="#use-setsize-size-and-sizelimit-to-limit-cache-size">Use SetSize, Size, and SizeLimit to limit cache size</a>. The ASP.NET Core runtime does <strong>not</strong> limit cache size based on memory pressure. It&#39;s up to the developer to limit cache size.</li>
+</ul>
+</li>
+</ul>
+<h2 id="use-imemorycache">Use IMemoryCache</h2>
+<aside class="callout callout-warning"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 4 2.8 20h18.4L12 4z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M12 10v4.4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="17" r="1.3" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Warning</p><p>Using a <em>shared</em> memory cache from <a href="#/doc/aspnet/fundamentals/dependency-injection">Dependency Injection</a> and calling <code>SetSize</code>, <code>Size</code>, or <code>SizeLimit</code> to limit cache size can cause the app to fail. When a size limit is set on a cache, all entries must specify a size when being added. This can lead to issues since developers may not have full control on what uses the shared cache.
+When using <code>SetSize</code>, <code>Size</code>, or <code>SizeLimit</code> to limit cache, create a cache singleton for caching. For more information and an example, see <a href="#use-setsize-size-and-sizelimit-to-limit-cache-size">Use SetSize, Size, and SizeLimit to limit cache size</a>.
+A shared cache is one shared by other frameworks or libraries.</p>
+</div></aside>
+<p>In-memory caching is a <em>service</em> that&#39;s referenced from an app using <a href="#/doc/aspnet/fundamentals/dependency-injection">Dependency Injection</a>. Request the <code>IMemoryCache</code> instance in the constructor:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">public class HomeController : Controller
+{
+    private IMemoryCache _cache;
+
+    public HomeController(IMemoryCache memoryCache)
+    {
+        _cache = memoryCache;
+    }
+    </code></pre></div></figure>
+<p>The following code uses <code>TryGetValue</code> to check if a time is in the cache. If a time isn&#39;t cached, a new entry is created and added to the cache with <code>Set</code>. The <code>CacheKeys</code> class is part of the download sample.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">public static class CacheKeys
+{
+    public static string Entry =&gt; &quot;_Entry&quot;;
+    public static string CallbackEntry =&gt; &quot;_Callback&quot;;
+    public static string CallbackMessage =&gt; &quot;_CallbackMessage&quot;;
+    public static string Parent =&gt; &quot;_Parent&quot;;
+    public static string Child =&gt; &quot;_Child&quot;;
+    public static string DependentMessage =&gt; &quot;_DependentMessage&quot;;
+    public static string DependentCTS =&gt; &quot;_DependentCTS&quot;;
+    public static string Ticks =&gt; &quot;_Ticks&quot;;
+    public static string CancelMsg =&gt; &quot;_CancelMsg&quot;;
+    public static string CancelTokenSource =&gt; &quot;_CancelTokenSource&quot;;
+}</code></pre></div></figure>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">    public IActionResult CacheTryGetValueSet()
+    {
+        DateTime cacheEntry;
+
+        // Look for cache key.
+        if (!_cache.TryGetValue(CacheKeys.Entry, out cacheEntry))
+        {
+            // Key not in cache, so get data.
+            cacheEntry = DateTime.Now;
+
+            // Set cache options.
+            var cacheEntryOptions = new MemoryCacheEntryOptions()
+                // Keep in cache for this time, reset time if accessed.
+                .SetSlidingExpiration(TimeSpan.FromSeconds(3));
+
+            // Save data in cache.
+            _cache.Set(CacheKeys.Entry, cacheEntry, cacheEntryOptions);
+        }
+
+        return View(&quot;Cache&quot;, cacheEntry);
+    }
+    </code></pre></div></figure>
+<p>The current time and the cached time are displayed:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">﻿@model DateTime?
+
+&lt;div&gt;
+    &lt;h2&gt;Actions&lt;/h2&gt;
+    &lt;ul&gt;
+        &lt;li&gt;&lt;a asp-controller=&quot;Home&quot; asp-action=&quot;CacheTryGetValueSet&quot;&gt;TryGetValue and Set&lt;/a&gt;&lt;/li&gt;
+        &lt;li&gt;&lt;a asp-controller=&quot;Home&quot; asp-action=&quot;CacheGet&quot;&gt;Get&lt;/a&gt;&lt;/li&gt;
+        &lt;li&gt;&lt;a asp-controller=&quot;Home&quot; asp-action=&quot;CacheGetOrCreate&quot;&gt;GetOrCreate&lt;/a&gt;&lt;/li&gt;
+        &lt;li&gt;&lt;a asp-controller=&quot;Home&quot; asp-action=&quot;CacheGetOrCreateAsynchronous&quot;&gt;CacheGetOrCreateAsynchronous&lt;/a&gt;&lt;/li&gt;
+        &lt;li&gt;&lt;a asp-controller=&quot;Home&quot; asp-action=&quot;CacheRemove&quot;&gt;Remove&lt;/a&gt;&lt;/li&gt;
+        &lt;li&gt;&lt;a asp-controller=&quot;Home&quot; asp-action=&quot;CacheGetOrCreateAbs&quot;&gt;CacheGetOrCreateAbs&lt;/a&gt;&lt;/li&gt;
+        &lt;li&gt;&lt;a asp-controller=&quot;Home&quot; asp-action=&quot;CacheGetOrCreateAbsSliding&quot;&gt;CacheGetOrCreateAbsSliding&lt;/a&gt;&lt;/li&gt;
+
+    &lt;/ul&gt;
+&lt;/div&gt;
+
+&lt;h3&gt;Current Time: @DateTime.Now.TimeOfDay.ToString()&lt;/h3&gt;
+&lt;h3&gt;Cached Time: @(Model == null ? &quot;No cached entry found&quot; : Model.Value.TimeOfDay.ToString())&lt;/h3&gt;</code></pre></div></figure>
+<p>The following code uses the <code>Set</code> extension method to cache data for a relative time without creating the <code>MemoryCacheEntryOptions</code> object:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">    public IActionResult SetCacheRelativeExpiration()
+    {
+        DateTime cacheEntry;
+
+        // Look for cache key.
+        if (!_cache.TryGetValue(CacheKeys.Entry, out cacheEntry))
+        {
+            // Key not in cache, so get data.
+            cacheEntry = DateTime.Now;
+
+            // Save data in cache and set the relative expiration time to one day
+            _cache.Set(CacheKeys.Entry, cacheEntry, TimeSpan.FromDays(1));
+        }
+
+        return View(&quot;Cache&quot;, cacheEntry);
+    }
+    </code></pre></div></figure>
+<p>The cached <code>DateTime</code> value remains in the cache while there are requests within the timeout period.</p>
+<p>The following code uses <code>GetOrCreate</code> and <code>GetOrCreateAsync</code> to cache data.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">    public IActionResult CacheGetOrCreate()
+    {
+        var cacheEntry = _cache.GetOrCreate(CacheKeys.Entry, entry =&gt;
+        {
+            entry.SlidingExpiration = TimeSpan.FromSeconds(3);
+            return DateTime.Now;
+        });
+
+        return View(&quot;Cache&quot;, cacheEntry);
+    }
+
+    public async Task CacheGetOrCreateAsynchronous()
+    {
+        var cacheEntry = await
+            _cache.GetOrCreateAsync(CacheKeys.Entry, entry =&gt;
+            {
+                entry.SlidingExpiration = TimeSpan.FromSeconds(3);
+                return Task.FromResult(DateTime.Now);
+            });
+
+        return View(&quot;Cache&quot;, cacheEntry);
+    }
+    </code></pre></div></figure>
+<p>The following code calls <code>Get</code> to fetch the cached time:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">    public IActionResult CacheGet()
+    {
+        var cacheEntry = _cache.Get&lt;DateTime?&gt;(CacheKeys.Entry);
+        return View(&quot;Cache&quot;, cacheEntry);
+    }
+    </code></pre></div></figure>
+<p>The following code gets or creates a cached item with absolute expiration:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">    public IActionResult CacheGetOrCreateAbs()
+    {
+        var cacheEntry = _cache.GetOrCreate(CacheKeys.Entry, entry =&gt;
+        {
+            entry.AbsoluteExpirationRelativeToNow = TimeSpan.FromSeconds(10);
+            return DateTime.Now;
+        });
+
+        return View(&quot;Cache&quot;, cacheEntry);
+    }
+    </code></pre></div></figure>
+<p>A cached item set with only a sliding expiration is at risk of never expiring. If the cached item is repeatedly accessed within the sliding expiration interval, the item never expires. Combine a sliding expiration with an absolute expiration to guarantee the item expires. The absolute expiration sets an upper bound on how long the item can be cached while still allowing the item to expire earlier if it isn&#39;t requested within the sliding expiration interval. If either the sliding expiration interval <em>or</em> the absolute expiration time pass, the item is evicted from the cache.</p>
+<p>The following code gets or creates a cached item with both sliding <em>and</em> absolute expiration:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">    public IActionResult CacheGetOrCreateAbsSliding()
+    {
+        var cacheEntry = _cache.GetOrCreate(CacheKeys.Entry, entry =&gt;
+        {
+            entry.SetSlidingExpiration(TimeSpan.FromSeconds(3));
+            entry.AbsoluteExpirationRelativeToNow = TimeSpan.FromSeconds(20);
+            return DateTime.Now;
+        });
+
+        return View(&quot;Cache&quot;, cacheEntry);
+    }
+    </code></pre></div></figure>
+<p>The preceding code guarantees the data will not be cached longer than the absolute time.</p>
+<p><code>GetOrCreate</code>, <code>GetOrCreateAsync</code>, and <code>Get</code> are extension methods in the <code>CacheExtensions</code> class. These methods extend the capability of <code>IMemoryCache</code>.</p>
+<h2 id="memorycacheentryoptions"><code>MemoryCacheEntryOptions</code></h2>
+<p>The following sample:</p>
+<ul>
+<li>Sets a sliding expiration time. Requests that access this cached item will reset the sliding expiration clock.</li>
+<li>Sets the cache priority to <code>NeverRemove?displayProperty=nameWithType</code>.</li>
+<li>Sets a <code>PostEvictionDelegate</code> that will be called after the entry is evicted from the cache. The callback is run on a different thread from the code that removes the item from the cache.</li>
+</ul>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">    public IActionResult CreateCallbackEntry()
+    {
+        var cacheEntryOptions = new MemoryCacheEntryOptions()
+            // Pin to cache.
+            .SetPriority(CacheItemPriority.NeverRemove)
+            // Add eviction callback
+            .RegisterPostEvictionCallback(callback: EvictionCallback, state: this);
+
+        _cache.Set(CacheKeys.CallbackEntry, DateTime.Now, cacheEntryOptions);
+
+        return RedirectToAction(&quot;GetCallbackEntry&quot;);
+    }
+
+    public IActionResult GetCallbackEntry()
+    {
+        return View(&quot;Callback&quot;, new CallbackViewModel
+        {
+            CachedTime = _cache.Get&lt;DateTime?&gt;(CacheKeys.CallbackEntry),
+            Message = _cache.Get&lt;string&gt;(CacheKeys.CallbackMessage)
+        });
+    }
+
+    public IActionResult RemoveCallbackEntry()
+    {
+        _cache.Remove(CacheKeys.CallbackEntry);
+        return RedirectToAction(&quot;GetCallbackEntry&quot;);
+    }
+
+    private static void EvictionCallback(object key, object value,
+        EvictionReason reason, object state)
+    {
+        var message = $&quot;Entry was evicted. Reason: {reason}.&quot;;
+        ((HomeController)state)._cache.Set(CacheKeys.CallbackMessage, message);
+    }
+    </code></pre></div></figure>
+<h2 id="use-setsize-size-and-sizelimit-to-limit-cache-size">Use SetSize, Size, and SizeLimit to limit cache size</h2>
+<p>A <code>MemoryCache</code> instance may optionally specify and enforce a size limit. The cache size limit does not have a defined unit of measure because the cache has no mechanism to measure the size of entries. If the cache size limit is set, all entries must specify size. The ASP.NET Core runtime does not limit cache size based on memory pressure. It&#39;s up to the developer to limit cache size. The size specified is in units the developer chooses.</p>
+<p>For example:</p>
+<ul>
+<li>If the web app was primarily caching strings, each cache entry size could be the string length.</li>
+<li>The app could specify the size of all entries as 1, and the size limit is the count of entries.</li>
+</ul>
+<p>If <code>SizeLimit</code> isn&#39;t set, the cache grows without bound. The ASP.NET Core runtime doesn&#39;t trim the cache when system memory is low. Apps must be architected to:</p>
+<ul>
+<li>Limit cache growth.</li>
+<li>Call <code>Compact</code> or <code>Remove</code> when available memory is limited:</li>
+</ul>
+<p>The following code creates a unitless fixed size <code>MemoryCache</code> accessible by <a href="#/doc/aspnet/fundamentals/dependency-injection">dependency injection</a>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">    // using Microsoft.Extensions.Caching.Memory;
+    public class MyMemoryCache 
+    {
+        public MemoryCache Cache { get; private set; }
+        public MyMemoryCache()
+        {
+            Cache = new MemoryCache(new MemoryCacheOptions
+            {
+                SizeLimit = 1024
+            });
+        }
+    }
+    </code></pre></div></figure>
+<p><code>SizeLimit</code> does not have units. Cached entries must specify size in whatever units they deem most appropriate if the cache size limit has been set. All users of a cache instance should use the same unit system. An entry will not be cached if the sum of the cached entry sizes exceeds the value specified by <code>SizeLimit</code>. If no cache size limit is set, the cache size set on the entry will be ignored.</p>
+<p>The following code registers <code>MyMemoryCache</code> with the <a href="#/doc/aspnet/fundamentals/dependency-injection">dependency injection</a> container.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">        public void ConfigureServices(IServiceCollection services)
+        {
+            services.AddRazorPages();
+            services.AddSingleton();
+        }
+        </code></pre></div></figure>
+<p><code>MyMemoryCache</code> is created as an independent memory cache for components that are aware of this size limited cache and know how to set cache entry size appropriately.</p>
+<p>The following code uses <code>MyMemoryCache</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">    public class SetSize : PageModel
+    {
+        private MemoryCache _cache;
+        public static readonly string MyKey = &quot;_MyKey&quot;;
+
+        public SetSize(MyMemoryCache memoryCache)
+        {
+            _cache = memoryCache.Cache;
+        }
+
+        [TempData]
+        public string DateTime_Now { get; set; }
+
+        // &lt;snippet2&gt;
+        public IActionResult OnGet()
+        {
+            if (!_cache.TryGetValue(MyKey, out string cacheEntry))
+            {
+                // Key not in cache, so get data.
+                cacheEntry = DateTime.Now.TimeOfDay.ToString();
+
+                var cacheEntryOptions = new MemoryCacheEntryOptions()
+                    // Set cache entry size by extension method.
+                    .SetSize(1)
+                    // Keep in cache for this time, reset time if accessed.
+                    .SetSlidingExpiration(TimeSpan.FromSeconds(3));
+
+                // Set cache entry size via property.
+                // cacheEntryOptions.Size = 1;
+
+                // Save data in cache.
+                _cache.Set(MyKey, cacheEntry, cacheEntryOptions);
+            }
+
+            DateTime_Now = cacheEntry;
+
+            return RedirectToPage(&quot;./Index&quot;);
+        }
+        // &lt;/snippet2&gt;
+    }
+    </code></pre></div></figure>
+<p>The size of the cache entry can be set by <code>Size</code> or the <code>SetSize</code> extension methods:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">        public IActionResult OnGet()
+        {
+            if (!_cache.TryGetValue(MyKey, out string cacheEntry))
+            {
+                // Key not in cache, so get data.
+                cacheEntry = DateTime.Now.TimeOfDay.ToString();
+
+                var cacheEntryOptions = new MemoryCacheEntryOptions()
+                    // Set cache entry size by extension method.
+                    .SetSize(1)
+                    // Keep in cache for this time, reset time if accessed.
+                    .SetSlidingExpiration(TimeSpan.FromSeconds(3));
+
+                // Set cache entry size via property.
+                // cacheEntryOptions.Size = 1;
+
+                // Save data in cache.
+                _cache.Set(MyKey, cacheEntry, cacheEntryOptions);
+            }
+
+            DateTime_Now = cacheEntry;
+
+            return RedirectToPage(&quot;./Index&quot;);
+        }
+        </code></pre></div></figure>
+<h3 id="memorycachecompact">MemoryCache.Compact</h3>
+<p><code>MemoryCache.Compact</code> attempts to remove the specified percentage of the cache in the following order:</p>
+<ul>
+<li>All expired items.</li>
+<li>Items by priority. Lowest priority items are removed first.</li>
+<li>Least recently used objects.</li>
+<li>Items with the earliest absolute expiration.</li>
+<li>Items with the earliest sliding expiration.</li>
+</ul>
+<p>Pinned items with priority <code>NeverRemove</code> are never removed. The following code removes a cache item and calls <code>Compact</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">            _cache.Remove(MyKey);
+
+            // Remove 33% of cached items.
+            _cache.Compact(.33);   
+            cache_size = _cache.Count;
+            </code></pre></div></figure>
+<p>For more information, see the <a target="_blank" rel="noopener" href="https://github.com/dotnet/extensions/blob/v3.0.0-preview8.19405.4/src/Caching/Memory/src/MemoryCache.cs#L382-L393">Compact source on GitHub</a>.</p>
+<h2 id="cache-dependencies">Cache dependencies</h2>
+<p>The following sample shows how to expire a cache entry if a dependent entry expires. A <code>CancellationChangeToken</code> is added to the cached item. When <code>Cancel</code> is called on the <code>CancellationTokenSource</code>, both cache entries are evicted.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">    public IActionResult CreateDependentEntries()
+    {
+        var cts = new CancellationTokenSource();
+        _cache.Set(CacheKeys.DependentCTS, cts);
+
+        using (var entry = _cache.CreateEntry(CacheKeys.Parent))
+        {
+            // expire this entry if the dependant entry expires.
+            entry.Value = DateTime.Now;
+            entry.RegisterPostEvictionCallback(DependentEvictionCallback, this);
+
+            _cache.Set(CacheKeys.Child,
+                DateTime.Now,
+                new CancellationChangeToken(cts.Token));
+        }
+
+        return RedirectToAction(&quot;GetDependentEntries&quot;);
+    }
+
+    public IActionResult GetDependentEntries()
+    {
+        return View(&quot;Dependent&quot;, new DependentViewModel
+        {
+            ParentCachedTime = _cache.Get&lt;DateTime?&gt;(CacheKeys.Parent),
+            ChildCachedTime = _cache.Get&lt;DateTime?&gt;(CacheKeys.Child),
+            Message = _cache.Get&lt;string&gt;(CacheKeys.DependentMessage)
+        });
+    }
+
+    public IActionResult RemoveChildEntry()
+    {
+        _cache.Get(CacheKeys.DependentCTS).Cancel();
+        return RedirectToAction(&quot;GetDependentEntries&quot;);
+    }
+
+    private static void DependentEvictionCallback(object key, object value,
+        EvictionReason reason, object state)
+    {
+        var message = $&quot;Parent entry was evicted. Reason: {reason}.&quot;;
+        ((HomeController)state)._cache.Set(CacheKeys.DependentMessage, message);
+    }
+    </code></pre></div></figure>
+<p>Using a <code>CancellationTokenSource</code> allows multiple cache entries to be evicted as a group. With the <code>using</code> pattern in the code above, cache entries created inside the <code>using</code> block will inherit triggers and expiration settings.</p>
+<h2 id="additional-notes">Additional notes</h2>
+<ul>
+<li>Expiration doesn&#39;t happen in the background. There is no timer that actively scans the cache for expired items. Any activity on the cache (<code>Get</code>, <code>Set</code>, <code>Remove</code>) can trigger a background scan for expired items. A timer on the <code>CancellationTokenSource</code> (<code>CancelAfter</code>) also removes the entry and triggers a scan for expired items. The following example uses <code>TimeSpan)</code> for the registered token. When this token fires it removes the entry immediately and fires the eviction callbacks:</li>
+</ul>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">    public IActionResult CacheAutoExpiringTryGetValueSet()
+    {
+        DateTime cacheEntry;
+
+        if (!_cache.TryGetValue(CacheKeys.Entry, out cacheEntry))
+        {
+            cacheEntry = DateTime.Now;
+
+            var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+
+            var cacheEntryOptions = new MemoryCacheEntryOptions()
+                .AddExpirationToken(new CancellationChangeToken(cts.Token));
+
+            _cache.Set(CacheKeys.Entry, cacheEntry, cacheEntryOptions);
+        }
+
+        return View(&quot;Cache&quot;, cacheEntry);
+    }
+    </code></pre></div></figure>
+<ul>
+<li>When using a callback to repopulate a cache item:<ul>
+<li>Multiple requests can find the cached key value empty because the callback hasn&#39;t completed.</li>
+<li>This can result in several threads repopulating the cached item.</li>
+</ul>
+</li>
+<li>When one cache entry is used to create another, the child copies the parent entry&#39;s expiration tokens and time-based expiration settings. The child isn&#39;t expired by manual removal or updating of the parent entry.</li>
+<li>Use <code>PostEvictionCallbacks</code> to set the callbacks that will be fired after the cache entry is evicted from the cache. In the example code, <code>Dispose?displayProperty=nameWithType</code> is called to release the unmanaged resources used by the <code>CancellationTokenSource</code>. However, the <code>CancellationTokenSource</code> is not disposed immediately because it is still being used by the cache entry. The <code>CancellationToken</code> is passed to <code>MemoryCacheEntryOptions</code> to create a cache entry that expires after a certain time. So <code>Dispose</code> should not be called until the cache entry is removed or expired. The example code calls the <code>RegisterPostEvictionCallback</code> method to register a callback that will be invoked when the cache entry is evicted, and it disposes the <code>CancellationTokenSource</code> in that callback.</li>
+<li>For most apps, <code>IMemoryCache</code> is enabled. For example, calling <code>AddMvc</code>, <code>AddControllersWithViews</code>, <code>AddRazorPages</code>, <code>AddMvcCore().AddRazorViewEngine</code>, and many other <code>Add{Service}</code> methods in <code>ConfigureServices</code>, enables <code>IMemoryCache</code>. For apps that are not calling one of the preceding <code>Add{Service}</code> methods, it may be necessary to call <code>AddMemoryCache</code> in <code>ConfigureServices</code>.</li>
+<li><code>MemoryCache</code> is thread-safe and can be used concurrently across multiple threads.</li>
+<li>Accessing the <code>Count</code> property is computationally expensive under high concurrency because it requires aggregating items across internal partitions. Avoid accessing <code>Count</code> frequently in performance-sensitive request paths.</li>
+</ul>
+<h2 id="background-cache-update">Background cache update</h2>
+<p>Use a <a href="#/doc/aspnet/fundamentals/host/hosted-services">background service</a> such as <code>IHostedService</code> to update the cache. The background service can recompute the entries and then assign them to the cache only when they&#39;re ready.</p>
+<h2 id="related-content">Related content</h2>
+<ul>
+<li><a href="#/doc/aspnet/performance/caching/distributed">Distributed caching in ASP.NET Core</a></li>
+<li><a href="#/doc/aspnet/fundamentals/change-tokens">Detect changes with change tokens in ASP.NET Core</a></li>
+<li><a href="#/doc/aspnet/performance/caching/response">Response caching in ASP.NET Core</a></li>
+<li><a href="#/doc/aspnet/performance/caching/middleware">Response caching middleware in ASP.NET Core</a></li>
+<li><a href="#/doc/aspnet/mvc/views/tag-helpers/built-in/cache-tag-helper">Cache Tag Helper in ASP.NET Core MVC</a></li>
+<li><a href="#/doc/aspnet/mvc/views/tag-helpers/built-in/distributed-cache-tag-helper">Distributed Cache Tag Helper in ASP.NET Core</a></li>
+</ul>
+<p>:::moniker-end</p>

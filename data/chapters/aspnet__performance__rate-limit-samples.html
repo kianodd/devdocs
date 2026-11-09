@@ -1,0 +1,320 @@
+<p>The following samples aren&#39;t production quality, they&#39;re examples on how to use the limiters.</p>
+<h2 id="limiter-with-onrejected-retryafter-and-globallimiter">Limiter with <code>OnRejected</code>, <code>RetryAfter</code>, and <code>GlobalLimiter</code></h2>
+<p>The following sample:</p>
+<ul>
+<li><p>Creates a <code>OnRejected?displayProperty=nameWithType</code> callback that&#39;s called when a request exceeds the specified limit. <code>retryAfter</code> can be used with the <code>TokenBucketRateLimiter</code>, Fixed Window Limiter, and Sliding Window Limiter because these algorithms are able to estimate when more permits are added. The <code>ConcurrencyLimiter</code> has no way of calculating when permits are available.</p>
+</li>
+<li><p>Adds the following limiters:</p>
+<ul>
+<li>A <code>SampleRateLimiterPolicy</code> that implements the <code>IRateLimiterPolicy1</code> interface. The <code>SampleRateLimiterPolicy</code> class is shown later in this article.</li>
+<li>A <code>SlidingWindowLimiter</code>:<ul>
+<li>With a partition for each authenticated user.</li>
+<li>One shared partition for all anonymous users.</li>
+</ul>
+</li>
+<li>A <code>GlobalLimiter</code> that&#39;s applied to all requests. The global limiter is executed first, followed by the endpoint-specific limiter, if one exists. The <code>GlobalLimiter</code> creates a partition for each <code>IPAddress</code>.</li>
+</ul>
+</li>
+</ul>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">// &lt;snippet&gt;
+using System.Globalization;
+using System.Net;
+using System.Threading.RateLimiting;
+using Microsoft.AspNetCore.Identity;
+using Microsoft.EntityFrameworkCore;
+using WebRateLimitAuth;
+using WebRateLimitAuth.Data;
+using WebRateLimitAuth.Models;
+
+var builder = WebApplication.CreateBuilder(args);
+
+var connectionString = builder.Configuration.GetConnectionString(&quot;DefaultConnection&quot;) ??
+    throw new InvalidOperationException(&quot;Connection string &#x27;DefaultConnection&#x27; not found.&quot;);
+builder.Services.AddDbContext(options =&gt;
+    options.UseSqlServer(connectionString));
+builder.Services.AddDatabaseDeveloperPageExceptionFilter();
+
+builder.Services.AddDefaultIdentity(options =&gt; options.SignIn.RequireConfirmedAccount = true)
+    .AddEntityFrameworkStores();
+
+builder.Services.Configure(
+    builder.Configuration.GetSection(MyRateLimitOptions.MyRateLimit));
+
+builder.Services.AddRazorPages();
+builder.Services.AddControllersWithViews();
+
+var userPolicyName = &quot;user&quot;;
+var helloPolicy = &quot;hello&quot;;
+var myOptions = new MyRateLimitOptions();
+builder.Configuration.GetSection(MyRateLimitOptions.MyRateLimit).Bind(myOptions);
+
+builder.Services.AddRateLimiter(limiterOptions =&gt;
+{
+    limiterOptions.OnRejected = (context, cancellationToken) =&gt;
+    {
+        if (context.Lease.TryGetMetadata(MetadataName.RetryAfter, out var retryAfter))
+        {
+            context.HttpContext.Response.Headers.RetryAfter =
+                ((int) retryAfter.TotalSeconds).ToString(NumberFormatInfo.InvariantInfo);
+        }
+
+        context.HttpContext.Response.StatusCode = StatusCodes.Status429TooManyRequests;
+        context.HttpContext.RequestServices.GetService()?
+            .CreateLogger(&quot;Microsoft.AspNetCore.RateLimitingMiddleware&quot;)
+            .LogWarning(&quot;OnRejected: {GetUserEndPoint}&quot;, GetUserEndPoint(context.HttpContext));
+
+        return new ValueTask();
+    };
+
+    limiterOptions.AddPolicy&lt;string, SampleRateLimiterPolicy&gt;(helloPolicy);
+    limiterOptions.AddPolicy(userPolicyName, context =&gt;
+    {
+        var username = &quot;anonymous user&quot;;
+        if (context.User.Identity?.IsAuthenticated is true)
+        {
+            username = context.User.Identity.Name;
+        }
+
+        return RateLimitPartition.GetSlidingWindowLimiter(username,
+            _ =&gt; new SlidingWindowRateLimiterOptions
+            {
+                PermitLimit = myOptions.PermitLimit,
+                QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
+                QueueLimit = myOptions.QueueLimit,
+                Window = TimeSpan.FromSeconds(myOptions.Window),
+                SegmentsPerWindow = myOptions.SegmentsPerWindow
+            });
+
+    });
+    
+    limiterOptions.GlobalLimiter = PartitionedRateLimiter.Create&lt;HttpContext, IPAddress&gt;(context =&gt;
+    {
+        IPAddress? remoteIpAddress = context.Connection.RemoteIpAddress;
+
+        if (!IPAddress.IsLoopback(remoteIpAddress!))
+        {
+            return RateLimitPartition.GetTokenBucketLimiter
+            (remoteIpAddress!, _ =&gt;
+                new TokenBucketRateLimiterOptions
+                {
+                    TokenLimit = myOptions.TokenLimit2,
+                    QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
+                    QueueLimit = myOptions.QueueLimit,
+                    ReplenishmentPeriod = TimeSpan.FromSeconds(myOptions.ReplenishmentPeriod),
+                    TokensPerPeriod = myOptions.TokensPerPeriod,
+                    AutoReplenishment = myOptions.AutoReplenishment
+                });
+        }
+
+        return RateLimitPartition.GetNoLimiter(IPAddress.Loopback);
+    });
+});
+
+var app = builder.Build();
+
+if (app.Environment.IsDevelopment())
+{
+    app.UseMigrationsEndPoint();
+}
+else
+{
+    app.UseExceptionHandler(&quot;/Error&quot;);
+    app.UseHsts();
+}
+
+app.UseHttpsRedirection();
+app.UseStaticFiles();
+
+app.UseRouting();
+
+app.UseAuthentication();
+app.UseRateLimiter(); // important to add after UseAuthentication because the limiter uses auth info
+app.UseAuthorization();
+
+app.MapRazorPages().RequireRateLimiting(userPolicyName);
+app.MapDefaultControllerRoute();
+
+static string GetUserEndPoint(HttpContext context) =&gt;
+   $&quot;User {context.User.Identity?.Name ?? &quot;Anonymous&quot;} endpoint:{context.Request.Path}&quot;
+   + $&quot; {context.Connection.RemoteIpAddress}&quot;;
+static string GetTicks() =&gt; (DateTime.Now.Ticks &amp; 0x11111).ToString(&quot;00000&quot;);
+
+app.MapGet(&quot;/a&quot;, (HttpContext context) =&gt; $&quot;{GetUserEndPoint(context)} {GetTicks()}&quot;)
+    .RequireRateLimiting(userPolicyName);
+
+app.MapGet(&quot;/b&quot;, (HttpContext context) =&gt; $&quot;{GetUserEndPoint(context)} {GetTicks()}&quot;)
+    .RequireRateLimiting(helloPolicy);
+
+app.MapGet(&quot;/c&quot;, (HttpContext context) =&gt; $&quot;{GetUserEndPoint(context)} {GetTicks()}&quot;);
+
+app.Run();
+// &lt;/snippet&gt;</code></pre></div></figure>
+<aside class="callout callout-warning"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 4 2.8 20h18.4L12 4z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M12 10v4.4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="17" r="1.3" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Warning</p><p>Creating partitions on client IP addresses makes the app vulnerable to Denial of Service Attacks which employ IP Source Address Spoofing. For more information, see <a target="_blank" rel="noopener" href="https://www.rfc-editor.org/info/bcp38">BCP 38 RFC 2827 Network Ingress Filtering: Defeating Denial of Service Attacks which employ IP Source Address Spoofing</a>.</p>
+</div></aside>
+<p>For the complete <code>Program.cs</code> file, see <a target="_blank" rel="noopener" href="https://github.com/dotnet/AspNetCore.Docs.Samples/blob/main/fundamentals/middleware/rate-limit/WebRateLimitAuth/Program.cs">the samples repository</a>.</p>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>Documentation links to .NET reference source usually load the repository&#39;s default branch, which represents the current development for the next release of .NET. To select a tag for a specific release, use the <strong>Switch branches or tags</strong> dropdown list.</p>
+</div></aside>
+<p>The <code>SampleRateLimiterPolicy</code> class</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">using System.Threading.RateLimiting;
+using Microsoft.AspNetCore.RateLimiting;
+using Microsoft.Extensions.Options;
+using WebRateLimitAuth.Models;
+
+namespace WebRateLimitAuth;
+
+// &lt;snippet&gt;
+public class SampleRateLimiterPolicy : IRateLimiterPolicy&lt;string&gt;
+{
+    private Func&lt;OnRejectedContext, CancellationToken, ValueTask&gt;? _onRejected;
+    private readonly MyRateLimitOptions _options;
+
+    public SampleRateLimiterPolicy(ILogger logger,
+                                   IOptions options)
+    {
+        _onRejected = (ctx, token) =&gt;
+        {
+            ctx.HttpContext.Response.StatusCode = StatusCodes.Status429TooManyRequests;
+            logger.LogWarning($&quot;Request rejected by {nameof(SampleRateLimiterPolicy)}&quot;);
+            return ValueTask.CompletedTask;
+        };
+        _options = options.Value;
+    }
+
+    public Func&lt;OnRejectedContext, CancellationToken, ValueTask&gt;? OnRejected =&gt; _onRejected;
+    // &lt;/snippet&gt;
+
+    public RateLimitPartition&lt;string&gt; GetPartition(HttpContext httpContext)
+    {
+        return RateLimitPartition.GetSlidingWindowLimiter(string.Empty,
+            _ =&gt; new SlidingWindowRateLimiterOptions
+            {
+                PermitLimit = _options.PermitLimit,
+                QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
+                QueueLimit = _options.QueueLimit,
+                Window = TimeSpan.FromSeconds(_options.Window),
+                SegmentsPerWindow = _options.SegmentsPerWindow
+            });
+    }
+}</code></pre></div></figure>
+<p>In the preceding code, <code>OnRejected</code> uses <code>OnRejectedContext</code> to set the response status to <a target="_blank" rel="noopener" href="https://developer.mozilla.org/docs/Web/HTTP/Status/429">429 Too Many Requests</a>. The default rejected status is <a target="_blank" rel="noopener" href="https://developer.mozilla.org/docs/Web/HTTP/Status/503">503 Service Unavailable</a>.</p>
+<h2 id="limiter-with-authorization">Limiter with authorization</h2>
+<p>The following sample uses JSON Web Tokens (JWT) and creates a partition with the JWT <a target="_blank" rel="noopener" href="https://github.com/dotnet/aspnetcore/blob/fd1891536f27e959d14a140ff9307b6a21191de9/src/Security/Authentication/JwtBearer/src/JwtBearerHandler.cs#L152-L158">access token</a>. In a production app, the JWT would typically be provided by a server acting as a Security token service (STS). For local development, the dotnet <a href="#/doc/aspnet/security/authentication/jwt-authn">user-jwts</a> command line tool can be used to create and manage app-specific local JWTs.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">using System.Threading.RateLimiting;
+using Microsoft.AspNetCore.Authentication;
+using Microsoft.Extensions.Primitives;
+using WebRateLimitAuth.Models;
+
+var builder = WebApplication.CreateBuilder(args);
+
+builder.Services.AddAuthorization();
+builder.Services.AddAuthentication(&quot;Bearer&quot;).AddJwtBearer();
+
+var myOptions = new MyRateLimitOptions();
+builder.Configuration.GetSection(MyRateLimitOptions.MyRateLimit).Bind(myOptions);
+var jwtPolicyName = &quot;jwt&quot;;
+
+builder.Services.AddRateLimiter(limiterOptions =&gt;
+{
+    limiterOptions.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+    limiterOptions.AddPolicy(policyName: jwtPolicyName, partitioner: httpContext =&gt;
+    {
+        var accessToken = httpContext.Features.Get()?
+                              .AuthenticateResult?.Properties?.GetTokenValue(&quot;access_token&quot;)?.ToString()
+                          ?? string.Empty;
+
+        if (!StringValues.IsNullOrEmpty(accessToken))
+        {
+            return RateLimitPartition.GetTokenBucketLimiter(accessToken, _ =&gt;
+                new TokenBucketRateLimiterOptions
+                {
+                    TokenLimit = myOptions.TokenLimit2,
+                    QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
+                    QueueLimit = myOptions.QueueLimit,
+                    ReplenishmentPeriod = TimeSpan.FromSeconds(myOptions.ReplenishmentPeriod),
+                    TokensPerPeriod = myOptions.TokensPerPeriod,
+                    AutoReplenishment = myOptions.AutoReplenishment
+                });
+        }
+
+        return RateLimitPartition.GetTokenBucketLimiter(&quot;Anon&quot;, _ =&gt;
+            new TokenBucketRateLimiterOptions
+            {
+                TokenLimit = myOptions.TokenLimit,
+                QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
+                QueueLimit = myOptions.QueueLimit,
+                ReplenishmentPeriod = TimeSpan.FromSeconds(myOptions.ReplenishmentPeriod),
+                TokensPerPeriod = myOptions.TokensPerPeriod,
+                AutoReplenishment = true
+            });
+    });
+});
+
+var app = builder.Build();
+
+app.UseAuthorization();
+app.UseRateLimiter();
+
+app.MapGet(&quot;/&quot;, () =&gt; &quot;Hello, World!&quot;);
+
+app.MapGet(&quot;/jwt&quot;, (HttpContext context) =&gt; $&quot;Hello {GetUserEndPointMethod(context)}&quot;)
+    .RequireRateLimiting(jwtPolicyName)
+    .RequireAuthorization();
+
+app.MapPost(&quot;/post&quot;, (HttpContext context) =&gt; $&quot;Hello {GetUserEndPointMethod(context)}&quot;)
+    .RequireRateLimiting(jwtPolicyName)
+    .RequireAuthorization();
+
+app.Run();
+
+static string GetUserEndPointMethod(HttpContext context) =&gt;
+    $&quot;Hello {context.User.Identity?.Name ?? &quot;Anonymous&quot;} &quot; +
+    $&quot;Endpoint:{context.Request.Path} Method: {context.Request.Method}&quot;;</code></pre></div></figure>
+<h2 id="limiter-with-concurrencylimiter-tokenbucketratelimiter-and-authorization">Limiter with <code>ConcurrencyLimiter</code>, <code>TokenBucketRateLimiter</code>, and authorization</h2>
+<p>The following sample:</p>
+<ul>
+<li>Adds a <code>ConcurrencyLimiter</code> with a policy name of <code>&quot;get&quot;</code> that is used on the Razor Pages.</li>
+<li>Adds a <code>TokenBucketRateLimiter</code> with a partition for each authorized user and a partition for all anonymous users.</li>
+<li>Sets RateLimiterOptions.RejectionStatusCode to <a target="_blank" rel="noopener" href="https://developer.mozilla.org/docs/Web/HTTP/Status/429">429 Too Many Requests</a>.</li>
+</ul>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">var getPolicyName = &quot;get&quot;;
+var postPolicyName = &quot;post&quot;;
+var myOptions = new MyRateLimitOptions();
+builder.Configuration.GetSection(MyRateLimitOptions.MyRateLimit).Bind(myOptions);
+
+builder.Services.AddRateLimiter(_ =&gt; _
+    .AddConcurrencyLimiter(policyName: getPolicyName, options =&gt;
+    {
+        options.PermitLimit = myOptions.PermitLimit;
+        options.QueueProcessingOrder = QueueProcessingOrder.OldestFirst;
+        options.QueueLimit = myOptions.QueueLimit;
+    })
+    .AddPolicy(policyName: postPolicyName, partitioner: httpContext =&gt;
+    {
+        string userName = httpContext.User.Identity?.Name ?? string.Empty;
+
+        if (!StringValues.IsNullOrEmpty(userName))
+        {
+            return RateLimitPartition.GetTokenBucketLimiter(userName, _ =&gt;
+                new TokenBucketRateLimiterOptions
+                {
+                    TokenLimit = myOptions.TokenLimit2,
+                    QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
+                    QueueLimit = myOptions.QueueLimit,
+                    ReplenishmentPeriod = TimeSpan.FromSeconds(myOptions.ReplenishmentPeriod),
+                    TokensPerPeriod = myOptions.TokensPerPeriod,
+                    AutoReplenishment = myOptions.AutoReplenishment
+                });
+        }
+
+        return RateLimitPartition.GetTokenBucketLimiter(&quot;Anon&quot;, _ =&gt;
+            new TokenBucketRateLimiterOptions
+            {
+                TokenLimit = myOptions.TokenLimit,
+                QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
+                QueueLimit = myOptions.QueueLimit,
+                ReplenishmentPeriod = TimeSpan.FromSeconds(myOptions.ReplenishmentPeriod),
+                TokensPerPeriod = myOptions.TokensPerPeriod,
+                AutoReplenishment = true
+            });
+    }));</code></pre></div></figure>
+<p>See <a target="_blank" rel="noopener" href="https://github.com/dotnet/AspNetCore.Docs.Samples/blob/main/fundamentals/middleware/rate-limit/WebRateLimitAuth/Program.cs#L145,L281">the samples repository for the complete <code>Program.cs</code></a> file.</p>

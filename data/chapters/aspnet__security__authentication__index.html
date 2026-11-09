@@ -1,0 +1,375 @@
+<p>:::moniker range=&quot;&gt;= aspnetcore-7.0&quot;</p>
+<p>By <a target="_blank" rel="noopener" href="https://github.com/mjrousos">Mike Rousos</a></p>
+<p>Authentication is the process of determining a user&#39;s identity. <a href="#/doc/aspnet/security/authorization/introduction">Authorization</a> is the process of determining whether a user has access to a resource. In ASP.NET Core, authentication is handled by the authentication service, <code>IAuthenticationService</code>, which is used by authentication <a href="#/doc/aspnet/fundamentals/middleware/index">middleware</a>. The authentication service uses registered authentication handlers to complete authentication-related actions. Examples of authentication-related actions include:</p>
+<ul>
+<li>Authenticating a user.</li>
+<li>Responding when an unauthenticated user tries to access a restricted resource.</li>
+</ul>
+<p>Configuring authentication doesn&#39;t automatically restrict access to endpoints. To <a href="#/doc/aspnet/security/authorization/policies@require-global-user-authentication">require authenticated users by default</a> in a server-side app, configure a fallback authorization policy.</p>
+<p>The registered authentication handlers and their configuration options are called &quot;schemes&quot;.</p>
+<p>Authentication schemes are specified by registering authentication services in <code>Program.cs</code>:</p>
+<ul>
+<li>By calling a scheme-specific extension method after a call to <code>AddAuthentication</code>, such as <code>AddJwtBearer</code> or <code>AddCookie</code>. These extension methods use <code>AddScheme?displayProperty=nameWithType</code> to register schemes with appropriate settings.</li>
+<li>Less commonly, by calling <code>AuthenticationBuilder.AddScheme</code> directly.</li>
+</ul>
+<p>For example, the following code registers authentication services and handlers for cookie and JWT bearer authentication schemes:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+    .AddJwtBearer(JwtBearerDefaults.AuthenticationScheme,
+        options =&gt; builder.Configuration.Bind(&quot;JwtSettings&quot;, options))
+    .AddCookie(CookieAuthenticationDefaults.AuthenticationScheme,
+        options =&gt; builder.Configuration.Bind(&quot;CookieSettings&quot;, options));</code></pre></div></figure>
+<p>The <code>AddAuthentication</code> parameter <code>AuthenticationScheme?displayProperty=nameWithType</code> is the name of the scheme to use by default when a specific scheme isn&#39;t requested.</p>
+<p>If multiple schemes are used, authorization policies (or authorization attributes) can <a href="#/doc/aspnet/security/authorization/authorize-with-a-specific-scheme">specify the authentication scheme (or schemes)</a> they depend on to authenticate the user. In the example above, the cookie authentication scheme could be used by specifying its name (<code>AuthenticationScheme?displayProperty=nameWithType</code> by default, though a different name could be provided when calling <code>AddCookie</code>).</p>
+<p>In some cases, the call to <code>AddAuthentication</code> is automatically made by other extension methods. For example, when using <a href="#/doc/aspnet/security/authentication/identity">ASP.NET Core Identity</a>, <code>AddAuthentication</code> is called internally.</p>
+<h2 id="multiple-calls-to-addauthentication">Multiple calls to <code>AddAuthentication</code></h2>
+<p>If <code>AddAuthentication</code> is called multiple times (for example, once directly in application startup and once internally by ASP.NET Core Identity):</p>
+<ul>
+<li><strong>Options configuration:</strong> Overloads of <code>AddAuthentication</code> that take a default scheme name or an <code>Action</code> delegate register options configuration actions that execute in registration order. The parameterless <code>AddAuthentication()</code> overload does not register a configuration delegate. Each configuration delegate overwrites only the specific properties it assigns. For example, when ASP.NET Core Identity configures specific scheme properties (such as <code>DefaultAuthenticateScheme</code> and <code>DefaultChallengeScheme</code>), a subsequent call to <code>AddAuthentication(JwtBearerDefaults.AuthenticationScheme)</code> only sets <code>DefaultScheme</code> and leaves Identity&#39;s <code>DefaultAuthenticateScheme</code> and <code>DefaultChallengeScheme</code> in effect. To override defaults set by an earlier registration like Identity, explicitly configure the corresponding properties (for example, by setting <code>options.DefaultAuthenticateScheme</code> and <code>options.DefaultChallengeScheme</code> in <code>AddAuthentication(options =&gt; ...)</code>).</li>
+<li><strong>Service registration:</strong> Core authentication services (such as <code>IAuthenticationService</code> and <code>IAuthenticationHandlerProvider</code>) are registered using <code>TryAdd</code>, so subsequent calls do not duplicate or replace existing service registrations.</li>
+<li><strong>Scheme registration:</strong> Calling scheme registration methods like <code>AddCookie</code> or <code>AddJwtBearer</code> adds named schemes to the authentication builder. Attempting to register the same scheme name twice throws an <code>InvalidOperationException</code> stating that the scheme already exists. However, additional options configuration delegates for an existing scheme can be registered using <code>builder.Services.Configure(schemeName, ...)</code> to modify properties on an already-registered scheme.</li>
+</ul>
+<p>The Authentication middleware is added in <code>Program.cs</code> by calling <code>UseAuthentication</code>. Calling <code>UseAuthentication</code> registers the middleware that uses the previously registered authentication schemes. Call <code>UseAuthentication</code> before any middleware that depends on users being authenticated.</p>
+<h2 id="authentication-concepts">Authentication concepts</h2>
+<p>Authentication is responsible for providing the <code>ClaimsPrincipal</code> for authorization to make permission decisions against. There are multiple authentication scheme approaches to select which authentication handler is responsible for generating the correct set of claims:</p>
+<ul>
+<li><a href="#authentication-scheme">Authentication scheme</a></li>
+<li>The default authentication scheme, discussed in the next two sections.</li>
+<li>Directly set <code>User?displayProperty=nameWithType</code>.</li>
+</ul>
+<p>When there is only a single authentication scheme registered, it becomes the default scheme. If multiple schemes are registered and the default scheme isn&#39;t specified, a scheme must be specified in the authorize attribute, otherwise, the following error is thrown:</p>
+<blockquote>
+<p>InvalidOperationException: No authenticationScheme was specified, and there was no DefaultAuthenticateScheme found. The default schemes can be set using either AddAuthentication(string defaultScheme) or AddAuthentication(Action\ configureOptions).</p>
+</blockquote>
+<h3 id="defaultscheme"><code>DefaultScheme</code></h3>
+<p>When there is only a single authentication scheme registered, the single authentication scheme:</p>
+<ul>
+<li>Is automatically used as the <code>DefaultScheme</code>.</li>
+<li>Eliminates the need to specify the <code>DefaultScheme</code> in <code>IServiceCollection)</code> or <code>IServiceCollection)</code>.</li>
+</ul>
+<p>To disable automatically using the single authentication scheme as the <code>DefaultScheme</code>, call <code>AppContext.SetSwitch(&quot;Microsoft.AspNetCore.Authentication.SuppressAutoDefaultScheme&quot;)</code>.</p>
+<h3 id="authentication-scheme">Authentication scheme</h3>
+<p>The <a href="#/doc/aspnet/security/authorization/authorize-with-a-specific-scheme">authentication scheme</a> can select which authentication handler is responsible for generating the correct set of claims. For more information, see <a href="#/doc/aspnet/security/authorization/authorize-with-a-specific-scheme">Authorize with a specific scheme</a>.</p>
+<p>An authentication scheme is a name that corresponds to:</p>
+<ul>
+<li>An authentication handler.</li>
+<li>Options for configuring that specific instance of the handler.</li>
+</ul>
+<p>Schemes are useful as a mechanism for referring to the authentication, challenge, and forbid behaviors of the associated handler. For example, an authorization policy can use scheme names to specify which authentication scheme (or schemes) should be used to authenticate the user. When configuring authentication, it&#39;s common to specify the default authentication scheme. The default scheme is used unless a resource requests a specific scheme. It&#39;s also possible to:</p>
+<ul>
+<li>Specify different default schemes to use for authenticate, challenge, and forbid actions.</li>
+<li>Combine multiple schemes into one using <a href="#/doc/aspnet/security/authentication/policyschemes">policy schemes</a>.</li>
+</ul>
+<h3 id="authentication-handler">Authentication handler</h3>
+<p>An authentication handler:</p>
+<ul>
+<li>Is a type that implements the behavior of a scheme.</li>
+<li>Is derived from <code>IAuthenticationHandler</code> or <code>AuthenticationHandler1</code>.</li>
+<li>Has the primary responsibility to authenticate users.</li>
+</ul>
+<p>Based on the authentication scheme&#39;s configuration and the incoming request context, authentication handlers:</p>
+<ul>
+<li>Construct <code>AuthenticationTicket</code> objects representing the user&#39;s identity if authentication is successful.</li>
+<li>Return &#39;no result&#39; or &#39;failure&#39; if authentication is unsuccessful.</li>
+<li>Have methods for challenge and forbid actions for when users attempt to access resources:<ul>
+<li>They&#39;re unauthorized to access (forbid).</li>
+<li>When they&#39;re unauthenticated (challenge).</li>
+</ul>
+</li>
+</ul>
+<h3 id="remoteauthenticationhandler-vs-authenticationhandler"><code>RemoteAuthenticationHandler</code> vs <code>AuthenticationHandler</code></h3>
+<p><code>RemoteAuthenticationHandler1</code> is the class for authentication that requires a remote authentication step. When the remote authentication step is finished, the handler calls back to the <code>CallbackPath</code> set by the handler. The handler finishes the authentication step using the information passed to the <code>HandleRemoteAuthenticateAsync</code> callback path. <a target="_blank" rel="noopener" href="https://oauth.net/2/">OAuth 2.0</a> and <a target="_blank" rel="noopener" href="https://openid.net/developers/how-connect-works/">OIDC</a> both use this pattern. JWT and cookies don&#39;t since they can directly use the bearer header and cookie to authenticate. The remotely hosted provider in this case:</p>
+<ul>
+<li>Is the authentication provider.</li>
+<li>Examples include <a href="#/doc/aspnet/security/authentication/social/facebook-logins">Facebook</a>, <a href="#/doc/aspnet/security/authentication/social/twitter-logins">Twitter</a>, <a href="#/doc/aspnet/security/authentication/social/google-logins">Google</a>, <a href="#/doc/aspnet/security/authentication/social/microsoft-logins">Microsoft</a>, and any other OIDC provider that handles authenticating users using the handlers mechanism.</li>
+</ul>
+<h3 id="authenticate">Authenticate</h3>
+<p>An authentication scheme&#39;s authenticate action is responsible for constructing the user&#39;s identity based on request context. It returns an <code>AuthenticateResult</code> indicating whether authentication was successful and, if so, the user&#39;s identity in an authentication ticket. See <code>AuthenticateAsync</code>. Authenticate examples include:</p>
+<ul>
+<li>A cookie authentication scheme constructing the user&#39;s identity from cookies.</li>
+<li>A JWT bearer scheme deserializing and validating a JWT bearer token to construct the user&#39;s identity.</li>
+</ul>
+<h3 id="challenge">Challenge</h3>
+<p>An authentication challenge is invoked by Authorization when an unauthenticated user requests an endpoint that requires authentication. An authentication challenge is issued, for example, when an anonymous user requests a restricted resource or follows a login link. Authorization invokes a challenge using the specified authentication schemes, or the default if none is specified. See <code>ChallengeAsync</code>. Authentication challenge examples include:</p>
+<ul>
+<li>A cookie authentication scheme redirecting the user to a login page.</li>
+<li>A JWT bearer scheme returning a 401 result with a <code>www-authenticate: bearer</code> header.</li>
+</ul>
+<p>A challenge action should let the user know what authentication mechanism to use to access the requested resource.</p>
+<h3 id="forbid">Forbid</h3>
+<p>An authentication scheme&#39;s forbid action is called by Authorization when an authenticated user attempts to access a resource they&#39;re not permitted to access. See <code>ForbidAsync</code>. Authentication forbid examples include:</p>
+<ul>
+<li>A cookie authentication scheme redirecting the user to a page indicating access was forbidden.</li>
+<li>A JWT bearer scheme returning a 403 result.</li>
+<li>A custom authentication scheme redirecting to a page where the user can request access to the resource.</li>
+</ul>
+<p>A forbid action can let the user know:</p>
+<ul>
+<li>They&#39;re authenticated.</li>
+<li>They&#39;re not permitted to access the requested resource.</li>
+</ul>
+<p>See the following links for differences between challenge and forbid:</p>
+<ul>
+<li><a href="#/doc/aspnet/security/authorization/resource-based">Resource-based authorization</a>.</li>
+<li><a href="#/doc/aspnet/security/authorization/secure-data@challenge">Differences between challenge and forbid</a>.</li>
+</ul>
+<h2 id="authentication-providers-per-tenant">Authentication providers per tenant</h2>
+<p>ASP.NET Core doesn&#39;t have a built-in solution for multi-tenant authentication. While it&#39;s possible for customers to write one using the built-in features, we recommend customers consider <a target="_blank" rel="noopener" href="https://www.orchardcore.net/">Orchard Core</a>, <a target="_blank" rel="noopener" href="https://abp.io/">ABP Framework</a>, or <a target="_blank" rel="noopener" href="https://www.finbuckle.com/multitenant">Finbuckle.MultiTenant</a> for multi-tenant authentication.</p>
+<p>Orchard Core is:</p>
+<ul>
+<li>An open-source, modular, and multi-tenant app framework built with ASP.NET Core.</li>
+<li>A content management system (CMS) built on top of that app framework.</li>
+</ul>
+<p>See the <a target="_blank" rel="noopener" href="https://github.com/OrchardCMS/OrchardCore">Orchard Core</a> source for an example of authentication providers per tenant.</p>
+<p><a target="_blank" rel="noopener" href="https://abp.io/">ABP Framework</a> supports various architectural patterns including modularity, microservices, domain driven design, and multi-tenancy. See <a target="_blank" rel="noopener" href="https://github.com/abpframework/abp">ABP Framework source on GitHub</a>.</p>
+<p>Finbuckle.MultiTenant:</p>
+<ul>
+<li>Open source</li>
+<li>Provides tenant resolution</li>
+<li>Lightweight</li>
+<li>Provides data isolation</li>
+<li>Configure app behavior uniquely for each tenant</li>
+</ul>
+<h2 id="additional-resources">Additional resources</h2>
+<ul>
+<li><a href="#/doc/aspnet/security/authorization/authorize-with-a-specific-scheme">Authorize with a specific scheme in ASP.NET Core</a></li>
+<li><a href="#/doc/aspnet/security/authentication/policyschemes">Policy schemes in ASP.NET Core</a></li>
+<li><a href="#/doc/aspnet/security/authorization/secure-data">Create an ASP.NET Core app with user data protected by authorization</a></li>
+<li><a href="#/doc/aspnet/security/authorization/policies@require-global-user-authentication">Globally require authenticated users</a></li>
+<li><a target="_blank" rel="noopener" href="https://github.com/dotnet/aspnetcore/issues/26002">GitHub issue on using multiple authentication schemes</a></li>
+</ul>
+<p>:::moniker-end</p>
+<p>:::moniker range=&quot;= aspnetcore-6.0&quot;</p>
+<p>By <a target="_blank" rel="noopener" href="https://github.com/mjrousos">Mike Rousos</a></p>
+<p>Authentication is the process of determining a user&#39;s identity. <a href="#/doc/aspnet/security/authorization/introduction">Authorization</a> is the process of determining whether a user has access to a resource. In ASP.NET Core, authentication is handled by the authentication service, <code>IAuthenticationService</code>, which is used by authentication <a href="#/doc/aspnet/fundamentals/middleware/index">middleware</a>. The authentication service uses registered authentication handlers to complete authentication-related actions. Examples of authentication-related actions include:</p>
+<ul>
+<li>Authenticating a user.</li>
+<li>Responding when an unauthenticated user tries to access a restricted resource.</li>
+</ul>
+<p>Configuring authentication doesn&#39;t automatically restrict access to endpoints. To <a href="#/doc/aspnet/security/authorization/policies@require-global-user-authentication">require authenticated users by default</a> in a server-side app, configure a fallback authorization policy.</p>
+<p>The registered authentication handlers and their configuration options are called &quot;schemes&quot;.</p>
+<p>Authentication schemes are specified by registering authentication services in <code>Program.cs</code>:</p>
+<ul>
+<li>By calling a scheme-specific extension method after a call to <code>AddAuthentication</code>, such as <code>AddJwtBearer</code> or <code>AddCookie</code>. These extension methods use <code>AddScheme?displayProperty=nameWithType</code> to register schemes with appropriate settings.</li>
+<li>Less commonly, by calling <code>AuthenticationBuilder.AddScheme</code> directly.</li>
+</ul>
+<p>For example, the following code registers authentication services and handlers for cookie and JWT bearer authentication schemes:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+    .AddJwtBearer(JwtBearerDefaults.AuthenticationScheme,
+        options =&gt; builder.Configuration.Bind(&quot;JwtSettings&quot;, options))
+    .AddCookie(CookieAuthenticationDefaults.AuthenticationScheme,
+        options =&gt; builder.Configuration.Bind(&quot;CookieSettings&quot;, options));</code></pre></div></figure>
+<p>The <code>AddAuthentication</code> parameter <code>AuthenticationScheme?displayProperty=nameWithType</code> is the name of the scheme to use by default when a specific scheme isn&#39;t requested.</p>
+<p>If multiple schemes are used, authorization policies (or authorization attributes) can <a href="#/doc/aspnet/security/authorization/authorize-with-a-specific-scheme">specify the authentication scheme (or schemes)</a> they depend on to authenticate the user. In the example above, the cookie authentication scheme could be used by specifying its name (<code>AuthenticationScheme?displayProperty=nameWithType</code> by default, though a different name could be provided when calling <code>AddCookie</code>).</p>
+<p>In some cases, the call to <code>AddAuthentication</code> is automatically made by other extension methods. For example, when using <a href="#/doc/aspnet/security/authentication/identity">ASP.NET Core Identity</a>, <code>AddAuthentication</code> is called internally.</p>
+<p>The Authentication middleware is added in <code>Program.cs</code> by calling <code>UseAuthentication</code>. Calling <code>UseAuthentication</code> registers the middleware that uses the previously registered authentication schemes. Call <code>UseAuthentication</code> before any middleware that depends on users being authenticated.</p>
+<h2 id="authentication-concepts">Authentication concepts</h2>
+<p>Authentication is responsible for providing the <code>ClaimsPrincipal</code> for authorization to make permission decisions against. There are multiple authentication scheme approaches to select which authentication handler is responsible for generating the correct set of claims:</p>
+<ul>
+<li><a href="#authentication-scheme">Authentication scheme</a></li>
+<li>The default authentication scheme, discussed in the next section.</li>
+<li>Directly set <code>User?displayProperty=nameWithType</code>.</li>
+</ul>
+<p>There&#39;s no automatic probing of schemes. If the default scheme isn&#39;t specified, the scheme must be specified in the authorize attribute, otherwise, the following error is thrown:</p>
+<blockquote>
+<p>InvalidOperationException: No authenticationScheme was specified, and there was no DefaultAuthenticateScheme found. The default schemes can be set using either AddAuthentication(string defaultScheme) or AddAuthentication(Action\ configureOptions).</p>
+</blockquote>
+<h3 id="authentication-scheme">Authentication scheme</h3>
+<p>The <a href="#/doc/aspnet/security/authorization/authorize-with-a-specific-scheme">authentication scheme</a> can select which authentication handler is responsible for generating the correct set of claims. For more information, see <a href="#/doc/aspnet/security/authorization/authorize-with-a-specific-scheme">Authorize with a specific scheme</a>.</p>
+<p>An authentication scheme is a name that corresponds to:</p>
+<ul>
+<li>An authentication handler.</li>
+<li>Options for configuring that specific instance of the handler.</li>
+</ul>
+<p>Schemes are useful as a mechanism for referring to the authentication, challenge, and forbid behaviors of the associated handler. For example, an authorization policy can use scheme names to specify which authentication scheme (or schemes) should be used to authenticate the user. When configuring authentication, it&#39;s common to specify the default authentication scheme. The default scheme is used unless a resource requests a specific scheme. It&#39;s also possible to:</p>
+<ul>
+<li>Specify different default schemes to use for authenticate, challenge, and forbid actions.</li>
+<li>Combine multiple schemes into one using <a href="#/doc/aspnet/security/authentication/policyschemes">policy schemes</a>.</li>
+</ul>
+<h3 id="authentication-handler">Authentication handler</h3>
+<p>An authentication handler:</p>
+<ul>
+<li>Is a type that implements the behavior of a scheme.</li>
+<li>Is derived from <code>IAuthenticationHandler</code> or <code>AuthenticationHandler1</code>.</li>
+<li>Has the primary responsibility to authenticate users.</li>
+</ul>
+<p>Based on the authentication scheme&#39;s configuration and the incoming request context, authentication handlers:</p>
+<ul>
+<li>Construct <code>AuthenticationTicket</code> objects representing the user&#39;s identity if authentication is successful.</li>
+<li>Return &#39;no result&#39; or &#39;failure&#39; if authentication is unsuccessful.</li>
+<li>Have methods for challenge and forbid actions for when users attempt to access resources:<ul>
+<li>They&#39;re unauthorized to access (forbid).</li>
+<li>When they&#39;re unauthenticated (challenge).</li>
+</ul>
+</li>
+</ul>
+<h3 id="remoteauthenticationhandler-vs-authenticationhandler"><code>RemoteAuthenticationHandler</code> vs <code>AuthenticationHandler</code></h3>
+<p><code>RemoteAuthenticationHandler1</code> is the class for authentication that requires a remote authentication step. When the remote authentication step is finished, the handler calls back to the <code>CallbackPath</code> set by the handler. The handler finishes the authentication step using the information passed to the <code>HandleRemoteAuthenticateAsync</code> callback path. <a target="_blank" rel="noopener" href="https://oauth.net/2/">OAuth 2.0</a> and <a target="_blank" rel="noopener" href="https://openid.net/developers/how-connect-works/">OIDC</a> both use this pattern. JWT and cookies don&#39;t since they can directly use the bearer header and cookie to authenticate. The remotely hosted provider in this case:</p>
+<ul>
+<li>Is the authentication provider.</li>
+<li>Examples include <a href="#/doc/aspnet/security/authentication/social/facebook-logins">Facebook</a>, <a href="#/doc/aspnet/security/authentication/social/twitter-logins">Twitter</a>, <a href="#/doc/aspnet/security/authentication/social/google-logins">Google</a>, <a href="#/doc/aspnet/security/authentication/social/microsoft-logins">Microsoft</a>, and any other OIDC provider that handles authenticating users using the handlers mechanism.</li>
+</ul>
+<h3 id="authenticate">Authenticate</h3>
+<p>An authentication scheme&#39;s authenticate action is responsible for constructing the user&#39;s identity based on request context. It returns an <code>AuthenticateResult</code> indicating whether authentication was successful and, if so, the user&#39;s identity in an authentication ticket. See <code>AuthenticateAsync</code>. Authenticate examples include:</p>
+<ul>
+<li>A cookie authentication scheme constructing the user&#39;s identity from cookies.</li>
+<li>A JWT bearer scheme deserializing and validating a JWT bearer token to construct the user&#39;s identity.</li>
+</ul>
+<h3 id="challenge">Challenge</h3>
+<p>An authentication challenge is invoked by Authorization when an unauthenticated user requests an endpoint that requires authentication. An authentication challenge is issued, for example, when an anonymous user requests a restricted resource or follows a login link. Authorization invokes a challenge using the specified authentication schemes, or the default if none is specified. See <code>ChallengeAsync</code>. Authentication challenge examples include:</p>
+<ul>
+<li>A cookie authentication scheme redirecting the user to a login page.</li>
+<li>A JWT bearer scheme returning a 401 result with a <code>www-authenticate: bearer</code> header.</li>
+</ul>
+<p>A challenge action should let the user know what authentication mechanism to use to access the requested resource.</p>
+<h3 id="forbid">Forbid</h3>
+<p>An authentication scheme&#39;s forbid action is called by Authorization when an authenticated user attempts to access a resource they&#39;re not permitted to access. See <code>ForbidAsync</code>. Authentication forbid examples include:</p>
+<ul>
+<li>A cookie authentication scheme redirecting the user to a page indicating access was forbidden.</li>
+<li>A JWT bearer scheme returning a 403 result.</li>
+<li>A custom authentication scheme redirecting to a page where the user can request access to the resource.</li>
+</ul>
+<p>A forbid action can let the user know:</p>
+<ul>
+<li>They&#39;re authenticated.</li>
+<li>They&#39;re not permitted to access the requested resource.</li>
+</ul>
+<p>See the following links for differences between challenge and forbid:</p>
+<ul>
+<li><a href="#/doc/aspnet/razor-pages/security/authorization/resource-based@challenge-and-forbid-with-an-operational-resource-handler">Challenge and forbid with an operational resource handler</a>.</li>
+<li><a href="#/doc/aspnet/security/authorization/secure-data@challenge">Differences between challenge and forbid</a>.</li>
+</ul>
+<h2 id="authentication-providers-per-tenant">Authentication providers per tenant</h2>
+<p>ASP.NET Core doesn&#39;t have a built-in solution for multi-tenant authentication. While it&#39;s possible for customers to write one using the built-in features, we recommend customers consider <a target="_blank" rel="noopener" href="https://www.orchardcore.net/">Orchard Core</a> or <a target="_blank" rel="noopener" href="https://abp.io/">ABP Framework</a> for multi-tenant authentication.</p>
+<p>Orchard Core is:</p>
+<ul>
+<li>An open-source, modular, and multi-tenant app framework built with ASP.NET Core.</li>
+<li>A content management system (CMS) built on top of that app framework.</li>
+</ul>
+<p>See the <a target="_blank" rel="noopener" href="https://github.com/OrchardCMS/OrchardCore">Orchard Core</a> source for an example of authentication providers per tenant.</p>
+<p><a target="_blank" rel="noopener" href="https://abp.io/">ABP Framework</a> supports various architectural patterns including modularity, microservices, domain driven design, and multi-tenancy. See <a target="_blank" rel="noopener" href="https://github.com/abpframework/abp">ABP Framework source on GitHub</a>.</p>
+<h2 id="additional-resources">Additional resources</h2>
+<ul>
+<li><a href="#/doc/aspnet/security/authorization/authorize-with-a-specific-scheme">Authorize with a specific scheme in ASP.NET Core</a></li>
+<li><a href="#/doc/aspnet/security/authentication/policyschemes">Policy schemes in ASP.NET Core</a></li>
+<li><a href="#/doc/aspnet/security/authorization/secure-data">Create an ASP.NET Core app with user data protected by authorization</a></li>
+<li><a href="#/doc/aspnet/security/authorization/policies@require-global-user-authentication">Globally require authenticated users</a></li>
+<li><a target="_blank" rel="noopener" href="https://github.com/dotnet/aspnetcore/issues/26002">GitHub issue on using multiple authentication schemes</a></li>
+</ul>
+<p>:::moniker-end</p>
+<p>:::moniker range=&quot;&lt; aspnetcore-6.0&quot;</p>
+<p>By <a target="_blank" rel="noopener" href="https://github.com/mjrousos">Mike Rousos</a></p>
+<p>Authentication is the process of determining a user&#39;s identity. <a href="#/doc/aspnet/security/authorization/introduction">Authorization</a> is the process of determining whether a user has access to a resource. In ASP.NET Core, authentication is handled by the authentication service, <code>IAuthenticationService</code>, which is used by authentication <a href="#/doc/aspnet/fundamentals/middleware/index">middleware</a>. The authentication service uses registered authentication handlers to complete authentication-related actions. Examples of authentication-related actions include:</p>
+<ul>
+<li>Authenticating a user.</li>
+<li>Responding when an unauthenticated user tries to access a restricted resource.</li>
+</ul>
+<p>Configuring authentication doesn&#39;t automatically restrict access to endpoints. To <a href="#/doc/aspnet/security/authorization/policies@require-global-user-authentication">require authenticated users by default</a> in a server-side app, configure a fallback authorization policy.</p>
+<p>The registered authentication handlers and their configuration options are called &quot;schemes&quot;.</p>
+<p>Authentication schemes are specified by registering authentication services in <code>Startup.ConfigureServices</code>:</p>
+<ul>
+<li>By calling a scheme-specific extension method after a call to <code>AddAuthentication</code> (such as <code>AddJwtBearer</code> or <code>AddCookie</code>, for example). These extension methods use <code>AddScheme?displayProperty=nameWithType</code> to register schemes with appropriate settings.</li>
+<li>Less commonly, by calling <code>AuthenticationBuilder.AddScheme</code> directly.</li>
+</ul>
+<p>For example, the following code registers authentication services and handlers for cookie and JWT bearer authentication schemes:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+    .AddJwtBearer(JwtBearerDefaults.AuthenticationScheme,
+        options =&gt; Configuration.Bind(&quot;JwtSettings&quot;, options))
+    .AddCookie(CookieAuthenticationDefaults.AuthenticationScheme,
+        options =&gt; Configuration.Bind(&quot;CookieSettings&quot;, options));</code></pre></div></figure>
+<p>The <code>AddAuthentication</code> parameter <code>AuthenticationScheme?displayProperty=nameWithType</code> is the name of the scheme to use by default when a specific scheme isn&#39;t requested.</p>
+<p>If multiple schemes are used, authorization policies (or authorization attributes) can <a href="#/doc/aspnet/security/authorization/authorize-with-a-specific-scheme">specify the authentication scheme (or schemes)</a> they depend on to authenticate the user. In the example above, the cookie authentication scheme could be used by specifying its name (<code>AuthenticationScheme?displayProperty=nameWithType</code> by default, though a different name could be provided when calling <code>AddCookie</code>).</p>
+<p>In some cases, the call to <code>AddAuthentication</code> is automatically made by other extension methods. For example, when using <a href="#/doc/aspnet/security/authentication/identity">ASP.NET Core Identity</a>, <code>AddAuthentication</code> is called internally.</p>
+<p>The Authentication middleware is added in <code>Startup.Configure</code> by calling <code>UseAuthentication</code>. Calling <code>UseAuthentication</code> registers the middleware that uses the previously registered authentication schemes. Call <code>UseAuthentication</code> before any middleware that depends on users being authenticated. When using endpoint routing, the call to <code>UseAuthentication</code> must go:</p>
+<ul>
+<li>After <code>UseRouting</code>, so that route information is available for authentication decisions.</li>
+<li>Before <code>UseEndpoints</code>, so that users are authenticated before accessing the endpoints.</li>
+</ul>
+<h2 id="authentication-concepts">Authentication concepts</h2>
+<p>Authentication is responsible for providing the <code>ClaimsPrincipal</code> for authorization to make permission decisions against. There are multiple authentication scheme approaches to select which authentication handler is responsible for generating the correct set of claims:</p>
+<ul>
+<li><a href="#authentication-scheme">Authentication scheme</a></li>
+<li>The default authentication scheme, discussed in the next section.</li>
+<li>Directly set <code>User?displayProperty=nameWithType</code>.</li>
+</ul>
+<p>There&#39;s no automatic probing of schemes. If the default scheme isn&#39;t specified, the scheme must be specified in the authorize attribute, otherwise, the following error is thrown:</p>
+<blockquote>
+<p>InvalidOperationException: No authenticationScheme was specified, and there was no DefaultAuthenticateScheme found. The default schemes can be set using either AddAuthentication(string defaultScheme) or AddAuthentication(Action\ configureOptions).</p>
+</blockquote>
+<h3 id="authentication-scheme">Authentication scheme</h3>
+<p>The <a href="#/doc/aspnet/security/authorization/authorize-with-a-specific-scheme">authentication scheme</a> can select which authentication handler is responsible for generating the correct set of claims. For more information, see <a href="#/doc/aspnet/security/authorization/authorize-with-a-specific-scheme">Authorize with a specific scheme</a>.</p>
+<p>An authentication scheme is a name that corresponds to:</p>
+<ul>
+<li>An authentication handler.</li>
+<li>Options for configuring that specific instance of the handler.</li>
+</ul>
+<p>Schemes are useful as a mechanism for referring to the authentication, challenge, and forbid behaviors of the associated handler. For example, an authorization policy can use scheme names to specify which authentication scheme (or schemes) should be used to authenticate the user. When configuring authentication, it&#39;s common to specify the default authentication scheme. The default scheme is used unless a resource requests a specific scheme. It&#39;s also possible to:</p>
+<ul>
+<li>Specify different default schemes to use for authenticate, challenge, and forbid actions.</li>
+<li>Combine multiple schemes into one using <a href="#/doc/aspnet/security/authentication/policyschemes">policy schemes</a>.</li>
+</ul>
+<h3 id="authentication-handler">Authentication handler</h3>
+<p>An authentication handler:</p>
+<ul>
+<li>Is a type that implements the behavior of a scheme.</li>
+<li>Is derived from <code>IAuthenticationHandler</code> or <code>AuthenticationHandler1</code>.</li>
+<li>Has the primary responsibility to authenticate users.</li>
+</ul>
+<p>Based on the authentication scheme&#39;s configuration and the incoming request context, authentication handlers:</p>
+<ul>
+<li>Construct <code>AuthenticationTicket</code> objects representing the user&#39;s identity if authentication is successful.</li>
+<li>Return &#39;no result&#39; or &#39;failure&#39; if authentication is unsuccessful.</li>
+<li>Have methods for challenge and forbid actions for when users attempt to access resources:<ul>
+<li>They&#39;re unauthorized to access (forbid).</li>
+<li>When they&#39;re unauthenticated (challenge).</li>
+</ul>
+</li>
+</ul>
+<h3 id="remoteauthenticationhandler-vs-authenticationhandler"><code>RemoteAuthenticationHandler</code> vs <code>AuthenticationHandler</code></h3>
+<p><code>RemoteAuthenticationHandler1</code> is the class for authentication that requires a remote authentication step. When the remote authentication step is finished, the handler calls back to the <code>CallbackPath</code> set by the handler. The handler finishes the authentication step using the information passed to the <code>HandleRemoteAuthenticateAsync</code> callback path. <a target="_blank" rel="noopener" href="https://oauth.net/2/">OAuth 2.0</a> and <a target="_blank" rel="noopener" href="https://openid.net/developers/how-connect-works/">OIDC</a> both use this pattern. JWT and cookies don&#39;t since they can directly use the bearer header and cookie to authenticate. The remotely hosted provider in this case:</p>
+<ul>
+<li>Is the authentication provider.</li>
+<li>Examples include <a href="#/doc/aspnet/security/authentication/social/facebook-logins">Facebook</a>, <a href="#/doc/aspnet/security/authentication/social/twitter-logins">Twitter</a>, <a href="#/doc/aspnet/security/authentication/social/google-logins">Google</a>, <a href="#/doc/aspnet/security/authentication/social/microsoft-logins">Microsoft</a>, and any other OIDC provider that handles authenticating users using the handlers mechanism.</li>
+</ul>
+<h3 id="authenticate">Authenticate</h3>
+<p>An authentication scheme&#39;s authenticate action is responsible for constructing the user&#39;s identity based on request context. It returns an <code>AuthenticateResult</code> indicating whether authentication was successful and, if so, the user&#39;s identity in an authentication ticket. See <code>AuthenticateAsync</code>. Authenticate examples include:</p>
+<ul>
+<li>A cookie authentication scheme constructing the user&#39;s identity from cookies.</li>
+<li>A JWT bearer scheme deserializing and validating a JWT bearer token to construct the user&#39;s identity.</li>
+</ul>
+<h3 id="challenge">Challenge</h3>
+<p>An authentication challenge is invoked by Authorization when an unauthenticated user requests an endpoint that requires authentication. An authentication challenge is issued, for example, when an anonymous user requests a restricted resource or follows a login link. Authorization invokes a challenge using the specified authentication schemes, or the default if none is specified. See <code>ChallengeAsync</code>. Authentication challenge examples include:</p>
+<ul>
+<li>A cookie authentication scheme redirecting the user to a login page.</li>
+<li>A JWT bearer scheme returning a 401 result with a <code>www-authenticate: bearer</code> header.</li>
+</ul>
+<p>A challenge action should let the user know what authentication mechanism to use to access the requested resource.</p>
+<h3 id="forbid">Forbid</h3>
+<p>An authentication scheme&#39;s forbid action is called by Authorization when an authenticated user attempts to access a resource they&#39;re not permitted to access. See <code>ForbidAsync</code>. Authentication forbid examples include:</p>
+<ul>
+<li>A cookie authentication scheme redirecting the user to a page indicating access was forbidden.</li>
+<li>A JWT bearer scheme returning a 403 result.</li>
+<li>A custom authentication scheme redirecting to a page where the user can request access to the resource.</li>
+</ul>
+<p>A forbid action can let the user know:</p>
+<ul>
+<li>They&#39;re authenticated.</li>
+<li>They&#39;re not permitted to access the requested resource.</li>
+</ul>
+<p>See the following links for differences between challenge and forbid:</p>
+<ul>
+<li><a href="#/doc/aspnet/security/authorization/resource-based">Resource-based authorization</a>.</li>
+<li><a href="#/doc/aspnet/security/authorization/secure-data@challenge">Differences between challenge and forbid</a>.</li>
+</ul>
+<h2 id="authentication-providers-per-tenant">Authentication providers per tenant</h2>
+<p>ASP.NET Core framework doesn&#39;t have a built-in solution for multi-tenant authentication. While it&#39;s possible for customers to write an app with multi-tenant authentication, we recommend using one of the following ASP.NET Core application frameworks that support multi-tenant authentication.</p>
+<p><a target="_blank" rel="noopener" href="https://www.orchardcore.net/">Orchard Core</a> is an open-source, modular, and multi-tenant app framework built with ASP.NET Core that also provides a content management system (CMS). See the <a target="_blank" rel="noopener" href="https://github.com/OrchardCMS/OrchardCore">Orchard Core</a> source for an example of authentication providers per tenant.</p>
+<p><a target="_blank" rel="noopener" href="https://abp.io/">ABP Framework</a> supports various architectural patterns including modularity, microservices, domain-driven design, and multi-tenancy. See <a target="_blank" rel="noopener" href="https://github.com/abpframework/abp">ABP Framework source on GitHub</a>.</p>
+<h2 id="additional-resources">Additional resources</h2>
+<ul>
+<li><a href="#/doc/aspnet/security/authorization/authorize-with-a-specific-scheme">Authorize with a specific scheme in ASP.NET Core</a></li>
+<li><a href="#/doc/aspnet/security/authentication/policyschemes">Policy schemes in ASP.NET Core</a></li>
+<li><a href="#/doc/aspnet/security/authorization/secure-data">Create an ASP.NET Core app with user data protected by authorization</a></li>
+<li><a href="#/doc/aspnet/security/authorization/policies@require-global-user-authentication">Globally require authenticated users</a></li>
+<li><a target="_blank" rel="noopener" href="https://github.com/dotnet/aspnetcore/issues/26002">GitHub issue on using multiple authentication schemes</a></li>
+</ul>
+<p>:::moniker-end</p>

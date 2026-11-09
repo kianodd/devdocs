@@ -1,0 +1,207 @@
+<p>By <a target="_blank" rel="noopener" href="https://github.com/tdykstra">Tom Dykstra</a></p>
+<p>:::moniker range=&quot;&gt;= aspnetcore-8.0&quot;</p>
+<p>Apps can apply timeout limits selectively to requests. ASP.NET Core servers don&#39;t do this by default since request processing times vary widely by scenario. For example, WebSockets, static files, and calling expensive APIs would each require a different timeout limit. So ASP.NET Core provides middleware that configures timeouts per endpoint as well as a global timeout.</p>
+<p>When a timeout limit is hit, a <code>CancellationToken</code> in <code>RequestAborted?displayProperty=nameWithType</code> has <code>IsCancellationRequested</code> set to <code>true</code>. <code>Abort</code> isn&#39;t automatically called on the request, so the application may still produce a success or failure response. The default behavior if the app doesn&#39;t handle the exception and produce a response is to return status code 504.</p>
+<p>This article explains how to configure the timeout middleware. The timeout middleware can be used in all types of ASP.NET Core apps: Minimal API, Web API with controllers, MVC, and Razor Pages. The sample app is a Minimal API, but every timeout feature it illustrates is also supported in the other app types.</p>
+<p>Request timeouts are in the <code>Timeouts</code> namespace.</p>
+<p><em><strong>Note:</strong></em> When an app is running in debug mode, the timeout middleware doesn&#39;t trigger. This behavior is the same as for <a href="#/doc/aspnet/fundamentals/servers/kestrel/options@behavior-with-debugger-attached">Kestrel timeouts</a>. To test timeouts, run the app without the debugger attached.</p>
+<h2 id="add-the-middleware-to-the-app">Add the middleware to the app</h2>
+<p>Add the request timeouts middleware to the service collection by calling <code>AddRequestTimeouts</code>.</p>
+<p>Add the middleware to the request processing pipeline by calling <code>UseRequestTimeouts</code>.</p>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><ul>
+<li>In apps that explicitly call <code>UseRouting</code>, <code>UseRequestTimeouts</code> must be called after <code>UseRouting</code>.</li>
+</ul>
+</div></aside>
+<p>Adding the middleware to the app doesn&#39;t automatically start triggering timeouts. Timeout limits have to be explicitly configured.</p>
+<h2 id="configure-one-endpoint-or-page">Configure one endpoint or page</h2>
+<p>For Minimal API apps, configure an endpoint to timeout by calling <code>WithRequestTimeout</code>, or by applying the <a href="xref:Microsoft.AspNetCore.Http.Timeouts.RequestTimeoutAttribute"><code>[RequestTimeout]</code></a> attribute, as shown in the following example:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">using Microsoft.AspNetCore.Http.Timeouts;
+
+var builder = WebApplication.CreateBuilder(args);
+builder.Services.AddRequestTimeouts();
+
+var app = builder.Build();
+app.UseRequestTimeouts();
+
+app.MapGet(&quot;/&quot;, async (HttpContext context) =&gt; {
+    try
+    {
+        await Task.Delay(TimeSpan.FromSeconds(10), context.RequestAborted);
+    }
+    catch (TaskCanceledException)
+    {
+        return Results.Content(&quot;Timeout!&quot;, &quot;text/plain&quot;);
+    }
+
+    return Results.Content(&quot;No timeout!&quot;, &quot;text/plain&quot;);
+}).WithRequestTimeout(TimeSpan.FromSeconds(2));
+// Returns &quot;Timeout!&quot;
+
+app.MapGet(&quot;/attribute&quot;,
+    [RequestTimeout(milliseconds: 2000)] async (HttpContext context) =&gt; {
+        try
+        {
+            await Task.Delay(TimeSpan.FromSeconds(10), context.RequestAborted);
+        }
+        catch (TaskCanceledException)
+        {
+            return Results.Content(&quot;Timeout!&quot;, &quot;text/plain&quot;);
+        }
+
+        return Results.Content(&quot;No timeout!&quot;, &quot;text/plain&quot;);
+    });
+// Returns &quot;Timeout!&quot;
+
+app.Run();</code></pre></div></figure>
+<p>For apps with controllers, apply the <code>[RequestTimeout]</code> attribute to the action method or the controller class. For Razor Pages apps, apply the attribute to the Razor page class.</p>
+<h2 id="configure-multiple-endpoints-or-pages">Configure multiple endpoints or pages</h2>
+<p>Create named <em>policies</em> to specify timeout configuration that applies to multiple endpoints. Add a policy by calling <code>AddPolicy</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">builder.Services.AddRequestTimeouts(options =&gt; {
+    options.DefaultPolicy =
+        new RequestTimeoutPolicy { Timeout = TimeSpan.FromMilliseconds(1500) };
+    options.AddPolicy(&quot;MyPolicy&quot;, TimeSpan.FromSeconds(2));
+});</code></pre></div></figure>
+<p>A timeout can be specified for an endpoint by policy name:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">app.MapGet(&quot;/namedpolicy&quot;, async (HttpContext context) =&gt; {
+    try
+    {
+        await Task.Delay(TimeSpan.FromSeconds(10), context.RequestAborted);
+    }
+    catch (TaskCanceledException)
+    {
+        return Results.Content(&quot;Timeout!&quot;, &quot;text/plain&quot;);
+    }
+
+    return Results.Content(&quot;No timeout!&quot;, &quot;text/plain&quot;);
+}).WithRequestTimeout(&quot;MyPolicy&quot;);
+// Returns &quot;Timeout!&quot;</code></pre></div></figure>
+<p>The <code>[RequestTimeout]</code> attribute can also be used to specify a named policy.</p>
+<h3 id="set-global-default-timeout-policy">Set global default timeout policy</h3>
+<p>Specify a policy for the global default timeout configuration:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">builder.Services.AddRequestTimeouts(options =&gt; {
+    options.DefaultPolicy =
+        new RequestTimeoutPolicy { Timeout = TimeSpan.FromMilliseconds(1500) };
+    options.AddPolicy(&quot;MyPolicy&quot;, TimeSpan.FromSeconds(2));
+});</code></pre></div></figure>
+<p>The default timeout applies to endpoints that don&#39;t have a timeout specified. The following endpoint code checks for a timeout although it doesn&#39;t call the extension method or apply the attribute. The global timeout configuration applies, so the code checks for a timeout:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">app.MapGet(&quot;/&quot;, async (HttpContext context) =&gt; {
+    try
+    {
+        await Task.Delay(TimeSpan.FromSeconds(10), context.RequestAborted);
+    }
+    catch
+    {
+        return Results.Content(&quot;Timeout!&quot;, &quot;text/plain&quot;);
+    }
+
+    return Results.Content(&quot;No timeout!&quot;, &quot;text/plain&quot;);
+});
+// Returns &quot;Timeout!&quot; due to default policy.</code></pre></div></figure>
+<h2 id="specify-the-status-code-in-a-policy">Specify the status code in a policy</h2>
+<p>The <code>RequestTimeoutPolicy</code> class has a property that can automatically set the status code when a timeout is triggered.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">builder.Services.AddRequestTimeouts(options =&gt; {
+    options.DefaultPolicy = new RequestTimeoutPolicy {
+        Timeout = TimeSpan.FromMilliseconds(1000),
+        TimeoutStatusCode = 503
+    };
+    options.AddPolicy(&quot;MyPolicy2&quot;, new RequestTimeoutPolicy {
+        Timeout = TimeSpan.FromMilliseconds(1000),
+        WriteTimeoutResponse = async (HttpContext context) =&gt; {
+            context.Response.ContentType = &quot;text/plain&quot;;
+            await context.Response.WriteAsync(&quot;Timeout from MyPolicy2!&quot;);
+        }
+    });
+});</code></pre></div></figure>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">app.MapGet(&quot;/&quot;, async (HttpContext context) =&gt; {
+    try
+    {
+        await Task.Delay(TimeSpan.FromSeconds(10), context.RequestAborted);
+    }
+    catch (TaskCanceledException)
+    {
+        throw;
+    }
+
+    return Results.Content(&quot;No timeout!&quot;, &quot;text/plain&quot;);
+});
+// Returns status code 503 due to default policy.</code></pre></div></figure>
+<h2 id="use-a-delegate-in-a-policy">Use a delegate in a policy</h2>
+<p>The <code>RequestTimeoutPolicy</code> class has a <code>WriteTimeoutResponse</code> property that can be used to customize the response when a timeout is triggered.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">builder.Services.AddRequestTimeouts(options =&gt; {
+    options.DefaultPolicy = new RequestTimeoutPolicy {
+        Timeout = TimeSpan.FromMilliseconds(1000),
+        TimeoutStatusCode = 503
+    };
+    options.AddPolicy(&quot;MyPolicy2&quot;, new RequestTimeoutPolicy {
+        Timeout = TimeSpan.FromMilliseconds(1000),
+        WriteTimeoutResponse = async (HttpContext context) =&gt; {
+            context.Response.ContentType = &quot;text/plain&quot;;
+            await context.Response.WriteAsync(&quot;Timeout from MyPolicy2!&quot;);
+        }
+    });
+});</code></pre></div></figure>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">app.MapGet(&quot;/usepolicy2&quot;, async (HttpContext context) =&gt; {
+    try
+    {
+        await Task.Delay(TimeSpan.FromSeconds(10), context.RequestAborted);
+    }
+    catch (TaskCanceledException)
+    {
+        throw;
+    }
+
+    return Results.Content(&quot;No timeout!&quot;, &quot;text/plain&quot;);
+}).WithRequestTimeout(&quot;MyPolicy2&quot;);
+// Returns &quot;Timeout from MyPolicy2!&quot; due to WriteTimeoutResponse in MyPolicy2.</code></pre></div></figure>
+<h2 id="disable-timeouts">Disable timeouts</h2>
+<p>To disable all timeouts including the default global timeout, use the <a href="xref:Microsoft.AspNetCore.Http.Timeouts.DisableRequestTimeoutAttribute"><code>[DisableRequestTimeout]</code></a> attribute or the <code>DisableRequestTimeout</code> extension method:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">app.MapGet(&quot;/disablebyattr&quot;, [DisableRequestTimeout] async (HttpContext context) =&gt; {
+    try
+    {
+        await Task.Delay(TimeSpan.FromSeconds(10), context.RequestAborted);
+    }
+    catch
+    {
+        return Results.Content(&quot;Timeout!&quot;, &quot;text/plain&quot;);
+    }
+
+    return Results.Content(&quot;No timeout!&quot;, &quot;text/plain&quot;);
+});
+// Returns &quot;No timeout!&quot;, ignores default timeout.</code></pre></div></figure>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">app.MapGet(&quot;/disablebyext&quot;, async (HttpContext context) =&gt; {
+    try
+    {
+        await Task.Delay(TimeSpan.FromSeconds(10), context.RequestAborted);
+    }
+    catch
+    {
+        return Results.Content(&quot;Timeout!&quot;, &quot;text/plain&quot;);
+    }
+
+    return Results.Content(&quot;No timeout!&quot;, &quot;text/plain&quot;);
+}).DisableRequestTimeout();
+// Returns &quot;No timeout!&quot;, ignores default timeout.</code></pre></div></figure>
+<h2 id="cancel-a-timeout">Cancel a timeout</h2>
+<p>To cancel a timeout that has already been started, use the <code>DisableTimeout</code> method on <code>IHttpRequestTimeoutFeature</code>. Timeouts cannot be canceled after they&#39;ve expired.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">app.MapGet(&quot;/canceltimeout&quot;, async (HttpContext context) =&gt; {
+    var timeoutFeature = context.Features.Get();
+    timeoutFeature?.DisableTimeout();
+
+    try
+    {
+        await Task.Delay(TimeSpan.FromSeconds(10), context.RequestAborted);
+    } 
+    catch (TaskCanceledException)
+    {
+        return Results.Content(&quot;Timeout!&quot;, &quot;text/plain&quot;);
+    }
+
+    return Results.Content(&quot;No timeout!&quot;, &quot;text/plain&quot;);
+}).WithRequestTimeout(TimeSpan.FromSeconds(1));
+// Returns &quot;No timeout!&quot; since the default timeout is not triggered.</code></pre></div></figure>
+<h2 id="see-also">See also</h2>
+<ul>
+<li><code>Timeouts</code></li>
+<li><a href="#/doc/aspnet/fundamentals/middleware/index">ASP.NET Core middleware</a></li>
+</ul>
+<p>:::moniker-end</p>

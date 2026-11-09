@@ -1,0 +1,606 @@
+<p>:::moniker range=&quot;&gt;= aspnetcore-6.0&quot;</p>
+<p>Network bandwidth is a limited resource. Reducing the size of the response usually increases the responsiveness of an app, often dramatically. One way to reduce payload size is to compress the responses from an application. This article describes how to implement response compression for your apps by using response compression middleware in ASP.NET Core.</p>
+<h2 id="explore-compression-with-https">Explore compression with HTTPS</h2>
+<p>Compressed responses over secure connections can be controlled with the <code>EnableForHttps</code> option, which is disabled by default because of the security risk. Using compression with dynamically generated pages can expose the app to <a target="_blank" rel="noopener" href="https://wikipedia.org/wiki/CRIME">CRIME</a> and <a target="_blank" rel="noopener" href="https://wikipedia.org/wiki/BREACH">BREACH</a> attacks. CRIME and BREACH attacks can be mitigated in ASP.NET Core with antiforgery tokens. For more information, see <a href="#/doc/aspnet/security/anti-request-forgery">Prevent Cross-Site Request Forgery (XSRF/CSRF) attacks in ASP.NET Core</a>. For information on mitigating BREACH attacks, see <a target="_blank" rel="noopener" href="http://www.breachattack.com/#mitigations">Mitigations</a> at <a target="_blank" rel="noopener" href="http://www.breachattack.com/">http://www.breachattack.com/</a>.</p>
+<p>Even when the app disables the <code>EnableForHttps</code> property (<code>false</code>), Internet Information Services (IIS), IIS Express, and <a href="#/doc/aspnet/host-and-deploy/azure-iis-errors-reference">Azure App Service</a> can apply <a target="_blank" rel="noopener" href="https://www.gnu.org/software/gzip/">Gzip</a> at the IIS web server. When you review response headers, take note of the <a target="_blank" rel="noopener" href="https://developer.mozilla.org/docs/Web/HTTP/Reference/Headers/Server">Server</a> header value. An unexpected <code>content-encoding</code> response header value might be the result of the web server and not the ASP.NET Core app configuration.</p>
+<h2 id="determine-when-to-use-response-compression-middleware">Determine when to use response compression middleware</h2>
+<p>Use server-based response compression technologies in IIS, Apache, or Nginx. The performance of the response compression middleware probably can&#39;t match that of the server modules. The <a href="#/doc/aspnet/fundamentals/servers/httpsys">HTTP.sys</a> server and <a href="#/doc/aspnet/fundamentals/servers/kestrel">Kestrel</a> server don&#39;t currently offer built-in compression support.</p>
+<p>Use response compression middleware when the app is:</p>
+<ul>
+<li><p>Unable to use the following server-based compression technologies:</p>
+<ul>
+<li><a target="_blank" rel="noopener" href="https://www.iis.net/overview/reliability/dynamiccachingandcompression">IIS dynamic caching and compression</a></li>
+<li><a target="_blank" rel="noopener" href="https://httpd.apache.org/docs/current/mod/mod_deflate.html">Apache mod_deflate module</a></li>
+<li><a target="_blank" rel="noopener" href="https://docs.nginx.com/nginx/admin-guide/web-server/compression/">Nginx compression and decompression</a></li>
+</ul>
+</li>
+<li><p>Hosting directly on:</p>
+<ul>
+<li><a href="#/doc/aspnet/fundamentals/servers/httpsys">HTTP.sys server</a></li>
+<li><a href="#/doc/aspnet/fundamentals/servers/kestrel">Kestrel server</a></li>
+</ul>
+</li>
+</ul>
+<h2 id="explore-response-compression">Explore response compression</h2>
+<p>Usually, any response not natively compressed can benefit from response compression. Responses not natively compressed typically include CSS, JavaScript, HTML, XML, and JSON. Don&#39;t compress natively compressed assets, such as PNG files. When attempting to further compress a natively compressed response, any small extra reduction in size and transmission time is likely overshadowed by the time it takes to process the compression. Don&#39;t compress files smaller than about 150 - 1,000 bytes, depending on the file&#39;s content and the efficiency of compression. The overhead of compressing small files might produce a compressed file larger than the uncompressed file.</p>
+<p>When a client can process compressed content, the client must inform the server of its capabilities by sending the <a target="_blank" rel="noopener" href="https://developer.mozilla.org/docs/Web/HTTP/Reference/Headers/Accept-Encoding">Accept-Encoding</a> header with the request. When a server sends compressed content, it must include information in the <a target="_blank" rel="noopener" href="https://developer.mozilla.org/docs/Web/HTTP/Reference/Headers/Content-Encoding">Content-Encoding</a> header regarding how the compressed response is encoded. </p>
+<p>The following table shows the content encoding designations for the <code>Accept-Encoding</code> header and indicates whether the response compression middleware supports the designation.</p>
+<p>:::moniker-end</p>
+<p>:::moniker range=&quot;&gt;= aspnetcore-6.0 &lt; aspnetcore-11.0&quot;</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Designation</th>
+<th align="center">Middleware</th>
+<th>Format</th>
+<th>Details</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>br</code></td>
+<td align="center">Yes (default)</td>
+<td>Brotli Compressed Data Format</td>
+<td><a target="_blank" rel="noopener" href="https://datatracker.ietf.org/doc/html/rfc7932">RFC 7932</a></td>
+</tr>
+<tr>
+<td><code>deflate</code></td>
+<td align="center">No</td>
+<td>DEFLATE Compressed Data Format</td>
+<td><a target="_blank" rel="noopener" href="https://datatracker.ietf.org/doc/html/rfc1951">RFC 1951</a></td>
+</tr>
+<tr>
+<td><code>exi</code></td>
+<td align="center">No</td>
+<td>Efficient XML Interchange (EXI)</td>
+<td><a target="_blank" rel="noopener" href="https://www.w3.org/TR/exi/">W3C Recommendation</a></td>
+</tr>
+<tr>
+<td><code>gzip</code></td>
+<td align="center">Yes</td>
+<td>Gzip file format</td>
+<td><a target="_blank" rel="noopener" href="https://www.ietf.org/rfc/rfc1952.txt">RFC 1952</a></td>
+</tr>
+<tr>
+<td><code>identity</code></td>
+<td align="center">Yes</td>
+<td>&quot;No encoding&quot; - the response must not be encoded</td>
+<td><a href="#troubleshoot-response-compression">Troubleshoot response compression</a></td>
+</tr>
+<tr>
+<td><code>pack200-gzip</code></td>
+<td align="center">No</td>
+<td>Network Transfer Format for Java archives</td>
+<td><a target="_blank" rel="noopener" href="https://jcp.org/aboutJava/communityprocess/review/jsr200/index.html">JSR 200</a></td>
+</tr>
+<tr>
+<td><code>*</code> (asterisk)</td>
+<td align="center">Yes</td>
+<td>&quot;Wildcard&quot; - any available content encoding not explicitly requested</td>
+<td><a href="#troubleshoot-response-compression">Troubleshoot response compression</a></td>
+</tr>
+</tbody></table></div>
+<p>:::moniker-end</p>
+<p>:::moniker range=&quot;&gt;= aspnetcore-11.0&quot;</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Designation</th>
+<th align="center">Middleware</th>
+<th>Format</th>
+<th>Details</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>br</code></td>
+<td align="center">Yes (default)</td>
+<td>Brotli Compressed Data Format</td>
+<td><a target="_blank" rel="noopener" href="https://datatracker.ietf.org/doc/html/rfc7932">RFC 7932</a></td>
+</tr>
+<tr>
+<td><code>deflate</code></td>
+<td align="center">No</td>
+<td>DEFLATE Compressed Data Format</td>
+<td><a target="_blank" rel="noopener" href="https://datatracker.ietf.org/doc/html/rfc1951">RFC 1951</a></td>
+</tr>
+<tr>
+<td><code>exi</code></td>
+<td align="center">No</td>
+<td>Efficient XML Interchange (EXI)</td>
+<td><a target="_blank" rel="noopener" href="https://www.w3.org/TR/exi/">W3C Recommendation</a></td>
+</tr>
+<tr>
+<td><code>gzip</code></td>
+<td align="center">Yes</td>
+<td>Gzip file format</td>
+<td><a target="_blank" rel="noopener" href="https://www.ietf.org/rfc/rfc1952.txt">RFC 1952</a></td>
+</tr>
+<tr>
+<td><code>identity</code></td>
+<td align="center">Yes</td>
+<td>&quot;No encoding&quot; - the response must not be encoded</td>
+<td><a href="#troubleshoot-response-compression">Troubleshoot response compression</a></td>
+</tr>
+<tr>
+<td><code>pack200-gzip</code></td>
+<td align="center">No</td>
+<td>Network Transfer Format for Java archives</td>
+<td><a target="_blank" rel="noopener" href="https://jcp.org/aboutJava/communityprocess/review/jsr200/index.html">JSR 200</a></td>
+</tr>
+<tr>
+<td><code>zstd</code></td>
+<td align="center">Yes (default)</td>
+<td>Zstandard Compressed Data Format</td>
+<td><a target="_blank" rel="noopener" href="https://datatracker.ietf.org/doc/html/rfc8878">RFC 8878</a></td>
+</tr>
+<tr>
+<td><code>*</code> (asterisk)</td>
+<td align="center">Yes</td>
+<td>&quot;Wildcard&quot; - any available content encoding not explicitly requested</td>
+<td><a href="#troubleshoot-response-compression">Troubleshoot response compression</a></td>
+</tr>
+</tbody></table></div>
+<p>:::moniker-end</p>
+<p>:::moniker range=&quot;&gt;= aspnetcore-6.0&quot;</p>
+<p>For more information, see the <a target="_blank" rel="noopener" href="https://www.iana.org/assignments/http-parameters/http-parameters.xml#http-content-coding-registry">IANA Official Content Coding List</a> for HTTP parameters.</p>
+<p>The response compression middleware allows adding other compression providers for custom <code>Accept-Encoding</code> header values. For more information, see <a href="#custom-providers">Custom Providers</a> later in this article.</p>
+<p>The response compression middleware is capable of reacting to quality value (qvalue, <code>q</code>) weighting when sent by the client to prioritize compression schemes. For more information, see <a target="_blank" rel="noopener" href="https://www.rfc-editor.org/rfc/rfc9110#field.accept-encoding">RFC 9110: HTTP Semantics (Section 12.5.3 Accept-Encoding)</a>.</p>
+<p>Compression algorithms are subject to a tradeoff between compression speed and the effectiveness of the compression. <em>Effectiveness</em> in this context refers to the size of the output after compression. The smallest size is achieved by the optimal compression.</p>
+<p>The headers involved in requesting, sending, caching, and receiving compressed content are described in the following table.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Header</th>
+<th>Role</th>
+<th>Details</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>Accept-Encoding</code></td>
+<td>Sent from the client to the server to indicate the content encoding schemes acceptable to the client.</td>
+<td><a target="_blank" rel="noopener" href="https://developer.mozilla.org/docs/Web/HTTP/Reference/Headers/Accept-Encoding">Accept-Encoding header</a></td>
+</tr>
+<tr>
+<td><code>Content-Encoding</code></td>
+<td>Sent from the server to the client to indicate the encoding of the content in the payload.</td>
+<td><a target="_blank" rel="noopener" href="https://developer.mozilla.org/docs/Web/HTTP/Reference/Headers/Content-Encoding">Content-Encoding header</a></td>
+</tr>
+<tr>
+<td><code>Content-Length</code></td>
+<td>When compression occurs, the <code>Content-Length</code> header is removed because the body content changes when the response is compressed.</td>
+<td><a target="_blank" rel="noopener" href="https://developer.mozilla.org/docs/Web/HTTP/Reference/Headers/Content-Length">Content-Length header</a></td>
+</tr>
+<tr>
+<td><code>Content-MD5</code></td>
+<td>When compression occurs, the <code>Content-MD5</code> header is removed because the body content is changed and the hash is no longer valid.</td>
+<td><a target="_blank" rel="noopener" href="https://datatracker.ietf.org/doc/html/rfc1864">RFC 1864: The Content-MD5 Header Field</a></td>
+</tr>
+<tr>
+<td><code>Content-Type</code></td>
+<td>Specifies the <a target="_blank" rel="noopener" href="https://developer.mozilla.org/docs/Glossary/MIME_type">MIME type</a> of the content. Every response should specify its <code>Content-Type</code> value. The response compression middleware checks this value to determine if the response should be compressed. The response compression middleware specifies a set of <a href="#review-the-mime-types">default MIME types</a> that it can encode, and they can be replaced or added.</td>
+<td><a target="_blank" rel="noopener" href="https://developer.mozilla.org/docs/Web/HTTP/Reference/Headers/Content-Type">Content-Type header</a></td>
+</tr>
+<tr>
+<td><code>Vary</code></td>
+<td>When sent by the server with a value of <code>Accept-Encoding</code> to clients and proxies, the <code>Vary</code> header indicates to the client or proxy that it should cache (vary) responses based on the value of the <code>Accept-Encoding</code> header of the request. The result of returning content with the <code>Vary: Accept-Encoding</code> header is that both compressed and uncompressed responses are cached separately.</td>
+<td><a target="_blank" rel="noopener" href="https://developer.mozilla.org/docs/Web/HTTP/Reference/Headers/Vary">Vary header</a></td>
+</tr>
+</tbody></table></div>
+<p>Explore the features of the response compression middleware with the <a target="_blank" rel="noopener" href="https://github.com/dotnet/AspNetCore.Docs/tree/main/aspnetcore/performance/response-compression/samples">sample app</a>. The sample illustrates:</p>
+<ul>
+<li>Compression of app responses by using Gzip and custom compression providers.</li>
+<li>How to add a <a target="_blank" rel="noopener" href="https://developer.mozilla.org/docs/Web/HTTP/Guides/MIME_types">MIME type</a> to the default list of MIME types for compression.</li>
+<li>How to add a custom response compression provider.</li>
+</ul>
+<h2 id="configure-the-response-compression-middleware">Configure the response compression middleware</h2>
+<p>:::moniker-end</p>
+<p>:::moniker range=&quot;&gt;= aspnetcore-6.0 &lt; aspnetcore-11.0&quot;</p>
+<p>The following code shows how to enable the response compression middleware for default <a target="_blank" rel="noopener" href="https://developer.mozilla.org/docs/Web/HTTP/Guides/MIME_types">MIME types</a> and compression providers (<a href="#brotli-and-gzip-compression-providers">Brotli and Gzip</a>):</p>
+<p>:::moniker-end</p>
+<p>:::moniker range=&quot;&gt;= aspnetcore-11.0&quot;</p>
+<p>The following code shows how to enable the response compression middleware for default <a target="_blank" rel="noopener" href="https://developer.mozilla.org/docs/Web/HTTP/Guides/MIME_types">MIME types</a> and compression providers (<a href="#review-providers">Brotli, Gzip, and Zstandard</a>):</p>
+<p>:::moniker-end</p>
+<p>:::moniker range=&quot;&gt;= aspnetcore-6.0&quot;</p>
+<h3 id="notes-about-response-compression-middleware">Notes about response compression middleware</h3>
+<p>When you work with response compression middleware, keep in mind the following points:</p>
+<ul>
+<li>Setting the <code>EnableForHttps</code> property to <code>true</code> is a security risk. For more information, see the <a href="#explore-compression-with-https">Compression with HTTPS</a> section earlier in this article.</li>
+<li>The app.UseResponseCompression method must be called <em><strong>before</strong></em> any middleware that compresses responses. For more information, see <a href="#/doc/aspnet/fundamentals/middleware/index@middleware-order">ASP.NET Core middleware &gt; Middleware order</a>.</li>
+<li>Use a tool such as <a target="_blank" rel="noopener" href="https://www.firefox.com/channel/desktop/developer/">Firefox Browser - Developer edition</a> to set the <code>Accept-Encoding</code> request header and examine the response headers, size, and body.</li>
+</ul>
+<p>Submit a request to the sample app without the <code>Accept-Encoding</code> header and observe that the response is uncompressed. The <code>Content-Encoding</code> header isn&#39;t in the Response Headers collection.</p>
+<p>For example, in Firefox Developer:</p>
+<ol>
+<li>Select the network tab.</li>
+<li>Right-click the request in the <a target="_blank" rel="noopener" href="https://firefox-source-docs.mozilla.org/devtools-user/network_monitor/request_list/index.html">Network request list</a> and select <strong>Edit and resend</strong>.</li>
+<li>Change the <code>Accept-Encoding:</code> value from  <code>gzip, deflate, br</code> to <code>none</code>.</li>
+<li>Select <strong>Send</strong>.</li>
+</ol>
+<p>Submit a request to the sample app with a browser by using the developer tools and observe that the response is compressed. The <code>Content-Encoding</code> and <code>Vary</code> headers are present on the response.</p>
+<h2 id="review-providers">Review providers</h2>
+<p>:::moniker-end</p>
+<p>:::moniker range=&quot;&gt;= aspnetcore-6.0 &lt; aspnetcore-11.0&quot;</p>
+<p>This section provides details about compression providers, including Brotli, Gzip, and custom providers.</p>
+<p>:::moniker-end</p>
+<p>:::moniker range=&quot;&gt;= aspnetcore-11.0&quot;</p>
+<p>This section provides details about compression providers, including Brotli, Gzip, Zstandard, and custom providers.</p>
+<p>:::moniker-end</p>
+<p>:::moniker range=&quot;&gt;= aspnetcore-6.0&quot;</p>
+<h3 id="brotli-and-gzip-compression-providers">Brotli and Gzip compression providers</h3>
+<p>Use the <code>BrotliCompressionProvider</code> class to compress responses with the <a target="_blank" rel="noopener" href="https://datatracker.ietf.org/doc/html/rfc7932">RFC 7932: Brotli Compressed Data Format</a>.</p>
+<p>If <a target="_blank" rel="noopener" href="https://github.com/dotnet/aspnetcore/blob/main/src/Middleware/ResponseCompression/src/ResponseCompressionProvider.cs#L44">no compression providers are explicitly added</a> to the <code>CompressionProviderCollection</code> class:</p>
+<p>:::moniker-end</p>
+<p>:::moniker range=&quot;&gt;= aspnetcore-6.0 &lt; aspnetcore-11.0&quot;</p>
+<ul>
+<li>By default, the Brotli and Gzip compression providers are added to the array of compression providers.</li>
+<li>When the client supports the Brotli compressed data format, compression defaults to Brotli compression.</li>
+<li>If the client doesn&#39;t support Brotli, compression defaults to Gzip when the client supports Gzip compression.</li>
+</ul>
+<p>:::moniker-end</p>
+<p>:::moniker range=&quot;&gt;= aspnetcore-11.0&quot;</p>
+<ul>
+<li>By default, the Brotli, Gzip, and Zstandard compression providers are added to the array of compression providers.</li>
+<li>When the client supports the Zstandard compressed data format, compression defaults to Zstandard compression.</li>
+<li>If the client doesn&#39;t support Zstandard but supports Brotli, compression defaults to Brotli compression.</li>
+<li>If the client doesn&#39;t support Zstandard or Brotli, compression defaults to Gzip when the client supports Gzip compression.</li>
+</ul>
+<p>:::moniker-end</p>
+<p>:::moniker range=&quot;&gt;= aspnetcore-6.0&quot;</p>
+<p>When a compression provider is added, other providers aren&#39;t added. For example, if the Gzip compression provider is the only provider explicitly added, no other compression providers are added.</p>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>Documentation links to .NET reference source usually load the repository&#39;s default branch, which represents the current development for the next release of .NET. To select a tag for a specific release, use the <strong>Switch branches or tags</strong> dropdown list.</p>
+</div></aside>
+<p>The following code:</p>
+<ul>
+<li>Enables response compression for HTTPS requests.</li>
+<li>Adds the Brotli and Gzip response compression providers.</li>
+</ul>
+<p>[!code-csharp<a href="response-compression/samples/6.x/SampleApp/Program.cs?name=snippet2&amp;highlight=6-11"></a>]</p>
+<p>Set the compression level with the <code>BrotliCompressionProviderOptions</code> class and <code>GzipCompressionProviderOptions</code> class. The Brotli and Gzip compression providers default to the fastest compression level as determined by the CompressionLevel.Fastest enum. However, this approach might not produce the most efficient compression. If the most efficient compression is desired, configure the response compression middleware for optimal compression.</p>
+<p>For values that indicate whether a compression operation emphasizes speed or compression size, see the <a href="/dotnet/api/system.io.compression.compressionlevel">CompressionLevel Enum</a>.</p>
+<p>[!code-csharp<a href="response-compression/samples/6.x/SampleApp/Program.cs?name=snippet2&amp;highlight=13-21"></a>]</p>
+<p>:::moniker-end</p>
+<p>:::moniker range=&quot;&gt;= aspnetcore-11.0&quot;</p>
+<h3 id="zstandard-compression-provider">Zstandard compression provider</h3>
+<p>Use the <code>ZstandardCompressionProvider</code> class to compress responses with the <a target="_blank" rel="noopener" href="https://datatracker.ietf.org/doc/html/rfc8878">RFC 8878: Zstandard Compression for HTTP</a>.</p>
+<p>Set the compression quality with the <code>ZstandardCompressionProviderOptions</code> class. The Zstandard quality level ranges from 1 to 22, where higher values produce better compression but slower speeds. The following example sets the Zstandard compression quality:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">builder.Services.Configure(options =&gt;
+{
+    options.CompressionOptions = new ZstandardCompressionOptions
+    {
+        Quality = 6 // 1 to 22, higher = better compression, slower
+    };
+});</code></pre></div></figure>
+<p>:::moniker-end</p>
+<p>:::moniker range=&quot;&gt;= aspnetcore-6.0&quot;</p>
+<h3 id="custom-providers">Custom providers</h3>
+<p>Create custom compression implementations with the <code>ICompressionProvider</code> interface. The <code>EncodingName</code> property represents the content encoding that this <code>ICompressionProvider</code> produces. The response compression middleware uses this information to choose the provider based on the list specified in the <code>Accept-Encoding</code> header of the request.</p>
+<p>Requests to the sample app with the <code>Accept-Encoding: mycustomcompression</code> header return a response with a <code>Content-Encoding: mycustomcompression</code> header. The client must be able to decompress the custom encoding in order for a custom compression implementation to work.</p>
+<p>[!code-csharp<a href="response-compression/samples/6.x/SampleApp/Program.cs?name=snippet_cust&amp;highlight=9"></a>]</p>
+<p>[!code-csharp<a href="response-compression/samples/6.x/SampleApp/CustomCompressionProvider.cs"></a>]</p>
+<p>In the preceding code, the sample doesn&#39;t compress the response body. However, the sample shows where to implement a custom compression algorithm.</p>
+<h2 id="review-the-mime-types">Review the MIME types</h2>
+<p>The response compression middleware specifies a default set of MIME types for compression. Review the <a target="_blank" rel="noopener" href="https://github.com/dotnet/aspnetcore/blob/main/src/Middleware/ResponseCompression/src/ResponseCompressionDefaults.cs">source code for a complete list of supported MIME types</a>.</p>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>Documentation links to .NET reference source usually load the repository&#39;s default branch, which represents the current development for the next release of .NET. To select a tag for a specific release, use the <strong>Switch branches or tags</strong> dropdown list.</p>
+</div></aside>
+<p>Replace or append MIME types with the ResponseCompressionOptions.MimeTypes property. Wildcard MIME types such as <code>text/*</code> aren&#39;t supported. The sample app adds a MIME type for <code>image/svg+xml</code> and compresses and serves the ASP.NET Core banner image <em>banner.svg</em>.</p>
+<p>[!code-csharp<a href="response-compression/samples/6.x/SampleApp/Program.cs?name=snippet_mime&amp;highlight=12-14"></a>]</p>
+<h2 id="add-the-vary-header">Add the Vary header</h2>
+<p>When responses are compressed based on the <a target="_blank" rel="noopener" href="https://developer.mozilla.org/docs/Web/HTTP/Reference/Headers/Accept-Encoding">Accept-Encoding request header</a>, there can be uncompressed and multiple compressed versions of the response. To instruct client and proxy caches that multiple versions exist and should be stored, the <code>Vary</code> header is added with an <code>Accept-Encoding</code> value. The response middleware <a target="_blank" rel="noopener" href="https://github.com/dotnet/aspnetcore/blob/main/src/Middleware/ResponseCompression/src/ResponseCompressionBody.cs#L198-L241">adds the &#39;Vary&#39; header</a> in the <em>ResponseCompressionBody.cs</em> file automatically when the response is compressed.</p>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>Documentation links to .NET reference source usually load the repository&#39;s default branch, which represents the current development for the next release of .NET. To select a tag for a specific release, use the <strong>Switch branches or tags</strong> dropdown list.</p>
+</div></aside>
+<p>:::moniker-end</p>
+<p>:::moniker range=&quot;&gt;= aspnetcore-11.0&quot;</p>
+<p>The response compression middleware adds <code>Vary: Accept-Encoding</code> even to responses whose body it doesn&#39;t compress—for example, when the content type isn&#39;t configured for compression or the client didn&#39;t request a supported encoding. The broader behavior gives shared caches and CDNs a correct cache key so a stored compressed response isn&#39;t served to a client that didn&#39;t request that encoding. If the response already lists <code>Accept-Encoding</code> in its <code>Vary</code> header, the middleware doesn&#39;t add a duplicate. For details and mitigation, see <a href="#/doc/aspnet/breaking-changes/11/response-compression-always-vary">Response compression always emits Vary: Accept-Encoding</a>.</p>
+<p>:::moniker-end</p>
+<p>:::moniker range=&quot;&gt;= aspnetcore-6.0 &lt; aspnetcore-11.0&quot;</p>
+<p>The <code>Vary: Accept-Encoding</code> header is only added when the response is compressed. This behavior changes for apps targeting .NET 11 or later. For more information, see <a href="#/doc/aspnet/breaking-changes/11/response-compression-always-vary">Response compression always emits Vary: Accept-Encoding</a>.</p>
+<p>:::moniker-end</p>
+<p>:::moniker range=&quot;&gt;= aspnetcore-6.0&quot;</p>
+<h2 id="issues-with-nginx-reverse-proxy">Issues with Nginx reverse proxy</h2>
+<p>When Nginx proxies the request, the <code>Accept-Encoding</code> header is removed. Removal of the <code>Accept-Encoding</code> header prevents the response compression middleware from compressing the response. For more information, see <a target="_blank" rel="noopener" href="https://docs.nginx.com/nginx/admin-guide/web-server/compression/">Nginx: Compression and decompression</a>. This issue is tracked in <a target="_blank" rel="noopener" href="https://github.com/dotnet/aspnetcore/issues/5989">GitHub dotnet/aspnetcore issue #5989</a> - <em>Figure out pass-through compression for Nginx</em>.</p>
+<h2 id="disable-iis-dynamic-compression">Disable IIS dynamic compression</h2>
+<p>To disable IIS Dynamic Compression Module configured at the server level, see <a href="#/doc/aspnet/host-and-deploy/iis/modules@disabling-iis-modules">Disabling IIS modules</a>.</p>
+<h2 id="troubleshoot-response-compression">Troubleshoot response compression</h2>
+<p>Use a tool like <a target="_blank" rel="noopener" href="https://www.firefox.com/channel/desktop/developer/">Firefox Browser - Developer edition</a> that lets you set the <code>Accept-Encoding</code> request header and study the response headers, size, and body. By default, response compression middleware compresses responses that meet the following conditions:</p>
+<p>:::moniker-end</p>
+<p>:::moniker range=&quot;&gt;= aspnetcore-6.0 &lt; aspnetcore-11.0&quot;</p>
+<ul>
+<li>The <code>Accept-Encoding</code> header is present with a value of <code>br</code>, <code>gzip</code>, <code>*</code> (asterisk), or custom encoding that matches a custom compression provider. The value must not be <code>identity</code> (no encoding) or have a quality value (qvalue, <code>q</code>) setting of 0 (zero).</li>
+</ul>
+<p>:::moniker-end</p>
+<p>:::moniker range=&quot;&gt;= aspnetcore-11.0&quot;</p>
+<ul>
+<li>The <code>Accept-Encoding</code> header is present with a value of <code>br</code>, <code>gzip</code>, <code>zstd</code>, <code>*</code> (asterisk), or custom encoding that matches a custom compression provider. The value must not be <code>identity</code> (no encoding) or have a quality value (qvalue, <code>q</code>) setting of 0 (zero).</li>
+</ul>
+<p>:::moniker-end</p>
+<p>:::moniker range=&quot;&gt;= aspnetcore-6.0&quot;</p>
+<ul>
+<li><p>The MIME type (<code>Content-Type</code>) must be set and must match a MIME type configured on the <code>ResponseCompressionOptions</code> class.</p>
+</li>
+<li><p>The request must not include the <a target="_blank" rel="noopener" href="https://developer.mozilla.org/docs/Web/HTTP/Reference/Headers/Content-Range">Content-Range header</a>.</p>
+</li>
+<li><p>The request must use the insecure hypertext protocol (http), unless the secure hypertext protocol (https) is configured in the response compression middleware options.</p>
+<blockquote>
+<p>[!IMPORTANT]
+Review the risks associated with enabling secure content compression, as described in <a href="#explore-compression-with-https">Compression with HTTPS</a> earlier in this article.</p>
+</blockquote>
+</li>
+</ul>
+<h2 id="review-the-azure-deployed-sample">Review the Azure deployed sample</h2>
+<p>The sample app deployed to Azure has the following <em>Program.cs</em> file:</p>
+<p>[!code-csharp<a href="response-compression/samples/6.x/SampleApp/Program.cs?name=snippet_opt"></a>]</p>
+<h2 id="related-content">Related content</h2>
+<ul>
+<li><a target="_blank" rel="noopener" href="https://github.com/dotnet/AspNetCore.Docs/tree/main/aspnetcore/performance/response-compression/samples">View or download sample code</a> (<a href="#/doc/aspnet/fundamentals/index@how-to-download-a-sample">how to download</a>)</li>
+<li><a target="_blank" rel="noopener" href="https://github.com/dotnet/aspnetcore/tree/main/src/Middleware/ResponseCompression/src">Response compression middleware source</a></li>
+<li><a target="_blank" rel="noopener" href="https://www.rfc-editor.org/rfc/rfc9110#name-content-codings">RFC 9110: HTTP Semantics (Section 8.4.1 Content Codings)</a></li>
+<li><a target="_blank" rel="noopener" href="https://www.rfc-editor.org/rfc/rfc9110#gzip.coding">RFC 9110: HTTP Semantics (Section 8.4.1.3 Gzip Coding)</a></li>
+<li><a target="_blank" rel="noopener" href="https://www.ietf.org/rfc/rfc1952.txt">RFC 1952: GZIP file format specification version 4.3</a></li>
+<li><a target="_blank" rel="noopener" href="https://www.rfc-editor.org/rfc/rfc8878">RFC 8878: Zstandard Compression for HTTP</a></li>
+</ul>
+<p>:::moniker-end</p>
+<p>:::moniker range=&quot;&lt; aspnetcore-6.0&quot;</p>
+<p>Network bandwidth is a limited resource. Reducing the size of the response usually increases the responsiveness of an app, often dramatically. One way to reduce payload sizes is to compress an app&#39;s responses.</p>
+<p><a target="_blank" rel="noopener" href="https://github.com/dotnet/AspNetCore.Docs/tree/main/aspnetcore/performance/response-compression/samples">View or download sample code</a> (<a href="#/doc/aspnet/fundamentals/index@how-to-download-a-sample">how to download</a>)</p>
+<h2 id="when-to-use-response-compression-middleware">When to use response compression middleware</h2>
+<p>Use server-based response compression technologies in IIS, Apache, or Nginx. The performance of the middleware probably won&#39;t match that of the server modules. <a href="#/doc/aspnet/fundamentals/servers/httpsys">HTTP.sys</a> server and <a href="#/doc/aspnet/fundamentals/servers/kestrel">Kestrel</a> server don&#39;t currently offer built-in compression support.</p>
+<p>Use response compression middleware when you&#39;re:</p>
+<ul>
+<li>Unable to use the following server-based compression technologies:<ul>
+<li><a target="_blank" rel="noopener" href="https://www.iis.net/overview/reliability/dynamiccachingandcompression">IIS Dynamic Compression module</a></li>
+<li><a target="_blank" rel="noopener" href="https://httpd.apache.org/docs/current/mod/mod_deflate.html">Apache mod_deflate module</a></li>
+<li><a target="_blank" rel="noopener" href="https://www.nginx.com/resources/admin-guide/compression-and-decompression/">Nginx Compression and Decompression</a></li>
+</ul>
+</li>
+<li>Hosting directly on:<ul>
+<li><a href="#/doc/aspnet/fundamentals/servers/httpsys">HTTP.sys server</a> (formerly called WebListener)</li>
+<li><a href="#/doc/aspnet/fundamentals/servers/kestrel">Kestrel server</a></li>
+</ul>
+</li>
+</ul>
+<h2 id="response-compression">Response compression</h2>
+<p>Usually, any response not natively compressed can benefit from response compression. Responses not natively compressed typically include: CSS, JavaScript, HTML, XML, and JSON. You shouldn&#39;t compress natively compressed assets, such as PNG files. If you attempt to further compress a natively compressed response, any small additional reduction in size and transmission time will likely be overshadowed by the time it took to process the compression. Don&#39;t compress files smaller than about 150-1000 bytes (depending on the file&#39;s content and the efficiency of compression). The overhead of compressing small files may produce a compressed file larger than the uncompressed file.</p>
+<p>When a client can process compressed content, the client must inform the server of its capabilities by sending the <code>Accept-Encoding</code> header with the request. When a server sends compressed content, it must include information in the <code>Content-Encoding</code> header on how the compressed response is encoded. Content encoding designations supported by the middleware are shown in the following table.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th><code>Accept-Encoding</code> header values</th>
+<th align="center">Middleware supported</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>br</code></td>
+<td align="center">Yes (default)</td>
+<td><a target="_blank" rel="noopener" href="https://tools.ietf.org/html/rfc7932">Brotli compressed data format</a></td>
+</tr>
+<tr>
+<td><code>deflate</code></td>
+<td align="center">No</td>
+<td><a target="_blank" rel="noopener" href="https://tools.ietf.org/html/rfc1951">DEFLATE compressed data format</a></td>
+</tr>
+<tr>
+<td><code>exi</code></td>
+<td align="center">No</td>
+<td><a target="_blank" rel="noopener" href="https://www.w3.org/TR/exi/">W3C Efficient XML Interchange</a></td>
+</tr>
+<tr>
+<td><code>gzip</code></td>
+<td align="center">Yes</td>
+<td><a target="_blank" rel="noopener" href="https://tools.ietf.org/html/rfc1952">Gzip file format</a></td>
+</tr>
+<tr>
+<td><code>identity</code></td>
+<td align="center">Yes</td>
+<td>&quot;No encoding&quot; identifier: The response must not be encoded.</td>
+</tr>
+<tr>
+<td><code>pack200-gzip</code></td>
+<td align="center">No</td>
+<td><a target="_blank" rel="noopener" href="https://jcp.org/aboutJava/communityprocess/review/jsr200/index.html">Network Transfer Format for Java Archives</a></td>
+</tr>
+<tr>
+<td><code>*</code></td>
+<td align="center">Yes</td>
+<td>Any available content encoding not explicitly requested</td>
+</tr>
+</tbody></table></div>
+<p>For more information, see the <a target="_blank" rel="noopener" href="https://www.iana.org/assignments/http-parameters/http-parameters.xml#http-content-coding-registry">IANA Official Content Coding List</a>.</p>
+<p>The middleware allows you to add additional compression providers for custom <code>Accept-Encoding</code> header values. For more information, see <a href="#custom-providers">Custom Providers</a> below.</p>
+<p>The middleware is capable of reacting to quality value (qvalue, <code>q</code>) weighting when sent by the client to prioritize compression schemes. For more information, see <a target="_blank" rel="noopener" href="https://www.rfc-editor.org/rfc/rfc9110#field.accept-encoding">RFC 9110: Accept-Encoding</a>.</p>
+<p>Compression algorithms are subject to a tradeoff between compression speed and the effectiveness of the compression. <em>Effectiveness</em> in this context refers to the size of the output after compression. The smallest size is achieved by the most <em>optimal</em> compression.</p>
+<p>The headers involved in requesting, sending, caching, and receiving compressed content are described in the table below.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Header</th>
+<th>Role</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>Accept-Encoding</code></td>
+<td>Sent from the client to the server to indicate the content encoding schemes acceptable to the client.</td>
+</tr>
+<tr>
+<td><code>Content-Encoding</code></td>
+<td>Sent from the server to the client to indicate the encoding of the content in the payload.</td>
+</tr>
+<tr>
+<td><code>Content-Length</code></td>
+<td>When compression occurs, the <code>Content-Length</code> header is removed, since the body content changes when the response is compressed.</td>
+</tr>
+<tr>
+<td><code>Content-MD5</code></td>
+<td>When compression occurs, the <code>Content-MD5</code> header is removed, since the body content has changed and the hash is no longer valid.</td>
+</tr>
+<tr>
+<td><code>Content-Type</code></td>
+<td>Specifies the MIME type of the content. Every response should specify its <code>Content-Type</code>. The middleware checks this value to determine if the response should be compressed. The middleware specifies a set of <a href="#review-the-mime-types">default MIME types</a> that it can encode, but you can replace or add MIME types.</td>
+</tr>
+<tr>
+<td><code>Vary</code></td>
+<td>When sent by the server with a value of <code>Accept-Encoding</code> to clients and proxies, the <code>Vary</code> header indicates to the client or proxy that it should cache (vary) responses based on the value of the <code>Accept-Encoding</code> header of the request. The result of returning content with the <code>Vary: Accept-Encoding</code> header is that both compressed and uncompressed responses are cached separately.</td>
+</tr>
+</tbody></table></div>
+<p>Explore the features of the response compression middleware with the <a target="_blank" rel="noopener" href="https://github.com/dotnet/AspNetCore.Docs/tree/main/aspnetcore/performance/response-compression/samples">sample app</a>. The sample illustrates:</p>
+<ul>
+<li>The compression of app responses using Gzip and custom compression providers.</li>
+<li>How to add a MIME type to the default list of MIME types for compression.</li>
+</ul>
+<h2 id="configuration">Configuration</h2>
+<p>The following code shows how to enable the response compression middleware for default MIME types and compression providers (<a href="#brotli-compression-provider">Brotli</a> and <a href="#gzip-compression-provider">Gzip</a>):</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">public class Startup
+{
+    public void ConfigureServices(IServiceCollection services)
+    {
+        services.AddResponseCompression();
+    }
+
+    public void Configure(IApplicationBuilder app, IHostingEnvironment env)
+    {
+        app.UseResponseCompression();
+    }
+}</code></pre></div></figure>
+<p>Notes:</p>
+<ul>
+<li><code>app.UseResponseCompression</code> must be called before any middleware that compresses responses. For more information, see <a href="#/doc/aspnet/fundamentals/middleware/index@middleware-order">ASP.NET Core middleware</a>.</li>
+<li>Use a tool such as <a target="_blank" rel="noopener" href="https://www.telerik.com/fiddler">Fiddler</a>, <a target="_blank" rel="noopener" href="https://www.mozilla.org/firefox/developer/">Firefox Browser Developer</a> to set the <code>Accept-Encoding</code> request header and study the response headers, size, and body.</li>
+</ul>
+<p>Submit a request to the sample app without the <code>Accept-Encoding</code> header and observe that the response is uncompressed. The <code>Content-Encoding</code> and <code>Vary</code> headers aren&#39;t present on the response.</p>
+<p><img src="response-compression/_static/request-uncompressed.png" alt="Fiddler window showing result of a request without the Accept-Encoding header. The response isn&#39;t compressed."></p>
+<p>Submit a request to the sample app with the <code>Accept-Encoding: br</code> header (Brotli compression) and observe that the response is compressed. The <code>Content-Encoding</code> and <code>Vary</code> headers are present on the response.</p>
+<p><img src="response-compression/_static/request-compressed-br.png" alt="Fiddler window showing result of a request with the Accept-Encoding header and a value of br. The Vary and Content-Encoding headers are added to the response. The response is compressed."></p>
+<h2 id="providers">Providers</h2>
+<h3 id="brotli-compression-provider">Brotli Compression Provider</h3>
+<p>Use the <code>BrotliCompressionProvider</code> to compress responses with the <a target="_blank" rel="noopener" href="https://tools.ietf.org/html/rfc7932">Brotli compressed data format</a>.</p>
+<p>If no compression providers are explicitly added to the <code>CompressionProviderCollection</code>:</p>
+<ul>
+<li>The Brotli Compression Provider is added by default to the array of compression providers along with the <a href="#gzip-compression-provider">Gzip compression provider</a>.</li>
+<li>Compression defaults to Brotli compression when the Brotli compressed data format is supported by the client. If Brotli isn&#39;t supported by the client, compression defaults to Gzip when the client supports Gzip compression.</li>
+</ul>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">public void ConfigureServices(IServiceCollection services)
+{
+    services.AddResponseCompression();
+}</code></pre></div></figure>
+<p>The Brotli Compression Provider must be added when any compression providers are explicitly added:</p>
+<p>[!code-csharp<a href="response-compression/samples/3.x/SampleApp/Startup.cs?name=snippet1&amp;highlight=5"></a>]</p>
+<p>Set the compression level with <code>BrotliCompressionProviderOptions</code>. The Brotli Compression Provider defaults to the fastest compression level (CompressionLevel.Fastest), which might not produce the most efficient compression. If the most efficient compression is desired, configure the middleware for optimal compression.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Compression Level</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>CompressionLevel.Fastest</td>
+<td>Compression should complete as quickly as possible, even if the resulting output isn&#39;t optimally compressed.</td>
+</tr>
+<tr>
+<td>CompressionLevel.NoCompression</td>
+<td>No compression should be performed.</td>
+</tr>
+<tr>
+<td>CompressionLevel.Optimal</td>
+<td>Responses should be optimally compressed, even if the compression takes more time to complete.</td>
+</tr>
+</tbody></table></div>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">public void ConfigureServices(IServiceCollection services)
+{
+    services.AddResponseCompression();
+
+    services.Configure(options =&gt; 
+    {
+        options.Level = CompressionLevel.Fastest;
+    });
+}</code></pre></div></figure>
+<h3 id="gzip-compression-provider">Gzip Compression Provider</h3>
+<p>Use the <code>GzipCompressionProvider</code> to compress responses with the <a target="_blank" rel="noopener" href="https://tools.ietf.org/html/rfc1952">Gzip file format</a>.</p>
+<p>If no compression providers are explicitly added to the <code>CompressionProviderCollection</code>:</p>
+<ul>
+<li>The Gzip Compression Provider is added by default to the array of compression providers along with the <a href="#brotli-compression-provider">Brotli Compression Provider</a>.</li>
+<li>Compression defaults to Brotli compression when the Brotli compressed data format is supported by the client. If Brotli isn&#39;t supported by the client, compression defaults to Gzip when the client supports Gzip compression.</li>
+</ul>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">public void ConfigureServices(IServiceCollection services)
+{
+    services.AddResponseCompression();
+}</code></pre></div></figure>
+<p>The Gzip Compression Provider must be added when any compression providers are explicitly added:</p>
+<p>[!code-csharp<a href="response-compression/samples/3.x/SampleApp/Startup.cs?name=snippet1&amp;highlight=6"></a>]</p>
+<p>Set the compression level with <code>GzipCompressionProviderOptions</code>. The Gzip Compression Provider defaults to the fastest compression level (CompressionLevel.Fastest), which might not produce the most efficient compression. If the most efficient compression is desired, configure the middleware for optimal compression.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Compression Level</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>CompressionLevel.Fastest</td>
+<td>Compression should complete as quickly as possible, even if the resulting output isn&#39;t optimally compressed.</td>
+</tr>
+<tr>
+<td>CompressionLevel.NoCompression</td>
+<td>No compression should be performed.</td>
+</tr>
+<tr>
+<td>CompressionLevel.Optimal</td>
+<td>Responses should be optimally compressed, even if the compression takes more time to complete.</td>
+</tr>
+</tbody></table></div>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">public void ConfigureServices(IServiceCollection services)
+{
+    services.AddResponseCompression();
+
+    services.Configure(options =&gt; 
+    {
+        options.Level = CompressionLevel.Fastest;
+    });
+}</code></pre></div></figure>
+<h3 id="custom-providers">Custom providers</h3>
+<p>Create custom compression implementations with <code>ICompressionProvider</code>. The <code>EncodingName</code> represents the content encoding that this <code>ICompressionProvider</code> produces. The middleware uses this information to choose the provider based on the list specified in the <code>Accept-Encoding</code> header of the request.</p>
+<p>Using the sample app, the client submits a request with the <code>Accept-Encoding: mycustomcompression</code> header. The middleware uses the custom compression implementation and returns the response with a <code>Content-Encoding: mycustomcompression</code> header. The client must be able to decompress the custom encoding in order for a custom compression implementation to work.</p>
+<p>[!code-csharp<a href="response-compression/samples/3.x/SampleApp/Startup.cs?name=snippet1&amp;highlight=7"></a>]</p>
+<p>[!code-csharp<a href="response-compression/samples/3.x/SampleApp/CustomCompressionProvider.cs?name=snippet1"></a>]</p>
+<p>Submit a request to the sample app with the <code>Accept-Encoding: mycustomcompression</code> header and observe the response headers. The <code>Vary</code> and <code>Content-Encoding</code> headers are present on the response. The response body (not shown) isn&#39;t compressed by the sample. There isn&#39;t a compression implementation in the <code>CustomCompressionProvider</code> class of the sample. However, the sample shows where you would implement such a compression algorithm.</p>
+<p><img src="response-compression/_static/request-custom-compression.png" alt="Fiddler window showing result of a request with the Accept-Encoding header and a value of mycustomcompression. The Vary and Content-Encoding headers are added to the response."></p>
+<h2 id="mime-types">MIME types</h2>
+<p>The middleware specifies a default set of MIME types for compression:</p>
+<ul>
+<li><code>application/javascript</code></li>
+<li><code>application/json</code></li>
+<li><code>application/xml</code></li>
+<li><code>text/css</code></li>
+<li><code>text/html</code></li>
+<li><code>text/json</code></li>
+<li><code>text/plain</code></li>
+<li><code>text/xml</code></li>
+</ul>
+<p>Replace or append MIME types with the response compression middleware options. Note that wildcard MIME types, such as <code>text/*</code> aren&#39;t supported. The sample app adds a MIME type for <code>image/svg+xml</code> and compresses and serves the ASP.NET Core banner image (<em>banner.svg</em>).</p>
+<p>[!code-csharp<a href="response-compression/samples/3.x/SampleApp/Startup.cs?name=snippet1&amp;highlight=8-10"></a>]</p>
+<p><a name="risk"></a></p>
+<h2 id="compression-with-secure-protocol">Compression with secure protocol</h2>
+<p>Compressed responses over secure connections can be controlled with the <code>EnableForHttps</code> option, which is disabled by default. Using compression with dynamically generated pages can lead to security problems such as the <a target="_blank" rel="noopener" href="https://wikipedia.org/wiki/CRIME_(security_exploit)">CRIME</a> and <a target="_blank" rel="noopener" href="https://wikipedia.org/wiki/BREACH_(security_exploit)">BREACH</a> attacks.</p>
+<h2 id="add-the-vary-header">Add the Vary header</h2>
+<p>When compressing responses based on the <code>Accept-Encoding</code> header, there are potentially multiple compressed versions of the response and an uncompressed version. In order to instruct client and proxy caches that multiple versions exist and should be stored, the <code>Vary</code> header is added with an <code>Accept-Encoding</code> value. In ASP.NET Core 2.0 or later, the middleware adds the <code>Vary</code> header automatically when the response is compressed.</p>
+<h2 id="middleware-issue-when-behind-an-nginx-reverse-proxy">Middleware issue when behind an Nginx reverse proxy</h2>
+<p>When a request is proxied by Nginx, the <code>Accept-Encoding</code> header is removed. Removal of the <code>Accept-Encoding</code> header prevents the middleware from compressing the response. For more information, see <a target="_blank" rel="noopener" href="https://www.nginx.com/resources/admin-guide/compression-and-decompression/">NGINX: Compression and Decompression</a>. This issue is tracked by <a target="_blank" rel="noopener" href="https://github.com/dotnet/aspnetcore/issues/5989">Figure out pass-through compression for Nginx (dotnet/aspnetcore#5989)</a>.</p>
+<h2 id="working-with-iis-dynamic-compression">Working with IIS dynamic compression</h2>
+<p>If you have an active IIS Dynamic Compression Module configured at the server level that you would like to disable for an app, disable the module with an addition to the <em>web.config</em> file. For more information, see <a href="#/doc/aspnet/host-and-deploy/iis/modules@disabling-iis-modules">Disabling IIS modules</a>.</p>
+<h2 id="troubleshooting">Troubleshooting</h2>
+<p>Use a tool like <a target="_blank" rel="noopener" href="https://www.telerik.com/fiddler">Fiddler</a> or <a target="_blank" rel="noopener" href="https://www.mozilla.org/firefox/developer/">Firefox Browser Developer</a>, which allow you to set the <code>Accept-Encoding</code> request header and study the response headers, size, and body. By default, response compression middleware compresses responses that meet the following conditions:</p>
+<ul>
+<li>The <code>Accept-Encoding</code> header is present with a value of <code>br</code>, <code>gzip</code>, <code>*</code>, or custom encoding that matches a custom compression provider that you&#39;ve established. The value must not be <code>identity</code> or have a quality value (qvalue, <code>q</code>) setting of 0 (zero).</li>
+<li>The MIME type (<code>Content-Type</code>) must be set and must match a MIME type configured on the <code>ResponseCompressionOptions</code>.</li>
+<li>The request must not include the <code>Content-Range</code> header.</li>
+<li>The request must use insecure protocol (http), unless secure protocol (https) is configured in the response compression middleware options. <em>Note the danger <a href="#risk">described above</a> when enabling secure content compression.</em></li>
+</ul>
+<h2 id="related-content">Related content</h2>
+<ul>
+<li><a href="#/doc/aspnet/fundamentals/startup">App startup in ASP.NET Core</a></li>
+<li><a href="#/doc/aspnet/fundamentals/middleware/index">ASP.NET Core middleware</a></li>
+<li><a target="_blank" rel="noopener" href="https://developer.mozilla.org/docs/Web/HTTP/Headers/Accept-Encoding">Mozilla Developer Network: Accept-Encoding</a></li>
+<li><a target="_blank" rel="noopener" href="https://www.rfc-editor.org/rfc/rfc9110#name-content-codings">RFC 9110 Section 8.4.1: Content Codings</a></li>
+<li><a target="_blank" rel="noopener" href="https://www.rfc-editor.org/rfc/rfc9110#gzip.coding">RFC 9110 Section 8.4.1.3: Gzip Coding</a></li>
+<li><a target="_blank" rel="noopener" href="https://www.ietf.org/rfc/rfc1952.txt">GZIP file format specification version 4.3</a></li>
+</ul>
+<p>:::moniker-end</p>

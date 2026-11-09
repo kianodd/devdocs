@@ -1,0 +1,874 @@
+<p>By <a target="_blank" rel="noopener" href="https://github.com/Kahbazi">Arvin Kahbazi</a>, <a target="_blank" rel="noopener" href="https://github.com/maartenba">Maarten Balliauw</a>, and <a target="_blank" rel="noopener" href="https://twitter.com/RickAndMSFT">Rick Anderson</a></p>
+<p>:::moniker range=&quot;&gt;= aspnetcore-7.0&quot;</p>
+<p>The <code>Microsoft.AspNetCore.RateLimiting</code> middleware provides rate limiting middleware. Apps configure rate limiting policies and then attach the policies to endpoints. Apps using rate limiting should be carefully load tested and reviewed before deploying. See <a href="#test7">Testing endpoints with rate limiting</a> in this article for more information.</p>
+<p>For an introduction to rate limiting, see <a target="_blank" rel="noopener" href="https://blog.maartenballiauw.be/posts/2022-09-26-aspnet-core-rate-limiting-middleware">Rate limiting middleware</a>.</p>
+<h2 id="why-use-rate-limiting">Why use rate limiting</h2>
+<p>Rate limiting can be used for managing the flow of incoming requests to an app. Key reasons to implement rate limiting:</p>
+<ul>
+<li><strong>Preventing Abuse</strong>: Rate limiting helps protect an app from abuse by limiting the number of requests a user or client can make in a given time period. This protection is particularly important for public APIs.</li>
+<li><strong>Ensuring Fair Usage</strong>: By setting limits that prevent users from monopolizing the system, you ensure that all users have fair access to resources.</li>
+<li><strong>Protecting Resources</strong>: Rate limiting helps prevent server overload by controlling the number of requests that can be processed. It protects the backend resources from being overwhelmed.</li>
+<li><strong>Enhancing Security</strong>: It can mitigate the risk of Denial of Service (DoS) attacks by limiting the rate at which requests are processed. It makes it harder for attackers to flood a system.</li>
+<li><strong>Improving Performance</strong>: By controlling the rate of incoming requests, you can maintain optimal performance and responsiveness of an app, ensuring a better user experience.</li>
+<li><strong>Cost Management</strong>: For services that incur costs based on usage, rate limiting can help manage and predict expenses by controlling the volume of requests processed.</li>
+</ul>
+<p>Implementing rate limiting in an ASP.NET Core app can help maintain stability, security, and performance. The result is a reliable and efficient service for all users.</p>
+<h2 id="prevent-ddos-attacks">Prevent DDoS attacks</h2>
+<p>While rate limiting can help mitigate the risk of Denial of Service (DoS) attacks by limiting the rate at which requests are processed, it&#39;s not a comprehensive solution for Distributed Denial of Service (DDoS) attacks. DDoS attacks involve multiple systems overwhelming an app with a flood of requests, making it difficult to handle with rate limiting alone.</p>
+<p>For robust DDoS protection, consider using a commercial DDoS protection service. These services offer advanced features such as:</p>
+<ul>
+<li><strong>Traffic analysis</strong>: Continuous monitoring and analysis of incoming traffic to detect and mitigate DDoS attacks in real time.</li>
+<li><strong>Scalability</strong>: The ability to handle large-scale attacks by distributing traffic across multiple servers and data centers.</li>
+<li><strong>Automated mitigation</strong>: Automated response mechanisms to quickly block malicious traffic without manual intervention.</li>
+<li><strong>Global network</strong>: A global network of servers to absorb and mitigate attacks closer to the source.</li>
+<li><strong>Constant updates</strong>: Commercial services continuously track and update their protection mechanisms to adapt to new and evolving threats.</li>
+</ul>
+<p>When using a cloud hosting service, DDoS protection is usually available as part of the hosting solution, such as <a target="_blank" rel="noopener" href="https://azure.microsoft.com/products/web-application-firewall/">Azure Web Application Firewall</a>, <a target="_blank" rel="noopener" href="https://aws.amazon.com/shield/">AWS Shield</a> or <a target="_blank" rel="noopener" href="https://cloud.google.com/armor/docs">Google Cloud Armor</a>. Dedicated protections are available as Web Application Firewalls (WAF) or as part of a CDN solution such as <a target="_blank" rel="noopener" href="https://www.cloudflare.com/ddos/">Cloudflare</a> or <a target="_blank" rel="noopener" href="https://www.akamai.com/us/en/products/security/kona-site-defender.jsp">Akamai Kona Site Defender</a></p>
+<p>Implementing a commercial DDoS protection service in conjunction with rate limiting can provide a comprehensive defense strategy, ensuring the stability, security, and performance of an app.</p>
+<h2 id="rate-limiting-with-multiple-app-instances">Rate limiting with multiple app instances</h2>
+<p>The rate limiting middleware keeps its counters in memory in each app instance. When an app runs on multiple instances, such as behind a load balancer or after scaling out, each instance enforces its limits separately. The effective limit is the configured limit multiplied by the number of instances. For example, a policy that allows 100 requests per minute allows up to 300 requests per minute across three instances. This also applies to a global limiter: it covers all requests to one instance, not to the whole app. To enforce one limit across all instances, apply rate limiting at a shared layer, such as an API gateway, or write a custom rate limiter that stores its counters in a shared store.</p>
+<h2 id="use-rate-limiting-middleware">Use rate-limiting middleware</h2>
+<p>The example in this section describes its policy as applying &quot;globally,&quot; but the rate limiting behavior applies only to the app&#39;s instance. For more information, see the <a href="#rate-limiting-with-multiple-app-instances">Rate limiting with multiple app instances</a> section.</p>
+<p>The following steps show how to use the rate limiting middleware in an ASP.NET Core app:</p>
+<ol>
+<li>Configure rate limiting services.</li>
+</ol>
+<p>  In the <code>Program.cs</code> file, configure the rate limiting services by adding the appropriate rate limiting policies. Define policies as either global or named policies. The following example permits 10 requests per minute by user (identity) or globally:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">builder.Services.AddRateLimiter(options =&gt;
+{
+    options.GlobalLimiter = PartitionedRateLimiter.Create&lt;HttpContext, string&gt;(httpContext =&gt;
+        RateLimitPartition.GetFixedWindowLimiter(
+            partitionKey: httpContext.User.Identity?.Name ?? httpContext.Request.Headers.Host.ToString(),
+            factory: partition =&gt; new FixedWindowRateLimiterOptions
+            {
+                AutoReplenishment = true,
+                PermitLimit = 10,
+                QueueLimit = 0,
+                Window = TimeSpan.FromMinutes(1)
+            }));
+});</code></pre></div></figure>
+<p>  Named policies need to be explicitly applied to the pages or endpoints. The following example adds a fixed window limiter policy named <code>&quot;fixed&quot;</code> which you add to an endpoint later:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">var builder = WebApplication.CreateBuilder(args);
+
+builder.Services.AddRateLimiter(options =&gt;
+{
+    options.AddFixedWindowLimiter(&quot;fixed&quot;, opt =&gt;
+    {
+        opt.PermitLimit = 4;
+        opt.Window = TimeSpan.FromSeconds(12);
+        opt.QueueProcessingOrder = QueueProcessingOrder.OldestFirst;
+        opt.QueueLimit = 2;
+    });
+});
+
+var app = builder.Build();</code></pre></div></figure>
+<p>  The global limiter applies to all endpoints automatically when you configure it via <a href="/dotnet/api/microsoft.aspnetcore.ratelimiting.ratelimiteroptions.globallimiter">options.GlobalLimiter</a>.</p>
+<ol start="2">
+<li><p>Enable rate limiting middleware</p>
+<p>In the <code>Program.cs</code> file, enable the rate limiting middleware by calling <a href="/dotnet/api/microsoft.aspnetcore.builder.ratelimiterapplicationbuilderextensions.useratelimiter">UseRateLimiter</a>:</p>
+</li>
+</ol>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">app.UseRouting();
+
+app.UseRateLimiter();
+
+app.UseEndpoints(endpoints =&gt;
+{
+    endpoints.MapControllers();
+});
+
+app.Run();</code></pre></div></figure>
+<h3 id="apply-rate-limiting-policies-to-endpoints-or-pages">Apply rate limiting policies to endpoints or pages</h3>
+<h4 id="apply-rate-limiting-to-web-api-endpoints">Apply rate limiting to Web API endpoints</h4>
+<p>Apply a named policy to the endpoint or group, for example:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">
+app.MapGet(&quot;/api/resource&quot;, () =&gt; &quot;This endpoint is rate limited&quot;)
+   .RequireRateLimiting(&quot;fixed&quot;); // Apply specific policy to an endpoint</code></pre></div></figure>
+<h4 id="apply-rate-limiting-to-mvc-controllers">Apply rate limiting to MVC controllers</h4>
+<p> Apply the configured rate limiting policies to specific endpoints or globally. For example, to apply the &quot;fixed&quot; policy to all controller endpoints:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">app.UseEndpoints(endpoints =&gt;
+{
+    endpoints.MapControllers().RequireRateLimiting(&quot;fixed&quot;);
+});</code></pre></div></figure>
+<h4 id="apply-rate-limiting-to-server-side-blazor-apps">Apply rate limiting to server-side Blazor apps</h4>
+<p>To set rate limiting for all of the app&#39;s routable Razor components, specify <code>RequireRateLimiting</code> with the rate limiting policy name on the <code>MapRazorComponents</code> call in the <code>Program</code> file. In the following example, the rate limiting policy named &quot;<code>policy</code>&quot; is applied:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">app.MapRazorComponents()
+    .AddInteractiveServerRenderMode()
+    .RequireRateLimiting(&quot;policy&quot;);</code></pre></div></figure>
+<p>To set a policy for a single routable Razor component or a folder of components via an imports file (<code>_Imports.razor</code>), apply the <a href="xref:Microsoft.AspNetCore.RateLimiting.EnableRateLimitingAttribute"><code>[EnableRateLimiting]</code> attribute</a> with the policy name. In the following example, the rate limiting policy named &quot;<code>override</code>&quot; is applied. The policy replaces any policies currently applied to the endpoint. The global limiter still runs on the endpoint with this attribute applied.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">@page &quot;/counter&quot;
+@using Microsoft.AspNetCore.RateLimiting
+@attribute [EnableRateLimiting(&quot;override&quot;)]
+
+&lt;h1&gt;Counter&lt;/h1&gt;</code></pre></div></figure>
+<p>Apply the <a href="xref:Microsoft.AspNetCore.RateLimiting.EnableRateLimitingAttribute"><code>[EnableRateLimiting]</code> attribute</a> only to a routable component or a folder of components via an imports file if <code>RequireRateLimiting</code> is <em><strong>not</strong></em> called on <code>MapRazorComponents</code>.</p>
+<p>Use the <a href="xref:Microsoft.AspNetCore.RateLimiting.DisableRateLimitingAttribute"><code>[DisableRateLimiting]</code> attribute</a> to disable rate limiting for a routable component or a folder of components via an imports file.</p>
+<h2 id="rate-limiter-algorithms">Rate limiter algorithms</h2>
+<p>The <a href="/dotnet/api/microsoft.aspnetcore.ratelimiting.ratelimiteroptionsextensions"><code>RateLimiterOptionsExtensions</code></a> class provides the following extension methods for rate limiting:</p>
+<ul>
+<li><a href="#fixed">Fixed window</a></li>
+<li><a href="#slide">Sliding window</a></li>
+<li><a href="#token">Token bucket</a></li>
+<li><a href="#concur">Concurrency</a></li>
+</ul>
+<p>The fixed, sliding, and token limiters all limit the maximum number of requests in a time period. The concurrency limiter limits only the number of concurrent requests and doesn&#39;t cap the number of requests in a time period. Consider the cost of an endpoint when you select a limiter. The cost of an endpoint includes the resources used, such as time, data access, CPU, and I/O.</p>
+<p><a name="fixed"></a></p>
+<h3 id="fixed-window-limiter">Fixed window limiter</h3>
+<p>The <a href="/dotnet/api/microsoft.aspnetcore.ratelimiting.ratelimiteroptionsextensions.addfixedwindowlimiter#microsoft-aspnetcore-ratelimiting-ratelimiteroptionsextensions-addfixedwindowlimiter(microsoft-aspnetcore-ratelimiting-ratelimiteroptions-system-string-system-threading-ratelimiting-fixedwindowratelimiteroptions)"><code>AddFixedWindowLimiter</code></a> method uses a fixed time window to limit requests. When the time window expires, a new time window starts and the request limit resets.</p>
+<p>Consider the following code:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">using Microsoft.AspNetCore.RateLimiting;
+using System.Threading.RateLimiting;
+
+var builder = WebApplication.CreateBuilder(args);
+
+builder.Services.AddRateLimiter(_ =&gt; _
+    .AddFixedWindowLimiter(policyName: &quot;fixed&quot;, options =&gt;
+    {
+        options.PermitLimit = 4;
+        options.Window = TimeSpan.FromSeconds(12);
+        options.QueueProcessingOrder = QueueProcessingOrder.OldestFirst;
+        options.QueueLimit = 2;
+    }));
+
+var app = builder.Build();
+
+app.UseRateLimiter();
+
+static string GetTicks() =&gt; (DateTime.Now.Ticks &amp; 0x11111).ToString(&quot;00000&quot;);
+
+app.MapGet(&quot;/&quot;, () =&gt; Results.Ok($&quot;Hello {GetTicks()}&quot;))
+                           .RequireRateLimiting(&quot;fixed&quot;);
+
+app.Run();</code></pre></div></figure>
+<p>The preceding code:</p>
+<ul>
+<li>Calls <code>AddRateLimiter</code> to add a rate limiting service to the service collection.</li>
+<li>Calls <code>AddFixedWindowLimiter</code> to create a fixed window limiter with a policy name of <code>&quot;fixed&quot;</code> and sets:</li>
+<li><code>PermitLimit</code> to 4 and the time <code>Window</code> to 12. A maximum of 4 requests per each 12-second window are allowed.</li>
+<li><code>QueueProcessingOrder</code> to <code>OldestFirst</code>.</li>
+<li><code>QueueLimit</code> to 2 (set this to 0 to disable the queueing mechanism).</li>
+<li>Calls <a href="/dotnet/api/microsoft.aspnetcore.builder.ratelimiterapplicationbuilderextensions.useratelimiter">UseRateLimiter</a> to enable rate limiting.</li>
+</ul>
+<p>Apps should use <a href="#/doc/aspnet/fundamentals/configuration/index">Configuration</a> to set limiter options. The following code updates the preceding code using <a target="_blank" rel="noopener" href="https://github.com/dotnet/AspNetCore.Docs.Samples/blob/main/fundamentals/middleware/rate-limit/WebRateLimitAuth/Models/MyRateLimitOptions.cs"><code>MyRateLimitOptions</code></a> for configuration:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">using System.Threading.RateLimiting;
+using Microsoft.AspNetCore.RateLimiting;
+using WebRateLimitAuth.Models;
+
+var builder = WebApplication.CreateBuilder(args);
+builder.Services.Configure(
+    builder.Configuration.GetSection(MyRateLimitOptions.MyRateLimit));
+
+var myOptions = new MyRateLimitOptions();
+builder.Configuration.GetSection(MyRateLimitOptions.MyRateLimit).Bind(myOptions);
+var fixedPolicy = &quot;fixed&quot;;
+
+builder.Services.AddRateLimiter(_ =&gt; _
+    .AddFixedWindowLimiter(policyName: fixedPolicy, options =&gt;
+    {
+        options.PermitLimit = myOptions.PermitLimit;
+        options.Window = TimeSpan.FromSeconds(myOptions.Window);
+        options.QueueProcessingOrder = QueueProcessingOrder.OldestFirst;
+        options.QueueLimit = myOptions.QueueLimit;
+    }));
+
+var app = builder.Build();
+
+app.UseRateLimiter();
+
+static string GetTicks() =&gt; (DateTime.Now.Ticks &amp; 0x11111).ToString(&quot;00000&quot;);
+
+app.MapGet(&quot;/&quot;, () =&gt; Results.Ok($&quot;Fixed Window Limiter {GetTicks()}&quot;))
+                           .RequireRateLimiting(fixedPolicy);
+
+app.Run();</code></pre></div></figure>
+<p><code>UseRateLimiter</code> must be called after <code>UseRouting</code> when rate limiting endpoint specific APIs are used. For example, if the <a href="xref:Microsoft.AspNetCore.RateLimiting.EnableRateLimitingAttribute"><code>[EnableRateLimiting]</code></a> attribute is used, <code>UseRateLimiter</code> must be called after <code>UseRouting</code>. When calling only global limiters, <code>UseRateLimiter</code> can be called before <code>UseRouting</code>.</p>
+<p>If the app calls <code>UseStatusCodePagesWithReExecute</code>, call it before <code>UseRouting</code> and <code>UseRateLimiter</code>. When the status code pages middleware re-executes a request, only the middleware registered after it runs again. If <code>UseRateLimiter</code> is called before <code>UseStatusCodePagesWithReExecute</code>, the rate limiter doesn&#39;t run for the re-executed endpoint, so that endpoint&#39;s rate limiting policy isn&#39;t applied, even when the policy has no permits remaining. The following order lets the rate limiter evaluate the re-executed endpoint:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">app.UseStatusCodePagesWithReExecute(&quot;/StatusCode/{0}&quot;);
+app.UseRouting();
+app.UseRateLimiter();</code></pre></div></figure>
+<p>For more information, see the <a href="#/doc/aspnet/fundamentals/error-handling@usestatuscodepageswithreexecute"><code>UseStatusCodePagesWithReExecute</code> section of the error handling article</a>.</p>
+<p><a name="slide"></a></p>
+<h3 id="sliding-window-limiter">Sliding window limiter</h3>
+<p>A sliding window algorithm:</p>
+<ul>
+<li>Is similar to the fixed window limiter but adds segments per window. The window slides one segment each segment interval. The segment interval is (window time)/(segments per window).</li>
+<li>Limits the requests for a window to <code>permitLimit</code> requests.</li>
+<li>Each time window is divided in <code>n</code> segments per window.</li>
+<li>Requests taken from the expired time segment one window back (<code>n</code> segments prior to the current segment) are added to the current segment. We refer to the most expired time segment one window back as the expired segment.</li>
+</ul>
+<p>Consider the following table that shows a sliding window limiter with a 30-second window, three segments per window, and a limit of 100 requests:</p>
+<ul>
+<li>The top row and first column shows the time segment.</li>
+<li>The second row shows the remaining requests available. The remaining requests are calculated as the available requests minus the processed requests plus the recycled requests.</li>
+<li>Requests at each time moves along the diagonal blue line.</li>
+<li>From time 30 on, the request taken from the expired time segment are added back to the request limit, as shown in the red lines.</li>
+</ul>
+<p><img src="~/performance/rate-limit/_static/rate.png" alt="Table showing requests, limits, and recycled slots"></p>
+<!-- 
+| Time | 0  | 10  | 20 | 30 | 40 | 50 | 60 |
+| ---- | -- | --  | -- | -- | -- | -- | -- |
+| Available | 100-20+0=80 | 80-30+0=50  | 50-40+0=10 | 10-30+20=0 |0+30-10=20 | 20-10+40=50 | 50-35+30=45 |
+|  0    | -20            |                                  |  |  |  |  | |
+|  10   |               | -30                             |  |  |  |  | |
+|  20   |               |            | -40                    |  |  |  | |
+|  30   | **[+20]**     |            |         | -30        |  |  | |
+|  40   |          |**[+30]**|       |                 | -10   |  | |
+|  50   |          |           | **[+40]**  |            |               | -10  | |
+|  60   |          |           |            |  **[+30]**  |    |  | -35|
+--><p>The following table shows the data in the previous graph in a different format. The <strong>Available</strong> column shows the requests available from the previous segment (The <strong>Carry over</strong> from the previous row). The first row shows 100 available requests because there&#39;s no previous segment.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th align="center">Time</th>
+<th align="center">Available</th>
+<th align="center">Taken</th>
+<th align="center">Recycled from expired</th>
+<th align="center">Carry over</th>
+</tr>
+</thead>
+<tbody><tr>
+<td align="center">0</td>
+<td align="center">100</td>
+<td align="center">20</td>
+<td align="center">0</td>
+<td align="center">80</td>
+</tr>
+<tr>
+<td align="center">10</td>
+<td align="center">80</td>
+<td align="center">30</td>
+<td align="center">0</td>
+<td align="center">50</td>
+</tr>
+<tr>
+<td align="center">20</td>
+<td align="center">50</td>
+<td align="center">40</td>
+<td align="center">0</td>
+<td align="center">10</td>
+</tr>
+<tr>
+<td align="center">30</td>
+<td align="center">10</td>
+<td align="center">30</td>
+<td align="center">20</td>
+<td align="center">0</td>
+</tr>
+<tr>
+<td align="center">40</td>
+<td align="center">0</td>
+<td align="center">10</td>
+<td align="center">30</td>
+<td align="center">20</td>
+</tr>
+<tr>
+<td align="center">50</td>
+<td align="center">20</td>
+<td align="center">10</td>
+<td align="center">40</td>
+<td align="center">50</td>
+</tr>
+<tr>
+<td align="center">60</td>
+<td align="center">50</td>
+<td align="center">35</td>
+<td align="center">30</td>
+<td align="center">45</td>
+</tr>
+</tbody></table></div>
+<p>The following code uses the sliding window rate limiter:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">using Microsoft.AspNetCore.RateLimiting;
+using System.Threading.RateLimiting;
+using WebRateLimitAuth.Models;
+
+var builder = WebApplication.CreateBuilder(args);
+
+var myOptions = new MyRateLimitOptions();
+builder.Configuration.GetSection(MyRateLimitOptions.MyRateLimit).Bind(myOptions);
+var slidingPolicy = &quot;sliding&quot;;
+
+builder.Services.AddRateLimiter(_ =&gt; _
+    .AddSlidingWindowLimiter(policyName: slidingPolicy, options =&gt;
+    {
+        options.PermitLimit = myOptions.PermitLimit;
+        options.Window = TimeSpan.FromSeconds(myOptions.Window);
+        options.SegmentsPerWindow = myOptions.SegmentsPerWindow;
+        options.QueueProcessingOrder = QueueProcessingOrder.OldestFirst;
+        options.QueueLimit = myOptions.QueueLimit;
+    }));
+
+var app = builder.Build();
+
+app.UseRateLimiter();
+
+static string GetTicks() =&gt; (DateTime.Now.Ticks &amp; 0x11111).ToString(&quot;00000&quot;);
+
+app.MapGet(&quot;/&quot;, () =&gt; Results.Ok($&quot;Sliding Window Limiter {GetTicks()}&quot;))
+                           .RequireRateLimiting(slidingPolicy);
+
+app.Run();</code></pre></div></figure>
+<p><a name="token"></a></p>
+<h3 id="token-bucket-limiter">Token bucket limiter</h3>
+<p>The token bucket limiter is similar to the sliding window limiter, but rather than adding back the requests taken from the expired segment, a fixed number of tokens are added each replenishment period. The tokens added each segment can&#39;t increase the available tokens to a number higher than the token bucket limit. The following table shows a token bucket limiter with a limit of 100 tokens and a 10-second replenishment period.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th align="center">Time</th>
+<th align="center">Available</th>
+<th align="center">Taken</th>
+<th align="center">Added</th>
+<th align="center">Carry over</th>
+</tr>
+</thead>
+<tbody><tr>
+<td align="center">0</td>
+<td align="center">100</td>
+<td align="center">20</td>
+<td align="center">0</td>
+<td align="center">80</td>
+</tr>
+<tr>
+<td align="center">10</td>
+<td align="center">80</td>
+<td align="center">10</td>
+<td align="center">20</td>
+<td align="center">90</td>
+</tr>
+<tr>
+<td align="center">20</td>
+<td align="center">90</td>
+<td align="center">5</td>
+<td align="center">15</td>
+<td align="center">100</td>
+</tr>
+<tr>
+<td align="center">30</td>
+<td align="center">100</td>
+<td align="center">30</td>
+<td align="center">20</td>
+<td align="center">90</td>
+</tr>
+<tr>
+<td align="center">40</td>
+<td align="center">90</td>
+<td align="center">6</td>
+<td align="center">16</td>
+<td align="center">100</td>
+</tr>
+<tr>
+<td align="center">50</td>
+<td align="center">100</td>
+<td align="center">40</td>
+<td align="center">20</td>
+<td align="center">80</td>
+</tr>
+<tr>
+<td align="center">60</td>
+<td align="center">80</td>
+<td align="center">50</td>
+<td align="center">20</td>
+<td align="center">50</td>
+</tr>
+</tbody></table></div>
+<p>The following code uses the token bucket limiter:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">using Microsoft.AspNetCore.RateLimiting;
+using System.Threading.RateLimiting;
+using WebRateLimitAuth.Models;
+
+var builder = WebApplication.CreateBuilder(args);
+
+var tokenPolicy = &quot;token&quot;;
+var myOptions = new MyRateLimitOptions();
+builder.Configuration.GetSection(MyRateLimitOptions.MyRateLimit).Bind(myOptions);
+
+builder.Services.AddRateLimiter(_ =&gt; _
+    .AddTokenBucketLimiter(policyName: tokenPolicy, options =&gt;
+    {
+        options.TokenLimit = myOptions.TokenLimit;
+        options.QueueProcessingOrder = QueueProcessingOrder.OldestFirst;
+        options.QueueLimit = myOptions.QueueLimit;
+        options.ReplenishmentPeriod = TimeSpan.FromSeconds(myOptions.ReplenishmentPeriod);
+        options.TokensPerPeriod = myOptions.TokensPerPeriod;
+        options.AutoReplenishment = myOptions.AutoReplenishment;
+    }));
+
+var app = builder.Build();
+
+app.UseRateLimiter();
+
+static string GetTicks() =&gt; (DateTime.Now.Ticks &amp; 0x11111).ToString(&quot;00000&quot;);
+
+app.MapGet(&quot;/&quot;, () =&gt; Results.Ok($&quot;Token Limiter {GetTicks()}&quot;))
+                           .RequireRateLimiting(tokenPolicy);
+
+app.Run();</code></pre></div></figure>
+<p>When <code>AutoReplenishment</code> is set to <code>true</code>, an internal timer replenishes the tokens every <code>ReplenishmentPeriod</code>; when set to <code>false</code>, the app must call <code>TryReplenish</code> on the limiter.</p>
+<p><a name="concur"></a></p>
+<h3 id="concurrency-limiter">Concurrency limiter</h3>
+<p>The concurrency limiter limits the number of concurrent requests. Each request reduces the concurrency limit by one. When a request completes, the limit is increased by one. Unlike the other requests limiters that limit the total number of requests for a specified period, the concurrency limiter limits only the number of concurrent requests and doesn&#39;t cap the number of requests in a time period.</p>
+<p>The following code uses the concurrency limiter:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">using Microsoft.AspNetCore.RateLimiting;
+using System.Threading.RateLimiting;
+using WebRateLimitAuth.Models;
+
+var builder = WebApplication.CreateBuilder(args);
+
+var concurrencyPolicy = &quot;Concurrency&quot;;
+var myOptions = new MyRateLimitOptions();
+builder.Configuration.GetSection(MyRateLimitOptions.MyRateLimit).Bind(myOptions);
+
+builder.Services.AddRateLimiter(_ =&gt; _
+    .AddConcurrencyLimiter(policyName: concurrencyPolicy, options =&gt;
+    {
+        options.PermitLimit = myOptions.PermitLimit;
+        options.QueueProcessingOrder = QueueProcessingOrder.OldestFirst;
+        options.QueueLimit = myOptions.QueueLimit;
+    }));
+
+var app = builder.Build();
+
+app.UseRateLimiter();
+
+static string GetTicks() =&gt; (DateTime.Now.Ticks &amp; 0x11111).ToString(&quot;00000&quot;);
+
+app.MapGet(&quot;/&quot;, async () =&gt;
+{
+    await Task.Delay(500);
+    return Results.Ok($&quot;Concurrency Limiter {GetTicks()}&quot;);
+                              
+}).RequireRateLimiting(concurrencyPolicy);
+
+app.Run();</code></pre></div></figure>
+<h2 id="rate-limiting-partitions">Rate limiting partitions</h2>
+<p>Rate limiting partitions divide the traffic into separate buckets that each get their own rate limit counters. This approach provides more granular control than a single global counter. Different keys, such as user ID, IP address, or API key, define the partition buckets.</p>
+<h3 id="benefits-of-partitioning">Benefits of partitioning</h3>
+<ul>
+<li><strong>Fairness</strong>: One user can&#39;t consume the entire rate limit for everyone.</li>
+<li><strong>Granularity</strong>: Different limits for different users and resources.</li>
+<li><strong>Security</strong>: Better protection against targeted abuse.</li>
+<li><strong>Tiered service</strong>: Support for service tiers with different limits.</li>
+</ul>
+<p>Partitioned rate limiting gives you fine-grained control over how you manage API traffic while ensuring fair resource allocation.</p>
+<h3 id="by-ip-address">By IP address</h3>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">options.GlobalLimiter = PartitionedRateLimiter.Create&lt;HttpContext, string&gt;(httpContext =&gt;
+    RateLimitPartition.GetFixedWindowLimiter(
+        partitionKey: httpContext.Connection.RemoteIpAddress?.ToString() ?? &quot;unknown&quot;,
+        factory: _ =&gt; new FixedWindowRateLimiterOptions
+        {
+            PermitLimit = 50,
+            Window = TimeSpan.FromMinutes(1)
+        }));</code></pre></div></figure>
+<h3 id="by-user-identity">By user identity</h3>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">options.GlobalLimiter = PartitionedRateLimiter.Create&lt;HttpContext, string&gt;(httpContext =&gt;
+    RateLimitPartition.GetFixedWindowLimiter(
+        partitionKey: httpContext.User.Identity?.Name ?? &quot;anonymous&quot;,
+        factory: _ =&gt; new FixedWindowRateLimiterOptions
+        {
+            PermitLimit = 100,
+            Window = TimeSpan.FromMinutes(1)
+        }));</code></pre></div></figure>
+<h3 id="by-api-key">By API key</h3>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">options.GlobalLimiter = PartitionedRateLimiter.Create&lt;HttpContext, string&gt;(httpContext =&gt;
+{
+    string apiKey = httpContext.Request.Headers[&quot;X-API-Key&quot;].ToString() ?? &quot;no-key&quot;;
+
+    // Different limits based on key tier
+    return apiKey switch
+    {
+        &quot;premium-key&quot; =&gt; RateLimitPartition.GetFixedWindowLimiter(
+            partitionKey: apiKey,
+            factory: _ =&gt; new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = 1000,
+                Window = TimeSpan.FromMinutes(1)
+            }),
+        
+        _ =&gt; RateLimitPartition.GetFixedWindowLimiter(
+            partitionKey: apiKey,
+            factory: _ =&gt; new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = 100,
+                Window = TimeSpan.FromMinutes(1)
+            }),
+    };
+});</code></pre></div></figure>
+<h3 id="by-endpoint-path">By endpoint path</h3>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">options.GlobalLimiter = PartitionedRateLimiter.Create&lt;HttpContext, string&gt;(httpContext =&gt;
+{
+    string path = httpContext.Request.Path.ToString();
+
+    // Different limits for different paths
+    if (path.StartsWith(&quot;/api/public&quot;))
+    {
+        return RateLimitPartition.GetFixedWindowLimiter(
+            partitionKey: $&quot;{httpContext.Connection.RemoteIpAddress}-public&quot;,
+            factory: _ =&gt; new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = 30,
+                Window = TimeSpan.FromSeconds(10)
+            });
+    }
+
+    return RateLimitPartition.GetFixedWindowLimiter(
+        partitionKey: httpContext.Connection.RemoteIpAddress?.ToString() ?? &quot;unknown&quot;,
+        factory: _ =&gt; new FixedWindowRateLimiterOptions
+        {
+            PermitLimit = 100,
+            Window = TimeSpan.FromMinutes(1)
+        });
+});</code></pre></div></figure>
+<h3 id="create-chained-limiters">Create chained limiters</h3>
+<p>The <code>CreateChained</code> API accepts multiple <code>PartitionedRateLimiter</code> instances and combines them into one <code>PartitionedRateLimiter</code>. The combined limiter runs all the input limiters in sequence. Because the result is a <code>PartitionedRateLimiter</code> assigned to <code>GlobalLimiter</code>, the chain applies to every endpoint. To chain limiters for a specific endpoint instead, use a named policy, as shown in <a href="#chain-limiters-in-a-named-policy">Chain limiters in a named policy</a>.</p>
+<p>The following code uses <code>CreateChained</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">using System.Globalization;
+using System.Threading.RateLimiting;
+
+var builder = WebApplication.CreateBuilder(args);
+
+builder.Services.AddRateLimiter(_ =&gt;
+{
+    _.OnRejected = async (context, cancellationToken) =&gt;
+    {
+        if (context.Lease.TryGetMetadata(MetadataName.RetryAfter, out var retryAfter))
+        {
+            context.HttpContext.Response.Headers.RetryAfter =
+                ((int) retryAfter.TotalSeconds).ToString(NumberFormatInfo.InvariantInfo);
+        }
+
+        context.HttpContext.Response.StatusCode = StatusCodes.Status429TooManyRequests;
+        await context.HttpContext.Response.WriteAsync(&quot;Too many requests. Please try again later.&quot;, cancellationToken);
+    };
+    _.GlobalLimiter = PartitionedRateLimiter.CreateChained(
+        PartitionedRateLimiter.Create&lt;HttpContext, string&gt;(httpContext =&gt;
+        {
+            var userAgent = httpContext.Request.Headers.UserAgent.ToString();
+
+            return RateLimitPartition.GetFixedWindowLimiter
+            (userAgent, _ =&gt;
+                new FixedWindowRateLimiterOptions
+                {
+                    AutoReplenishment = true,
+                    PermitLimit = 4,
+                    Window = TimeSpan.FromSeconds(2)
+                });
+        }),
+        PartitionedRateLimiter.Create&lt;HttpContext, string&gt;(httpContext =&gt;
+        {
+            var userAgent = httpContext.Request.Headers.UserAgent.ToString();
+            
+            return RateLimitPartition.GetFixedWindowLimiter
+            (userAgent, _ =&gt;
+                new FixedWindowRateLimiterOptions
+                {
+                    AutoReplenishment = true,
+                    PermitLimit = 20,    
+                    Window = TimeSpan.FromSeconds(30)
+                });
+        }));
+});
+
+var app = builder.Build();
+app.UseRateLimiter();
+
+static string GetTicks() =&gt; (DateTime.Now.Ticks &amp; 0x11111).ToString(&quot;00000&quot;);
+
+app.MapGet(&quot;/&quot;, () =&gt; Results.Ok($&quot;Hello {GetTicks()}&quot;));
+
+app.Run();</code></pre></div></figure>
+<p>For more information, see the <a target="_blank" rel="noopener" href="https://github.com/dotnet/runtime/blob/79874806d246670ee5fe76e73ce566578fe675c0/src/libraries/System.Threading.RateLimiting/src/System/Threading/RateLimiting/PartitionedRateLimiter.cs#L52-L64">CreateChained source code</a>.</p>
+<h3 id="chain-limiters-in-a-named-policy">Chain limiters in a named policy</h3>
+<p><code>CreateChained</code> chains <em>global</em> limiters that apply to every endpoint. To combine multiple limiter types and scope them to specific endpoints, chain the limiters inside a named policy with <code>CreateChained</code>. This overload returns a single <code>RateLimiter</code> that runs each limiter in sequence, which is the return type a named policy&#39;s partition factory requires.</p>
+<p>The following <code>&quot;combined&quot;</code> policy chains a token bucket limiter and a concurrency limiter with <code>RateLimiter.CreateChained</code>, then applies the policy to a single endpoint with <code>RequireRateLimiting</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">var builder = WebApplication.CreateBuilder(args);
+
+builder.Services.AddRateLimiter(options =&gt;
+{
+    options.AddPolicy(&quot;combined&quot;, httpContext =&gt;
+    {
+        // Partition on the authenticated identity name when available. Each distinct key creates and
+        // caches its own limiter, so partitioning on unbounded user-controlled
+        // input can exhaust memory (a DoS risk).
+        string partitionKey = httpContext.User.Identity?.Name ?? &quot;anonymous&quot;;
+
+        return RateLimitPartition.Get(partitionKey, _ =&gt;
+            RateLimiter.CreateChained(
+                new TokenBucketRateLimiter(new TokenBucketRateLimiterOptions
+                {
+                    TokenLimit = 100,
+                    QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
+                    QueueLimit = 5,
+                    ReplenishmentPeriod = TimeSpan.FromSeconds(10),
+                    TokensPerPeriod = 10,
+                    AutoReplenishment = true
+                }),
+                new ConcurrencyLimiter(new ConcurrencyLimiterOptions
+                {
+                    PermitLimit = 5,
+                    QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
+                    QueueLimit = 2
+                })));
+    });
+});
+
+var app = builder.Build();
+
+app.MapGet(&quot;/api/resource&quot;, () =&gt; &quot;This endpoint uses multiple limiters&quot;)
+   .RequireRateLimiting(&quot;combined&quot;);</code></pre></div></figure>
+<p>A request must acquire a lease from every limiter in the chain to proceed, and the limiters run in the order passed to <code>RateLimiter.CreateChained</code>. If a limiter rejects the request, the request is rejected and the leases already acquired from earlier limiters in the chain are disposed in reverse order.</p>
+<p>When chaining limiters in a named policy, keep the following in mind:</p>
+<ul>
+<li>Disposing a lease returns the permit for a concurrency limiter. The time-based limiters (token bucket, fixed window, and sliding window) don&#39;t return a permit that was already acquired when a later limiter in the chain rejects the request, so take this into account when ordering the limiters in the chain.</li>
+<li>Constructing a <code>TokenBucketRateLimiter</code> directly with <code>AutoReplenishment</code> set to <code>true</code> gives each limiter instance its own timer. The <code>AddTokenBucketLimiter</code> and <code>RateLimitPartition.GetTokenBucketLimiter</code> helpers instead set <code>AutoReplenishment</code> to <code>false</code> and replenish all of their limiters from a single shared timer.</li>
+<li><code>RateLimiter.CreateChained</code> doesn&#39;t dispose the limiters passed to it. In the preceding example, the partition caches the chained limiter and the framework manages its lifetime. If you create chained limiters outside of a partition, dispose the inner limiters when they&#39;re no longer in use.</li>
+<li>Prefer the global <code>PartitionedRateLimiter.CreateChained</code> approach when the chain should apply to every endpoint. Use a named policy with <code>RateLimiter.CreateChained</code> only when the chain must be scoped to specific endpoints.</li>
+</ul>
+<h2 id="choosing-what-happens-when-a-request-is-rate-limited">Choosing what happens when a request is rate limited</h2>
+<p>For simple cases, you can just set the status code:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">builder.Services.AddRateLimiter(options =&gt;
+{
+    // Set a custom status code for rejections
+    options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+
+    // Rate limiter configuration...
+});</code></pre></div></figure>
+<p>The most common approach is to register an <code>OnRejected</code> callback when configuring rate limiting:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">builder.Services.AddRateLimiter(options =&gt;
+{
+    // Rate limiter configuration...
+    
+    options.OnRejected = async (context, cancellationToken) =&gt;
+    {
+        context.HttpContext.Response.StatusCode = StatusCodes.Status429TooManyRequests;
+
+        if (context.Lease.TryGetMetadata(MetadataName.RetryAfter, out var retryAfter))
+        {
+            context.HttpContext.Response.Headers.RetryAfter =
+                ((long)Math.Ceiling(retryAfter.TotalSeconds)).ToString(NumberFormatInfo.InvariantInfo);
+        }
+
+        await context.HttpContext.Response.WriteAsync(&quot;Rate limit exceeded. Please try again later.&quot;, cancellationToken);
+
+        // Optional logging
+        logger.LogWarning(&quot;Rate limit exceeded for IP: {IpAddress}&quot;,
+            context.HttpContext.Connection.RemoteIpAddress);
+    };
+});</code></pre></div></figure>
+<p>The example requires <code>using System.Globalization;</code> and <code>using System.Threading.RateLimiting;</code>.</p>
+<p>:::moniker-end</p>
+<p>:::moniker range=&quot;&gt;= aspnetcore-11.0&quot;</p>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p><code>FixedWindowRateLimiter</code> reports <code>MetadataName.RetryAfter</code> based on the next fixed-window boundary. Apps that copy this metadata to the <code>Retry-After</code> response header in <code>OnRejected</code> return an accurate retry interval automatically. Limiters that can&#39;t estimate when permits are available, such as <code>ConcurrencyLimiter</code>, don&#39;t provide <code>RetryAfter</code> metadata.</p>
+</div></aside>
+<p>:::moniker-end</p>
+<p>:::moniker range=&quot;&gt;= aspnetcore-7.0&quot;</p>
+<p>Another option is to queue the request:</p>
+<h3 id="request-queuing">Request queuing</h3>
+<p>When you enable queuing, if a request exceeds the rate limit, the system places it in a queue. The request waits in the queue until a permit becomes available or a timeout occurs. The system processes requests according to a configurable queue order.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">builder.Services.AddRateLimiter(options =&gt;
+{
+    options.AddFixedWindowLimiter(&quot;api&quot;, options =&gt;
+    {
+        options.PermitLimit = 10;           // Allow 10 requests
+        options.Window = TimeSpan.FromSeconds(10);  // Per 10-second window
+        options.QueueLimit = 5;             // Queue up to 5 additional requests
+        options.QueueProcessingOrder = QueueProcessingOrder.OldestFirst; // Process oldest requests first
+        options.AutoReplenishment = true; // Default: automatically replenish permits
+    });
+});</code></pre></div></figure>
+<h2 id="enableratelimiting-and-disableratelimiting-attributes"><code>EnableRateLimiting</code> and <code>DisableRateLimiting</code> attributes</h2>
+<p>Apply the <a href="xref:Microsoft.AspNetCore.RateLimiting.EnableRateLimitingAttribute"><code>[EnableRateLimiting]</code></a> and <a href="xref:Microsoft.AspNetCore.RateLimiting.DisableRateLimitingAttribute"><code>[DisableRateLimiting]</code></a> attributes to a controller, action method, or Razor Page. For Razor Pages, apply the attribute to the Razor Page and not the page handlers. For example, you can&#39;t apply <code>[EnableRateLimiting]</code> to <code>OnGet</code>, <code>OnPost</code>, or any other page handler.</p>
+<p>The <code>[DisableRateLimiting]</code> attribute <em><strong>disables</strong></em> rate limiting for the controller, action method, or Razor Page, regardless of named rate limiters or global limiters applied. For example, consider the following code which calls <code>RequireRateLimiting</code> to apply the <code>fixedPolicy</code> rate limiting to all controller endpoints:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">using Microsoft.AspNetCore.RateLimiting;
+using System.Threading.RateLimiting;
+using WebRateLimitAuth.Models;
+
+var builder = WebApplication.CreateBuilder(args);
+
+builder.Services.AddRazorPages();
+builder.Services.AddControllersWithViews();
+
+builder.Services.Configure(
+    builder.Configuration.GetSection(MyRateLimitOptions.MyRateLimit));
+
+var myOptions = new MyRateLimitOptions();
+builder.Configuration.GetSection(MyRateLimitOptions.MyRateLimit).Bind(myOptions);
+var fixedPolicy = &quot;fixed&quot;;
+
+builder.Services.AddRateLimiter(_ =&gt; _
+    .AddFixedWindowLimiter(policyName: fixedPolicy, options =&gt;
+    {
+        options.PermitLimit = myOptions.PermitLimit;
+        options.Window = TimeSpan.FromSeconds(myOptions.Window);
+        options.QueueProcessingOrder = QueueProcessingOrder.OldestFirst;
+        options.QueueLimit = myOptions.QueueLimit;
+    }));
+
+var slidingPolicy = &quot;sliding&quot;;
+
+builder.Services.AddRateLimiter(_ =&gt; _
+    .AddSlidingWindowLimiter(policyName: slidingPolicy, options =&gt;
+    {
+        options.PermitLimit = myOptions.SlidingPermitLimit;
+        options.Window = TimeSpan.FromSeconds(myOptions.Window);
+        options.SegmentsPerWindow = myOptions.SegmentsPerWindow;
+        options.QueueProcessingOrder = QueueProcessingOrder.OldestFirst;
+        options.QueueLimit = myOptions.QueueLimit;
+    }));
+
+var app = builder.Build();
+app.UseRateLimiter();
+
+if (!app.Environment.IsDevelopment())
+{
+    app.UseExceptionHandler(&quot;/Error&quot;);
+    app.UseHsts();
+}
+
+app.UseHttpsRedirection();
+app.UseStaticFiles();
+
+app.MapRazorPages().RequireRateLimiting(slidingPolicy);
+app.MapDefaultControllerRoute().RequireRateLimiting(fixedPolicy);
+
+app.Run();</code></pre></div></figure>
+<p>In the following code, <code>[DisableRateLimiting]</code> disables rate limiting and overrides <code>[EnableRateLimiting(&quot;fixed&quot;)]</code> applied to the <code>Home2Controller</code> and <code>app.MapDefaultControllerRoute().RequireRateLimiting(fixedPolicy)</code> called in <code>Program.cs</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">[EnableRateLimiting(&quot;fixed&quot;)]
+public class Home2Controller : Controller
+{
+    private readonly ILogger _logger;
+
+    public Home2Controller(ILogger logger)
+    {
+        _logger = logger;
+    }
+
+    public ActionResult Index()
+    {
+        return View();
+    }
+
+    [EnableRateLimiting(&quot;sliding&quot;)]
+    public ActionResult Privacy()
+    {
+        return View();
+    }
+
+    [DisableRateLimiting]
+    public ActionResult NoLimit()
+    {
+        return View();
+    }
+
+    [ResponseCache(Duration = 0, Location = ResponseCacheLocation.None, NoStore = true)]
+    public IActionResult Error()
+    {
+        return View(new ErrorViewModel { RequestId = Activity.Current?.Id ?? HttpContext.TraceIdentifier });
+    }
+}</code></pre></div></figure>
+<p>In the preceding code, the <code>[EnableRateLimiting(&quot;sliding&quot;)]</code> is <em><strong>not</strong></em> applied to the <code>Privacy</code> action method because <code>Program.cs</code> called <code>app.MapDefaultControllerRoute().RequireRateLimiting(fixedPolicy)</code>. <!-- https://github.com/dotnet/AspNetCore.Docs/pull/27294#discussion_r998484867 --></p>
+<p>Consider the following code which doesn&#39;t call <code>RequireRateLimiting</code> on <code>MapRazorPages</code> or <code>MapDefaultControllerRoute</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">using Microsoft.AspNetCore.RateLimiting;
+using System.Threading.RateLimiting;
+using WebRateLimitAuth.Models;
+
+var builder = WebApplication.CreateBuilder(args);
+
+builder.Services.AddRazorPages();
+builder.Services.AddControllersWithViews();
+
+builder.Services.Configure(
+    builder.Configuration.GetSection(MyRateLimitOptions.MyRateLimit));
+
+var myOptions = new MyRateLimitOptions();
+builder.Configuration.GetSection(MyRateLimitOptions.MyRateLimit).Bind(myOptions);
+var fixedPolicy = &quot;fixed&quot;;
+
+builder.Services.AddRateLimiter(_ =&gt; _
+    .AddFixedWindowLimiter(policyName: fixedPolicy, options =&gt;
+    {
+        options.PermitLimit = myOptions.PermitLimit;
+        options.Window = TimeSpan.FromSeconds(myOptions.Window);
+        options.QueueProcessingOrder = QueueProcessingOrder.OldestFirst;
+        options.QueueLimit = myOptions.QueueLimit;
+    }));
+
+var slidingPolicy = &quot;sliding&quot;;
+
+builder.Services.AddRateLimiter(_ =&gt; _
+    .AddSlidingWindowLimiter(policyName: slidingPolicy, options =&gt;
+    {
+        options.PermitLimit = myOptions.SlidingPermitLimit;
+        options.Window = TimeSpan.FromSeconds(myOptions.Window);
+        options.SegmentsPerWindow = myOptions.SegmentsPerWindow;
+        options.QueueProcessingOrder = QueueProcessingOrder.OldestFirst;
+        options.QueueLimit = myOptions.QueueLimit;
+    }));
+
+var app = builder.Build();
+
+app.UseRateLimiter();
+
+if (!app.Environment.IsDevelopment())
+{
+    app.UseExceptionHandler(&quot;/Error&quot;);
+    app.UseHsts();
+}
+
+app.UseHttpsRedirection();
+app.UseStaticFiles();
+
+app.MapRazorPages();
+app.MapDefaultControllerRoute();  // RequireRateLimiting not called
+
+app.Run();</code></pre></div></figure>
+<p>Consider the following controller:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">[EnableRateLimiting(&quot;fixed&quot;)]
+public class Home2Controller : Controller
+{
+    private readonly ILogger _logger;
+
+    public Home2Controller(ILogger logger)
+    {
+        _logger = logger;
+    }
+
+    public ActionResult Index()
+    {
+        return View();
+    }
+
+    [EnableRateLimiting(&quot;sliding&quot;)]
+    public ActionResult Privacy()
+    {
+        return View();
+    }
+
+    [DisableRateLimiting]
+    public ActionResult NoLimit()
+    {
+        return View();
+    }
+
+    [ResponseCache(Duration = 0, Location = ResponseCacheLocation.None, NoStore = true)]
+    public IActionResult Error()
+    {
+        return View(new ErrorViewModel { RequestId = Activity.Current?.Id ?? HttpContext.TraceIdentifier });
+    }
+}</code></pre></div></figure>
+<p>In the preceding controller:</p>
+<ul>
+<li>The <code>&quot;fixed&quot;</code> policy rate limiter is applied to all action methods that don&#39;t have <code>EnableRateLimiting</code> and <code>DisableRateLimiting</code> attributes.</li>
+<li>The <code>&quot;sliding&quot;</code> policy rate limiter is applied to the <code>Privacy</code> action.</li>
+<li>Rate limiting is disabled on the <code>NoLimit</code> action method.</li>
+</ul>
+<h2 id="rate-limiting-metrics">Rate limiting metrics</h2>
+<p>The rate limiting middleware provides <a href="/aspnet/core/metrics/overview">built-in metrics and monitoring</a> capabilities to help you understand how rate limits affect app performance and user experience. For a list of metrics, see <a href="/dotnet/core/diagnostics/built-in-metrics-aspnetcore#microsoftaspnetcoreratelimiting"><code>Microsoft.AspNetCore.RateLimiting</code></a>.</p>
+<p><a name="test7"></a></p>
+<h2 id="testing-endpoints-with-rate-limiting">Testing endpoints with rate limiting</h2>
+<p>Before deploying an app that uses rate limiting to production, stress test the app to validate the rate limiters and options you used. For example, create a <a target="_blank" rel="noopener" href="https://jmeter.apache.org/usermanual/jmeter_proxy_step_by_step.html">JMeter script</a> by using a tool like <a target="_blank" rel="noopener" href="https://www.blazemeter.com/blog/jmeter-tutorial">BlazeMeter</a> or <a target="_blank" rel="noopener" href="https://jmeter.apache.org/usermanual/jmeter_proxy_step_by_step.html">Apache JMeter HTTP(S) Test Script Recorder</a> and load the script to <a href="/azure/load-testing/overview-what-is-azure-load-testing">Azure Load Testing</a>.</p>
+<p>If you create partitions by using user input, your app becomes vulnerable to <a target="_blank" rel="noopener" href="https://www.cisa.gov/uscert/ncas/tips/ST04-015">Denial of Service</a> (DoS) attacks. For example, if you create partitions by using client IP addresses, your app becomes vulnerable to Denial of Service attacks that use IP Source Address Spoofing. For more information, see <a target="_blank" rel="noopener" href="https://www.rfc-editor.org/info/bcp38">BCP 38 RFC 2827 Network Ingress Filtering: Defeating Denial of Service Attacks that employ IP Source Address Spoofing</a>.</p>
+<h2 id="related-content">Related content</h2>
+<ul>
+<li><a target="_blank" rel="noopener" href="https://blog.maartenballiauw.be/posts/2022-09-26-aspnet-core-rate-limiting-middleware">Rate limiting middleware</a> by Maarten Balliauw provides an excellent introduction and overview to rate limiting.</li>
+<li><a href="/dotnet/core/extensions/http-ratelimiter">Rate limit an HTTP handler in .NET</a></li>
+</ul>
+<p>:::moniker-end</p>
