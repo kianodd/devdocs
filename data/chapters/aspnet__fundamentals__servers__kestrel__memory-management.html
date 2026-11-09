@@ -1,0 +1,53 @@
+<p>By <a target="_blank" rel="noopener" href="https://github.com/tdykstra">Tom Dykstra</a></p>
+<p>This article provides guidance for managing memory in Kestrel, including automatic eviction from memory pools and using memory pool metrics.</p>
+<h2 id="automatic-eviction-from-memory-pool">Automatic eviction from memory pool</h2>
+<p>The memory pools used by Kestrel, IIS, and HTTP.sys automatically evict memory blocks when the application is idle or under low load. The feature runs automatically and doesn&#39;t need to be enabled or configured manually.</p>
+<p>This automatic eviction feature reduces overall memory usage and helps applications stay responsive under varying workloads. In versions of .NET earlier than 10, memory allocated by the pool remained reserved even when not in use.</p>
+<h3 id="use-memory-pool-metrics">Use memory pool metrics</h3>
+<p>The default memory pool used by the ASP.NET Core server implementations includes metrics, which can be used to monitor and analyze memory usage patterns. The metrics are under the name <code>&quot;Microsoft.AspNetCore.MemoryPool&quot;</code>.</p>
+<p>For information about metrics and how to use them, see <a href="#/doc/aspnet/metrics/overview">ASP.NET Core metrics</a>.</p>
+<h2 id="manage-memory-pools">Manage memory pools</h2>
+<p>Besides using memory pools efficiently by evicting unneeded memory blocks, ASP.NET Core provides a built-in <a target="_blank" rel="noopener" href="https://source.dot.net/#Microsoft.AspNetCore.Connections.Abstractions/IMemoryPoolFactory.cs">IMemoryPoolFactory</a> interface and its default implementation, which are available through dependency injection.</p>
+<p>The following code example shows a simple background service that uses the built-in memory pool factory implementation to create memory pools. These pools benefit from the automatic eviction feature:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">public class MyBackgroundService : BackgroundService
+{
+    private readonly MemoryPool&lt;byte&gt; _memoryPool;
+
+    public MyBackgroundService(IMemoryPoolFactory&lt;byte&gt; factory)
+    {
+        _memoryPool = factory.Create();
+    }
+
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    {
+        while (!stoppingToken.IsCancellationRequested)
+        {
+            try
+            {
+                await Task.Delay(20, stoppingToken);
+                // do work that needs memory
+                // consider checking _memoryPool.MaxBufferSize
+                var rented = _memoryPool.Rent(100);
+                rented.Dispose();
+            }
+            catch (OperationCanceledException)
+            {
+                return;
+            }
+        }
+    }
+}</code></pre></div></figure>
+<p>To use a custom memory pool factory, make a class that implements <code>IMemoryPoolFactory</code> and register it with dependency injection, as the following example does. Memory pools created this way do not benefit from the automatic eviction feature unless you implement similar eviction logic in your custom factory:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">services.AddSingleton&lt;IMemoryPoolFactory&lt;byte&gt;,
+CustomMemoryPoolFactory&gt;();
+
+public class CustomMemoryPoolFactory : IMemoryPoolFactory&lt;byte&gt;
+{
+    public MemoryPool&lt;byte&gt; Create()
+    {
+        // Return a custom MemoryPool implementation
+        // or the default, as is shown here.
+        return MemoryPool&lt;byte&gt;.Shared;
+    }
+}</code></pre></div></figure>
+<p>When you&#39;re using a memory pool, be aware of the pool&#39;s <code>MaxBufferSize</code>.</p>

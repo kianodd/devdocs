@@ -1,0 +1,235 @@
+<h2 id="introduction">Introduction</h2>
+<p>When proxying a request it&#39;s common to modify parts of the request or response to adapt to the destination server&#39;s requirements or to flow additional data such as the client&#39;s original IP address. This process is implemented via Transforms. Types of transforms are defined globally for the application and then individual routes supply the parameters to enable and configure those transforms. The original request objects are not modified by these transforms, only the proxy requests.</p>
+<p>YARP includes a set of built-in request and response transforms that can be used. For more information, see <a href="#/doc/aspnet/fundamentals/servers/yarp/transforms">YARP Request and Response Transforms</a>. If those transforms are not sufficient, then custom transforms can be added.</p>
+<h2 id="requesttransform"><code>RequestTransform</code></h2>
+<p>All request transforms must derive from the abstract base class <a href="#/doc/aspnet/fundamentals/servers/yarp/transforms"><code>RequestTransform</code></a>. These can freely modify the proxy <code>HttpRequestMessage</code>. Avoid reading or modifying the request body as this may disrupt the proxying flow. Consider also adding a parametrized extension method on <code>TransformBuilderContext</code> for discoverability and ease of use.</p>
+<p>A request transform may conditionally produce an immediate response such as for error conditions. This prevents any remaining transforms from running and the request from being proxied. This is indicated by setting the <code>HttpResponse.StatusCode</code> to a value other than 200, or calling <code>HttpResponse.StartAsync()</code>, or writing to the <code>HttpResponse.Body</code> or <code>BodyWriter</code>.</p>
+<p><code>AddRequestTransform</code> is a <code>TransformBuilderContext</code> extension method that defines a request transform as a <code>Func&lt;RequestTransformContext, ValueTask&gt;</code>. This allows creating a custom request transform without implementing a <code>RequestTransform</code> derived class.</p>
+<h2 id="responsetransform"><code>ResponseTransform</code></h2>
+<p>All response transforms must derive from the abstract base class <code>ResponseTransform</code>. These can freely modify the client <code>HttpResponse</code>. Avoid reading or modifying the response body as this may disrupt the proxying flow. Consider also adding a parametrized extension method on <code>TransformBuilderContext</code> for discoverability and easy of use.</p>
+<p><code>AddResponseTransform</code> is a <code>TransformBuilderContext</code> extension method that defines a response transform as a <code>Func&lt;ResponseTransformContext, ValueTask&gt;</code>. This allows creating a custom response transform without implementing a <code>ResponseTransform</code> derived class.</p>
+<h2 id="responsetrailerstransform"><code>ResponseTrailersTransform</code></h2>
+<p>All response trailers transforms must derive from the abstract base class <code>ResponseTrailersTransform</code>. These can freely modify the client HttpResponse trailers. These run after the response body and should not attempt to modify the response headers or body. Consider also adding a parametrized extension method on <code>TransformBuilderContext</code> for discoverability and easy of use.</p>
+<p><code>AddResponseTrailersTransform</code> is a <code>TransformBuilderContext</code> extension method that defines a response trailers transform as a <code>Func&lt;ResponseTrailersTransformContext, ValueTask&gt;</code>. This allows creating a custom response trailers transform without implementing a <code>ResponseTrailersTransform</code> derived class.</p>
+<h2 id="request-body-transforms">Request body transforms</h2>
+<p>YARP does not provide any built in transforms for modifying the request body. However, the body can be modified by custom transforms.</p>
+<p>Be careful about which kinds of requests are modified, how much data gets buffered, enforcing timeouts, parsing untrusted input, and updating the body-related headers like <code>Content-Length</code>.</p>
+<p>The below example uses simple, inefficient buffering to transform requests. A more efficient implementation would wrap and replace <code>HttpContext.Request.Body</code> with a stream that performed the needed modifications as data was proxied from client to server. That would also require removing the Content-Length header since the final length would not be known in advance.</p>
+<p>This sample requires YARP 1.1, see <a target="_blank" rel="noopener" href="https://github.com/microsoft/reverse-proxy/pull/1569">https://github.com/microsoft/reverse-proxy/pull/1569</a>.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">.AddTransforms(context =&gt;
+{
+    context.AddRequestTransform(async requestContext =&gt;
+    {
+        using var reader =
+            new StreamReader(requestContext.HttpContext.Request.Body);
+        // TODO: size limits, timeouts
+        var body = await reader.ReadToEndAsync();
+        if (!string.IsNullOrEmpty(body))
+        {
+            body = body.Replace(&quot;Alpha&quot;, &quot;Charlie&quot;);
+            var bytes = Encoding.UTF8.GetBytes(body);
+            // Change Content-Length to match the modified body, or remove it
+            requestContext.HttpContext.Request.Body = new MemoryStream(bytes);
+            // Request headers are copied before transforms are invoked, update any
+            // needed headers on the ProxyRequest
+            requestContext.ProxyRequest.Content.Headers.ContentLength =
+                bytes.Length;
+        }
+    });
+});</code></pre></div></figure>
+<p>Custom transforms can only modify a request body if one is already present. They can&#39;t add a new body to a request that doesn&#39;t have one (for example, a POST request without a body or a GET request). If you need to add a body for a specific HTTP method and route, you must do so in <a href="#/doc/aspnet/fundamentals/middleware/index">middleware</a> that runs before YARP, not in a transform.</p>
+<p>The following middleware demonstrates how to add a body to a request that doesn&#39;t have one:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">public class AddRequestBodyMiddleware
+{
+    private readonly RequestDelegate _next;
+
+    public AddRequestBodyMiddleware(RequestDelegate next)
+    {
+        _next = next;
+    }
+
+    public async Task InvokeAsync(HttpContext context)
+    {
+        // Only modify specific route and method
+        if (context.Request.Method == HttpMethods.Get &amp;&amp;
+            context.Request.Path == &quot;/special-route&quot;)
+        {
+            var bodyContent = &quot;key=value&quot;;
+            var bodyBytes = Encoding.UTF8.GetBytes(bodyContent);
+
+            // Create a new request body
+            context.Request.Body = new MemoryStream(bodyBytes);
+            context.Request.ContentLength = bodyBytes.Length;
+
+            // Replace IHttpRequestBodyDetectionFeature so YARP knows
+            // a body is present
+            context.Features.Set(
+                new CustomBodyDetectionFeature());
+        }
+
+        await _next(context);
+    }
+
+    // Helper class to indicate the request can have a body
+    private class CustomBodyDetectionFeature : IHttpRequestBodyDetectionFeature
+    {
+        public bool CanHaveBody =&gt; true;
+    }
+}</code></pre></div></figure>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>You can use <code>context.GetRouteModel().Config.RouteId</code> in middleware to conditionally apply this logic for specific YARP routes.</p>
+</div></aside>
+<h2 id="response-body-transforms">Response body transforms</h2>
+<p>YARP does not provide any built in transforms for modifying the response body. However, the body can be modified by custom transforms.</p>
+<p>Be careful about which kinds of responses are modified, how much data gets buffered, enforcing timeouts, parsing untrusted input, and updating the body-related headers like <code>Content-Length</code>. You may need to decompress content before modifying it, as indicated by the Content-Encoding header, and afterwards re-compress it or remove the header.</p>
+<p>The below example uses simple, inefficient buffering to transform responses. A more efficient implementation would wrap the stream returned by <code>ReadAsStreamAsync()</code> with a stream that performed the needed modifications as data was proxied from client to server. That would also require removing the Content-Length header since the final length would not be known in advance.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">.AddTransforms(context =&gt;
+{
+    context.AddResponseTransform(async responseContext =&gt;
+    {
+        var stream =
+            await responseContext.ProxyResponse.Content.ReadAsStreamAsync();
+        using var reader = new StreamReader(stream);
+        // TODO: size limits, timeouts
+        var body = await reader.ReadToEndAsync();
+
+        if (!string.IsNullOrEmpty(body))
+        {
+            responseContext.SuppressResponseBody = true;
+
+            body = body.Replace(&quot;Bravo&quot;, &quot;Charlie&quot;);
+            var bytes = Encoding.UTF8.GetBytes(body);
+            // Change Content-Length to match the modified body, or remove it
+            responseContext.HttpContext.Response.ContentLength = bytes.Length;
+            // Response headers are copied before transforms are invoked, update
+            // any needed headers on the HttpContext.Response
+            await responseContext.HttpContext.Response.Body.WriteAsync(bytes);
+        }
+    });
+});</code></pre></div></figure>
+<h2 id="itransformprovider"><code>ITransformProvider</code></h2>
+<p><code>ITransformProvider</code> provides the functionality of <code>AddTransforms</code> described above as well as DI integration and validation support.</p>
+<p><code>ITransformProvider</code>&#39;s can be registered in DI by calling <code>AddTransforms</code>. Multiple <code>ITransformProvider</code> implementations can be registered and all will be run.</p>
+<p><code>ITransformProvider</code> has two methods, <code>Validate</code> and <code>Apply</code>. <code>Validate</code> gives you the opportunity to inspect the route for any parameters that are needed to configure a transform, such as custom metadata, and to return validation errors on the context if any needed values are missing or invalid. The <code>Apply</code> method provides the same functionality as AddTransform as discussed above, adding and configuring transforms per route.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">services.AddReverseProxy()
+    .LoadFromConfig(_configuration.GetSection(&quot;ReverseProxy&quot;))
+    .AddTransforms();</code></pre></div></figure>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">internal class MyTransformProvider : ITransformProvider
+{
+    public void ValidateRoute(TransformRouteValidationContext context)
+    {
+        // Check all routes for a custom property and validate the associated
+        // transform data
+        if (context.Route.Metadata?.TryGetValue(&quot;CustomMetadata&quot;, out var value) ??
+            false)
+        {
+            if (string.IsNullOrEmpty(value))
+            {
+                context.Errors.Add(new ArgumentException(
+                    &quot;A non-empty CustomMetadata value is required&quot;));
+            }
+        }
+    }
+
+    public void ValidateCluster(TransformClusterValidationContext context)
+    {
+        // Check all clusters for a custom property and validate the associated
+        // transform data.
+        if (context.Cluster.Metadata?.TryGetValue(&quot;CustomMetadata&quot;, out var value)
+            ?? false)
+        {
+            if (string.IsNullOrEmpty(value))
+            {
+                context.Errors.Add(new ArgumentException(
+                    &quot;A non-empty CustomMetadata value is required&quot;));
+            }
+        }
+    }
+
+    public void Apply(TransformBuilderContext transformBuildContext)
+    {
+        // Check all routes for a custom property and add the associated transform.
+        if ((transformBuildContext.Route.Metadata?.TryGetValue(&quot;CustomMetadata&quot;,
+            out var value) ?? false)
+            || (transformBuildContext.Cluster?.Metadata?.TryGetValue(
+            &quot;CustomMetadata&quot;, out value) ?? false))
+        {
+            if (string.IsNullOrEmpty(value))
+            {
+                throw new ArgumentException(
+                    &quot;A non-empty CustomMetadata value is required&quot;);
+            }
+
+            transformBuildContext.AddRequestTransform(transformContext =&gt;
+            {
+                transformContext.ProxyRequest.Options.Set(
+                    new HttpRequestOptionsKey&lt;string&gt;(&quot;CustomMetadata&quot;), value);
+
+                return default;
+            });
+        }
+    }
+}</code></pre></div></figure>
+<h2 id="itransformfactory"><code>ITransformFactory</code></h2>
+<p>Developers that want to integrate their custom transforms with the <code>Transforms</code> section of configuration can implement an <code>ITransformFactory</code>. This should be registered in DI using the <code>AddTransformFactory()</code> method. Multiple factories can be registered and all will be used.</p>
+<p><code>ITransformFactory</code> provides two methods, <code>Validate</code> and <code>Build</code>. These process one set of transform values at a time, represented by a <code>IReadOnlyDictionary&lt;string, string&gt;</code>.</p>
+<p>The <code>Validate</code> method is called when loading a configuration to verify the contents and report all errors. Any reported errors will prevent the configuration from being applied.</p>
+<p>The <code>Build</code> method takes the given configuration and produces the associated transform instances for the route.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">services.AddReverseProxy()
+    .LoadFromConfig(_configuration.GetSection(&quot;ReverseProxy&quot;))
+    .AddTransformFactory();</code></pre></div></figure>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">internal class MyTransformFactory : ITransformFactory
+{
+    public bool Validate(TransformRouteValidationContext context,
+        IReadOnlyDictionary&lt;string, string&gt; transformValues)
+    {
+        if (transformValues.TryGetValue(&quot;CustomTransform&quot;, out var value))
+        {
+            if (string.IsNullOrEmpty(value))
+            {
+                context.Errors.Add(new ArgumentException(
+                    &quot;A non-empty CustomTransform value is required&quot;));
+            }
+
+            return true; // Matched
+        }
+
+        return false;
+    }
+
+    public bool Build(TransformBuilderContext context,
+        IReadOnlyDictionary&lt;string, string&gt; transformValues)
+    {
+        if (transformValues.TryGetValue(&quot;CustomTransform&quot;, out var value))
+        {
+            if (string.IsNullOrEmpty(value))
+            {
+                throw new ArgumentException(
+                    &quot;A non-empty CustomTransform value is required&quot;);
+            }
+
+            context.AddRequestTransform(transformContext =&gt;
+            {
+                transformContext.ProxyRequest.Options.Set(
+                    new HttpRequestOptionsKey&lt;string&gt;(&quot;CustomTransform&quot;), value);
+                return default;
+            });
+
+            return true;
+        }
+
+        return false;
+    }
+}</code></pre></div></figure>
+<p><code>Validate</code> and <code>Build</code> return <code>true</code> if they&#39;ve identified the given transform configuration as one that they own. A <code>ITransformFactory</code> may implement multiple transforms. Any <code>RouteConfig.Transforms</code> entries not handled by any <code>ITransformFactory</code> will be considered configuration errors and prevent the configuration from being applied.</p>
+<p>Consider also adding parametrized extension methods on <code>RouteConfig</code> like <code>WithTransformQueryValue</code> to facilitate programmatic route construction.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">public static RouteConfig WithTransformQueryValue(this RouteConfig routeConfig,
+    string queryKey, string value, bool append = true)
+{
+    var type = append ? QueryTransformFactory.AppendKey :
+        QueryTransformFactory.SetKey;
+    return routeConfig.WithTransform(transform =&gt;
+    {
+        transform[QueryTransformFactory.QueryValueParameterKey] = queryKey;
+        transform[type] = value;
+    });
+}</code></pre></div></figure>

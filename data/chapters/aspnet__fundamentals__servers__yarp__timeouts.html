@@ -1,0 +1,96 @@
+<h2 id="introduction">Introduction</h2>
+<p>.NET 8 introduced the <a href="/aspnet/core/performance/timeouts">request timeouts middleware</a> to enable configuring request timeouts globally as well as per endpoint. This functionality is also available in YARP 2.1 when running on .NET 8 or newer.</p>
+<h2 id="defaults">Defaults</h2>
+<p>Requests do not have any timeouts by default, other than the <a href="#/doc/aspnet/fundamentals/servers/yarp/http-client-config@httprequest">ActivityTimeout</a> used to clean up idle requests. A default policy specified in <a href="/dotnet/api/microsoft.aspnetcore.http.timeouts.requesttimeoutoptions">RequestTimeoutOptions</a> will apply to proxied requests as well.</p>
+<h2 id="interaction-with-activitytimeout">Interaction with ActivityTimeout</h2>
+<p>Both route-level <code>Timeout</code> and cluster-level <code>ActivityTimeout</code> apply to proxied requests. Understanding how they interact is important for configuring appropriate timeouts:</p>
+<ul>
+<li><p><strong>ActivityTimeout</strong> is configured per cluster in the <code>HttpRequest</code> section and has a default value of <strong>100 seconds</strong>. This timeout resets whenever there&#39;s activity on the request. Activity includes receiving response headers or successfully reading or writing request, response, or streaming data (like gRPC or WebSockets). TCP keep-alives and HTTP/2 protocol pings do not reset the timeout, but WebSocket pings do.</p>
+</li>
+<li><p><strong>Timeout</strong> is configured per route and specifies the total time allowed for a request to complete.</p>
+</li>
+</ul>
+<h3 id="which-timeout-takes-precedence">Which timeout takes precedence?</h3>
+<p>Both timeouts apply simultaneously. If a request is <strong>idle</strong> (no activity), the <code>ActivityTimeout</code> will cancel it. If a request is <strong>active</strong> but taking too long overall, the route-level <code>Timeout</code> will cancel it. In practice, for an idle request, whichever timeout is lower will take effect first.</p>
+<p>For example:</p>
+<ul>
+<li>With a route <code>Timeout</code> of <strong>300 seconds</strong> and the default <code>ActivityTimeout</code> of <strong>100 seconds</strong>: if the request becomes idle, it will be canceled after 100 seconds due to <code>ActivityTimeout</code>, even though the route allows up to 300 seconds.</li>
+<li>With a route <code>Timeout</code> of <strong>60 seconds</strong> and the default <code>ActivityTimeout</code> of <strong>100 seconds</strong>: the request will be canceled after 60 seconds if it hasn&#39;t completed, regardless of activity.</li>
+</ul>
+<h3 id="debugging-considerations">Debugging considerations</h3>
+<p>An important difference between these timeouts:</p>
+<ul>
+<li><strong>Route-level Timeout</strong> does not apply when a debugger is attached to the process, making it easier to debug long-running requests.</li>
+<li><strong>ActivityTimeout</strong> always applies, even when a debugger is attached.</li>
+</ul>
+<p>To avoid <code>ActivityTimeout</code> interfering with debugging or legitimate long-running requests, configure it explicitly in the cluster&#39;s <code>HttpRequest</code> section:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JSON</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-json"><span class="hljs-punctuation">{</span>
+  <span class="hljs-attr">&quot;Clusters&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-punctuation">{</span>
+    <span class="hljs-attr">&quot;cluster1&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-punctuation">{</span>
+      <span class="hljs-attr">&quot;HttpRequest&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-punctuation">{</span>
+        <span class="hljs-attr">&quot;ActivityTimeout&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;00:10:00&quot;</span>
+      <span class="hljs-punctuation">}</span><span class="hljs-punctuation">,</span>
+      <span class="hljs-attr">&quot;Destinations&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-punctuation">{</span>
+        <span class="hljs-attr">&quot;cluster1/destination1&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-punctuation">{</span>
+          <span class="hljs-attr">&quot;Address&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;https://localhost:10001/&quot;</span>
+        <span class="hljs-punctuation">}</span>
+      <span class="hljs-punctuation">}</span>
+    <span class="hljs-punctuation">}</span>
+  <span class="hljs-punctuation">}</span>
+<span class="hljs-punctuation">}</span></code></pre></div></figure>
+<h2 id="configuration">Configuration</h2>
+<p>Timeouts and Timeout Policies can be specified per route via RouteConfig and can be bound from the <code>Routes</code> sections of the config file. As with other route properties, this can be modified and reloaded without restarting the proxy. Policy names are case insensitive.</p>
+<p>Timeouts are specified in a TimeSpan format (HH:MM:SS). Specifying both a Timeout and a TimeoutPolicy on the same route is invalid and will cause the configuration to be rejected.</p>
+<p>Note that request timeouts do not apply when a debugger is attached to the process.</p>
+<p>Example:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JSON</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-json"><span class="hljs-punctuation">{</span>
+  <span class="hljs-attr">&quot;ReverseProxy&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-punctuation">{</span>
+    <span class="hljs-attr">&quot;Routes&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-punctuation">{</span>
+      <span class="hljs-attr">&quot;route1&quot;</span> <span class="hljs-punctuation">:</span> <span class="hljs-punctuation">{</span>
+        <span class="hljs-attr">&quot;ClusterId&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;cluster1&quot;</span><span class="hljs-punctuation">,</span>
+        <span class="hljs-attr">&quot;TimeoutPolicy&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;customPolicy&quot;</span><span class="hljs-punctuation">,</span>
+        <span class="hljs-attr">&quot;Match&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-punctuation">{</span>
+          <span class="hljs-attr">&quot;Hosts&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-punctuation">[</span> <span class="hljs-string">&quot;localhost&quot;</span> <span class="hljs-punctuation">]</span>
+        <span class="hljs-punctuation">}</span>
+      <span class="hljs-punctuation">}</span>
+      <span class="hljs-attr">&quot;route2&quot;</span> <span class="hljs-punctuation">:</span> <span class="hljs-punctuation">{</span>
+        <span class="hljs-attr">&quot;ClusterId&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;cluster1&quot;</span><span class="hljs-punctuation">,</span>
+        <span class="hljs-attr">&quot;Timeout&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;00:01:00&quot;</span><span class="hljs-punctuation">,</span>
+        <span class="hljs-attr">&quot;Match&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-punctuation">{</span>
+          <span class="hljs-attr">&quot;Hosts&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-punctuation">[</span> <span class="hljs-string">&quot;localhost2&quot;</span> <span class="hljs-punctuation">]</span>
+        <span class="hljs-punctuation">}</span>
+      <span class="hljs-punctuation">}</span>
+    <span class="hljs-punctuation">}</span><span class="hljs-punctuation">,</span>
+    <span class="hljs-attr">&quot;Clusters&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-punctuation">{</span>
+      <span class="hljs-attr">&quot;cluster1&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-punctuation">{</span>
+        <span class="hljs-attr">&quot;Destinations&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-punctuation">{</span>
+          <span class="hljs-attr">&quot;cluster1/destination1&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-punctuation">{</span>
+            <span class="hljs-attr">&quot;Address&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;https://localhost:10001/&quot;</span>
+          <span class="hljs-punctuation">}</span>
+        <span class="hljs-punctuation">}</span>
+      <span class="hljs-punctuation">}</span>
+    <span class="hljs-punctuation">}</span>
+  <span class="hljs-punctuation">}</span>
+<span class="hljs-punctuation">}</span></code></pre></div></figure>
+<p>Timeout policies and the default policy can be configured in the service collection and the middleware can be added as follows:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">var builder = WebApplication.CreateBuilder(args);
+
+builder.Services.AddReverseProxy()
+    .LoadFromConfig(builder.Configuration.GetSection(&quot;ReverseProxy&quot;));
+
+builder.Services.AddRequestTimeouts(options =&gt;
+{
+    options.AddPolicy(&quot;customPolicy&quot;, TimeSpan.FromSeconds(20));
+});
+
+var app = builder.Build();
+
+app.UseRequestTimeouts();
+
+app.MapReverseProxy();
+
+app.Run();</code></pre></div></figure>
+<h3 id="disable-timeouts">Disable timeouts</h3>
+<p>Specifying the value <code>disable</code> in a route&#39;s <code>TimeoutPolicy</code> parameter means the request timeout middleware will not apply timeouts to this route.</p>
+<h3 id="websockets">WebSockets</h3>
+<p>Request timeouts are disabled after the initial WebSocket handshake. However, <code>ActivityTimeout</code> does apply to WebSocket requests. WebSocket keep-alives can be enabled by either the client or server talking to the proxy to keep the connection from becoming idle and triggering the <code>ActivityTimeout</code>.</p>

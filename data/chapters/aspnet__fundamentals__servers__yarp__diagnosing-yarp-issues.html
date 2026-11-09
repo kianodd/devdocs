@@ -1,0 +1,277 @@
+<p>When using a reverse proxy, there is an additional hop from the client to the proxy, and then from the proxy to destination for things to go wrong. This topic should provide some hints and tips for how to debug and diagnose issues when they occur. It assumes that the proxy is already running, and so does not include problems at startup such as configuration errors.</p>
+<h2 id="logging">Logging</h2>
+<p>The first step to being able to tell what is going on with YARP is to turn on <a href="/aspnet/core/fundamentals/logging/#configuration">logging</a>. This is a configuration flag so can be changed on the fly. YARP is implemented as a middleware component for ASP.NET Core, so you need to enable logging for both YARP and ASP.NET to get the complete picture of what is going on.</p>
+<p>By default ASP.NET will log to the console, and the configuration file can be used to control the level of logging.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JSON</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-json">  <span class="hljs-comment">//Sets the Logging level for ASP.NET</span>
+  <span class="hljs-attr">&quot;Logging&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-punctuation">{</span>
+    <span class="hljs-attr">&quot;LogLevel&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-punctuation">{</span>
+      <span class="hljs-attr">&quot;Default&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;Information&quot;</span><span class="hljs-punctuation">,</span>
+      <span class="hljs-comment">// Uncomment to hide diagnostic messages from runtime and proxy</span>
+      <span class="hljs-comment">// &quot;Microsoft&quot;: &quot;Warning&quot;,</span>
+      <span class="hljs-comment">// &quot;Yarp&quot; : &quot;Warning&quot;,</span>
+      <span class="hljs-attr">&quot;Microsoft.Hosting.Lifetime&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;Information&quot;</span>
+    <span class="hljs-punctuation">}</span>
+  <span class="hljs-punctuation">}</span><span class="hljs-punctuation">,</span></code></pre></div></figure>
+<p>You want logging information from the <code>Microsoft.AspNetCore.\*</code> and <code>Yarp.ReverseProxy.\*</code> providers. The preceding example emits <code>Information</code>-level events from both providers to the console. Changing the level to <code>Debug</code> shows additional entries. ASP.NET implements change detection for configuration files, so you can edit the <code>appsettings.json</code> file (or <code>appsettings.development.json</code> for the <code>Development</code> environment) while the project is running and observe changes to the log output.</p>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>Settings in the <code>appsettings.development.json</code> file override settings in <code>appsettings.json</code> when running in the <code>Development</code> environment, so make sure that if you are editing <code>appsettings.json</code> that the values aren&#39;t overridden.</p>
+</div></aside>
+<h3 id="understanding-log-entries">Understanding log entries</h3>
+<p>The logging output is directly tied to the way that ASP.NET Core processes requests. It&#39;s important to realize that as middleware, YARP is relying on much of the ASP.NET functionality to process the requests, for example the following is for the processing of a request with &quot;Debug&quot; mode enabled:</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Level</th>
+<th>Log Message</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>dbug</td>
+<td>Microsoft.AspNetCore.Server.Kestrel.Connections[39]<br>Connection id &quot;0HMCD0JK7K51U&quot; accepted.</td>
+<td>Connections are independent of requests, so this is a new connection</td>
+</tr>
+<tr>
+<td>dbug</td>
+<td>Microsoft.AspNetCore.Server.Kestrel.Connections[1]<br>Connection id &quot;0HMCD0JK7K51U&quot; started.</td>
+<td></td>
+</tr>
+<tr>
+<td>info</td>
+<td>Microsoft.AspNetCore.Hosting.Diagnostics[1]<br>Request starting HTTP/1.1 GET <a target="_blank" rel="noopener" href="http://localhost:5000/">http://localhost:5000/</a> - -</td>
+<td>This is the incoming request to ASP.NET</td>
+</tr>
+<tr>
+<td>dbug</td>
+<td>Microsoft.AspNetCore.HostFiltering.HostFilteringMiddleware[0]<br>Wildcard detected, all requests with hosts will be allowed.</td>
+<td>My configuration does not tie endpoints to specific hostnames</td>
+</tr>
+<tr>
+<td>dbug</td>
+<td>Microsoft.AspNetCore.Routing.Matching.DfaMatcher[1001]<br>1 candidate(s) found for the request path &#39;/&#39;</td>
+<td>This shows what possible matches there are for the route</td>
+</tr>
+<tr>
+<td>dbug</td>
+<td>Microsoft.AspNetCore.Routing.Matching.DfaMatcher[1005]<br>Endpoint &#39;minimumroute&#39; with route pattern &#39;{**catch-all}&#39; is valid for the request path &#39;/&#39;</td>
+<td>The minimum route from YARPs configuration has matched</td>
+</tr>
+<tr>
+<td>dbug</td>
+<td>Microsoft.AspNetCore.Routing.EndpointRoutingMiddleware[1]<br>Request matched endpoint &#39;minimumroute&#39;</td>
+<td></td>
+</tr>
+<tr>
+<td>info</td>
+<td>Microsoft.AspNetCore.Routing.EndpointMiddleware[0]<br>Executing endpoint &#39;minimumroute&#39;</td>
+<td></td>
+</tr>
+<tr>
+<td>info</td>
+<td>Yarp.ReverseProxy.Forwarder.HttpForwarder[9]<br>Proxying to <a target="_blank" rel="noopener" href="http://www.example.com/">http://www.example.com/</a></td>
+<td>YARP is proxying the request to example.com</td>
+</tr>
+<tr>
+<td>info</td>
+<td>Microsoft.AspNetCore.Routing.EndpointMiddleware[1]<br>Executed endpoint &#39;minimumroute&#39;</td>
+<td></td>
+</tr>
+<tr>
+<td>dbug</td>
+<td>Microsoft.AspNetCore.Server.Kestrel.Connections[9]<br>Connection id &quot;0HMCD0JK7K51U&quot; completed keep alive response.</td>
+<td>The response has finished, but connection can be kept alive.</td>
+</tr>
+<tr>
+<td>info</td>
+<td>Microsoft.AspNetCore.Hosting.Diagnostics[2]<br>Request finished HTTP/1.1 GET <a target="_blank" rel="noopener" href="http://localhost:5000/">http://localhost:5000/</a> - - - 200 1256 text/html;+charset=utf-8 12.7797ms</td>
+<td>The response completed with status code 200, responding with 1256 bytes as text/html in ~13ms.</td>
+</tr>
+<tr>
+<td>dbug</td>
+<td>Microsoft.AspNetCore.Server.Kestrel.Transport.Sockets[6]<br>Connection id &quot;0HMCD0JK7K51U&quot; received FIN.</td>
+<td>Diagnostic information about the connection to determine who closed it and how cleanly</td>
+</tr>
+<tr>
+<td>dbug</td>
+<td>Microsoft.AspNetCore.Server.Kestrel.Connections[10]<br>Connection id &quot;0HMCD0JK7K51U&quot; disconnecting.</td>
+<td></td>
+</tr>
+<tr>
+<td>dbug</td>
+<td>Microsoft.AspNetCore.Server.Kestrel.Connections[2]<br>Connection id &quot;0HMCD0JK7K51U&quot; stopped.</td>
+<td></td>
+</tr>
+<tr>
+<td>dbug</td>
+<td>Microsoft.AspNetCore.Server.Kestrel.Transport.Sockets[7]<br>Connection id &quot;0HMCD0JK7K51U&quot; sending FIN because: &quot;The Socket transport&#39;s send loop completed gracefully.&quot;</td>
+<td></td>
+</tr>
+</tbody></table></div>
+<p>The above gives general information about the request and how it was processed.</p>
+<h3 id="using-aspnet-request-logging">Using ASP.NET request logging</h3>
+<p>ASP.NET includes a middleware component that can be used to provide more details about the request and response. The <code>UseHttpLogging</code> component can be added to the request pipeline, which adds additional entries to the log detailing the incoming and outgoing request headers.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">app.UseHttpLogging();
+// Enable endpoint routing, required for the reverse proxy
+app.UseRouting();
+// Register the reverse proxy routes
+app.MapReverseProxy();</code></pre></div></figure>
+<p>For example:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Terminal</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-bash"><span class="tk-cmd">info:</span> Microsoft.AspNetCore.HttpLogging.HttpLoggingMiddleware[1]
+      <span class="tk-cmd">Request:</span>
+      <span class="tk-cmd">Protocol:</span> HTTP/1.1
+      <span class="tk-cmd">Method:</span> GET
+      <span class="tk-cmd">Scheme:</span> http
+      <span class="tk-cmd">PathBase:</span>
+      <span class="tk-cmd">Path:</span> /
+      <span class="tk-cmd">Accept:</span> */*
+      <span class="tk-cmd">Host:</span> localhost:5000
+      <span class="tk-cmd">User-Agent:</span> curl/7.55.1
+<span class="tk-cmd">info:</span> Microsoft.AspNetCore.HttpLogging.HttpLoggingMiddleware[2]
+      <span class="tk-cmd">Response:</span>
+      <span class="tk-cmd">StatusCode:</span> 200
+      <span class="tk-cmd">Content-Type:</span> text/html; charset=utf-8
+      <span class="tk-cmd">Date:</span> Tue, 12 Oct 2021 23:29:20 GMT
+      <span class="tk-cmd">Server:</span> ECS,(sec/97A5)
+      <span class="tk-cmd">Age:</span> 113258
+      <span class="tk-cmd">Cache-Control:</span> [Redacted]
+      <span class="tk-cmd">ETag:</span> [Redacted]
+      <span class="tk-cmd">Expires:</span> Tue, 19 Oct 2021 23:29:20 GMT
+      <span class="tk-cmd">Last-Modified:</span> Thu, 17 Oct 2019 07:18:26 GMT
+      <span class="tk-cmd">Vary:</span> [Redacted]
+      <span class="tk-cmd">Content-Length:</span> 1256
+      <span class="tk-cmd">X-Cache:</span> [Redacted]</code></pre></div></figure>
+<h2 id="using-telemetry-events">Using telemetry events</h2>
+<p>We recommend reading <a href="/dotnet/fundamentals/networking/telemetry/overview">Networking telemetry in .NET</a> as a primer on how to consume networking telemetry in .NET.</p>
+<p>The <a target="_blank" rel="noopener" href="https://github.com/microsoft/reverse-proxy/tree/main/samples/ReverseProxy.Metrics.Sample">Metrics sample</a> shows how to listen to events from the different providers that collect telemetry as part of YARP. The most important from a diagnostics perspective are:</p>
+<ul>
+<li><code>ForwarderTelemetryConsumer</code></li>
+<li><code>HttpClientTelemetryConsumer</code></li>
+</ul>
+<p>To use either of these, create a class implementing a <code>Yarp.Telemetry.Consumption</code> interface, such as <code>IForwarderTelemetryConsumer</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">public class ForwarderTelemetry : IForwarderTelemetryConsumer
+{
+    /// Called before forwarding a request.
+    public void OnForwarderStart(DateTime timestamp, string destinationPrefix)
+    {
+        Console.WriteLine($&quot;Forwarder Telemetry [{timestamp:HH:mm:ss.fff}] =&gt; &quot; +
+            $&quot;OnForwarderStart :: Destination prefix: {destinationPrefix}&quot;);
+    }
+
+    /// Called after forwarding a request.
+    public void OnForwarderStop(DateTime timestamp, int statusCode)
+    {
+        Console.WriteLine($&quot;Forwarder Telemetry [{timestamp:HH:mm:ss.fff}] =&gt; &quot; +
+            $&quot;OnForwarderStop :: Status: {statusCode}&quot;);
+    }
+
+    /// Called before &lt;see cref=&quot;OnForwarderStop(DateTime, int)&quot;/&gt; if forwarding the request failed.
+    public void OnForwarderFailed(DateTime timestamp, ForwarderError error)
+    {
+        Console.WriteLine($&quot;Forwarder Telemetry [{timestamp:HH:mm:ss.fff}] =&gt; &quot; +
+            $&quot;OnForwarderFailed :: Error: {error.ToString()}&quot;);
+    }
+
+    /// Called when reaching a given stage of forwarding a request.
+    public void OnForwarderStage(DateTime timestamp, ForwarderStage stage)
+    {
+        Console.WriteLine($&quot;Forwarder Telemetry [{timestamp:HH:mm:ss.fff}] =&gt; &quot; +
+            $&quot;OnForwarderStage :: Stage: {stage.ToString()}&quot;);
+    }
+
+    /// Called periodically while a content transfer is active.
+    public void OnContentTransferring(DateTime timestamp, bool isRequest, long contentLength,
+        long iops, TimeSpan readTime, TimeSpan writeTime)
+    {
+        Console.WriteLine($&quot;Forwarder Telemetry [{timestamp:HH:mm:ss.fff}] =&gt; &quot; +
+            $&quot;OnContentTransferring :: Is request: {isRequest}, Content length: {contentLength}, &quot; +
+            $&quot;IOps: {iops}, Read time: {readTime:s\\.fff}, Write time: {writeTime:s\\.fff}&quot;);
+    }
+
+    /// Called after transferring the request or response content.
+    public void OnContentTransferred(DateTime timestamp, bool isRequest, long contentLength,
+        long iops, TimeSpan readTime, TimeSpan writeTime, TimeSpan firstReadTime)
+    {
+        Console.WriteLine($&quot;Forwarder Telemetry [{timestamp:HH:mm:ss.fff}] =&gt; &quot; +
+            $&quot;OnContentTransferred :: Is request: {isRequest}, Content length: {contentLength}, &quot; +
+            $&quot;IOps: {iops}, Read time: {readTime:s\\.fff}, Write time: {writeTime:s\\.fff}&quot;);
+    }
+
+    /// Called before forwarding a request from `ForwarderMiddleware`, therefore is not called for direct forwarding scenarios.
+    public void OnForwarderInvoke(DateTime timestamp, string clusterId, string routeId,
+        string destinationId)
+    {
+        Console.WriteLine($&quot;Forwarder Telemetry [{timestamp:HH:mm:ss.fff}] =&gt; &quot; +
+            $&quot;OnForwarderInvoke:: Cluster id: {clusterId}, Route Id: {routeId}, Destination: {destinationId}&quot;);
+    }
+}</code></pre></div></figure>
+<p>Register the class as part of services, for example:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">services.AddTelemetryConsumer();
+
+// Add the reverse proxy to capability to the server
+var proxyBuilder = services.AddReverseProxy();
+// Initialize the reverse proxy from the &quot;ReverseProxy&quot; section of configuration
+proxyBuilder.LoadFromConfig(Configuration.GetSection(&quot;ReverseProxy&quot;));</code></pre></div></figure>
+<p>Details are logged on each part of the request, for example:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Terminal</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-bash"><span class="tk-cmd">Forwarder</span> Telemetry [06:40:48.186] =&gt; OnForwarderInvoke::
+    <span class="tk-cmd">Cluster</span> id: minimumcluster, Route Id: minimumroute, Destination: example.com
+<span class="tk-cmd">Forwarder</span> Telemetry [06:41:00.269] =&gt; OnForwarderStart ::
+    <span class="tk-cmd">Destination</span> prefix: http://www.example.com/
+<span class="tk-cmd">Forwarder</span> Telemetry [06:41:00.298] =&gt; OnForwarderStage :: Stage: SendAsyncStart
+<span class="tk-cmd">Forwarder</span> Telemetry [06:41:00.507] =&gt; OnForwarderStage :: Stage: SendAsyncStop
+<span class="tk-cmd">Forwarder</span> Telemetry [06:41:00.530] =&gt; OnForwarderStage :: Stage:
+    <span class="tk-cmd">ResponseContentTransferStart</span>
+<span class="tk-cmd">Forwarder</span> Telemetry [06:41:03.655] =&gt; OnForwarderStop :: Status: 200</code></pre></div></figure>
+<p>The events for telemetry are fired as they occur, so you can <a href="/aspnet/core/fundamentals/http-context#use-httpcontext-from-custom-components">obtain the <code>HttpContext</code></a> and the YARP feature from it:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">services.AddTelemetryConsumer();
+services.AddHttpContextAccessor();
+...
+public void OnForwarderInvoke(DateTime timestamp, string clusterId, string routeId,
+    string destinationId)
+{
+    var context = new HttpContextAccessor().HttpContext;
+    var YarpFeature = context.GetReverseProxyFeature();
+
+    var dests = from d in YarpFeature.AvailableDestinations
+        select d.Model.Config.Address;
+
+    Console.WriteLine($&quot;Destinations: {string.Join(&quot;, &quot;, dests)}&quot;);
+}</code></pre></div></figure>
+<h2 id="using-custom-middleware">Using custom middleware</h2>
+<p>Another way to inspect the state for requests is to insert additional middleware into the request pipeline. You can insert between the other stages to see the state of the request.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">// We can customize the proxy pipeline and add/remove/replace steps
+app.MapReverseProxy(proxyPipeline =&gt;
+{
+    // Use a custom proxy middleware, defined below
+    proxyPipeline.Use(MyCustomProxyStep);
+    // Don&#x27;t forget to include these two middleware when you make a custom proxy pipeline (if you need them).
+    proxyPipeline.UseSessionAffinity();
+    proxyPipeline.UseLoadBalancing();
+});
+...
+public Task MyCustomProxyStep(HttpContext context, Func next)
+{
+    // Can read data from the request via the context
+    foreach (var header in context.Request.Headers)
+    {
+        Console.WriteLine($&quot;{header.Key}: {header.Value}&quot;);
+    }
+
+    // The context also stores a ReverseProxyFeature which holds proxy specific data such as the cluster, route and destinations
+    var proxyFeature = context.GetReverseProxyFeature();
+    Console.WriteLine(System.Text.Json.JsonSerializer.Serialize(proxyFeature.Route.Config));
+
+    // Important - required to move to the next step in the proxy pipeline
+    return next();
+}</code></pre></div></figure>
+<p>You can also use <a href="/aspnet/core/fundamentals/middleware/write">ASP.NET middleware</a> within Configure that will enable you to inspect the request before the proxy pipeline.</p>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>The proxy streams the response from the destination server back to the client, so the response headers and body aren&#39;t readily accessible via middleware.</p>
+</div></aside>
+<h2 id="using-the-debugger">Using the debugger</h2>
+<p>A debugger, such as Visual Studio, can be attached to the proxy process. However, unless you have existing middleware, there isn&#39;t a good place in the app code to break and inspect the state of the request. Therefore, the debugger is best used in conjunction with one of the preceding techniques so that you have distinct places to insert breakpoints.</p>
+<h2 id="network-tracing">Network tracing</h2>
+<p>It can be attractive to use network tracing tools like <a target="_blank" rel="noopener" href="https://www.telerik.com/fiddler">Fiddler</a> or <a target="_blank" rel="noopener" href="https://www.wireshark.org/">Wireshark</a> to try to monitor what&#39;s happening either side of the proxy. However, be cautious using both tools:</p>
+<ul>
+<li>Fiddler registers itself as a proxy and relies on apps using the default proxy to be able to monitor traffic. This works for inbound traffic from a browser to YARP but won&#39;t capture the outbound requests, as YARP is configured to not use the proxy settings for outbound traffic.</li>
+<li>On Windows, Wireshark uses Npcap to capture packet data for network traffic, so it captures both inbound and outbound traffic and can be used to monitor HTTP traffic.</li>
+<li>HTTPS traffic is encrypted and isn&#39;t automatically decryptable by network monitoring tools. Each tool has workarounds that may enable traffic to be monitored, but they require risky use of certificates and changes to trust relationships. Because YARP is making outbound requests, techniques for tricking browsers don&#39;t apply to the YARP process.</li>
+</ul>
+<p>The protocol choice for outbound traffic is made based on the destination URL in the cluster configuration. If traffic monitoring is used for diagnostics, changing the outbound URLs to <code>http://</code>, if possible, may be the simplest approach to enable the monitoring tools to work, provided the issues being diagnosed aren&#39;t transport protocol related.</p>
