@@ -1,0 +1,113 @@
+<p>By <a target="_blank" rel="noopener" href="https://twitter.com/RickAndMSFT">Rick Anderson</a></p>
+<p>:::moniker range=&quot;&gt;= aspnetcore-9.0&quot;</p>
+<h2 id="key-management">Key management</h2>
+<p>The app attempts to detect its operational environment and handle key configuration on its own.</p>
+<ol>
+<li><p>If the app is hosted in <a target="_blank" rel="noopener" href="https://azure.microsoft.com/services/app-service/">Azure Apps</a>, keys are persisted to the <em>%HOME%\ASP.NET\DataProtection-Keys</em> folder. This folder is backed by network storage and is synchronized across all machines hosting the app.</p>
+<ul>
+<li>Keys aren&#39;t protected at rest.</li>
+<li>The <em>DataProtection-Keys</em> folder supplies the key ring to all instances of an app in a single deployment slot.</li>
+<li>Separate deployment slots, such as Staging and Production, don&#39;t share a key ring. When you swap between deployment slots, for example swapping Staging to Production or using A/B testing, any app using Data Protection won&#39;t be able to decrypt stored data using the key ring inside the previous slot. This leads to users being logged out of an app that uses the standard ASP.NET Core cookie authentication, as it uses Data Protection to protect its cookies. If you desire slot-independent key rings, use an external key ring provider, such as Azure Blob Storage, Azure Key Vault, a SQL store, or Redis cache.</li>
+</ul>
+</li>
+<li><p>If the user profile is available, keys are persisted to the <em>%LOCALAPPDATA%\ASP.NET\DataProtection-Keys</em> folder. If the operating system is Windows, the keys are encrypted at rest using DPAPI.</p>
+<p>The app pool&#39;s <a href="/iis/configuration/system.applicationhost/applicationpools/add/processmodel#configuration">setProfileEnvironment attribute</a> must also be enabled. The default value of <code>setProfileEnvironment</code> is <code>true</code>. In some scenarios (for example, Windows OS), <code>setProfileEnvironment</code> is set to <code>false</code>. If keys aren&#39;t stored in the user profile directory as expected:</p>
+<ol>
+<li>Navigate to the <em>%windir%/system32/inetsrv/config</em> folder.</li>
+<li>Open the <em>applicationHost.config</em> file.</li>
+<li>Locate the <code>&lt;system.applicationHost&gt;&lt;applicationPools&gt;&lt;applicationPoolDefaults&gt;&lt;processModel&gt;</code> element.</li>
+<li>Confirm that the <code>setProfileEnvironment</code> attribute isn&#39;t present, which defaults the value to <code>true</code>, or explicitly set the attribute&#39;s value to <code>true</code>.</li>
+</ol>
+</li>
+<li><p>If the app is hosted in IIS, keys are persisted to the HKLM registry in a special registry key that&#39;s ACLed only to the worker process account. Keys are encrypted at rest using DPAPI.</p>
+</li>
+<li><p>If none of these conditions match, keys aren&#39;t persisted outside of the current process. When the process shuts down, all generated keys are lost.</p>
+</li>
+</ol>
+<p>The developer is always in full control and can override how and where keys are stored. The first three options above should provide good defaults for most apps similar to how the ASP.NET <strong>&lt;machineKey&gt;</strong> auto-generation routines worked in the past. The final, fallback option is the only scenario that requires the developer to specify <a href="#/doc/aspnet/overview">configuration</a> upfront if they want key persistence, but this fallback only occurs in rare situations.</p>
+<p>When hosting in a Docker container, keys should be persisted in a folder that&#39;s a Docker volume (a shared volume or a host-mounted volume that persists beyond the container&#39;s lifetime) or in an external provider, such as <a target="_blank" rel="noopener" href="https://azure.microsoft.com/services/key-vault/">Azure Key Vault</a> or <a target="_blank" rel="noopener" href="https://redis.io/">Redis</a>. An external provider is also useful in web farm scenarios if apps can&#39;t access a shared network volume (see <a href="#/doc/aspnet/overview@persist-keys-to-the-file-system-persistkeystofilesystem">PersistKeysToFileSystem</a> for more information).</p>
+<aside class="callout callout-warning"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 4 2.8 20h18.4L12 4z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M12 10v4.4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="17" r="1.3" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Warning</p><p>If the developer overrides the rules outlined above and points the Data Protection system at a specific key repository, automatic encryption of keys at rest is disabled. At-rest protection can be re-enabled via <a href="#/doc/aspnet/overview">configuration</a>.</p>
+</div></aside>
+<h2 id="key-lifetime">Key lifetime</h2>
+<p>Keys have a 90-day lifetime by default. When a key expires, the app automatically generates a new key and sets the new key as the active key. As long as retired keys remain on the system, your app can decrypt any data protected with them. See <a href="#/doc/aspnet/security/data-protection/implementation/key-management@key-expiration-and-rolling">key management</a> for more information.</p>
+<h2 id="default-algorithms">Default algorithms</h2>
+<p>The default payload protection algorithm used is AES-256-CBC for confidentiality and HMACSHA256 for authenticity. A 512-bit master key, changed every 90 days, is used to derive the two sub-keys used for these algorithms on a per-payload basis. See <a href="#/doc/aspnet/security/data-protection/implementation/subkeyderivation@additional-authenticated-data-and-subkey-derivation">subkey derivation</a> for more information.</p>
+<h3 id="delete-keys">Delete keys</h3>
+<p>Deleting a key makes its protected data permanently inaccessible. To mitigate that risk, we recommend not deleting keys. The resulting accumulation of keys generally has minimal impact because they&#39;re small. In exceptional cases, such as extremely long-running services, keys can be deleted. Only delete keys:</p>
+<ul>
+<li>That are old (no longer in use).</li>
+<li>When you can accept the risk of data loss in exchange for storage savings.</li>
+</ul>
+<p>We recommend not deleting data protection keys.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">﻿using Microsoft.AspNetCore.DataProtection.KeyManagement;
+
+var services = new ServiceCollection();
+services.AddDataProtection();
+
+var serviceProvider = services.BuildServiceProvider();
+
+var keyManager = serviceProvider.GetService();
+
+if (keyManager is IDeletableKeyManager deletableKeyManager)
+{
+    var utcNow = DateTimeOffset.UtcNow;
+    var yearAgo = utcNow.AddYears(-1);
+
+    if (!deletableKeyManager.DeleteKeys(key =&gt; key.ExpirationDate &lt; yearAgo))
+    {
+        Console.WriteLine(&quot;Failed to delete keys.&quot;);
+    }
+    else
+    {
+        Console.WriteLine(&quot;Old keys deleted successfully.&quot;);
+    }
+}
+else
+{
+    Console.WriteLine(&quot;Key manager does not support deletion.&quot;);
+}</code></pre></div></figure>
+<h2 id="related-content">Related content</h2>
+<ul>
+<li><a href="#/doc/aspnet/security/data-protection/extensibility/key-management">Key management extensibility in ASP.NET Core</a></li>
+<li><a href="#/doc/aspnet/host-and-deploy/web-farm">Host ASP.NET Core in a web farm</a></li>
+</ul>
+<p>:::moniker-end</p>
+<p>:::moniker range=&quot;&lt; aspnetcore-9.0&quot;</p>
+<h2 id="key-management">Key management</h2>
+<p>The app attempts to detect its operational environment and handle key configuration on its own.</p>
+<ol>
+<li><p>If the app is hosted in <a target="_blank" rel="noopener" href="https://azure.microsoft.com/services/app-service/">Azure Apps</a>, keys are persisted to the <em>%HOME%\ASP.NET\DataProtection-Keys</em> folder. This folder is backed by network storage and is synchronized across all machines hosting the app.</p>
+<ul>
+<li>Keys aren&#39;t protected at rest.</li>
+<li>The <em>DataProtection-Keys</em> folder supplies the key ring to all instances of an app in a single deployment slot.</li>
+<li>Separate deployment slots, such as Staging and Production, don&#39;t share a key ring. When you swap between deployment slots, for example swapping Staging to Production or using A/B testing, any app using Data Protection won&#39;t be able to decrypt stored data using the key ring inside the previous slot. This leads to users being logged out of an app that uses the standard ASP.NET Core cookie authentication, as it uses Data Protection to protect its cookies. If you desire slot-independent key rings, use an external key ring provider, such as Azure Blob Storage, Azure Key Vault, a SQL store, or Redis cache.</li>
+</ul>
+</li>
+<li><p>If the user profile is available, keys are persisted to the <em>%LOCALAPPDATA%\ASP.NET\DataProtection-Keys</em> folder. If the operating system is Windows, the keys are encrypted at rest using DPAPI.</p>
+<p>The app pool&#39;s <a href="/iis/configuration/system.applicationhost/applicationpools/add/processmodel#configuration">setProfileEnvironment attribute</a> must also be enabled. The default value of <code>setProfileEnvironment</code> is <code>true</code>. In some scenarios (for example, Windows OS), <code>setProfileEnvironment</code> is set to <code>false</code>. If keys aren&#39;t stored in the user profile directory as expected:</p>
+<ol>
+<li>Navigate to the <em>%windir%/system32/inetsrv/config</em> folder.</li>
+<li>Open the <em>applicationHost.config</em> file.</li>
+<li>Locate the <code>&lt;system.applicationHost&gt;&lt;applicationPools&gt;&lt;applicationPoolDefaults&gt;&lt;processModel&gt;</code> element.</li>
+<li>Confirm that the <code>setProfileEnvironment</code> attribute isn&#39;t present, which defaults the value to <code>true</code>, or explicitly set the attribute&#39;s value to <code>true</code>.</li>
+</ol>
+</li>
+<li><p>If the app is hosted in IIS, keys are persisted to the HKLM registry in a special registry key that&#39;s ACLed only to the worker process account. Keys are encrypted at rest using DPAPI.</p>
+</li>
+<li><p>If none of these conditions match, keys aren&#39;t persisted outside of the current process. When the process shuts down, all generated keys are lost.</p>
+</li>
+</ol>
+<p>The developer is always in full control and can override how and where keys are stored. The first three options above should provide good defaults for most apps similar to how the ASP.NET <strong>&lt;machineKey&gt;</strong> auto-generation routines worked in the past. The final, fallback option is the only scenario that requires the developer to specify <a href="../../overview.md">configuration</a> upfront if they want key persistence, but this fallback only occurs in rare situations.</p>
+<p>When hosting in a Docker container, keys should be persisted in a folder that&#39;s a Docker volume (a shared volume or a host-mounted volume that persists beyond the container&#39;s lifetime) or in an external provider, such as <a target="_blank" rel="noopener" href="https://azure.microsoft.com/services/key-vault/">Azure Key Vault</a> or <a target="_blank" rel="noopener" href="https://redis.io/">Redis</a>. An external provider is also useful in web farm scenarios if apps can&#39;t access a shared network volume (see <a href="../../overview.md#persist-keys-to-the-file-system-persistkeystofilesystem">PersistKeysToFileSystem</a> for more information).</p>
+<aside class="callout callout-warning"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 4 2.8 20h18.4L12 4z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M12 10v4.4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="17" r="1.3" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Warning</p><p>If the developer overrides the rules outlined above and points the Data Protection system at a specific key repository, automatic encryption of keys at rest is disabled. At-rest protection can be re-enabled via <a href="../../overview.md">configuration</a>.</p>
+</div></aside>
+<h2 id="key-lifetime">Key lifetime</h2>
+<p>Keys have a 90-day lifetime by default. When a key expires, the app automatically generates a new key and sets the new key as the active key. As long as retired keys remain on the system, your app can decrypt any data protected with them. See <a href="../../../implementation/key-management.md#key-expiration-and-rolling">key management</a> for more information.</p>
+<h2 id="default-algorithms">Default algorithms</h2>
+<p>The default payload protection algorithm used is AES-256-CBC for confidentiality and HMACSHA256 for authenticity. A 512-bit master key, changed every 90 days, is used to derive the two sub-keys used for these algorithms on a per-payload basis. See <a href="../../../implementation/subkeyderivation.md#additional-authenticated-data-and-subkey-derivation">subkey derivation</a> for more information.</p>
+<h2 id="related-content">Related content</h2>
+<ul>
+<li><a href="../../../extensibility/key-management.md">Key management extensibility in ASP.NET Core</a></li>
+<li><a href="#/doc/aspnet/host-and-deploy/web-farm">Host ASP.NET Core in a web farm</a></li>
+</ul>
+<p>:::moniker-end</p>

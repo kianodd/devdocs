@@ -1,0 +1,727 @@
+<!-- ms.sfi.ropc: t --><p>By <a target="_blank" rel="noopener" href="https://github.com/analogrelay">Ashley Stanton-Nurse</a>, <a target="_blank" rel="noopener" href="https://twitter.com/bradygaster">Brady Gaster</a>, and <a target="_blank" rel="noopener" href="https://github.com/tdykstra">Tom Dykstra</a>.</p>
+<p>:::moniker range=&quot;&gt;= aspnetcore-8.0&quot;</p>
+<p>This article explains SignalR-specific aspects of setting up a <a target="_blank" rel="noopener" href="https://redis.io/">Redis</a> server to use for scaling out an ASP.NET Core SignalR app.</p>
+<aside class="callout callout-warning"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 4 2.8 20h18.4L12 4z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M12 10v4.4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="17" r="1.3" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Warning</p><p>This article shows the use of connection strings. When a local database is used for development and testing, database user authentication via the connection string isn&#39;t required.
+In production environments, connection strings sometimes include a password for authenticating database access or database operations. A resource owner password credential (ROPC) in a connection string is a security risk that should be avoided in production apps. Production apps should use the most secure authentication flow available.
+For more information on authentication for apps deployed to test or production environments, see <a href="#/doc/aspnet/security/index@secure-authentication-flows">ASP.NET Core security topics</a>.</p>
+</div></aside>
+<h2 id="set-up-a-redis-backplane">Set up a Redis backplane</h2>
+<ul>
+<li><p>Deploy a Redis server.</p>
+<blockquote>
+<p>[!IMPORTANT]
+For production use, a Redis backplane is recommended only when it runs in the same data center as the SignalR app. Otherwise, network latency degrades performance. If your SignalR app is running in the Azure cloud, we recommend Azure SignalR Service instead of a Redis backplane.</p>
+</blockquote>
+<p>For more information, see the following resources:</p>
+<ul>
+<li><a href="#/doc/aspnet/signalr/scale">ASP.NET Core SignalR production hosting and scaling</a></li>
+<li><a target="_blank" rel="noopener" href="https://redis.io/">Redis documentation</a></li>
+<li><a href="/azure/azure-cache-for-redis/">Azure Redis Cache documentation</a></li>
+</ul>
+</li>
+<li><p>In the SignalR app, install the following NuGet package:</p>
+<ul>
+<li><code>Microsoft.AspNetCore.SignalR.StackExchangeRedis</code></li>
+</ul>
+</li>
+<li><p>Call <code>AddStackExchangeRedis</code> by adding the following line before the line that calls <code>builder.Build()</code>) in the <code>Program.cs</code> file.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">builder.Services.AddSignalR().AddStackExchangeRedis(&quot;&lt;your_Redis_connection_string&gt;&quot;);</code></pre></div></figure>
+</li>
+<li><p>Configure options as needed:</p>
+<p>Most options can be set in the connection string or in the <a target="_blank" rel="noopener" href="https://stackexchange.github.io/StackExchange.Redis/Configuration#configuration-options"><code>ConfigurationOptions</code></a> object. Options specified in <code>ConfigurationOptions</code> override the ones set in the connection string.</p>
+<p>The following example shows how to set options in the <code>ConfigurationOptions</code> object. This example adds a channel prefix so that multiple apps can share the same Redis instance, as explained in the following step.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">builder.Services.AddSignalR()
+  .AddStackExchangeRedis(connectionString, options =&gt; {
+      options.Configuration.ChannelPrefix = RedisChannel.Literal(&quot;MyApp&quot;);
+  });</code></pre></div></figure>
+<p>In the preceding code, <code>options.Configuration</code> is initialized with whatever was specified in the connection string.</p>
+<p>For information about Redis options, see the <a target="_blank" rel="noopener" href="https://stackexchange.github.io/StackExchange.Redis/Configuration.html">StackExchange Redis documentation</a>.</p>
+</li>
+<li><p>If you&#39;re using one Redis server for multiple SignalR apps, use a different channel prefix for each SignalR app.</p>
+<p>Setting a channel prefix isolates one SignalR app from others that use different channel prefixes. If you don&#39;t assign different prefixes, a message sent from one app to all of its own clients will go to all clients of all apps that use the Redis server as a backplane.</p>
+</li>
+<li><p>Configure your server farm load balancing software for sticky sessions. Here are some examples of documentation on how to do that:</p>
+<ul>
+<li><a href="/iis/extensions/configuring-application-request-routing-arr/http-load-balancing-using-application-request-routing">IIS</a></li>
+<li><a target="_blank" rel="noopener" href="https://www.haproxy.com/blog/load-balancing-affinity-persistence-sticky-sessions-what-you-need-to-know/">HAProxy</a></li>
+<li><a target="_blank" rel="noopener" href="https://docs.nginx.com/nginx/admin-guide/load-balancer/http-load-balancer/#sticky">Nginx</a></li>
+</ul>
+</li>
+</ul>
+<h2 id="redis-server-errors">Redis server errors</h2>
+<p>When a Redis server goes down, SignalR throws exceptions that indicate messages won&#39;t be delivered. Some typical exception messages:</p>
+<ul>
+<li><em>Failed writing message</em></li>
+<li><em>Failed to invoke hub method &#39;MethodName&#39;</em></li>
+<li><em>Connection to Redis failed</em></li>
+</ul>
+<p>SignalR doesn&#39;t buffer messages to send them when the server comes back up. Any messages sent while the Redis server is down are lost.</p>
+<p>SignalR automatically reconnects when the Redis server is available again.</p>
+<h3 id="custom-behavior-for-connection-failures">Custom behavior for connection failures</h3>
+<p>Here&#39;s an example that shows how to handle Redis connection failure events.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">services.AddSignalR()
+        .AddMessagePackProtocol()
+        .AddStackExchangeRedis(o =&gt;
+        {
+            o.ConnectionFactory = async writer =&gt;
+            {
+                var config = new ConfigurationOptions
+                {
+                    AbortOnConnectFail = false
+                };
+                config.EndPoints.Add(IPAddress.Loopback, 0);
+                config.SetDefaultPorts();
+                var connection = await ConnectionMultiplexer.ConnectAsync(config, writer);
+                connection.ConnectionFailed += (_, e) =&gt;
+                {
+                    Console.WriteLine(&quot;Connection to Redis failed.&quot;);
+                };
+
+                if (!connection.IsConnected)
+                {
+                    Console.WriteLine(&quot;Did not connect to Redis.&quot;);
+                }
+
+                return connection;
+            };
+        });</code></pre></div></figure>
+<h2 id="redis-cluster">Redis Cluster</h2>
+<p><a target="_blank" rel="noopener" href="https://redis.io/topics/cluster-spec">Redis Cluster</a> utilizes multiple simultaneously active Redis servers to achieve high availability. When Redis Cluster is used as the backplane for SignalR, messages are delivered to all of the nodes of the cluster without code modifications to the app.</p>
+<p>There&#39;s a tradeoff between the number of nodes in the cluster and the throughput of the backplane. Increasing the number of nodes increases the availability of the cluster but decreases the throughput because messages must be transmitted to all of the nodes in the cluster.</p>
+<p>In the SignalR app, include all of the possible Redis nodes using either of the following approaches:</p>
+<ul>
+<li>List the nodes in the connection string delimited with commas.</li>
+<li>If using custom behavior for connection failures, add the nodes to <a target="_blank" rel="noopener" href="https://stackexchange.github.io/StackExchange.Redis/Configuration#configuration-options"><code>ConfigurationOptions.Endpoints</code></a>.</li>
+</ul>
+<h2 id="next-steps">Next steps</h2>
+<p>For more information, see the following resources:</p>
+<ul>
+<li><a href="#/doc/aspnet/signalr/scale">ASP.NET Core SignalR production hosting and scaling</a></li>
+<li><a target="_blank" rel="noopener" href="https://redis.io/documentation">Redis documentation</a></li>
+<li><a target="_blank" rel="noopener" href="https://stackexchange.github.io/StackExchange.Redis/">StackExchange Redis documentation</a></li>
+<li><a href="/azure/azure-cache-for-redis/">Azure Redis Cache documentation</a></li>
+</ul>
+<p>:::moniker-end</p>
+<p>:::moniker range=&quot;= aspnetcore-7.0&quot;</p>
+<!-- ms.sfi.ropc: t --><p>This article explains SignalR-specific aspects of setting up a <a target="_blank" rel="noopener" href="https://redis.io/">Redis</a> server to use for scaling out an ASP.NET Core SignalR app.</p>
+<aside class="callout callout-warning"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 4 2.8 20h18.4L12 4z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M12 10v4.4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="17" r="1.3" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Warning</p><p>This article shows the use of connection strings. When a local database is used for development and testing, database user authentication via the connection string isn&#39;t required.
+In production environments, connection strings sometimes include a password for authenticating database access or database operations. A resource owner password credential (ROPC) in a connection string is a security risk that should be avoided in production apps. Production apps should use the most secure authentication flow available.
+For more information on authentication for apps deployed to test or production environments, see <a href="#/doc/aspnet/security/index@secure-authentication-flows">ASP.NET Core security topics</a>.</p>
+</div></aside>
+<h2 id="set-up-a-redis-backplane">Set up a Redis backplane</h2>
+<ul>
+<li><p>Deploy a Redis server.</p>
+<blockquote>
+<p>[!IMPORTANT]
+For production use, a Redis backplane is recommended only when it runs in the same data center as the SignalR app. Otherwise, network latency degrades performance. If your SignalR app is running in the Azure cloud, we recommend Azure SignalR Service instead of a Redis backplane.</p>
+</blockquote>
+<p>For more information, see the following resources:</p>
+<ul>
+<li><a href="../../scale.md">ASP.NET Core SignalR production hosting and scaling</a></li>
+<li><a target="_blank" rel="noopener" href="https://redis.io/">Redis documentation</a></li>
+<li><a href="/azure/azure-cache-for-redis/">Azure Redis Cache documentation</a></li>
+</ul>
+</li>
+<li><p>In the SignalR app, install the following NuGet package:</p>
+<ul>
+<li><code>Microsoft.AspNetCore.SignalR.StackExchangeRedis</code></li>
+</ul>
+</li>
+<li><p>Call <code>AddStackExchangeRedis</code> by adding the following line before the line that calls <code>builder.Build()</code>) in the <code>Program.cs</code> file.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">builder.Services.AddSignalR().AddStackExchangeRedis(&quot;&lt;your_Redis_connection_string&gt;&quot;);</code></pre></div></figure>
+</li>
+<li><p>Configure options as needed:</p>
+<p>Most options can be set in the connection string or in the <a target="_blank" rel="noopener" href="https://stackexchange.github.io/StackExchange.Redis/Configuration#configuration-options"><code>ConfigurationOptions</code></a> object. Options specified in <code>ConfigurationOptions</code> override the ones set in the connection string.</p>
+<p>The following example shows how to set options in the <code>ConfigurationOptions</code> object. This example adds a channel prefix so that multiple apps can share the same Redis instance, as explained in the following step.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">services.AddSignalR()
+  .AddStackExchangeRedis(connectionString, options =&gt; {
+      options.Configuration.ChannelPrefix = &quot;MyApp&quot;;
+  });</code></pre></div></figure>
+<p>In the preceding code, <code>options.Configuration</code> is initialized with whatever was specified in the connection string.</p>
+<p>For information about Redis options, see the <a target="_blank" rel="noopener" href="https://stackexchange.github.io/StackExchange.Redis/Configuration.html">StackExchange Redis documentation</a>.</p>
+</li>
+<li><p>If you&#39;re using one Redis server for multiple SignalR apps, use a different channel prefix for each SignalR app.</p>
+<p>Setting a channel prefix isolates one SignalR app from others that use different channel prefixes. If you don&#39;t assign different prefixes, a message sent from one app to all of its own clients will go to all clients of all apps that use the Redis server as a backplane.</p>
+</li>
+<li><p>Configure your server farm load balancing software for sticky sessions. Here are some examples of documentation on how to do that:</p>
+<ul>
+<li><a href="/iis/extensions/configuring-application-request-routing-arr/http-load-balancing-using-application-request-routing">IIS</a></li>
+<li><a target="_blank" rel="noopener" href="https://www.haproxy.com/blog/load-balancing-affinity-persistence-sticky-sessions-what-you-need-to-know/">HAProxy</a></li>
+<li><a target="_blank" rel="noopener" href="https://docs.nginx.com/nginx/admin-guide/load-balancer/http-load-balancer/#sticky">Nginx</a></li>
+</ul>
+</li>
+</ul>
+<h2 id="redis-server-errors">Redis server errors</h2>
+<p>When a Redis server goes down, SignalR throws exceptions that indicate messages won&#39;t be delivered. Some typical exception messages:</p>
+<ul>
+<li><em>Failed writing message</em></li>
+<li><em>Failed to invoke hub method &#39;MethodName&#39;</em></li>
+<li><em>Connection to Redis failed</em></li>
+</ul>
+<p>SignalR doesn&#39;t buffer messages to send them when the server comes back up. Any messages sent while the Redis server is down are lost.</p>
+<p>SignalR automatically reconnects when the Redis server is available again.</p>
+<h3 id="custom-behavior-for-connection-failures">Custom behavior for connection failures</h3>
+<p>Here&#39;s an example that shows how to handle Redis connection failure events.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">services.AddSignalR()
+        .AddMessagePackProtocol()
+        .AddStackExchangeRedis(o =&gt;
+        {
+            o.ConnectionFactory = async writer =&gt;
+            {
+                var config = new ConfigurationOptions
+                {
+                    AbortOnConnectFail = false
+                };
+                config.EndPoints.Add(IPAddress.Loopback, 0);
+                config.SetDefaultPorts();
+                var connection = await ConnectionMultiplexer.ConnectAsync(config, writer);
+                connection.ConnectionFailed += (_, e) =&gt;
+                {
+                    Console.WriteLine(&quot;Connection to Redis failed.&quot;);
+                };
+
+                if (!connection.IsConnected)
+                {
+                    Console.WriteLine(&quot;Did not connect to Redis.&quot;);
+                }
+
+                return connection;
+            };
+        });</code></pre></div></figure>
+<h2 id="redis-cluster">Redis Cluster</h2>
+<p><a target="_blank" rel="noopener" href="https://redis.io/topics/cluster-spec">Redis Cluster</a> utilizes multiple simultaneously active Redis servers to achieve high availability. When Redis Cluster is used as the backplane for SignalR, messages are delivered to all of the nodes of the cluster without code modifications to the app.</p>
+<p>There&#39;s a tradeoff between the number of nodes in the cluster and the throughput of the backplane. Increasing the number of nodes increases the availability of the cluster but decreases the throughput because messages must be transmitted to all of the nodes in the cluster.</p>
+<p>In the SignalR app, include all of the possible Redis nodes using either of the following approaches:</p>
+<ul>
+<li>List the nodes in the connection string delimited with commas.</li>
+<li>If using custom behavior for connection failures, add the nodes to <a target="_blank" rel="noopener" href="https://stackexchange.github.io/StackExchange.Redis/Configuration#configuration-options"><code>ConfigurationOptions.Endpoints</code></a>.</li>
+</ul>
+<h2 id="next-steps">Next steps</h2>
+<p>For more information, see the following resources:</p>
+<ul>
+<li><a href="../../scale.md">ASP.NET Core SignalR production hosting and scaling</a></li>
+<li><a target="_blank" rel="noopener" href="https://redis.io/documentation">Redis documentation</a></li>
+<li><a target="_blank" rel="noopener" href="https://stackexchange.github.io/StackExchange.Redis/">StackExchange Redis documentation</a></li>
+<li><a href="/azure/azure-cache-for-redis/">Azure Redis Cache documentation</a></li>
+</ul>
+<p>:::moniker-end</p>
+<p>:::moniker range=&quot;= aspnetcore-6.0&quot;</p>
+<!-- ms.sfi.ropc: t -->
+<p>This article explains SignalR-specific aspects of setting up a <a target="_blank" rel="noopener" href="https://redis.io/">Redis</a> server to use for scaling out an ASP.NET Core SignalR app.</p>
+<aside class="callout callout-warning"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 4 2.8 20h18.4L12 4z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M12 10v4.4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="17" r="1.3" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Warning</p><p>This article shows the use of connection strings. When a local database is used for development and testing, database user authentication via the connection string isn&#39;t required.
+In production environments, connection strings sometimes include a password for authenticating database access or database operations. A resource owner password credential (ROPC) in a connection string is a security risk that should be avoided in production apps. Production apps should use the most secure authentication flow available.
+For more information on authentication for apps deployed to test or production environments, see <a href="#/doc/aspnet/security/index@secure-authentication-flows">ASP.NET Core security topics</a>.</p>
+</div></aside>
+<h2 id="set-up-a-redis-backplane">Set up a Redis backplane</h2>
+<ul>
+<li><p>Deploy a Redis server.</p>
+<blockquote>
+<p>[!IMPORTANT]
+For production use, a Redis backplane is recommended only when it runs in the same data center as the SignalR app. Otherwise, network latency degrades performance. If your SignalR app is running in the Azure cloud, we recommend Azure SignalR Service instead of a Redis backplane.</p>
+</blockquote>
+<p>For more information, see the following resources:</p>
+<ul>
+<li><a href="../../scale.md">ASP.NET Core SignalR production hosting and scaling</a></li>
+<li><a target="_blank" rel="noopener" href="https://redis.io/">Redis documentation</a></li>
+<li><a href="/azure/azure-cache-for-redis/">Azure Redis Cache documentation</a></li>
+</ul>
+</li>
+<li><p>In the SignalR app, install the following NuGet package:</p>
+<ul>
+<li><code>Microsoft.AspNetCore.SignalR.StackExchangeRedis</code></li>
+</ul>
+</li>
+<li><p>Call <code>AddStackExchangeRedis</code> by adding the following line before the line that calls <code>builder.Build()</code>) in the <code>Program.cs</code> file.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">builder.Services.AddSignalR().AddStackExchangeRedis(&quot;&lt;your_Redis_connection_string&gt;&quot;);</code></pre></div></figure>
+</li>
+<li><p>Configure options as needed:</p>
+<p>Most options can be set in the connection string or in the <a target="_blank" rel="noopener" href="https://stackexchange.github.io/StackExchange.Redis/Configuration#configuration-options"><code>ConfigurationOptions</code></a> object. Options specified in <code>ConfigurationOptions</code> override the ones set in the connection string.</p>
+<p>The following example shows how to set options in the <code>ConfigurationOptions</code> object. This example adds a channel prefix so that multiple apps can share the same Redis instance, as explained in the following step.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">builder.Services.AddSignalR()
+  .AddStackExchangeRedis(connectionString, options =&gt; {
+      options.Configuration.ChannelPrefix = RedisChannel.Literal(&quot;MyApp&quot;);
+  });</code></pre></div></figure>
+<p>In the preceding code, <code>options.Configuration</code> is initialized with whatever was specified in the connection string.</p>
+<p>For information about Redis options, see the <a target="_blank" rel="noopener" href="https://stackexchange.github.io/StackExchange.Redis/Configuration.html">StackExchange Redis documentation</a>.</p>
+</li>
+<li><p>If you&#39;re using one Redis server for multiple SignalR apps, use a different channel prefix for each SignalR app.</p>
+<p>Setting a channel prefix isolates one SignalR app from others that use different channel prefixes. If you don&#39;t assign different prefixes, a message sent from one app to all of its own clients will go to all clients of all apps that use the Redis server as a backplane.</p>
+</li>
+<li><p>Configure your server farm load balancing software for sticky sessions. Here are some examples of documentation on how to do that:</p>
+<ul>
+<li><a href="/iis/extensions/configuring-application-request-routing-arr/http-load-balancing-using-application-request-routing">IIS</a></li>
+<li><a target="_blank" rel="noopener" href="https://www.haproxy.com/blog/load-balancing-affinity-persistence-sticky-sessions-what-you-need-to-know/">HAProxy</a></li>
+<li><a target="_blank" rel="noopener" href="https://docs.nginx.com/nginx/admin-guide/load-balancer/http-load-balancer/#sticky">Nginx</a></li>
+</ul>
+</li>
+</ul>
+<h2 id="redis-server-errors">Redis server errors</h2>
+<p>When a Redis server goes down, SignalR throws exceptions that indicate messages won&#39;t be delivered. Some typical exception messages:</p>
+<ul>
+<li><em>Failed writing message</em></li>
+<li><em>Failed to invoke hub method &#39;MethodName&#39;</em></li>
+<li><em>Connection to Redis failed</em></li>
+</ul>
+<p>SignalR doesn&#39;t buffer messages to send them when the server comes back up. Any messages sent while the Redis server is down are lost.</p>
+<p>SignalR automatically reconnects when the Redis server is available again.</p>
+<h3 id="custom-behavior-for-connection-failures">Custom behavior for connection failures</h3>
+<p>Here&#39;s an example that shows how to handle Redis connection failure events.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">services.AddSignalR()
+        .AddMessagePackProtocol()
+        .AddStackExchangeRedis(o =&gt;
+        {
+            o.ConnectionFactory = async writer =&gt;
+            {
+                var config = new ConfigurationOptions
+                {
+                    AbortOnConnectFail = false
+                };
+                config.EndPoints.Add(IPAddress.Loopback, 0);
+                config.SetDefaultPorts();
+                var connection = await ConnectionMultiplexer.ConnectAsync(config, writer);
+                connection.ConnectionFailed += (_, e) =&gt;
+                {
+                    Console.WriteLine(&quot;Connection to Redis failed.&quot;);
+                };
+
+                if (!connection.IsConnected)
+                {
+                    Console.WriteLine(&quot;Did not connect to Redis.&quot;);
+                }
+
+                return connection;
+            };
+        });</code></pre></div></figure>
+<h2 id="redis-cluster">Redis Cluster</h2>
+<p><a target="_blank" rel="noopener" href="https://redis.io/topics/cluster-spec">Redis Cluster</a> utilizes multiple simultaneously active Redis servers to achieve high availability. When Redis Cluster is used as the backplane for SignalR, messages are delivered to all of the nodes of the cluster without code modifications to the app.</p>
+<p>There&#39;s a tradeoff between the number of nodes in the cluster and the throughput of the backplane. Increasing the number of nodes increases the availability of the cluster but decreases the throughput because messages must be transmitted to all of the nodes in the cluster.</p>
+<p>In the SignalR app, include all of the possible Redis nodes using either of the following approaches:</p>
+<ul>
+<li>List the nodes in the connection string delimited with commas.</li>
+<li>If using custom behavior for connection failures, add the nodes to <a target="_blank" rel="noopener" href="https://stackexchange.github.io/StackExchange.Redis/Configuration#configuration-options"><code>ConfigurationOptions.Endpoints</code></a>.</li>
+</ul>
+<h2 id="next-steps">Next steps</h2>
+<p>For more information, see the following resources:</p>
+<ul>
+<li><a href="../../scale.md">ASP.NET Core SignalR production hosting and scaling</a></li>
+<li><a target="_blank" rel="noopener" href="https://redis.io/documentation">Redis documentation</a></li>
+<li><a target="_blank" rel="noopener" href="https://stackexchange.github.io/StackExchange.Redis/">StackExchange Redis documentation</a></li>
+<li><a href="/azure/azure-cache-for-redis/">Azure Redis Cache documentation</a></li>
+</ul>
+<p>:::moniker-end</p>
+<p>:::moniker range=&quot;= aspnetcore-5.0&quot;</p>
+<!-- ms.sfi.ropc: t -->
+<p>This article explains SignalR-specific aspects of setting up a <a target="_blank" rel="noopener" href="https://redis.io/">Redis</a> server to use for scaling out an ASP.NET Core SignalR app.</p>
+<aside class="callout callout-warning"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 4 2.8 20h18.4L12 4z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M12 10v4.4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="17" r="1.3" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Warning</p><p>This article shows the use of connection strings. When a local database is used for development and testing, database user authentication via the connection string isn&#39;t required.
+In production environments, connection strings sometimes include a password for authenticating database access or database operations. A resource owner password credential (ROPC) in a connection string is a security risk that should be avoided in production apps. Production apps should use the most secure authentication flow available.
+For more information on authentication for apps deployed to test or production environments, see <a href="#/doc/aspnet/security/index@secure-authentication-flows">ASP.NET Core security topics</a>.</p>
+</div></aside>
+<h2 id="set-up-a-redis-backplane">Set up a Redis backplane</h2>
+<ul>
+<li><p>Deploy a Redis server.</p>
+<blockquote>
+<p>[!IMPORTANT]
+For production use, a Redis backplane is recommended only when it runs in the same data center as the SignalR app. Otherwise, network latency degrades performance. If your SignalR app is running in the Azure cloud, we recommend Azure SignalR Service instead of a Redis backplane. </p>
+</blockquote>
+<p>For more information, see the following resources:</p>
+<ul>
+<li><a href="../../scale.md">ASP.NET Core SignalR production hosting and scaling</a></li>
+<li><a target="_blank" rel="noopener" href="https://redis.io/">Redis documentation</a></li>
+<li><a href="/azure/azure-cache-for-redis/">Azure Redis Cache documentation</a></li>
+</ul>
+</li>
+<li><p>In the SignalR app, install the following NuGet package:</p>
+<ul>
+<li><code>Microsoft.AspNetCore.SignalR.StackExchangeRedis</code></li>
+</ul>
+</li>
+<li><p>In the <code>Startup.ConfigureServices</code> method, call <code>AddStackExchangeRedis</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">services.AddSignalR().AddStackExchangeRedis(&quot;&lt;your_Redis_connection_string&gt;&quot;);</code></pre></div></figure>
+</li>
+<li><p>Configure options as needed:</p>
+<p>Most options can be set in the connection string or in the <a target="_blank" rel="noopener" href="https://stackexchange.github.io/StackExchange.Redis/Configuration#configuration-options"><code>ConfigurationOptions</code></a> object. Options specified in <code>ConfigurationOptions</code> override the ones set in the connection string.</p>
+<p>The following example shows how to set options in the <code>ConfigurationOptions</code> object. This example adds a channel prefix so that multiple apps can share the same Redis instance, as explained in the following step.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">services.AddSignalR()
+  .AddStackExchangeRedis(connectionString, options =&gt; {
+      options.Configuration.ChannelPrefix = &quot;MyApp&quot;;
+  });</code></pre></div></figure>
+<p>In the preceding code, <code>options.Configuration</code> is initialized with whatever was specified in the connection string.</p>
+<p>For information about Redis options, see the <a target="_blank" rel="noopener" href="https://stackexchange.github.io/StackExchange.Redis/Configuration.html">StackExchange Redis documentation</a>.</p>
+</li>
+<li><p>If you&#39;re using one Redis server for multiple SignalR apps, use a different channel prefix for each SignalR app.</p>
+<p>Setting a channel prefix isolates one SignalR app from others that use different channel prefixes. If you don&#39;t assign different prefixes, a message sent from one app to all of its own clients will go to all clients of all apps that use the Redis server as a backplane.</p>
+</li>
+<li><p>Configure your server farm load balancing software for sticky sessions. Here are some examples of documentation on how to do that:</p>
+<ul>
+<li><a href="/iis/extensions/configuring-application-request-routing-arr/http-load-balancing-using-application-request-routing">IIS</a></li>
+<li><a target="_blank" rel="noopener" href="https://www.haproxy.com/blog/load-balancing-affinity-persistence-sticky-sessions-what-you-need-to-know/">HAProxy</a></li>
+<li><a target="_blank" rel="noopener" href="https://docs.nginx.com/nginx/admin-guide/load-balancer/http-load-balancer/#sticky">Nginx</a></li>
+</ul>
+</li>
+</ul>
+<h2 id="redis-server-errors">Redis server errors</h2>
+<p>When a Redis server goes down, SignalR throws exceptions that indicate messages won&#39;t be delivered. Some typical exception messages:</p>
+<ul>
+<li><em>Failed writing message</em></li>
+<li><em>Failed to invoke hub method &#39;MethodName&#39;</em></li>
+<li><em>Connection to Redis failed</em></li>
+</ul>
+<p>SignalR doesn&#39;t buffer messages to send them when the server comes back up. Any messages sent while the Redis server is down are lost.</p>
+<p>SignalR automatically reconnects when the Redis server is available again.</p>
+<h3 id="custom-behavior-for-connection-failures">Custom behavior for connection failures</h3>
+<p>Here&#39;s an example that shows how to handle Redis connection failure events.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">services.AddSignalR()
+        .AddMessagePackProtocol()
+        .AddStackExchangeRedis(o =&gt;
+        {
+            o.ConnectionFactory = async writer =&gt;
+            {
+                var config = new ConfigurationOptions
+                {
+                    AbortOnConnectFail = false
+                };
+                config.EndPoints.Add(IPAddress.Loopback, 0);
+                config.SetDefaultPorts();
+                var connection = await ConnectionMultiplexer.ConnectAsync(config, writer);
+                connection.ConnectionFailed += (_, e) =&gt;
+                {
+                    Console.WriteLine(&quot;Connection to Redis failed.&quot;);
+                };
+
+                if (!connection.IsConnected)
+                {
+                    Console.WriteLine(&quot;Did not connect to Redis.&quot;);
+                }
+
+                return connection;
+            };
+        });</code></pre></div></figure>
+<h2 id="redis-cluster">Redis Cluster</h2>
+<p><a target="_blank" rel="noopener" href="https://redis.io/topics/cluster-spec">Redis Cluster</a> utilizes multiple simultaneously active Redis servers to achieve high availability. When Redis Cluster is used as the backplane for SignalR, messages are delivered to all of the nodes of the cluster without code modifications to the app.</p>
+<p>There&#39;s a tradeoff between the number of nodes in the cluster and the throughput of the backplane. Increasing the number of nodes increases the availability of the cluster but decreases the throughput because messages must be transmitted to all of the nodes in the cluster.</p>
+<p>In the SignalR app, include all of the possible Redis nodes using either of the following approaches:</p>
+<ul>
+<li>List the nodes in the connection string delimited with commas.</li>
+<li>If using custom behavior for connection failures, add the nodes to <a target="_blank" rel="noopener" href="https://stackexchange.github.io/StackExchange.Redis/Configuration#configuration-options"><code>ConfigurationOptions.Endpoints</code></a>.</li>
+</ul>
+<h2 id="next-steps">Next steps</h2>
+<p>For more information, see the following resources:</p>
+<ul>
+<li><a href="../../scale.md">ASP.NET Core SignalR production hosting and scaling</a></li>
+<li><a target="_blank" rel="noopener" href="https://redis.io/documentation">Redis documentation</a></li>
+<li><a target="_blank" rel="noopener" href="https://stackexchange.github.io/StackExchange.Redis/">StackExchange Redis documentation</a></li>
+<li><a href="/azure/azure-cache-for-redis/">Azure Redis Cache documentation</a></li>
+</ul>
+<p>:::moniker-end</p>
+<p>:::moniker range=&quot;&gt; aspnetcore-2.2 &lt; aspnetcore-5.0&quot;</p>
+<!-- ms.sfi.ropc: t -->
+<p>This article explains SignalR-specific aspects of setting up a <a target="_blank" rel="noopener" href="https://redis.io/">Redis</a> server to use for scaling out an ASP.NET Core SignalR app.</p>
+<aside class="callout callout-warning"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 4 2.8 20h18.4L12 4z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M12 10v4.4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="17" r="1.3" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Warning</p><p>This article shows the use of connection strings. When a local database is used for development and testing, database user authentication via the connection string isn&#39;t required.
+In production environments, connection strings sometimes include a password for authenticating database access or database operations. A resource owner password credential (ROPC) in a connection string is a security risk that should be avoided in production apps. Production apps should use the most secure authentication flow available.
+For more information on authentication for apps deployed to test or production environments, see <a href="#/doc/aspnet/security/index@secure-authentication-flows">ASP.NET Core security topics</a>.</p>
+</div></aside>
+<h2 id="set-up-a-redis-backplane">Set up a Redis backplane</h2>
+<ul>
+<li><p>Deploy a Redis server.</p>
+<blockquote>
+<p>[!IMPORTANT]
+For production use, a Redis backplane is recommended only when it runs in the same data center as the SignalR app. Otherwise, network latency degrades performance. If your SignalR app is running in the Azure cloud, we recommend Azure SignalR Service instead of a Redis backplane. </p>
+</blockquote>
+<p>For more information, see the following resources:</p>
+<ul>
+<li><a href="../../scale.md">ASP.NET Core SignalR production hosting and scaling</a></li>
+<li><a target="_blank" rel="noopener" href="https://redis.io/">Redis documentation</a></li>
+<li><a href="/azure/azure-cache-for-redis/">Azure Redis Cache documentation</a></li>
+</ul>
+</li>
+<li><p>In the SignalR app, install the following NuGet package:</p>
+<ul>
+<li><code>Microsoft.AspNetCore.SignalR.StackExchangeRedis</code></li>
+</ul>
+</li>
+<li><p>In the <code>Startup.ConfigureServices</code> method, call <code>AddStackExchangeRedis</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">services.AddSignalR().AddStackExchangeRedis(&quot;&lt;your_Redis_connection_string&gt;&quot;);</code></pre></div></figure>
+</li>
+<li><p>Configure options as needed:</p>
+<p>Most options can be set in the connection string or in the <a target="_blank" rel="noopener" href="https://stackexchange.github.io/StackExchange.Redis/Configuration#configuration-options"><code>ConfigurationOptions</code></a> object. Options specified in <code>ConfigurationOptions</code> override the ones set in the connection string.</p>
+<p>The following example shows how to set options in the <code>ConfigurationOptions</code> object. This example adds a channel prefix so that multiple apps can share the same Redis instance, as explained in the following step.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">services.AddSignalR()
+  .AddStackExchangeRedis(connectionString, options =&gt; {
+      options.Configuration.ChannelPrefix = &quot;MyApp&quot;;
+  });</code></pre></div></figure>
+<p>In the preceding code, <code>options.Configuration</code> is initialized with whatever was specified in the connection string.</p>
+<p>For information about Redis options, see the <a target="_blank" rel="noopener" href="https://stackexchange.github.io/StackExchange.Redis/Configuration.html">StackExchange Redis documentation</a>.</p>
+</li>
+<li><p>If you&#39;re using one Redis server for multiple SignalR apps, use a different channel prefix for each SignalR app.</p>
+<p>Setting a channel prefix isolates one SignalR app from others that use different channel prefixes. If you don&#39;t assign different prefixes, a message sent from one app to all of its own clients will go to all clients of all apps that use the Redis server as a backplane.</p>
+</li>
+<li><p>Configure your server farm load balancing software for sticky sessions. Here are some examples of documentation on how to do that:</p>
+<ul>
+<li><a href="/iis/extensions/configuring-application-request-routing-arr/http-load-balancing-using-application-request-routing">IIS</a></li>
+<li><a target="_blank" rel="noopener" href="https://www.haproxy.com/blog/load-balancing-affinity-persistence-sticky-sessions-what-you-need-to-know/">HAProxy</a></li>
+<li><a target="_blank" rel="noopener" href="https://docs.nginx.com/nginx/admin-guide/load-balancer/http-load-balancer/#sticky">Nginx</a></li>
+</ul>
+</li>
+</ul>
+<h2 id="redis-server-errors">Redis server errors</h2>
+<p>When a Redis server goes down, SignalR throws exceptions that indicate messages won&#39;t be delivered. Some typical exception messages:</p>
+<ul>
+<li><em>Failed writing message</em></li>
+<li><em>Failed to invoke hub method &#39;MethodName&#39;</em></li>
+<li><em>Connection to Redis failed</em></li>
+</ul>
+<p>SignalR doesn&#39;t buffer messages to send them when the server comes back up. Any messages sent while the Redis server is down are lost.</p>
+<p>SignalR automatically reconnects when the Redis server is available again.</p>
+<h3 id="custom-behavior-for-connection-failures">Custom behavior for connection failures</h3>
+<p>Here&#39;s an example that shows how to handle Redis connection failure events.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">services.AddSignalR()
+        .AddMessagePackProtocol()
+        .AddStackExchangeRedis(o =&gt;
+        {
+            o.ConnectionFactory = async writer =&gt;
+            {
+                var config = new ConfigurationOptions
+                {
+                    AbortOnConnectFail = false
+                };
+                config.EndPoints.Add(IPAddress.Loopback, 0);
+                config.SetDefaultPorts();
+                var connection = await ConnectionMultiplexer.ConnectAsync(config, writer);
+                connection.ConnectionFailed += (_, e) =&gt;
+                {
+                    Console.WriteLine(&quot;Connection to Redis failed.&quot;);
+                };
+
+                if (!connection.IsConnected)
+                {
+                    Console.WriteLine(&quot;Did not connect to Redis.&quot;);
+                }
+
+                return connection;
+            };
+        });</code></pre></div></figure>
+<h2 id="redis-cluster">Redis Cluster</h2>
+<p><a target="_blank" rel="noopener" href="https://redis.io/topics/cluster-spec">Redis Cluster</a> utilizes multiple simultaneously active Redis servers to achieve high availability. When Redis Cluster is used as the backplane for SignalR, messages are delivered to all of the nodes of the cluster without code modifications to the app.</p>
+<p>There&#39;s a tradeoff between the number of nodes in the cluster and the throughput of the backplane. Increasing the number of nodes increases the availability of the cluster but decreases the throughput because messages must be transmitted to all of the nodes in the cluster.</p>
+<p>In the SignalR app, include all of the possible Redis nodes using either of the following approaches:</p>
+<ul>
+<li>List the nodes in the connection string delimited with commas.</li>
+<li>If using custom behavior for connection failures, add the nodes to <a target="_blank" rel="noopener" href="https://stackexchange.github.io/StackExchange.Redis/Configuration#configuration-options"><code>ConfigurationOptions.Endpoints</code></a>.</li>
+</ul>
+<h2 id="next-steps">Next steps</h2>
+<p>For more information, see the following resources:</p>
+<ul>
+<li><a href="../../scale.md">ASP.NET Core SignalR production hosting and scaling</a></li>
+<li><a target="_blank" rel="noopener" href="https://redis.io/documentation">Redis documentation</a></li>
+<li><a target="_blank" rel="noopener" href="https://stackexchange.github.io/StackExchange.Redis/">StackExchange Redis documentation</a></li>
+<li><a href="/azure/azure-cache-for-redis/">Azure Redis Cache documentation</a></li>
+</ul>
+<p>:::moniker-end</p>
+<p>:::moniker range=&quot;= aspnetcore-2.2&quot;</p>
+<!-- ms.sfi.ropc: t --><p>This article explains SignalR-specific aspects of setting up a <a target="_blank" rel="noopener" href="https://redis.io/">Redis</a> server to use for scaling out an ASP.NET Core SignalR app.</p>
+<aside class="callout callout-warning"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 4 2.8 20h18.4L12 4z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M12 10v4.4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="17" r="1.3" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Warning</p><p>This article shows the use of connection strings. When a local database is used for development and testing, database user authentication via the connection string isn&#39;t required.
+In production environments, connection strings sometimes include a password for authenticating database access or database operations. A resource owner password credential (ROPC) in a connection string is a security risk that should be avoided in production apps. Production apps should use the most secure authentication flow available.
+For more information on authentication for apps deployed to test or production environments, see <a href="#/doc/aspnet/security/index@secure-authentication-flows">ASP.NET Core security topics</a>.</p>
+</div></aside>
+<h2 id="set-up-a-redis-backplane">Set up a Redis backplane</h2>
+<ul>
+<li><p>Deploy a Redis server.</p>
+<blockquote>
+<p>[!IMPORTANT]
+For production use, a Redis backplane is recommended only when it runs in the same data center as the SignalR app. Otherwise, network latency degrades performance. If your SignalR app is running in the Azure cloud, we recommend Azure SignalR Service instead of a Redis backplane. </p>
+</blockquote>
+<p>For more information, see the following resources:</p>
+<ul>
+<li><a href="../../scale.md">ASP.NET Core SignalR production hosting and scaling</a></li>
+<li><a target="_blank" rel="noopener" href="https://redis.io/">Redis documentation</a></li>
+<li><a href="/azure/azure-cache-for-redis/">Azure Redis Cache documentation</a></li>
+</ul>
+</li>
+<li><p>In the SignalR app, install one of the following NuGet packages:</p>
+<ul>
+<li><code>Microsoft.AspNetCore.SignalR.StackExchangeRedis</code> - Depends on StackExchange.Redis 2.X.X. This is the recommended package for ASP.NET Core 2.2 or later.</li>
+<li><code>Microsoft.AspNetCore.SignalR.Redis</code> - Depends on StackExchange.Redis 1.X.X. This package isn&#39;t included in ASP.NET Core 3.0 or later.</li>
+</ul>
+</li>
+<li><p>In the <code>Startup.ConfigureServices</code> method, call <code>AddStackExchangeRedis</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">services.AddSignalR().AddStackExchangeRedis(&quot;&lt;your_Redis_connection_string&gt;&quot;);</code></pre></div></figure>
+</li>
+</ul>
+<p> When using <code>Microsoft.AspNetCore.SignalR.Redis</code>, call <code>AddRedis</code>.</p>
+<ul>
+<li><p>Configure options as needed:</p>
+<p>Most options can be set in the connection string or in the <a target="_blank" rel="noopener" href="https://stackexchange.github.io/StackExchange.Redis/Configuration#configuration-options">ConfigurationOptions</a> object. Options specified in <code>ConfigurationOptions</code> override the ones set in the connection string.</p>
+<p>The following example shows how to set options in the <code>ConfigurationOptions</code> object. This example adds a channel prefix so that multiple apps can share the same Redis instance, as explained in the following step.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">services.AddSignalR()
+  .AddStackExchangeRedis(connectionString, options =&gt; {
+      options.Configuration.ChannelPrefix = &quot;MyApp&quot;;
+  });</code></pre></div></figure>
+</li>
+</ul>
+<p> When using <code>Microsoft.AspNetCore.SignalR.Redis</code>, call <code>AddRedis</code>.</p>
+<p>  In the preceding code, <code>options.Configuration</code> is initialized with whatever was specified in the connection string.</p>
+<p>  For information about Redis options, see the <a target="_blank" rel="noopener" href="https://stackexchange.github.io/StackExchange.Redis/Configuration.html">StackExchange Redis documentation</a>.</p>
+<ul>
+<li><p>If you&#39;re using one Redis server for multiple SignalR apps, use a different channel prefix for each SignalR app.</p>
+<p>Setting a channel prefix isolates one SignalR app from others that use different channel prefixes. If you don&#39;t assign different prefixes, a message sent from one app to all of its own clients will go to all clients of all apps that use the Redis server as a backplane.</p>
+</li>
+<li><p>Configure your server farm load balancing software for sticky sessions. Here are some examples of documentation on how to do that:</p>
+<ul>
+<li><a href="/iis/extensions/configuring-application-request-routing-arr/http-load-balancing-using-application-request-routing">IIS</a></li>
+<li><a target="_blank" rel="noopener" href="https://www.haproxy.com/blog/load-balancing-affinity-persistence-sticky-sessions-what-you-need-to-know/">HAProxy</a></li>
+<li><a target="_blank" rel="noopener" href="https://docs.nginx.com/nginx/admin-guide/load-balancer/http-load-balancer/#sticky">Nginx</a></li>
+</ul>
+</li>
+</ul>
+<h2 id="redis-server-errors">Redis server errors</h2>
+<p>When a Redis server goes down, SignalR throws exceptions that indicate messages won&#39;t be delivered. Some typical exception messages:</p>
+<ul>
+<li><em>Failed writing message</em></li>
+<li><em>Failed to invoke hub method &#39;MethodName&#39;</em></li>
+<li><em>Connection to Redis failed</em></li>
+</ul>
+<p>SignalR doesn&#39;t buffer messages to send them when the server comes back up. Any messages sent while the Redis server is down are lost.</p>
+<p>SignalR automatically reconnects when the Redis server is available again.</p>
+<h3 id="custom-behavior-for-connection-failures">Custom behavior for connection failures</h3>
+<p>Here&#39;s an example that shows how to handle Redis connection failure events.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">services.AddSignalR()
+        .AddMessagePackProtocol()
+        .AddStackExchangeRedis(o =&gt;
+        {
+            o.ConnectionFactory = async writer =&gt;
+            {
+                var config = new ConfigurationOptions
+                {
+                    AbortOnConnectFail = false
+                };
+                config.EndPoints.Add(IPAddress.Loopback, 0);
+                config.SetDefaultPorts();
+                var connection = await ConnectionMultiplexer.ConnectAsync(config, writer);
+                connection.ConnectionFailed += (_, e) =&gt;
+                {
+                    Console.WriteLine(&quot;Connection to Redis failed.&quot;);
+                };
+
+                if (!connection.IsConnected)
+                {
+                    Console.WriteLine(&quot;Did not connect to Redis.&quot;);
+                }
+
+                return connection;
+            };
+        });</code></pre></div></figure>
+<h2 id="redis-cluster">Redis Cluster</h2>
+<p><a target="_blank" rel="noopener" href="https://redis.io/topics/cluster-spec">Redis Cluster</a> utilizes multiple simultaneously active Redis servers to achieve high availability. When Redis Cluster is used as the backplane for SignalR, messages are delivered to all of the nodes of the cluster without code modifications to the app.</p>
+<p>There&#39;s a tradeoff between the number of nodes in the cluster and the throughput of the backplane. Increasing the number of nodes increases the availability of the cluster but decreases the throughput because messages must be transmitted to all of the nodes in the cluster.</p>
+<p>In the SignalR app, include all of the possible Redis nodes using either of the following approaches:</p>
+<ul>
+<li>List the nodes in the connection string delimited with commas.</li>
+<li>If using custom behavior for connection failures, add the nodes to <a target="_blank" rel="noopener" href="https://stackexchange.github.io/StackExchange.Redis/Configuration#configuration-options"><code>ConfigurationOptions.Endpoints</code></a>.</li>
+</ul>
+<h2 id="next-steps">Next steps</h2>
+<p>For more information, see the following resources:</p>
+<ul>
+<li><a href="../../scale.md">ASP.NET Core SignalR production hosting and scaling</a></li>
+<li><a target="_blank" rel="noopener" href="https://redis.io/documentation">Redis documentation</a></li>
+<li><a target="_blank" rel="noopener" href="https://stackexchange.github.io/StackExchange.Redis/">StackExchange Redis documentation</a></li>
+<li><a href="/azure/azure-cache-for-redis/">Azure Redis Cache documentation</a></li>
+</ul>
+<p>:::moniker-end</p>
+<p>:::moniker range=&quot;= aspnetcore-2.1&quot;</p>
+<!-- ms.sfi.ropc: t --><p>This article explains SignalR-specific aspects of setting up a <a target="_blank" rel="noopener" href="https://redis.io/">Redis</a> server to use for scaling out an ASP.NET Core SignalR app.</p>
+<aside class="callout callout-warning"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 4 2.8 20h18.4L12 4z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M12 10v4.4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="17" r="1.3" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Warning</p><p>This article shows the use of connection strings. When a local database is used for development and testing, database user authentication via the connection string isn&#39;t required.
+In production environments, connection strings sometimes include a password for authenticating database access or database operations. A resource owner password credential (ROPC) in a connection string is a security risk that should be avoided in production apps. Production apps should use the most secure authentication flow available.
+For more information on authentication for apps deployed to test or production environments, see <a href="#/doc/aspnet/security/index@secure-authentication-flows">ASP.NET Core security topics</a>.</p>
+</div></aside>
+<h2 id="set-up-a-redis-backplane">Set up a Redis backplane</h2>
+<ul>
+<li><p>Deploy a Redis server.</p>
+<blockquote>
+<p>[!IMPORTANT]
+For production use, a Redis backplane is recommended only when it runs in the same data center as the SignalR app. Otherwise, network latency degrades performance. If your SignalR app is running in the Azure cloud, we recommend Azure SignalR Service instead of a Redis backplane. </p>
+</blockquote>
+<p>For more information, see the following resources:</p>
+<ul>
+<li><a href="../../scale.md">ASP.NET Core SignalR production hosting and scaling</a></li>
+<li><a target="_blank" rel="noopener" href="https://redis.io/">Redis documentation</a></li>
+<li><a href="/azure/azure-cache-for-redis/">Azure Redis Cache documentation</a></li>
+</ul>
+</li>
+<li><p>In the SignalR app, install the <code>Microsoft.AspNetCore.SignalR.Redis</code> NuGet package.</p>
+</li>
+<li><p>In the <code>Startup.ConfigureServices</code> method, call <code>AddRedis</code> after <code>AddSignalR</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">services.AddSignalR().AddRedis(&quot;&lt;your_Redis_connection_string&gt;&quot;);</code></pre></div></figure>
+</li>
+<li><p>Configure options as needed:</p>
+<p>Most options can be set in the connection string or in the <a target="_blank" rel="noopener" href="https://stackexchange.github.io/StackExchange.Redis/Configuration#configuration-options">ConfigurationOptions</a> object. Options specified in <code>ConfigurationOptions</code> override the ones set in the connection string.</p>
+<p>The following example shows how to set options in the <code>ConfigurationOptions</code> object. This example adds a channel prefix so that multiple apps can share the same Redis instance, as explained in the following step.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">services.AddSignalR()
+  .AddRedis(connectionString, options =&gt; {
+      options.Configuration.ChannelPrefix = &quot;MyApp&quot;;
+  });</code></pre></div></figure>
+<p>In the preceding code, <code>options.Configuration</code> is initialized with whatever was specified in the connection string.</p>
+</li>
+<li><p>If you&#39;re using one Redis server for multiple SignalR apps, use a different channel prefix for each SignalR app.</p>
+<p>Setting a channel prefix isolates one SignalR app from others that use different channel prefixes. If you don&#39;t assign different prefixes, a message sent from one app to all of its own clients will go to all clients of all apps that use the Redis server as a backplane.</p>
+</li>
+<li><p>Configure your server farm load balancing software for sticky sessions. Here are some examples of documentation on how to do that:</p>
+<ul>
+<li><a href="/iis/extensions/configuring-application-request-routing-arr/http-load-balancing-using-application-request-routing">IIS</a></li>
+<li><a target="_blank" rel="noopener" href="https://www.haproxy.com/blog/load-balancing-affinity-persistence-sticky-sessions-what-you-need-to-know/">HAProxy</a></li>
+<li><a target="_blank" rel="noopener" href="https://docs.nginx.com/nginx/admin-guide/load-balancer/http-load-balancer/#sticky">Nginx</a></li>
+</ul>
+</li>
+</ul>
+<h2 id="redis-server-errors">Redis server errors</h2>
+<p>When a Redis server goes down, SignalR throws exceptions that indicate messages won&#39;t be delivered. Some typical exception messages:</p>
+<ul>
+<li><em>Failed writing message</em></li>
+<li><em>Failed to invoke hub method &#39;MethodName&#39;</em></li>
+<li><em>Connection to Redis failed</em></li>
+</ul>
+<p>SignalR doesn&#39;t buffer messages to send them when the server comes back up. Any messages sent while the Redis server is down are lost.</p>
+<p>SignalR automatically reconnects when the Redis server is available again.</p>
+<h3 id="custom-behavior-for-connection-failures">Custom behavior for connection failures</h3>
+<p>Here&#39;s an example that shows how to handle Redis connection failure events.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">services.AddSignalR()
+        .AddRedis(o =&gt;
+        {
+            o.ConnectionFactory = async writer =&gt;
+            {
+                var config = new ConfigurationOptions
+                {
+                    AbortOnConnectFail = false
+                };
+                config.EndPoints.Add(IPAddress.Loopback, 0);
+                config.SetDefaultPorts();
+                var connection = await ConnectionMultiplexer.ConnectAsync(config, writer);
+                connection.ConnectionFailed += (_, e) =&gt;
+                {
+                    Console.WriteLine(&quot;Connection to Redis failed.&quot;);
+                };
+
+                if (!connection.IsConnected)
+                {
+                    Console.WriteLine(&quot;Did not connect to Redis.&quot;);
+                }
+
+                return connection;
+            };
+        });</code></pre></div></figure>
+<h2 id="redis-cluster">Redis Cluster</h2>
+<p><a target="_blank" rel="noopener" href="https://redis.io/topics/cluster-spec">Redis Cluster</a> utilizes multiple simultaneously active Redis servers to achieve high availability. When Redis Cluster is used as the backplane for SignalR, messages are delivered to all of the nodes of the cluster without code modifications to the app.</p>
+<p>There&#39;s a tradeoff between the number of nodes in the cluster and the throughput of the backplane. Increasing the number of nodes increases the availability of the cluster but decreases the throughput because messages must be transmitted to all of the nodes in the cluster.</p>
+<p>In the SignalR app, include all of the possible Redis nodes using either of the following approaches:</p>
+<ul>
+<li>List the nodes in the connection string delimited with commas.</li>
+<li>If using custom behavior for connection failures, add the nodes to <a target="_blank" rel="noopener" href="https://stackexchange.github.io/StackExchange.Redis/Configuration#configuration-options"><code>ConfigurationOptions.Endpoints</code></a>.</li>
+</ul>
+<h2 id="next-steps">Next steps</h2>
+<p>For more information, see the following resources:</p>
+<ul>
+<li><a href="../../scale.md">ASP.NET Core SignalR production hosting and scaling</a></li>
+<li><a target="_blank" rel="noopener" href="https://redis.io/documentation">Redis documentation</a></li>
+<li><a target="_blank" rel="noopener" href="https://stackexchange.github.io/StackExchange.Redis/">StackExchange Redis documentation</a></li>
+<li><a href="/azure/azure-cache-for-redis/">Azure Redis Cache documentation</a></li>
+</ul>
+<p>:::moniker-end</p>

@@ -1,0 +1,174 @@
+<p>:::moniker range=&quot;&gt;= aspnetcore-8.0&quot;</p>
+<p>ASP.NET Core provides a cryptographic API to protect data, including key management and rotation.</p>
+<p>Web apps often need to store sensitive data. The Windows data protection API (<a href="/dotnet/standard/security/how-to-use-data-protection">DPAPI</a>) isn&#39;t intended for use in web apps.</p>
+<p>The ASP.NET Core data protection stack is designed to:</p>
+<ul>
+<li>Provide a built-in solution for most web scenarios.</li>
+<li>Address many deficiencies of the previous encryption system. </li>
+<li>Serve as the replacement for the <code>&lt;machineKey&gt;</code> element in ASP.NET 1.x - 4.x.</li>
+</ul>
+<h2 id="problem-statement">Problem statement</h2>
+<p><em>I need to persist trusted information for later retrieval, but I don&#39;t trust the persistence mechanism.</em> In web terms, this statement might be written as <em>I need to round-trip trusted state via an untrusted client.</em></p>
+<p>Authenticity, integrity, and tamper-proofing are requirements. The canonical example of this scenario is an authentication cookie or bearer token. The server generates an <em><strong>I am Groot and have xyz permissions</strong></em> token and sends it to the client. The client presents that token back to the server, but the server needs some kind of assurance that the client didn&#39;t forge the token. </p>
+<p>Confidentiality is a requirement. Because the persisted state is trusted by the server, this state might contain information that shouldn&#39;t be disclosed to an untrusted client. For example:</p>
+<ul>
+<li>A file path</li>
+<li>A permission</li>
+<li>A handle or other indirect reference</li>
+<li>Some server-specific data</li>
+</ul>
+<p>Isolation is a requirement. Because modern apps are componentized, individual components want to take advantage of this system without regard to other components in the system. For instance, consider a bearer token component using this stack. It should operate without any interference, for example, from an anti-CSRF mechanism also using the same stack.</p>
+<p>Some common assumptions can narrow the scope of requirements:</p>
+<ul>
+<li>All services operating within the cryptosystem are equally trusted.</li>
+<li>The data doesn&#39;t need to be generated or consumed outside of the services under our direct control.</li>
+<li>Operations must be fast because each request to the web service might go through the cryptosystem one or more times. The speed requirement makes symmetric cryptography ideal. Asymmetric cryptography isn&#39;t used until it&#39;s required.</li>
+</ul>
+<h2 id="design-philosophy">Design philosophy</h2>
+<p>ASP.NET Core data protection is an <a href="#/doc/aspnet/security/data-protection/using-data-protection">easy to use</a> data protection stack based on the following principles:</p>
+<ul>
+<li><strong>Configuration should be easy</strong>. The system strives for zero configuration. In situations where developers need to configure a specific aspect, such as the key repository, those specific configurations aren&#39;t difficult.</li>
+<li><strong>Offer basic consumer-facing APIs</strong>. The APIs are straight forward to use correctly and difficult to use incorrectly.</li>
+<li><strong>Don&#39;t require the developer to learn the principles of managing keys</strong>. The system handles algorithm selection and key lifetime on behalf of the developer. Developers don&#39;t have access to the raw key material, so they don&#39;t need expert knowledge of the principles.</li>
+<li><strong>Protect keys at rest as much as possible</strong>. The system figures out an appropriate default protection mechanism and applies it automatically.</li>
+</ul>
+<p>The data protection APIs aren&#39;t primarily intended for indefinite persistence of confidential payloads. Other technologies, such as <a href="/windows/win32/seccng/cng-dpapi">Windows CNG DPAPI</a> and <a href="/purview/azure-rights-management-learn-about">Azure Rights Management</a> are more suited to the scenario of indefinite storage. They have correspondingly strong key management capabilities. That said, the ASP.NET Core data protection APIs can be used for long-term protection of confidential data.</p>
+<h2 id="target-audience">Target audience</h2>
+<p>The data protection system provides APIs that target three main audiences:</p>
+<ul>
+<li><p>The <a href="#/doc/aspnet/security/data-protection/consumer-apis/overview">consumer APIs</a> target application and framework developers.</p>
+<p> <em>I don&#39;t want to learn about how the stack operates or about how it&#39;s configured. I just want to perform some operation with high probability of using the APIs successfully.</em></p>
+</li>
+<li><p>The <a href="#/doc/aspnet/security/data-protection/configuration/overview">configuration APIs</a> target app developers and system administrators.</p>
+<p> <em>I need to tell the data protection system that my environment requires nondefault paths or settings.</em></p>
+</li>
+<li><p>The <a href="#/doc/aspnet/security/data-protection/extensibility/index">extensibility APIs</a> target developers in charge of implementing custom policy. Usage of these APIs is limited to rare situations and developers with security experience.</p>
+<p> <em>I need to replace an entire component within the system because I have truly unique behavioral requirements. I&#39;m willing to learn uncommonly used parts of the API surface so I can build a plugin that fulfills my requirements.</em></p>
+</li>
+</ul>
+<h2 id="package-layout">Package layout</h2>
+<p>The data protection stack consists of five packages:</p>
+<ul>
+<li><p><a target="_blank" rel="noopener" href="https://www.nuget.org/packages/Microsoft.AspNetCore.DataProtection.Abstractions/">Microsoft.AspNetCore.DataProtection.Abstractions</a> contains:</p>
+<ul>
+<li><code>IDataProtectionProvider</code> and <code>IDataProtector</code> interfaces to create data protection services.</li>
+<li>Useful extension methods for working with these types, such as IDataProtector.Protect.</li>
+</ul>
+<p>If the data protection system is instantiated elsewhere and you&#39;re consuming the API, reference <code>Microsoft.AspNetCore.DataProtection.Abstractions</code>.</p>
+</li>
+<li><p><a target="_blank" rel="noopener" href="https://www.nuget.org/packages/Microsoft.AspNetCore.DataProtection/">Microsoft.AspNetCore.DataProtection</a> contains the core implementation of the data protection system, including:</p>
+<ul>
+<li>Core cryptographic operations</li>
+<li>Key management</li>
+<li>Configuration and extensibility</li>
+</ul>
+<p>To instantiate the data protection system, reference <code>Microsoft.AspNetCore.DataProtection</code>. You might need to reference the data protection system when:</p>
+<ul>
+<li>Adding it to an <code>IServiceCollection</code>.</li>
+<li>Modifying or extending its behavior.</li>
+</ul>
+</li>
+<li><p><a target="_blank" rel="noopener" href="https://www.nuget.org/packages/Microsoft.AspNetCore.DataProtection.Extensions/">Microsoft.AspNetCore.DataProtection.Extensions</a> contains more APIs which developers might find useful but, which don&#39;t belong in the core package. For instance, this package contains:</p>
+<ul>
+<li>Factory methods to instantiate the data protection system to store keys at a location on the file system without dependency injection. For more information, see <code>DataProtectionProvider</code>.</li>
+<li>Extension methods for limiting the lifetime of protected payloads. For more information, see <code>ITimeLimitedDataProtector</code>.</li>
+</ul>
+</li>
+<li><p><a target="_blank" rel="noopener" href="https://www.nuget.org/packages/Microsoft.AspNetCore.DataProtection.SystemWeb/">Microsoft.AspNetCore.DataProtection.SystemWeb</a> can be installed into an existing ASP.NET 4.x app to redirect its <code>&lt;machineKey&gt;</code> operations to use the new ASP.NET Core data protection stack. For more information, see <a href="#/doc/aspnet/security/data-protection/compatibility/replacing-machinekey">Replace the ASP.NET machineKey in ASP.NET Core</a>.</p>
+</li>
+<li><p><a target="_blank" rel="noopener" href="https://www.nuget.org/packages/Microsoft.AspNetCore.Cryptography.KeyDerivation/">Microsoft.AspNetCore.Cryptography.KeyDerivation</a> provides an implementation of the PBKDF2 password hashing routine. It&#39;s convenient for systems that must handle user passwords securely. For more information, see <a href="#/doc/aspnet/security/data-protection/consumer-apis/password-hashing">Hash passwords in ASP.NET Core</a>.</p>
+</li>
+</ul>
+<h2 id="related-content">Related content</h2>
+<ul>
+<li><a href="#/doc/aspnet/security/data-protection/using-data-protection">Get started with the Data Protection APIs in ASP.NET Core</a></li>
+<li><a href="#/doc/aspnet/host-and-deploy/web-farm">Host ASP.NET Core in a web farm</a></li>
+</ul>
+<p>:::moniker-end</p>
+<p>:::moniker range=&quot;&lt; aspnetcore-8.0&quot;</p>
+<p>ASP.NET Core provides a cryptographic API to protect data, including key management and rotation.</p>
+<p>Web apps often need to store sensitive data. The Windows data protection API (<a href="/dotnet/standard/security/how-to-use-data-protection">DPAPI</a>) isn&#39;t intended for use in web apps.</p>
+<p>The ASP.NET Core data protection stack was designed to:</p>
+<ul>
+<li>Provide a built in solution for most Web scenarios.</li>
+<li>Address many of the deficiencies of the previous encryption system. </li>
+<li>Serve as the replacement for the <code>&lt;machineKey&gt;</code> element in ASP.NET 1.x - 4.x.</li>
+</ul>
+<h2 id="problem-statement">Problem statement</h2>
+<p><em>I need to persist trusted information for later retrieval, but I don&#39;t trust the persistence mechanism.</em> In web terms, this might be written as <em>I need to round-trip trusted state via an untrusted client.</em></p>
+<p>Authenticity, integrity, and tamper-proofing is a requirement. The canonical example of this is an authentication cookie or bearer token. The server generates an <em><strong>I am Groot and have xyz permissions</strong></em> token and sends it to the client. The client presents that token back to the server, but the server needs some kind of assurance that the client hasn&#39;t forged the token. </p>
+<p>Confidentiality is a requirement. Since the persisted state is trusted by the server, this state could contain information that shouldn&#39;t be disclosed to an untrusted client. For example:</p>
+<ul>
+<li>A file path.</li>
+<li>A permission.</li>
+<li>A handle or other indirect reference.</li>
+<li>Some server-specific data.</li>
+</ul>
+<p>Isolation is a requirement. Since modern apps are componentized, individual components want to take advantage of this system without regard to other components in the system. For instance, consider a bearer token component using this stack. It should operate without any interference, for example, from an anti-CSRF mechanism also using the same stack.</p>
+<p>Some common assumptions can narrow the scope of requirements:</p>
+<ul>
+<li>All services operating within the cryptosystem are equally trusted.</li>
+<li>The data doesn&#39;t need to be generated or consumed outside of the services under our direct control.</li>
+<li>Operations must be fast since each request to the web service might go through the cryptosystem one or more times. The speed requirement makes symmetric cryptography ideal. Asymmetric cryptography isn&#39;t used until it&#39;s required.</li>
+</ul>
+<h2 id="design-philosophy">Design philosophy</h2>
+<p>ASP.NET Core data protection is an <a href="../using-data-protection.md">easy to use</a> data protection stack. It&#39;s based on the following principles:</p>
+<ul>
+<li>Ease of configuration. The system strives for zero configuration. In situations where developers need to configure a specific aspect, such as the key repository, those specific configurations aren&#39;t difficult.</li>
+<li>Offer a basic consumer-facing API. The APIs are straight forward to use correctly and difficult to use incorrectly.</li>
+<li>Developers don&#39;t have to learn key management principles. The system handles algorithm selection and key lifetime on behalf of the developer. The developer doesn&#39;t have access to the raw key material.</li>
+<li>Keys are protected at rest as much as possible. The system figures out an appropriate default protection mechanism and applies it automatically.</li>
+</ul>
+<p>The data protection APIs aren&#39;t primarily intended for indefinite persistence of confidential payloads. Other technologies, such as <a href="/windows/win32/seccng/cng-dpapi">Windows CNG DPAPI</a> and <a href="/rights-management/">Azure Rights Management</a> are more suited to the scenario of indefinite storage. They have correspondingly strong key management capabilities. That said, the ASP.NET Core data protection APIs can be used for long-term protection of confidential data.</p>
+<h2 id="audience">Audience</h2>
+<p>The data protection system provides APIs that target three main audiences:</p>
+<ol>
+<li><p>The <a href="../consumer-apis/overview.md">consumer APIs</a> target application and framework developers.</p>
+<p><em>I don&#39;t want to learn about how the stack operates or about how it&#39;s configured. I just want to perform some operation with high probability of using the APIs successfully.</em></p>
+</li>
+<li><p>The <a href="../configuration/overview.md">configuration APIs</a> target app developers and system administrators.</p>
+<p><em>I need to tell the data protection system that my environment requires non-default paths or settings.</em></p>
+</li>
+<li><p>The extensibility APIs target developers in charge of implementing custom policy. Usage of these APIs is limited to rare situations and developers with security experience.</p>
+<p><em>I need to replace an entire component within the system because I have truly unique behavioral requirements. I&#39;m willing to learn uncommonly used parts of the API surface in order to build a plugin that fulfills my requirements.</em></p>
+</li>
+</ol>
+<h2 id="package-layout">Package layout</h2>
+<p>The data protection stack consists of five packages:</p>
+<ul>
+<li><p><a target="_blank" rel="noopener" href="https://www.nuget.org/packages/Microsoft.AspNetCore.DataProtection.Abstractions/">Microsoft.AspNetCore.DataProtection.Abstractions</a> contains:</p>
+<ul>
+<li><code>IDataProtectionProvider</code> and <code>IDataProtector</code> interfaces to create data protection services.</li>
+<li>Useful extension methods for working with these types. for example, IDataProtector.Protect</li>
+</ul>
+<p>If the data protection system is instantiated elsewhere and you&#39;re consuming the API, reference <code>Microsoft.AspNetCore.DataProtection.Abstractions</code>.</p>
+</li>
+<li><p><a target="_blank" rel="noopener" href="https://www.nuget.org/packages/Microsoft.AspNetCore.DataProtection/">Microsoft.AspNetCore.DataProtection</a> contains the core implementation of the data protection system, including:</p>
+<ul>
+<li>Core cryptographic operations.</li>
+<li>Key management.</li>
+<li>Configuration and extensibility.</li>
+</ul>
+<p>To instantiate the data protection system, reference <code>Microsoft.AspNetCore.DataProtection</code>. You might need to reference the data protection system when:</p>
+<ul>
+<li>Adding it to an <code>IServiceCollection</code>.</li>
+<li>Modifying or extending its behavior.</li>
+</ul>
+</li>
+<li><p><a target="_blank" rel="noopener" href="https://www.nuget.org/packages/Microsoft.AspNetCore.DataProtection.Extensions/">Microsoft.AspNetCore.DataProtection.Extensions</a> contains additional APIs which developers might find useful but which don&#39;t belong in the core package. For instance, this package contains:</p>
+<ul>
+<li>Factory methods to instantiate the data protection system to store keys at a location on the file system without dependency injection. See <code>DataProtectionProvider</code>.</li>
+<li>Extension methods for limiting the lifetime of protected payloads. See <code>ITimeLimitedDataProtector</code>.</li>
+</ul>
+</li>
+<li><p><a target="_blank" rel="noopener" href="https://www.nuget.org/packages/Microsoft.AspNetCore.DataProtection.SystemWeb/">Microsoft.AspNetCore.DataProtection.SystemWeb</a> can be installed into an existing ASP.NET 4.x app to redirect its <code>&lt;machineKey&gt;</code> operations to use the new ASP.NET Core data protection stack. For more information, see <a href="../compatibility/replacing-machinekey.md">Replace the ASP.NET machineKey in ASP.NET Core</a>.</p>
+</li>
+<li><p><a target="_blank" rel="noopener" href="https://www.nuget.org/packages/Microsoft.AspNetCore.Cryptography.KeyDerivation/">Microsoft.AspNetCore.Cryptography.KeyDerivation</a> provides an implementation of the PBKDF2 password hashing routine and can be used by systems that must handle user passwords securely. For more information, see <a href="../consumer-apis/password-hashing.md">Hash passwords in ASP.NET Core</a>.</p>
+</li>
+</ul>
+<h2 id="related-content">Related content</h2>
+<ul>
+<li><a href="../using-data-protection.md">Get started with the Data Protection APIs in ASP.NET Core</a></li>
+<li><a href="#/doc/aspnet/host-and-deploy/web-farm">Host ASP.NET Core in a web farm</a></li>
+</ul>
+<p>:::moniker-end</p>

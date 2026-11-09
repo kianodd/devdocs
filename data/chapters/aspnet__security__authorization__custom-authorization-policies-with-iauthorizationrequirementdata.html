@@ -1,0 +1,204 @@
+<p>Use the <code>IAuthorizationRequirementData</code> interface to specify requirements associated with the authorization policy in attribute definitions.</p>
+<p>This article uses a <a href="#/doc/aspnet/fundamentals/minimal-apis">Minimal API</a> endpoint within the app and focuses on testing JWT-based authorization. For a demonstration of similar guidance in an MVC app with a controller, see the <a href="#/doc/aspnet/mvc/security/authorization/custom-authorization-policies-with-iauthorizationrequirementdata-in-mvc">Custom authorization policies with `IAuthorizationRequirementData` in ASP.NET Core MVC</a>.</p>
+<p>:::moniker range=&quot;&gt;= aspnetcore-11.0&quot;</p>
+<p>You can apply <code>IAuthorizationRequirementData</code> attributes to SignalR hubs and hub methods, MVC controllers and actions, and Blazor&#39;s <a href="#/doc/aspnet/blazor/security/index@authorizeview-component"><code>AuthorizeView</code></a> and <a href="../../blazor/security/authentication-state.md?pivots=server#implement-a-custom-authenticationstateprovider"><code>AuthorizeRouteView</code></a> components, not just to endpoints. For apps that target releases earlier than .NET 11, these attributes are only enforced on Minimal API and routed endpoints.</p>
+<p>Framework authors can use the <code>CombineAsync</code> overload to combine mixed authorization metadata using the same rules as the authorization middleware.</p>
+<p>:::moniker-end</p>
+<p>:::moniker range=&quot;&lt; aspnetcore-11.0&quot;</p>
+<p><code>IAuthorizationRequirementData</code> isn&#39;t supported for authorization attributes applied to:</p>
+<ul>
+<li>SignalR hubs and hub methods</li>
+<li>MVC controllers and actions</li>
+<li>Blazor&#39;s <a href="#/doc/aspnet/blazor/security/index@authorizeview-component"><code>AuthorizeView</code></a> and <a href="../../blazor/security/authentication-state.md?pivots=server#implement-a-custom-authenticationstateprovider"><code>AuthorizeRouteView</code></a> components</li>
+</ul>
+<p>Support for the preceding is available for apps that target .NET 11 or later.</p>
+<p>:::moniker-end</p>
+<h2 id="sample-app">Sample app</h2>
+<p>The Blazor Web App sample for this article is the <a target="_blank" rel="noopener" href="https://github.com/dotnet/AspNetCore.Docs.Samples/tree/main/security/authorization/AuthRequirementsDataBWA"><code>AuthRequirementsDataBWA</code> sample app (<code>dotnet/AspNetCore.Docs.Samples</code> GitHub repository)</a> (<a href="#/doc/aspnet/fundamentals/index@how-to-download-a-sample">how to download</a>). The sample app implements a minimum age handler for users accessing a Minimal API endpoint at <code>/api/greetings/hello</code>, requiring a user to present a birth date claim indicating that they&#39;re at least 21 years old.</p>
+<h2 id="minimum-age-authorize-attribute">Minimum age authorize attribute</h2>
+<p>The <code>MinimumAgeAuthorizeAttribute</code> implementation of <code>IAuthorizationRequirementData</code> sets an authorization age:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">using Microsoft.AspNetCore.Authorization;
+
+namespace AuthRequirementsDataBWA.Authorization;
+
+class MinimumAgeAuthorizeAttribute(int age) : AuthorizeAttribute, 
+    IAuthorizationRequirement, IAuthorizationRequirementData
+{
+    public int Age { get; set; } = age;
+
+    public IEnumerable GetRequirements()
+    {
+        yield return this;
+    }
+}</code></pre></div></figure>
+<h2 id="minimum-age-authorization-handler">Minimum age authorization handler</h2>
+<p>The <code>MinimumAgeAuthorizationHandler</code> class handles the single <code>IAuthorizationRequirement</code> provided by <code>MinimumAgeAuthorizeAttribute</code>, as specified by the generic parameter <code>MinimumAgeAuthorizeAttribute</code>.</p>
+<p>The <code>HandleRequirementAsync</code> method:</p>
+<ul>
+<li>Gets the user&#39;s birth date claim.</li>
+<li>Obtains the user&#39;s age from the claim.</li>
+<li>Adjusts age if the user hasn&#39;t had a birthday this year.</li>
+<li>Marks the authorization requirement succeeded if the user meets the age requirement.</li>
+<li>Implements logging for demonstration purposes.</li>
+</ul>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">using System.Globalization;
+using System.Security.Claims;
+using Microsoft.AspNetCore.Authorization;
+
+namespace AuthRequirementsDataBWA.Authorization;
+
+class MinimumAgeAuthorizationHandler(ILogger logger) 
+    : AuthorizationHandler
+{
+    // Check whether a given minimum age requirement is satisfied.
+    protected override Task HandleRequirementAsync(
+        AuthorizationHandlerContext context, 
+        MinimumAgeAuthorizeAttribute requirement)
+    {
+        logger.LogInformation(
+            &quot;Evaluating authorization requirement for age &gt;= {age}&quot;, 
+            requirement.Age);
+
+        // Get the user&#x27;s birth date claim.
+        var dateOfBirthClaim = 
+            context.User.FindFirst(c =&gt; c.Type == ClaimTypes.DateOfBirth);
+
+        if (dateOfBirthClaim != null)
+        {
+            // If the user has a date of birth claim, obtain their age.
+            var dateOfBirth = Convert.ToDateTime(dateOfBirthClaim.Value, 
+                CultureInfo.InvariantCulture);
+            var age = DateTime.Now.Year - dateOfBirth.Year;
+
+            // Adjust age if the user hasn&#x27;t had a birthday yet this year.
+            if (dateOfBirth &gt; DateTime.Now.AddYears(-age))
+            {
+                age--;
+            }
+
+            // If the user meets the age requirement, mark the authorization
+            // requirement succeeded.
+            if (age &gt;= requirement.Age)
+            {
+                logger.LogInformation(
+                    &quot;Minimum age authorization requirement {age} satisfied&quot;, 
+                    requirement.Age);
+                context.Succeed(requirement);
+            }
+            else
+            {
+                logger.LogInformation(
+                    &quot;Current user&#x27;s DateOfBirth claim ({dateOfBirth}) doesn&#x27;t &quot; +
+                    &quot;satisfy the minimum age authorization requirement {age}&quot;,
+                    dateOfBirthClaim.Value,
+                    requirement.Age);
+            }
+        }
+        else
+        {
+            logger.LogInformation(&quot;No DateOfBirth claim present&quot;);
+        }
+
+        return Task.CompletedTask;
+    }
+}</code></pre></div></figure>
+<p>The <code>MinimumAgeAuthorizationHandler</code> is registered as a singleton <code>IAuthorizationHandler</code> service in the app&#39;s <code>Program</code> file:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">builder.Services.AddSingleton&lt;IAuthorizationHandler,
+    MinimumAgeAuthorizationHandler&gt;();</code></pre></div></figure>
+<p>A <a href="#/doc/aspnet/fundamentals/minimal-apis">Minimal API</a> endpoint is configured in the app&#39;s <code>Program</code> file with the <code>RequireAuthorization</code> extension method and the <code>MinimumAgeAuthorizeAttribute</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">app.MapGet(&quot;/api/greetings/hello&quot;, (HttpContext context) =&gt;
+{
+    return $&quot;Hello {context.User.Identity?.Name}!&quot;;
+}).RequireAuthorization(new MinimumAgeAuthorizeAttribute(21));</code></pre></div></figure>
+<p>The endpoint displays the user&#39;s name when they satisfy the minimum age policy, using an age of 21 years old supplied to a <code>MinimumAgeAuthorizeAttribute</code> instance.</p>
+<p>If the user&#39;s birth date claim indicates that they&#39;re at least 21 years old, the endpoint displays the greeting string, issuing a 200 (OK) status code. If the user is missing the birth date claim or the claim indicates that they aren&#39;t at least 21 years old, the greeting isn&#39;t displayed and a 403 (Forbidden) status code is issued.</p>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>For MVC controller guidance that demonstrates the same behavior, see <a href="#/doc/aspnet/mvc/security/authorization/custom-authorization-policies-with-iauthorizationrequirementdata-in-mvc">Custom authorization policies with `IAuthorizationRequirementData` in ASP.NET Core MVC</a>.</p>
+</div></aside>
+<p>JWT bearer authentication services are added in the app&#39;s <code>Program</code> file:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">builder.Services.AddAuthentication().AddJwtBearer();</code></pre></div></figure>
+<p>The app settings file (<code>appsettings.Development.json</code>) configures the audience and issuer for JWT bearer authentication:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JSON</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-json"><span class="hljs-attr">&quot;Authentication&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-punctuation">{</span>
+  <span class="hljs-attr">&quot;Schemes&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-punctuation">{</span>
+    <span class="hljs-attr">&quot;Bearer&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-punctuation">{</span>
+      <span class="hljs-attr">&quot;ValidAudiences&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-punctuation">[</span>
+        <span class="hljs-string">&quot;https://localhost:5001&quot;</span><span class="hljs-punctuation">,</span>
+        <span class="hljs-string">&quot;http://localhost:5000&quot;</span>
+      <span class="hljs-punctuation">]</span><span class="hljs-punctuation">,</span>
+      <span class="hljs-attr">&quot;ValidIssuer&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;dotnet-user-jwts&quot;</span>
+    <span class="hljs-punctuation">}</span>
+  <span class="hljs-punctuation">}</span>
+<span class="hljs-punctuation">}</span></code></pre></div></figure>
+<p>In the preceding example, the localhost audience matches the localhost address specified by <code>applicationUrl</code> in the app&#39;s launch profile (<code>Properties/launchSettings.json</code>).</p>
+<h2 id="demonstration">Demonstration</h2>
+<p>Test the sample with <a href="#/doc/aspnet/security/authentication/jwt-authn"><code>dotnet user-jwts</code></a> and curl.</p>
+<p>From the project&#39;s folder in a command shell, execute the following command to create a JWT bearer token with a birth date claim that makes the user over 21 years old:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">dotnet user-jwts create --claim http://schemas.xmlsoap.org/ws/2005/05/identity/claims/dateofbirth=1989-01-01</code></pre></div></figure>
+<p>The output produces a token after &quot;<code>Token:</code>&quot; in the command shell:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">New JWT saved with ID &#x27;{JWT ID}&#x27;.
+Name: {USER}
+Custom Claims: [http://schemas.xmlsoap.org/ws/2005/05/identity/claims/dateofbirth=1989-01-01]
+
+Token: {TOKEN}</code></pre></div></figure>
+<p>Set the value of the token (where the <code>{TOKEN}</code> placeholder appears in the preceding output) aside for use later.</p>
+<p>You can decode the token in an online JWT decoder, such as <a target="_blank" rel="noopener" href="https://jwt.ms/"><code>jwt.ms</code></a> to see its contents, revealing that it contains a <code>birthdate</code> claim with the user&#39;s birth date:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JSON</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-json"><span class="hljs-punctuation">{</span>
+  <span class="hljs-attr">&quot;alg&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;HS256&quot;</span><span class="hljs-punctuation">,</span>
+  <span class="hljs-attr">&quot;typ&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;JWT&quot;</span>
+<span class="hljs-punctuation">}</span>.<span class="hljs-punctuation">{</span>
+  <span class="hljs-attr">&quot;unique_name&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;{USER}&quot;</span><span class="hljs-punctuation">,</span>
+  <span class="hljs-attr">&quot;sub&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;{USER}&quot;</span><span class="hljs-punctuation">,</span>
+  <span class="hljs-attr">&quot;jti&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;6cd613ed&quot;</span><span class="hljs-punctuation">,</span>
+  <span class="hljs-attr">&quot;birthdate&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;1989-01-01&quot;</span><span class="hljs-punctuation">,</span>
+  <span class="hljs-attr">&quot;aud&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-punctuation">[</span>
+    <span class="hljs-string">&quot;https://localhost:5001&quot;</span><span class="hljs-punctuation">,</span>
+    <span class="hljs-string">&quot;http://localhost:5000&quot;</span>
+  <span class="hljs-punctuation">]</span><span class="hljs-punctuation">,</span>
+  <span class="hljs-attr">&quot;nbf&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-number">1773663513</span><span class="hljs-punctuation">,</span>
+  <span class="hljs-attr">&quot;exp&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-number">1781612313</span><span class="hljs-punctuation">,</span>
+  <span class="hljs-attr">&quot;iat&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-number">1773663515</span><span class="hljs-punctuation">,</span>
+  <span class="hljs-attr">&quot;iss&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;dotnet-user-jwts&quot;</span>
+<span class="hljs-punctuation">}</span>.<span class="hljs-punctuation">[</span>Signature<span class="hljs-punctuation">]</span></code></pre></div></figure>
+<p>Execute the command again with a <code>dateofbirth</code> value that makes the user under the age of 21:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">dotnet user-jwts create --claim http://schemas.xmlsoap.org/ws/2005/05/identity/claims/dateofbirth=2020-01-01</code></pre></div></figure>
+<p>Set the value of second token aside.</p>
+<p>Start the app in Visual Studio or with the <code>dotnet watch</code> command in a command shell:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">dotnet watch</code></pre></div></figure>
+<p>In a command shell, use the .NET CLI to execute the following <code>curl.exe</code> command to request the <code>api/greetings/hello</code> endpoint. Replace the <code>{TOKEN}</code> placeholder with the first JWT bearer token that you saved earlier:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">curl.exe -i -H &quot;Authorization: Bearer {TOKEN}&quot; https://localhost:5001/api/greetings/hello</code></pre></div></figure>
+<p>The output indicates success because the user&#39;s birth date claim indicates that they&#39;re at least 21 years old:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">HTTP/1.1 200 OK
+Content-Type: text/plain; charset=utf-8
+Date: Thu, 15 May 2025 22:58:10 GMT
+Server: Kestrel
+Transfer-Encoding: chunked
+
+Hello {USER}!</code></pre></div></figure>
+<p>Logging indicates that the age requirement was met:</p>
+<!-- DOC AUTHOR NOTE
+
+The following block quote uses two spaces at the ends of lines (except the
+last line) to create returns in the rendered content. Don't remove the two
+spaces at the ends of the lines when editing the following content.
+
+--><blockquote>
+<p>:::no-loc text=&quot;MinimumAgeAuthorizationHandler: Information: Evaluating authorization requirement for age &gt;= 21&quot;:::
+:::no-loc text=&quot;MinimumAgeAuthorizationHandler: Information: Minimum age authorization requirement 21 satisfied&quot;:::</p>
+</blockquote>
+<p>Re-execute the <code>curl.exe</code> command with the second token, which indicates the user is under 21 years old. The output indicates that the requirement isn&#39;t met. Access to the endpoint is forbidden (status code 403):</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">HTTP/1.1 403 Forbidden
+Content-Length: 0
+Date: Thu, 15 May 2025 22:58:36 GMT
+Server: Kestrel</code></pre></div></figure>
+<p>Logging indicates that the age requirement wasn&#39;t met:</p>
+<!-- DOC AUTHOR NOTE
+
+The following block quote uses two spaces at the ends of lines (except the
+last line) to create returns in the rendered content. Don't remove the two
+spaces at the ends of the lines when editing the following content.
+
+--><blockquote>
+<p>:::no-loc text=&quot;MinimumAgeAuthorizationHandler: Information: Evaluating authorization requirement for age &gt;= 21&quot;:::
+:::no-loc text=&quot;MinimumAgeAuthorizationHandler: Information: Current user&#39;s DateOfBirth claim (2020-01-01) doesn&#39;t satisfy the minimum age authorization requirement 21&quot;:::</p>
+</blockquote>
+<h2 id="related-content">Related content</h2>
+<p><a href="#/doc/aspnet/mvc/security/authorization/custom-authorization-policies-with-iauthorizationrequirementdata-in-mvc">Custom authorization policies with `IAuthorizationRequirementData` in ASP.NET Core MVC</a></p>

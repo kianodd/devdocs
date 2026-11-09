@@ -1,0 +1,275 @@
+<p>By <a target="_blank" rel="noopener" href="https://github.com/mjrousos">Mike Rousos</a></p>
+<p>This article describes how to implement the <code>IAuthorizationPolicyProvider</code> interface to create a custom authorization policy provider, including how to create an authorization attribute for the provider.</p>
+<p>For a typical implementation of <a href="#/doc/aspnet/security/authorization/policies">policy-based authorization</a>, policies are registered by calling <code>AddPolicy?displayProperty=nameWithType</code> during authorization service configuration. Sometimes, it isn&#39;t possible or desirable to register many authorization policies in this manner.</p>
+<p>For example, an app might require policy-based checks for building room numbers or user ages, where it doesn&#39;t make sense to create policies for building room numbers or ages with many <code>AddPolicy</code> calls. These scenarios are best implemented by passing a parameter that represents room numbers or ages to a custom <code>[Authorize]</code> attribute backed by a custom authorization policy provider. The custom policy provider receives the parameter value and dynamically creates a single policy to determine if authorization requirements are met. Using this approach, you avoid creating dozens or even hundreds of individual, explicit authorization policies.</p>
+<p>Other scenarios where a custom policy provider is useful include:</p>
+<ul>
+<li>To dynamically, flexibly determine authorization requirements based on complex logic.</li>
+<li>To create policies at runtime based on information from an external data source, such as a database.</li>
+<li>When an external service is used to provide policy evaluation.</li>
+</ul>
+<h2 id="sample-app">Sample app</h2>
+<p>The Blazor Web App sample for this article is the <a target="_blank" rel="noopener" href="https://github.com/dotnet/AspNetCore.Docs.Samples/tree/main/security/authorization/BlazorWebAppAuthorization"><code>BlazorWebAppAuthorization</code> sample app (<code>dotnet/AspNetCore.Docs.Samples</code> GitHub repository)</a> (<a href="#/doc/aspnet/fundamentals/index@how-to-download-a-sample">how to download</a>). The sample app uses seeded accounts to demonstrate the examples in this article. For more information, see the sample&#39;s README file (<code>README.md</code>).</p>
+<aside class="callout callout-warning"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 4 2.8 20h18.4L12 4z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M12 10v4.4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="17" r="1.3" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Warning</p><p>This sample app uses an in-memory database to store user information, which isn&#39;t suitable for production scenarios. The sample app is intended for demonstration purposes only and shouldn&#39;t be used as a starting point for production apps.</p>
+</div></aside>
+<p>For an MVC sample, see the <a target="_blank" rel="noopener" href="https://github.com/dotnet/aspnetcore/tree/v3.1.3/src/Security/samples/CustomPolicyProvider"><code>CustomPolicyProvider</code> sample in the <code>dotnet/aspnetcore</code> GitHub repository</a>.</p>
+<aside class="callout callout-tip"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M9.5 18h5M10.5 21h3M12 3a6 6 0 0 0-3.6 10.8c.7.6 1.1 1.3 1.3 2.2h4.6c.2-.9.6-1.6 1.3-2.2A6 6 0 0 0 12 3Z" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round"/></svg></span><div class="callout-body"><p class="callout-title">Tip</p><p>Use the <a target="_blank" rel="noopener" href="https://git-scm.com/docs/git-sparse-checkout"><code>git sparse-checkout</code> command</a> to download a single folder from the main branch of a GitHub repository.</p>
+<p>In the following example, the <code>security/authorization/BlazorWebAppAuthorization</code> subfolder is downloaded from the <code>dotnet/AspNetCore.Docs.Samples</code> repository. Replace <code>https://github.com/dotnet/AspNetCore.Docs.Samples.git</code> with the URL of the repository that you want to clone, and replace the <code>security/authorization/BlazorWebAppAuthorization</code> path with the path to the subfolder that you want to download:</p>
+<p><figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">git clone --depth 1 --filter=blob:none https://github.com/dotnet/AspNetCore.Docs.Samples.git --sparse
+cd AspNetCore.Docs.Samples
+git sparse-checkout init --cone
+git sparse-checkout set security/authorization/BlazorWebAppAuthorization</code></pre></div></figure></p>
+</div></aside>
+<h2 id="customize-policy-retrieval">Customize policy retrieval</h2>
+<p>The developer decides in advance how custom policies are named by inventing a naming scheme in a string format that&#39;s easily parsed to meet one or more requirements for each policy evaluation:</p>
+<ul>
+<li>The custom authorization attribute adopts the policy naming scheme.</li>
+<li>The custom policy provider adopts the same policy naming scheme.</li>
+</ul>
+<p>For example, consider a minimum age naming scheme in the format <code>MinimumAge{AGE}</code>, where the <code>{AGE}</code> placeholder is any given age, for example, <code>MinimumAge21</code>. This naming scheme is easily identified by its prefix &quot;<code>MinimumAge</code>&quot; with an easily parsed string-based age (&quot;<code>21</code>&quot;).</p>
+<p>The developer customizes how authorization policies are provided by implementing the following APIs in the custom policy provider:</p>
+<ul>
+<li>The <code>GetPolicyAsync</code> method returns an authorization policy for a given name.</li>
+<li>The <code>GetDefaultPolicyAsync</code> method returns the default authorization policy, which is selected when authorization is required but no specific policy is set.</li>
+<li>The <code>GetFallbackPolicyAsync</code> method returns the fallback authorization policy, which is selected when no policy is produced from authorization metadata. By default, the fallback policy is <code>null</code>.</li>
+</ul>
+<p>For complete named, default, and fallback policy selection rules, see <a href="#/doc/aspnet/security/authorization/policies@default-and-fallback-policies">Policy-based authorization in ASP.NET Core</a>.</p>
+<p>The general format of a custom policy provider that either returns a policy for a given matching name (represented by the <code>{IDENTIFY POLICY BY NAME}</code> placeholder) or returns <code>null</code> when no policy name matches is similar to the following.</p>
+<p>Implementing the required default and fallback policies for a custom policy provider (<code>GetDefaultPolicyAsync</code>, <code>GetFallbackPolicyAsync</code>) are omitted in the following example for brevity but are described and shown in a complete example later in this article.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">// Omitted for brevity:
+//   &#x27;GetDefaultPolicyAsync&#x27; (default policy)
+//   &#x27;GetFallbackPolicyAsync&#x27; (fallback policy) 
+internal class CustomPolicyProvider() : IAuthorizationPolicyProvider
+{
+    public Task&lt;AuthorizationPolicy?&gt; GetPolicyAsync(string policyName)
+    {
+        if ({IDENTIFY POLICY BY NAME})
+        {
+            var policy = new AuthorizationPolicyBuilder(
+                IdentityConstants.ApplicationScheme);
+            policy.AddRequirements(...);
+
+            return Task.FromResult&lt;AuthorizationPolicy?&gt;(policy.Build());
+        }
+
+        return Task.FromResult&lt;AuthorizationPolicy?&gt;(null);
+    }
+}</code></pre></div></figure>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>Use of <code>ApplicationScheme?displayProperty=nameWithType</code> in the preceding example represents the scheme used to identify application authentication cookies. An empty <code>AuthenticationSchemes?displayProperty=nameWithType</code> list evaluates requirements against the default schemes&mdash;it doesn&#39;t authenticate every registered scheme.</p>
+</div></aside>
+<p>ASP.NET Core only uses one instance of <code>IAuthorizationPolicyProvider</code>. <code>DefaultAuthorizationPolicyProvider</code> is the framework&#39;s default <code>IAuthorizationPolicyProvider</code> implementation for retrieving authorization policies by name. Policy provider behavior is customized by registering a custom policy provider implementation in the app&#39;s service container to replace the default implementation.</p>
+<p>If a custom policy provider is able to explicitly match and return all of the authorization policies that the app uses, the policy provider can return <code>Task.FromResult(null)</code> from the <code>GetPolicyAsync</code> method when no policy name matches. However, most apps that implement a custom provider defer traditional policy retrieval, for example to handle role-based and claim-based policies, to the default policy provider. Such an app typically uses a custom provider that:</p>
+<ul>
+<li>Attempts to parse policy names, returning an authorization policy for a matching name with one or more requirements or assertions.</li>
+<li>Uses the framework&#39;s <code>DefaultAuthorizationPolicyProvider</code> by implementing <code>GetDefaultPolicyAsync</code> to provide an authorization policy for <code>[Authorize]</code> attributes that don&#39;t specify a policy name:</li>
+</ul>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">public Task GetDefaultPolicyAsync() =&gt; 
+    DefaultPolicyProvider.GetDefaultPolicyAsync();</code></pre></div></figure>
+<p>Any of the following <code>AuthorizationPolicyBuilder</code> methods can be used for the custom policy provider&#39;s requirements and assertions in its <code>GetPolicyAsync</code> method:</p>
+<ul>
+<li><code>AddRequirements</code></li>
+<li><code>RequireClaim</code></li>
+<li><code>RequireRole</code></li>
+<li><code>RequireUserName</code></li>
+<li><code>RequireAssertion</code></li>
+<li><code>RequireAuthenticatedUser</code></li>
+</ul>
+<p>The custom policy provider must also implement <code>GetFallbackPolicyAsync</code>. Choosing a non-<code>null</code> fallback is optional. The following example retrieves the fallback authorization policy by delegating to the default authorization policy provider&#39;s implementation:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">public Task&lt;AuthorizationPolicy?&gt; GetFallbackPolicyAsync() =&gt; 
+    DefaultPolicyProvider.GetFallbackPolicyAsync();</code></pre></div></figure>
+<p>The default policy or fallback policy can combine policies, which is useful, for example, when middleware-based authorization flows don&#39;t specify per-endpoint authorization. All combined requirements must succeed for the combined policy to succeed.</p>
+<p>In the following example, the policy combines:</p>
+<ul>
+<li>A standard user policy that requires an authenticated user with a <code>Status</code> claim of <code>Active</code>.</li>
+<li>A manager policy that requires the <code>Manager</code> role with a <code>Department</code> claim of <code>Sales</code>.</li>
+</ul>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">var standardUserPolicy = new AuthorizationPolicyBuilder()
+    .RequireAuthenticatedUser()
+    .RequireClaim(&quot;Status&quot;, &quot;Active&quot;)
+    .Build();
+
+var managerPolicy = new AuthorizationPolicyBuilder()
+    .RequireRole(&quot;Manager&quot;)
+    .RequireClaim(&quot;Department&quot;, &quot;Sales&quot;)
+    .Build();
+
+var combinedPolicy = AuthorizationPolicy.Combine(standardUserPolicy, managerPolicy);
+
+return Task.FromResult&lt;AuthorizationPolicy?&gt;(combinedPolicy);</code></pre></div></figure>
+<h2 id="custom-authorization-attribute">Custom authorization attribute</h2>
+<p>The recommended approach for applying policies in concert with a custom policy provider is to use a strongly-typed <code>AuthorizeAttribute</code>. A custom attribute implementation maps arguments into a string that&#39;s used to retrieve a corresponding authorization policy.</p>
+<p>The following <code>MinimumAgeAuthorizeAttribute</code> example derives from <code>AuthorizeAttribute</code> and makes the <code>Age</code> property wrap the <code>Policy?displayProperty=nameWithType</code> property. The attribute type has a policy string based on the hard-coded prefix (<code>MinimumAge</code>) and an integer passed in via its constructor (<code>MinimumAge{AGE}</code>), where the <code>{AGE}</code> placeholder is the minimum age, for example, <code>MinimumAge21</code>. The following attribute is used with the custom policy provider shown later in this article in the <a href="#minimum-age-custom-policy-provider-example">Minimum age custom policy provider example</a> section.</p>
+<p><code>Policies/Attributes/MinimumAgeAuthorizeAttribute.cs</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">using Microsoft.AspNetCore.Authorization;
+
+namespace BlazorWebAppAuthorization.Policies.Attributes;
+
+public class MinimumAgeAuthorizeAttribute : AuthorizeAttribute
+{
+    private const string PolicyPrefix = &quot;MinimumAge&quot;;
+
+    public MinimumAgeAuthorizeAttribute(int age) =&gt; Age = age;
+
+    public int Age
+    {
+        get
+        {
+            if (!string.IsNullOrEmpty(Policy) &amp;&amp;
+                Policy.StartsWith(PolicyPrefix, 
+                    StringComparison.OrdinalIgnoreCase) &amp;&amp;
+                int.TryParse(Policy.AsSpan(PolicyPrefix.Length), out var age))
+            {
+                return age;
+            }
+
+            return default;
+        }
+        set
+        {
+            ArgumentOutOfRangeException.ThrowIfNegative(value);
+            Policy = $&quot;{PolicyPrefix}{value}&quot;;
+        }
+    }
+}</code></pre></div></figure>
+<p>You can apply the attribute for any given authorized minimum age with an integer parameter for the age. Examples are shown later in this article in the <a href="#use-policies-from-a-custom-policy-provider">Use policies from a custom policy provider</a> section.</p>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>As with all policy-based authorization scenarios, create a requirement and an authorization handler for the policy. Register the handler in the app&#39;s service container.</p>
+<p>For examples that work with the custom policy provider in this article, see the parameterized <code>MinimumAgeRequirement</code> and <code>MinimumAgeHandler</code> code in the <em>Policy-based authorization</em> article, which work with the <code>MinimumAgePolicyProvider</code> demonstrated in this article:</p>
+<ul>
+<li><a href="#/doc/aspnet/security/authorization/policies@requirements-and-policy-registration"><code>MinimumAgeRequirement(int)</code> parameterized class that accepts a minimum age</a></li>
+<li><a href="#/doc/aspnet/security/authorization/policies@use-a-handler-for-one-requirement"><code>MinimumAgeHandler</code> class for one requirement</a></li>
+<li><a href="#/doc/aspnet/security/authorization/policies@handler-registration">Register the <code>MinimumAgeHandler</code></a></li>
+</ul>
+</div></aside>
+<h2 id="minimum-age-custom-policy-provider-example">Minimum age custom policy provider example</h2>
+<p>Consider a situation where authorization is based on a user&#39;s minimum age and the authorization policy names follow the pattern <code>MinimumAge{AGE}</code>, where the <code>{AGE}</code> placeholder is a string representation of an integer age. This is the same naming scheme established for the <code>MinimumAgeAuthorizeAttribute</code> earlier in this article in the <a href="#custom-authorization-attribute">Custom authorization attribute</a> section.</p>
+<p>The custom policy provider should generate authorization policies by completing the following tasks:</p>
+<ul>
+<li>The age is parsed from the policy name.</li>
+<li>An authorization policy builder (<code>AuthorizationPolicyBuilder</code>) creates a new <code>AuthorizationPolicy</code>.</li>
+<li>The authorization policy builder is constructed with at least one authorization scheme name or always succeeds. Otherwise, there&#39;s no information on how to provide a challenge to the user and an exception is thrown. </li>
+<li>Set the list of authentication schemes in <code>AuthenticationSchemes?displayProperty=nameWithType</code> for the built policy. The following example passes <code>ApplicationScheme?displayProperty=nameWithType</code>, which represents the scheme used to identify application authentication cookies. An empty (unassigned) <code>AuthenticationSchemes</code> list evaluates requirements against the custom policy provider&#39;s default schemes&mdash;it doesn&#39;t authenticate every registered scheme.</li>
+<li>Add one or more requirements to the policy for user age evaluations with <code>AddRequirements</code>.</li>
+</ul>
+<p>The following example demonstrates a minimum age custom policy provider.</p>
+<p><code>Policies/Providers/MinimumAgePolicyProvider.cs</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">using BlazorWebAppAuthorization.Policies.Requirements;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Identity;
+using Microsoft.Extensions.Options;
+
+namespace BlazorWebAppAuthorization.Policies.Providers;
+
+public class MinimumAgePolicyProvider(IOptions options) 
+    : IAuthorizationPolicyProvider
+{
+    private const string PolicyPrefix = &quot;MinimumAge&quot;;
+
+    private DefaultAuthorizationPolicyProvider DefaultPolicyProvider { get; } = 
+        new(options);
+
+    public Task&lt;AuthorizationPolicy?&gt; GetPolicyAsync(string policyName)
+    {
+        if (policyName.StartsWith(
+                PolicyPrefix, StringComparison.OrdinalIgnoreCase) &amp;&amp;
+            int.TryParse(policyName.AsSpan(PolicyPrefix.Length), out var age) &amp;&amp;
+            age &gt;= 0)
+        {
+            var policy = new AuthorizationPolicyBuilder(
+                IdentityConstants.ApplicationScheme);
+            policy.AddRequirements(new MinimumAgeRequirement(age));
+
+            return Task.FromResult&lt;AuthorizationPolicy?&gt;(policy.Build());
+        }
+
+        return DefaultPolicyProvider.GetPolicyAsync(policyName);
+    }
+
+    public Task GetDefaultPolicyAsync() =&gt; 
+        DefaultPolicyProvider.GetDefaultPolicyAsync();
+
+    public Task&lt;AuthorizationPolicy?&gt; GetFallbackPolicyAsync() =&gt; 
+        DefaultPolicyProvider.GetFallbackPolicyAsync();
+}</code></pre></div></figure>
+<h2 id="use-policies-from-a-custom-policy-provider">Use policies from a custom policy provider</h2>
+<p>To use custom policies:</p>
+<ul>
+<li><p>As with all policy-based authorization scenarios, create a requirement and an authorization handler for the policy. Register the handler in the app&#39;s service container.</p>
+<p>For examples that work with the custom policy provider in this article, see the parameterized <code>MinimumAgeRequirement</code> and <code>MinimumAgeHandler</code> code in the <em>Policy-based authorization</em> article, which work with the <code>MinimumAgePolicyProvider</code> demonstrated in this article:</p>
+<ul>
+<li><a href="#/doc/aspnet/security/authorization/policies@requirements-and-policy-registration"><code>MinimumAgeRequirement(int)</code> parameterized class that accepts a minimum age</a></li>
+<li><a href="#/doc/aspnet/security/authorization/policies@use-a-handler-for-one-requirement"><code>MinimumAgeHandler</code> class for one requirement</a></li>
+<li><a href="#/doc/aspnet/security/authorization/policies@handler-registration">Register the <code>MinimumAgeHandler</code></a></li>
+</ul>
+</li>
+</ul>
+<p>:::moniker range=&quot;&gt;= aspnetcore-6.0&quot;</p>
+<ul>
+<li><p>Register the custom policy provider type to replace the default policy provider.</p>
+<p>In the app&#39;s <code>Program</code> file:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">builder.Services.AddSingleton&lt;IAuthorizationPolicyProvider, MinimumAgePolicyProvider&gt;();</code></pre></div></figure>
+</li>
+</ul>
+<p>:::moniker-end</p>
+<p>:::moniker range=&quot;&lt; aspnetcore-6.0&quot;</p>
+<ul>
+<li><p>Register the custom policy provider type to replace the default policy provider.</p>
+<p>In <code>Startup.ConfigureServices</code> of the <code>Startup.cs</code> file:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">services.AddSingleton&lt;IAuthorizationPolicyProvider, MinimumAgePolicyProvider&gt;();</code></pre></div></figure>
+</li>
+</ul>
+<p>:::moniker-end</p>
+<p>The <a href="#sample-app">sample app</a> institutes application cookie redirect mapping with the following code:</p>
+<ul>
+<li>Anonymous Users: When an unauthenticated user requests a protected endpoint, the cookie handler issues a challenge and redirects to <code>LoginPath?displayProperty=nameWithType</code> with a return URL parameter.</li>
+<li>Underage Users: When an authenticated user fails the custom minimum age policy, the handler issues a forbid response and redirects to <code>AccessDeniedPath?displayProperty=nameWithType</code> instead of the login page.</li>
+</ul>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">builder.Services.ConfigureApplicationCookie(options =&gt;
+{
+    options.LoginPath = &quot;/Account/Login&quot;;
+    options.AccessDeniedPath = &quot;/Account/AccessDenied&quot;;
+});</code></pre></div></figure>
+<p>For demonstration purposes, an <code>AuthorizeView</code> component can specify the weakly-typed <code>MinimumAge21</code> (<code>&quot;MinimumAge&quot; + Age</code>) policy, as the following sample Razor component demonstrates. Using a weakly-typed policy name isn&#39;t the best approach for applying a custom authorization policy. After the following example, a strongly-typed <code>AuthorizeAttribute</code> is demonstrated using the <a href="#custom-authorization-attribute"><code>MinimumAgeAuthorizeAttribute</code> implementation</a> described in the <a href="#custom-authorization-attribute">Custom authorization attribute</a> section.</p>
+<p><code>Components/Pages/PassMinimumAge21Policy.razor</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">@page &quot;/pass-minimumage21-policy&quot;
+
+&lt;h1&gt;Pass &#x27;MinimumAge21&#x27; policy (weakly-typed approach)&lt;/h1&gt;
+
+&lt;p&gt;
+    Uses an AuthorizeView component to apply the policy using the policy&#x27;s name. 
+    This approach is shown for demonstration purposes and isn&#x27;t recommended for 
+    production code.
+&lt;/p&gt;
+
+
+    
+        &lt;p&gt;You satisfy the &#x27;MinimumAge21&#x27; policy.&lt;/p&gt;
+    
+    
+        &lt;p&gt;You &lt;b&gt;don&#x27;t&lt;/b&gt; satisfy the &#x27;MinimumAge21&#x27; policy.&lt;/p&gt;
+    </code></pre></div></figure>
+<p>The following component uses the strongly-typed <a href="#custom-authorization-attribute">custom <code>MinimumAgeAuthorizeAttribute</code> implementation</a> described in the <a href="#custom-authorization-attribute">Custom authorization attribute</a> section. Using a strongly-typed attribute is recommended for production apps.</p>
+<p><code>Components/Pages/PassMinimumAge21PolicyWithAttribute.razor</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">@page &quot;/pass-minimumage21-policy-with-attribute&quot;
+@using BlazorWebAppAuthorization.Policies.Attributes
+@attribute [MinimumAgeAuthorize(21)]
+
+&lt;h1&gt;Pass &#x27;MinimumAge21&#x27; policy (strongly-typed approach)&lt;/h1&gt;
+
+&lt;p&gt;
+    Applies the policy to the Razor component with a custom 
+    [MinimumAgeAuthorize] attribute (derived from AuthorizeAttribute).
+    This approach is preferred for production code, as it&#x27;s strongly-typed
+    and avoids the use of a string to set the policy and minimum age.
+&lt;/p&gt;
+
+&lt;p&gt;You satisfy the &#x27;MinimumAge21&#x27; policy.&lt;/p&gt;</code></pre></div></figure>
+<p>The same approach is useful for securing <a href="#/doc/aspnet/fundamentals/minimal-apis@authorization">Minimal API endpoints</a>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">app.MapGet(&quot;/must-be-21&quot;, [MinimumAgeAuthorize(21)] () =&gt; 
+    &quot;This endpoint requires a 21-year-old birthdate claim.&quot;);</code></pre></div></figure>
+<h2 id="related-content">Related content</h2>
+<ul>
+<li><a target="_blank" rel="noopener" href="https://github.com/dotnet/aspnetcore/tree/v3.1.3/src/Security/samples/CustomPolicyProvider">Complete custom &#39;IAuthorizationPolicyProvider&#39; sample (<code>dotnet/aspnetcore</code> GitHub repository)</a></li>
+<li><a href="#/doc/aspnet/security/authorization/policies">Policy-based authorization in ASP.NET Core</a></li>
+<li><a href="#/doc/aspnet/razor-pages/security/authorization/policies">Policy-based authorization in ASP.NET Core Razor Pages</a></li>
+<li><a href="#/doc/aspnet/mvc/security/authorization/policies">Policy-based authorization in ASP.NET Core MVC</a></li>
+</ul>

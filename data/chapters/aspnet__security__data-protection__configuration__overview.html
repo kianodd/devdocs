@@ -1,0 +1,594 @@
+<!-- ms.sfi.ropc: t --><p>:::moniker range=&quot;&gt;= aspnetcore-6.0&quot;</p>
+<p>When the Data Protection system is initialized, it applies <a href="#/doc/aspnet/security/data-protection/configuration/default-settings">default settings</a> based on the operational environment. These settings are appropriate for apps running on a single machine. However, there are cases where a developer may want to change the default settings:</p>
+<ul>
+<li>The app is spread across multiple machines.</li>
+<li>For compliance reasons.</li>
+</ul>
+<p>For these scenarios, the Data Protection system offers a rich configuration API.</p>
+<aside class="callout callout-warning"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 4 2.8 20h18.4L12 4z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M12 10v4.4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="17" r="1.3" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Warning</p><p>Similar to configuration files, the data protection key ring should be protected using appropriate permissions. You can choose to encrypt keys at rest, but this doesn&#39;t prevent cyberattackers from creating new keys. Consequently, your app&#39;s security is impacted. The storage location configured with Data Protection should have its access limited to the app itself, similar to the way you would protect configuration files. For example, if you choose to store your key ring on disk, use file system permissions. Ensure only the identity under which your web app runs has read, write, and create access to that directory. If you use Azure Blob Storage, only the web app should have the ability to read, write, or create new entries in the blob store, etc.</p>
+<p>The extension method <code>AddDataProtection</code> returns an <code>IDataProtectionBuilder</code>. <code>IDataProtectionBuilder</code> exposes extension methods that you can chain together to configure Data Protection options.</p>
+</div></aside>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>This article was written for an app that runs within a docker container. In a docker container the app always has the same path and, therefore, the same application discriminator. Apps that need to run in multiple environments (for example local and deployed), must set the default application discriminator for the environment.
+Running an app in multiple environments is beyond the scope of this article.</p>
+</div></aside>
+<p>The following NuGet packages are required for the Data Protection extensions used in this article:</p>
+<ul>
+<li><a target="_blank" rel="noopener" href="https://www.nuget.org/packages/Azure.Extensions.AspNetCore.DataProtection.Blobs"><code>Azure.Extensions.AspNetCore.DataProtection.Blobs</code></a></li>
+<li><a target="_blank" rel="noopener" href="https://www.nuget.org/packages/Azure.Extensions.AspNetCore.DataProtection.Keys"><code>Azure.Extensions.AspNetCore.DataProtection.Keys</code></a></li>
+</ul>
+<h2 id="protect-keys-with-azure-key-vault-protectkeyswithazurekeyvault">Protect keys with Azure Key Vault (<code>ProtectKeysWithAzureKeyVault</code>)</h2>
+<p>To interact with <a target="_blank" rel="noopener" href="https://azure.microsoft.com/services/key-vault/">Azure Key Vault</a> locally using developer credentials, either sign into your storage account in Visual Studio or sign in with the <a href="/cli/azure/">Azure CLI</a>. If you haven&#39;t already installed the Azure CLI, see <a href="/cli/azure/install-azure-cli">How to install the Azure CLI</a>. You can execute the following command in the Developer PowerShell panel in Visual Studio or from a command shell when not using Visual Studio:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">az login</code></pre></div></figure>
+<p>For more information, see <a href="/dotnet/azure/sdk/authentication/local-development-dev-accounts#sign-in-to-azure-using-developer-tooling">Sign-in to Azure using developer tooling</a>.</p>
+<p>When <a href="/azure/key-vault/general/quick-create-portal">establishing the key vault in the Entra or Azure portal</a>:</p>
+<ul>
+<li><p>Configure the key vault to use Azure role-based access control (RABC). If you aren&#39;t operating on an <a href="/azure/virtual-network/virtual-networks-overview">Azure Virtual Network</a>, including for local development and testing, confirm that public access on the <strong>Networking</strong> step is <strong>enabled</strong> (checked). Enabling public access only exposes the key vault endpoint. Authenticated accounts are still required for access.</p>
+</li>
+<li><p>Create an Azure Managed Identity (or add a role to the existing Managed Identity that you plan to use) with the <strong>Key Vault Crypto User</strong> role. Assign the Managed Identity to the Azure App Service that&#39;s hosting the deployment: <strong>Settings</strong> &gt; <strong>Identity</strong> &gt; <strong>User assigned</strong> &gt; <strong>Add</strong>.</p>
+<blockquote>
+<p>[!NOTE]
+If you also plan to run an app locally with an authorized user for blob access using the <a href="/cli/azure/">Azure CLI</a> or Visual Studio&#39;s Azure Service Authentication, add your developer Azure user account in <strong>Access Control (IAM)</strong> with the <strong>Key Vault Crypto User</strong> role. If you want to use the Azure CLI through Visual Studio, execute the <code>az login</code> command from the Developer PowerShell panel and follow the prompts to authenticate with the tenant.</p>
+</blockquote>
+</li>
+<li><p>When key encryption is active, keys in the key file include the comment, &quot;&quot; After starting the app, select the <strong>View/edit</strong> command from the context menu at the end of the key row to confirm that a key is present with key vault security applied.</p>
+</li>
+<li><p>Optionally, you can enable automatic key vault key rotation without concern about decrypting payloads with data protection keys based on expired/rotated key vault keys. Each generated data protection key includes a reference to the key vault key used to encrypted it. Just make sure that you retain expired key vault keys, don&#39;t delete them in the key vault. Also, use a versionless key identifier in the app&#39;s key vault configuration, where no key GUID is placed at the end of the identifier (example: <code>https://contoso.vault.azure.net/keys/data-protection</code>). Use a similar rotation period for both keys with the key vault key rotating more frequently than the data protection key to ensure that a new key vault key is used at the time of data protection key rotation.</p>
+</li>
+</ul>
+<p>Protecting keys with Azure Key Vault implements an <code>IXmlEncryptor</code> that disables automatic data protection settings, including the key ring storage location. To configure the Azure Blob Storage provider to store the keys in blob storage, follow the guidance in <a href="#/doc/aspnet/security/data-protection/implementation/key-storage-providers@azure-storage">Key storage providers in ASP.NET Core</a> and call one of the <code>PersistKeysToAzureBlobStorage</code> overloads in the app. The following example uses the overload that accepts a blob URI and token credential (<code>TokenCredential</code>), relying on an Azure Managed Identity for role-based access control (RBAC).</p>
+<p>To configure the Azure Key Vault provider, call one of the <code>ProtectKeysWithAzureKeyVault</code> overloads. The following example uses the overload that accepts key identifier and token credential (<code>TokenCredential</code>), relying on a Managed Identity for RBAC in production (<code>ManagedIdentityCredential</code>) or a <code>DefaultAzureCredential</code> during development and testing. Other overloads accept either a key vault client or an app client ID with client secret. For more information, see <a href="#/doc/aspnet/security/data-protection/implementation/key-storage-providers@azure-storage">Key storage providers in ASP.NET Core</a>.</p>
+<p>For more information on the Azure SDK&#39;s API and authentication, see <a href="/dotnet/azure/sdk/authentication/">Authenticate .NET apps to Azure services using the Azure Identity library</a> and <a href="/azure/key-vault/general/rbac-guide?tabs=azure-cli">Provide access to Key Vault keys, certificates, and secrets with Azure role-based access control</a>. For logging guidance, see <a href="/dotnet/azure/sdk/logging#logging-without-client-registration">Logging with the Azure SDK for .NET: Logging without client registration</a>. For apps using dependency injection, an app can call <code>AddAzureClientsCore</code>, passing <code>true</code> for <code>enableLogForwarding</code>, to create and wire up the logging infrastructure.</p>
+<p>To create a key in the Azure portal, see <a href="/azure/key-vault/keys/quick-create-portal">Quickstart: Set and retrieve a key from Azure Key Vault using the Azure portal</a>. Give the key at least <code>Get</code>, <code>Unwrap Key</code>, and <code>Wrap Key</code> permissions. Record the key identifier for use with the app&#39;s configuration. If you plan to enable automatic rotation of the key vault key, record the <em>versionless</em> key identifier, where no key GUID is placed at the end of the identifier (example: <code>https://contoso.vault.azure.net/keys/data-protection</code>).</p>
+<p>In the <code>Program</code> file where services are registered:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">TokenCredential? credential;
+
+if (builder.Environment.IsProduction())
+{
+    credential = new ManagedIdentityCredential(&quot;{MANAGED IDENTITY CLIENT ID}&quot;);
+}
+else
+{
+    // Local development and testing only
+    DefaultAzureCredentialOptions options = new()
+    {
+        // Specify the tenant ID to use the dev credentials when running the app locally
+        // in Visual Studio.
+        VisualStudioTenantId = &quot;{TENANT ID}&quot;,
+        SharedTokenCacheTenantId = &quot;{TENANT ID}&quot;
+    };
+
+    credential = new DefaultAzureCredential(options);
+}
+
+builder.Services.AddDataProtection()
+    .SetApplicationName(&quot;{APPLICATION NAME}&quot;)
+    .PersistKeysToAzureBlobStorage(new Uri(&quot;{BLOB URI}&quot;), credential)
+    .ProtectKeysWithAzureKeyVault(new Uri(&quot;{KEY IDENTIFIER}&quot;), credential);</code></pre></div></figure>
+<p><code>{MANAGED IDENTITY CLIENT ID}</code>: The Azure Managed Identity Client ID (GUID).</p>
+<p><code>{TENANT ID}</code>: Tenant ID.</p>
+<p><code>{APPLICATION NAME}</code>: <code>SetApplicationName</code> sets the unique name of this app within the data protection system. The value should match across deployments of the app.</p>
+<p><code>{BLOB URI}</code>: Full URI to the key file. The URI is generated by Azure Storage when you create the key file. Do not use a SAS.</p>
+<p><code>{KEY IDENTIFIER}</code>: Azure Key Vault key identifier used for key encryption. An access policy allows the application to access the key vault with <code>Get</code>, <code>Unwrap Key</code>, and <code>Wrap Key</code> permissions. The version of the key is obtained from the key in the Entra or Azure portal after it&#39;s created. If you enable automatic rotation of the key vault key, make sure that you use a <em>versionless</em> key identifier in the app&#39;s key vault configuration, where no key GUID is placed at the end of the identifier (example: <code>https://contoso.vault.azure.net/keys/data-protection</code>).</p>
+<p>For an app to communicate and authorize itself with Azure Key Vault, the <a target="_blank" rel="noopener" href="https://www.nuget.org/packages/Azure.Identity/"><code>Azure.Identity</code> NuGet package</a> must be referenced by the app.</p>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>For guidance on adding packages to .NET apps, see the articles under <em>Install and manage packages</em> at <a href="/nuget/consume-packages/overview-and-workflow">Package consumption workflow (NuGet documentation)</a>. Confirm correct package versions at <a target="_blank" rel="noopener" href="https://www.nuget.org">NuGet.org</a>.</p>
+</div></aside>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>In non-<code>Production</code> environments, the preceding example uses <code>DefaultAzureCredential</code> to simplify authentication while developing apps that deploy to Azure by combining credentials used in Azure hosting environments with credentials used in local development. For more information, see <a href="/dotnet/azure/sdk/authentication/system-assigned-managed-identity">Authenticate Azure-hosted .NET apps to Azure resources using a system-assigned managed identity</a>.</p>
+</div></aside>
+<p>If the app uses the older Azure packages (<code>Microsoft.AspNetCore.DataProtection.AzureStorage</code> and <code>Microsoft.AspNetCore.DataProtection.AzureKeyVault</code>), we recommend <em><strong>removing</strong></em> these references and upgrading to the <a target="_blank" rel="noopener" href="https://www.nuget.org/packages/Azure.Extensions.AspNetCore.DataProtection.Blobs"><code>Azure.Extensions.AspNetCore.DataProtection.Blobs</code></a> and <a target="_blank" rel="noopener" href="https://www.nuget.org/packages/Azure.Extensions.AspNetCore.DataProtection.Keys"><code>Azure.Extensions.AspNetCore.DataProtection.Keys</code></a> packages. The newer packages address key security and stability issues.</p>
+<p><strong>Alternative shared-access signature (SAS) approach</strong>: As an alternative to using a Managed Identity for access to the key blob in Azure Blob Storage, you can call the <code>PersistKeysToAzureBlobStorage</code> overload that accepts a blob URI with a SAS token. The following example continues to use either a <code>ManagedIdentityCredential</code> (production) or <code>DefaultAzureCredential</code> (development and testing) for its <code>TokenCredential</code>, as seen in the preceding example:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">builder.Services.AddDataProtection()
+    .SetApplicationName(&quot;{APPLICATION NAME}&quot;)
+    .PersistKeysToAzureBlobStorage(new Uri(&quot;{BLOB URI WITH SAS}&quot;))
+    .ProtectKeysWithAzureKeyVault(new Uri(&quot;{KEY IDENTIFIER}&quot;), credential);</code></pre></div></figure>
+<p><code>{APPLICATION NAME}</code>: <code>SetApplicationName</code> sets the unique name of this app within the data protection system. The value should match across deployments of the app.</p>
+<p><code>{BLOB URI WITH SAS}</code>: The full URI where the key file should be stored with the SAS token as a query string parameter. The URI is generated by Azure Storage when you request a SAS for the uploaded key file.</p>
+<p><code>{KEY IDENTIFIER}</code>: Azure Key Vault key identifier used for key encryption. An access policy allows the application to access the key vault with <code>Get</code>, <code>Unwrap Key</code>, and <code>Wrap Key</code> permissions. The version of the key is obtained from the key in the Entra or Azure portal after it&#39;s created. If you enable automatic rotation of the key vault key, make sure that you use a versionless key identifier in the app&#39;s key vault configuration, where no key GUID is placed at the end of the identifier (example: <code>https://contoso.vault.azure.net/keys/data-protection</code>).</p>
+<h2 id="persist-keys-to-the-file-system-persistkeystofilesystem">Persist keys to the file system (<code>PersistKeysToFileSystem</code>)</h2>
+<p>To store keys on a UNC share instead of at the <em>%LOCALAPPDATA%</em> default location, configure the system with <code>PersistKeysToFileSystem</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">        builder.Services.AddDataProtection()
+            .PersistKeysToFileSystem(new DirectoryInfo(@&quot;\\server\share\directory\&quot;));
+        </code></pre></div></figure>
+<aside class="callout callout-warning"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 4 2.8 20h18.4L12 4z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M12 10v4.4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="17" r="1.3" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Warning</p><p>If you change the key persistence location, the system no longer automatically encrypts keys at rest, since it doesn&#39;t know whether DPAPI is an appropriate encryption mechanism.</p>
+</div></aside>
+<h2 id="persist-keys-in-a-database-persistkeystodbcontext">Persist keys in a database (<code>PersistKeysToDbContext</code>)</h2>
+<p>To store keys in a database using EntityFramework, configure the system with the <a target="_blank" rel="noopener" href="https://www.nuget.org/packages/Microsoft.AspNetCore.DataProtection.EntityFrameworkCore/">Microsoft.AspNetCore.DataProtection.EntityFrameworkCore</a> package:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">        builder.Services.AddDataProtection()
+            .PersistKeysToDbContext();
+        </code></pre></div></figure>
+<p>The preceding code stores the keys in the configured database. The database context being used must implement <code>IDataProtectionKeyContext</code>.  <code>IDataProtectionKeyContext</code> exposes the property <code>DataProtectionKeys</code></p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">    public DbSet DataProtectionKeys { get; set; } = null!;
+    </code></pre></div></figure>
+<p>This property represents the table in which the keys are stored. Create the table manually or with <code>DbContext</code> Migrations. For more information, see <code>DataProtectionKey</code>.</p>
+<h2 id="protect-keys-configuration-api-protectkeyswith">Protect keys configuration API (<code>ProtectKeysWith\*</code>)</h2>
+<p>You can configure the system to protect keys at rest by calling any of the <code>ProtectKeysWith\*</code> configuration APIs. Consider the example below, which stores keys on a UNC share and encrypts those keys at rest with a specific X.509 certificate.</p>
+<p>:::moniker-end</p>
+<p>:::moniker range=&quot;&gt;= aspnetcore-9.0&quot;</p>
+<p>You can provide an <code>X509Certificate2</code> to <code>ProtectKeysWithCertificate</code> from a file by calling <code>LoadCertificateFromFile?displayProperty=nameWithType</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">        builder.Services.AddDataProtection()
+            .PersistKeysToFileSystem(new DirectoryInfo(@&quot;\\server\share\directory\&quot;))
+            .ProtectKeysWithCertificate(
+                new X509Certificate2(&quot;certificate.pfx&quot;, builder.Configuration[&quot;CertificatePassword&quot;]));
+        </code></pre></div></figure>
+<p>The following code example demonstrates how to load a certificate using a thumbprint:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">        builder.Services.AddDataProtection()
+            .PersistKeysToFileSystem(new DirectoryInfo(@&quot;\\server\share\directory\&quot;))
+            .ProtectKeysWithCertificate(builder.Configuration[&quot;CertificateThumbprint&quot;]);
+        </code></pre></div></figure>
+<p>:::moniker-end</p>
+<p>:::moniker range=&quot;&gt;= aspnetcore-6.0 &lt; aspnetcore-9.0&quot;</p>
+<p>You can provide an <code>X509Certificate2</code> to <code>ProtectKeysWithCertificate</code>, such as a certificate loaded from a file:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">        builder.Services.AddDataProtection()
+            .PersistKeysToFileSystem(new DirectoryInfo(@&quot;\\server\share\directory\&quot;))
+            .ProtectKeysWithCertificate(
+                new X509Certificate2(&quot;certificate.pfx&quot;, builder.Configuration[&quot;CertificatePassword&quot;]));
+        </code></pre></div></figure>
+<p>The following code example demonstrates how to load a certificate using a thumbprint:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">        builder.Services.AddDataProtection()
+            .PersistKeysToFileSystem(new DirectoryInfo(@&quot;\\server\share\directory\&quot;))
+            .ProtectKeysWithCertificate(builder.Configuration[&quot;CertificateThumbprint&quot;]);
+        </code></pre></div></figure>
+<p>:::moniker-end</p>
+<p>:::moniker range=&quot;&gt;= aspnetcore-6.0&quot;</p>
+<p>For examples and discussion on the built-in key encryption mechanisms, see <a href="#/doc/aspnet/security/data-protection/implementation/key-encryption-at-rest">Key encryption at rest in Windows and Azure using ASP.NET Core</a>.</p>
+<h2 id="unprotect-keys-with-any-certificate-unprotectkeyswithanycertificate">Unprotect keys with any certificate (<code>UnprotectKeysWithAnyCertificate</code>)</h2>
+<p>You can rotate certificates and decrypt keys at rest using an array of <code>X509Certificate2</code> certificates with <code>UnprotectKeysWithAnyCertificate</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">        builder.Services.AddDataProtection()
+            .PersistKeysToFileSystem(new DirectoryInfo(@&quot;\\server\share\directory\&quot;))
+            .ProtectKeysWithCertificate(
+                new X509Certificate2(&quot;certificate.pfx&quot;, builder.Configuration[&quot;CertificatePassword&quot;]))
+            .UnprotectKeysWithAnyCertificate(
+                new X509Certificate2(&quot;certificate_1.pfx&quot;, builder.Configuration[&quot;CertificatePassword_1&quot;]),
+                new X509Certificate2(&quot;certificate_2.pfx&quot;, builder.Configuration[&quot;CertificatePassword_2&quot;]));
+        </code></pre></div></figure>
+<h2 id="set-the-default-key-lifetime-setdefaultkeylifetime">Set the default key lifetime (<code>SetDefaultKeyLifetime</code>)</h2>
+<p>To configure the system to use a key lifetime of 14 days instead of the default 90 days, use <code>SetDefaultKeyLifetime</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">        builder.Services.AddDataProtection()
+            .SetDefaultKeyLifetime(TimeSpan.FromDays(14));
+        </code></pre></div></figure>
+<h2 id="set-the-application-name-setapplicationname">Set the application name (<code>SetApplicationName</code>)</h2>
+<p>By default, the Data Protection system isolates apps from one another based on their <a href="#/doc/aspnet/fundamentals/index@content-root">content root</a> paths, even if they share the same physical key repository. This isolation prevents the apps from understanding each other&#39;s protected payloads.</p>
+<p>To share protected payloads among apps:</p>
+<ul>
+<li>Configure <code>SetApplicationName</code> in each app with the same value.</li>
+<li>Use the same version of the Data Protection API stack across the apps. Perform <strong>either</strong> of the following in the apps&#39; project files:<ul>
+<li>Reference the same shared framework version via the <a href="#/doc/aspnet/fundamentals/metapackage-app">Microsoft.AspNetCore.App metapackage</a>.</li>
+<li>Reference the same <a href="#/doc/aspnet/security/data-protection/introduction@package-layout">Data Protection package</a> version.</li>
+</ul>
+</li>
+</ul>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">        builder.Services.AddDataProtection()
+            .SetApplicationName(&quot;&lt;sharedApplicationName&gt;&quot;);
+        </code></pre></div></figure>
+<p><code>SetApplicationName</code> internally sets <code>ApplicationDiscriminator?displayProperty=nameWithType</code>. For troubleshooting purposes, the value assigned to the discriminator by the framework can be logged with the following code placed after the <code>WebApplication</code> is built in <code>Program.cs</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">var discriminator = app.Services.GetRequiredService&lt;IOptions&gt;()
+    .Value.ApplicationDiscriminator;
+app.Logger.LogInformation(&quot;ApplicationDiscriminator: {ApplicationDiscriminator}&quot;, discriminator);</code></pre></div></figure>
+<p>For more information on how the discriminator is used, see the following sections later in this article:</p>
+<ul>
+<li><a href="#per-application-isolation">Per-application isolation</a></li>
+<li><a href="#data-protection-and-app-isolation">Data Protection and app isolation</a></li>
+</ul>
+<aside class="callout callout-warning"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 4 2.8 20h18.4L12 4z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M12 10v4.4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="17" r="1.3" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Warning</p><p>In .NET 6, <code>WebApplicationBuilder</code> normalizes the content root path to end with a <code>DirectorySeparatorChar</code>. For example, on Windows the content root path ends in <code>\</code> and on Linux <code>/</code>. Other hosts don&#39;t normalize the path. Most apps migrating from <code>HostBuilder</code> or  <code>WebHostBuilder</code> won&#39;t share the same app name because they won&#39;t have the terminating <code>DirectorySeparatorChar</code>. To work around this issue, remove the directory separator character and set the app name manually, as shown in the following code:</p>
+<p><figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">using System.Reflection;
+using Microsoft.AspNetCore.DataProtection;
+
+var builder = WebApplication.CreateBuilder(args);
+
+var trimmedContentRootPath =
+    builder.Environment.ContentRootPath.TrimEnd(Path.DirectorySeparatorChar);
+
+builder.Services.AddDataProtection().SetApplicationName(trimmedContentRootPath);
+
+var app = builder.Build();
+
+app.MapGet(&quot;/&quot;, () =&gt; Assembly.GetEntryAssembly()!.GetName().Name);
+
+app.Run();</code></pre></div></figure></p>
+</div></aside>
+<h2 id="disable-automatic-key-generation-disableautomatickeygeneration">Disable automatic key generation (<code>DisableAutomaticKeyGeneration</code>)</h2>
+<p>You may have a scenario where you don&#39;t want an app to automatically roll keys (create new keys) as they approach expiration. One example of this scenario might be apps set up in a primary/secondary relationship, where only the primary app is responsible for key management concerns and secondary apps simply have a read-only view of the key ring. The secondary apps can be configured to treat the key ring as read-only by configuring the system with <code>DisableAutomaticKeyGeneration</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">        builder.Services.AddDataProtection()
+            .DisableAutomaticKeyGeneration();
+        </code></pre></div></figure>
+<h2 id="per-application-isolation">Per-application isolation</h2>
+<p>When the Data Protection system is provided by an ASP.NET Core host, it automatically isolates apps from one another, even if those apps are running under the same worker process account and are using the same master keying material. This is similar to the IsolateApps modifier from System.Web&#39;s <code>&lt;machineKey&gt;</code> element.</p>
+<p>The isolation mechanism works by considering each app on the local machine as a unique tenant, thus the <code>IDataProtector</code> rooted for any given app automatically includes the app ID as a discriminator (<code>ApplicationDiscriminator</code>). The app&#39;s unique ID is the app&#39;s physical path:</p>
+<ul>
+<li>For apps hosted in IIS, the unique ID is the IIS physical path of the app. If an app is deployed in a web farm environment, this value is stable assuming that the IIS environments are configured similarly across all machines in the web farm.</li>
+<li>For self-hosted apps running on the <a href="#/doc/aspnet/fundamentals/servers/index@kestrel">Kestrel server</a>, the unique ID is the physical path to the app on disk.</li>
+</ul>
+<p>The unique identifier is designed to survive resets&mdash;both of the individual app and of the machine itself.</p>
+<p>This isolation mechanism assumes that the apps aren&#39;t malicious. A malicious app can always impact any other app running under the same worker process account. In a shared hosting environment where apps are mutually untrusted, the hosting provider should take steps to ensure OS-level isolation between apps, including separating the apps&#39; underlying key repositories.</p>
+<p>If the Data Protection system isn&#39;t provided by an ASP.NET Core host (for example, if you instantiate it via the <code>DataProtectionProvider</code> concrete type) app isolation is disabled by default. When app isolation is disabled, all apps backed by the same keying material can share payloads as long as they provide the appropriate <a href="#/doc/aspnet/security/data-protection/consumer-apis/purpose-strings">purposes</a>. To provide app isolation in this environment, call the <a href="#set-the-application-name-setapplicationname"><code>SetApplicationName</code></a> method on the configuration object and provide a unique name for each app.</p>
+<h3 id="data-protection-and-app-isolation">Data Protection and app isolation</h3>
+<p>Consider the following points for app isolation:</p>
+<ul>
+<li><p>When multiple apps are pointed at the same key repository, the intention is that the apps share the same master key material. Data Protection is developed with the assumption that all apps sharing a key ring can access all items in that key ring. The application unique identifier is used to isolate application specific keys derived from the key ring provided keys. It doesn&#39;t expect item level permissions, such as those provided by Azure KeyVault to be used to enforce extra isolation. Attempting item level permissions generates application errors. If you don&#39;t want to rely on the built-in application isolation, separate key store locations should be used and not shared between applications.</p>
+</li>
+<li><p>The application discriminator (<code>ApplicationDiscriminator</code>) is used to allow different apps to share the same master key material but to keep their cryptographic payloads distinct from one another. <!-- The docs already draw an analogy between this and multi-tenancy.--> For the apps to be able to read each other&#39;s cryptographic payloads, they must have the same application discriminator, which can be set by calling <a href="#set-the-application-name-setapplicationname"><code>SetApplicationName</code></a>.</p>
+</li>
+<li><p>If an app is compromised (for example, by an RCE attack), all master key material accessible to that app must also be considered compromised, regardless of its protection-at-rest state. This implies that if two apps are pointed at the same repository, even if they use different app discriminators, a compromise of one is functionally equivalent to a compromise of both.</p>
+<p>This &quot;functionally equivalent to a compromise of both&quot; clause holds even if the two apps use different mechanisms for key protection at rest. Typically, this isn&#39;t an expected configuration. The protection-at-rest mechanism is intended to provide protection in the event a cyberattacker gains read access to the repository. A cyberattacker who gains write access to the repository (perhaps because they attained code execution permission within an app) can insert malicious keys into storage. The Data Protection system intentionally doesn&#39;t provide protection against a cyberattacker who gains write access to the key repository.</p>
+</li>
+<li><p>If apps need to remain truly isolated from one another, they should use different key repositories. This naturally falls out of the definition of &quot;isolated&quot;. Apps are <em><strong>not</strong></em> isolated if they all have Read and Write access to each other&#39;s data stores.</p>
+</li>
+</ul>
+<h2 id="changing-algorithms-with-usecryptographicalgorithms">Changing algorithms with <code>UseCryptographicAlgorithms</code></h2>
+<p>The Data Protection stack allows you to change the default algorithm used by newly generated keys. The simplest way to do this is to call <code>UseCryptographicAlgorithms</code> from the configuration callback:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">        builder.Services.AddDataProtection()
+            .UseCryptographicAlgorithms(new AuthenticatedEncryptorConfiguration
+            {
+                EncryptionAlgorithm = EncryptionAlgorithm.AES_256_CBC,
+                ValidationAlgorithm = ValidationAlgorithm.HMACSHA256
+            });
+        </code></pre></div></figure>
+<p>The default EncryptionAlgorithm is AES-256-CBC, and the default ValidationAlgorithm is HMACSHA256. The default policy can be set by a system administrator via a <a href="#/doc/aspnet/security/data-protection/configuration/machine-wide-policy">machine-wide policy</a>, but an explicit call to <code>UseCryptographicAlgorithms</code> overrides the default policy.</p>
+<p>Calling <code>UseCryptographicAlgorithms</code> allows you to specify the desired algorithm from a predefined built-in list. You don&#39;t need to worry about the implementation of the algorithm. In the scenario above, the Data Protection system attempts to use the CNG implementation of AES if running on Windows. Otherwise, it falls back to the managed <code>Aes?displayProperty=fullName</code> class.</p>
+<p>You can manually specify an implementation via a call to <code>UseCustomCryptographicAlgorithms</code>.</p>
+<aside class="callout callout-tip"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M9.5 18h5M10.5 21h3M12 3a6 6 0 0 0-3.6 10.8c.7.6 1.1 1.3 1.3 2.2h4.6c.2-.9.6-1.6 1.3-2.2A6 6 0 0 0 12 3Z" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round"/></svg></span><div class="callout-body"><p class="callout-title">Tip</p><p>Changing algorithms doesn&#39;t affect existing keys in the key ring. It only affects newly-generated keys.</p>
+</div></aside>
+<h3 id="specifying-custom-managed-algorithms">Specifying custom managed algorithms</h3>
+<p>To specify custom managed algorithms, create a <code>ManagedAuthenticatedEncryptorConfiguration</code> instance that points to the implementation types:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">        builder.Services.AddDataProtection()
+            .UseCustomCryptographicAlgorithms(new ManagedAuthenticatedEncryptorConfiguration
+            {
+                // A type that subclasses SymmetricAlgorithm
+                EncryptionAlgorithmType = typeof(Aes),
+
+                // Specified in bits
+                EncryptionAlgorithmKeySize = 256,
+
+                // A type that subclasses KeyedHashAlgorithm
+                ValidationAlgorithmType = typeof(HMACSHA256)
+            });
+        </code></pre></div></figure>
+<p>Generally the *Type properties must point to concrete, instantiable (via a public parameterless ctor) implementations of <code>SymmetricAlgorithm</code> and <code>KeyedHashAlgorithm</code>, though the system special-cases some values like <code>typeof(Aes)</code> for convenience.</p>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>The SymmetricAlgorithm must have a key length of ≥ 128 bits and a block size of ≥ 64 bits, and it must support CBC-mode encryption with PKCS #7 padding. The KeyedHashAlgorithm must have a digest size of &gt;= 128 bits, and it must support keys of length equal to the hash algorithm&#39;s digest length. The KeyedHashAlgorithm isn&#39;t strictly required to be HMAC.</p>
+</div></aside>
+<h3 id="specifying-custom-windows-cng-algorithms">Specifying custom Windows CNG algorithms</h3>
+<p>To specify a custom Windows CNG algorithm using CBC-mode encryption with HMAC validation, create a <code>CngCbcAuthenticatedEncryptorConfiguration</code> instance that contains the algorithmic information:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">        builder.Services.AddDataProtection()
+            .UseCustomCryptographicAlgorithms(new CngCbcAuthenticatedEncryptorConfiguration
+            {
+                // Passed to BCryptOpenAlgorithmProvider
+                EncryptionAlgorithm = &quot;AES&quot;,
+                EncryptionAlgorithmProvider = null,
+
+                // Specified in bits
+                EncryptionAlgorithmKeySize = 256,
+
+                // Passed to BCryptOpenAlgorithmProvider
+                HashAlgorithm = &quot;SHA256&quot;,
+                HashAlgorithmProvider = null
+            });
+        </code></pre></div></figure>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>The symmetric block cipher algorithm must have a key length of &gt;= 128 bits, a block size of &gt;= 64 bits, and it must support CBC-mode encryption with PKCS #7 padding. The hash algorithm must have a digest size of &gt;= 128 bits and must support being opened with the BCRYPT_ALG_HANDLE_HMAC_FLAG flag. The *Provider properties can be set to null to use the default provider for the specified algorithm. For more information, see the <a href="/windows/win32/api/bcrypt/nf-bcrypt-bcryptopenalgorithmprovider">BCryptOpenAlgorithmProvider</a> documentation.</p>
+</div></aside>
+<p>To specify a custom Windows CNG algorithm using Galois/Counter Mode encryption with validation, create a <code>CngGcmAuthenticatedEncryptorConfiguration</code> instance that contains the algorithmic information:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">        builder.Services.AddDataProtection()
+            .UseCustomCryptographicAlgorithms(new CngGcmAuthenticatedEncryptorConfiguration
+            {
+                // Passed to BCryptOpenAlgorithmProvider
+                EncryptionAlgorithm = &quot;AES&quot;,
+                EncryptionAlgorithmProvider = null,
+
+                // Specified in bits
+                EncryptionAlgorithmKeySize = 256
+            });
+        </code></pre></div></figure>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>The symmetric block cipher algorithm must have a key length of &gt;= 128 bits, a block size of exactly 128 bits, and it must support GCM encryption. You can set the <code>EncryptionAlgorithmProvider</code> property to null to use the default provider for the specified algorithm. For more information, see the <a href="/windows/win32/api/bcrypt/nf-bcrypt-bcryptopenalgorithmprovider">BCryptOpenAlgorithmProvider</a> documentation.</p>
+</div></aside>
+<h3 id="specifying-other-custom-algorithms">Specifying other custom algorithms</h3>
+<p>Though not exposed as a first-class API, the Data Protection system is extensible enough to allow specifying almost any kind of algorithm. For example, it&#39;s possible to keep all keys contained within a Hardware Security Module (HSM) and to provide a custom implementation of the core encryption and decryption routines. For more information, see <code>IAuthenticatedEncryptor</code> in <a href="#/doc/aspnet/security/data-protection/extensibility/core-crypto">Core cryptography extensibility</a>.</p>
+<h2 id="persisting-keys-when-hosting-in-a-docker-container">Persisting keys when hosting in a Docker container</h2>
+<p>When hosting in a <a href="/dotnet/standard/microservices-architecture/container-docker-introduction/">Docker</a> container, keys should be maintained in either:</p>
+<ul>
+<li>A folder that&#39;s a Docker volume that persists beyond the container&#39;s lifetime, such as a shared volume or a host-mounted volume.</li>
+<li>An external provider, such as <a href="/azure/storage/blobs/storage-blobs-introduction">Azure Blob Storage</a> (shown in the <a href="#protect-keys-with-azure-key-vault-protectkeyswithazurekeyvault"><code>ProtectKeysWithAzureKeyVault</code></a> section) or <a target="_blank" rel="noopener" href="https://redis.io">Redis</a>.</li>
+</ul>
+<h2 id="persisting-keys-with-redis">Persisting keys with Redis</h2>
+<p>Only Redis versions supporting <a href="/azure/azure-cache-for-redis/cache-how-to-premium-persistence">Redis Data Persistence</a> should be used to store keys. <a href="/azure/storage/blobs/storage-blobs-introduction">Azure Blob storage</a> is persistent and can be used to store keys. For more information, see <a target="_blank" rel="noopener" href="https://github.com/dotnet/AspNetCore/issues/13476">this GitHub issue</a>.</p>
+<h2 id="logging">Logging</h2>
+<p>Enable the <code>Information</code> or lower level of logging to diagnose problems. The following <code>appsettings.json</code> file enables information logging of the Data Protection API:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">{
+  &quot;Logging&quot;: {
+    &quot;LogLevel&quot;: {
+      &quot;Default&quot;: &quot;Information&quot;,
+      &quot;Microsoft.AspNetCore&quot;: &quot;Warning&quot;,
+      &quot;Microsoft.AspNetCore.DataProtection&quot;: &quot;Information&quot;
+    }
+  },
+  &quot;AllowedHosts&quot;: &quot;*&quot;
+}</code></pre></div></figure>
+<p>For more information on logging, see <a href="#/doc/aspnet/fundamentals/logging/index">Logging in .NET and ASP.NET Core</a>.</p>
+<h2 id="additional-resources">Additional resources</h2>
+<ul>
+<li><a href="#/doc/aspnet/security/data-protection/configuration/non-di-scenarios">Non-DI aware scenarios for Data Protection in ASP.NET Core</a></li>
+<li><a href="#/doc/aspnet/security/data-protection/configuration/machine-wide-policy">Data Protection machine-wide policy support in ASP.NET Core</a></li>
+<li><a href="#/doc/aspnet/host-and-deploy/web-farm">Host ASP.NET Core in a web farm</a></li>
+<li><a href="#/doc/aspnet/security/data-protection/implementation/key-storage-providers">Key storage providers in ASP.NET Core</a></li>
+</ul>
+<p>:::moniker-end</p>
+<p>:::moniker range=&quot;&lt; aspnetcore-6.0&quot;</p>
+<p>When the Data Protection system is initialized, it applies <a href="#/doc/aspnet/security/data-protection/configuration/default-settings">default settings</a> based on the operational environment. These settings are appropriate for apps running on a single machine. However, there are cases where a developer may want to change the default settings:</p>
+<ul>
+<li>The app is spread across multiple machines.</li>
+<li>For compliance reasons.</li>
+</ul>
+<p>For these scenarios, the Data Protection system offers a rich configuration API.</p>
+<aside class="callout callout-warning"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 4 2.8 20h18.4L12 4z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M12 10v4.4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="17" r="1.3" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Warning</p><p>Similar to configuration files, the data protection key ring should be protected using appropriate permissions. You can choose to encrypt keys at rest, but this doesn&#39;t prevent cyberattackers from creating new keys. Consequently, your app&#39;s security is impacted. The storage location configured with Data Protection should have its access limited to the app itself, similar to the way you would protect configuration files. For example, if you choose to store your key ring on disk, use file system permissions. Ensure only the identity under which your web app runs has read, write, and create access to that directory. If you use Azure Blob Storage, only the web app should have the ability to read, write, or create new entries in the blob store.</p>
+<p>The extension method <code>AddDataProtection</code> returns an <code>IDataProtectionBuilder</code>, which exposes extension methods that you can chain together to configure Data Protection options.</p>
+</div></aside>
+<p>The following NuGet packages are required for the Data Protection extensions used in this article:</p>
+<ul>
+<li><a target="_blank" rel="noopener" href="https://www.nuget.org/packages/Azure.Extensions.AspNetCore.DataProtection.Blobs"><code>Azure.Extensions.AspNetCore.DataProtection.Blobs</code></a></li>
+<li><a target="_blank" rel="noopener" href="https://www.nuget.org/packages/Azure.Extensions.AspNetCore.DataProtection.Keys"><code>Azure.Extensions.AspNetCore.DataProtection.Keys</code></a></li>
+</ul>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>For guidance on adding packages to .NET apps, see the articles under <em>Install and manage packages</em> at <a href="/nuget/consume-packages/overview-and-workflow">Package consumption workflow (NuGet documentation)</a>. Confirm correct package versions at <a target="_blank" rel="noopener" href="https://www.nuget.org">NuGet.org</a>.</p>
+</div></aside>
+<h2 id="protect-keys-with-azure-key-vault-protectkeyswithazurekeyvault">Protect keys with Azure Key Vault (<code>ProtectKeysWithAzureKeyVault</code>)</h2>
+<p>To interact with <a target="_blank" rel="noopener" href="https://azure.microsoft.com/services/key-vault/">Azure Key Vault</a> locally using developer credentials, either sign into your storage account in Visual Studio or sign in with the <a href="/cli/azure/">Azure CLI</a>. If you haven&#39;t already installed the Azure CLI, see <a href="/cli/azure/install-azure-cli">How to install the Azure CLI</a>. You can execute the following command in the Developer PowerShell panel in Visual Studio or from a command shell when not using Visual Studio:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">az login</code></pre></div></figure>
+<p>For more information, see <a href="/dotnet/azure/sdk/authentication/local-development-dev-accounts#sign-in-to-azure-using-developer-tooling">Sign-in to Azure using developer tooling</a>.</p>
+<p>When <a href="/azure/key-vault/general/quick-create-portal">establishing the key vault in the Entra or Azure portal</a>:</p>
+<ul>
+<li><p>Configure the key vault to use Azure role-based access control (RABC). If you aren&#39;t operating on an <a href="/azure/virtual-network/virtual-networks-overview">Azure Virtual Network</a>, including for local development and testing, confirm that public access on the <strong>Networking</strong> step is <strong>enabled</strong> (checked). Enabling public access only exposes the key vault endpoint. Authenticated accounts are still required for access.</p>
+</li>
+<li><p>Create an Azure Managed Identity (or add a role to the existing Managed Identity that you plan to use) with the <strong>Key Vault Crypto User</strong> role. Assign the Managed Identity to the Azure App Service that&#39;s hosting the deployment: <strong>Settings</strong> &gt; <strong>Identity</strong> &gt; <strong>User assigned</strong> &gt; <strong>Add</strong>.</p>
+<blockquote>
+<p>[!NOTE]
+If you also plan to run an app locally with an authorized user for blob access using the <a href="/cli/azure/">Azure CLI</a> or Visual Studio&#39;s Azure Service Authentication, add your developer Azure user account in <strong>Access Control (IAM)</strong> with the <strong>Key Vault Crypto User</strong> role. If you want to use the Azure CLI through Visual Studio, execute the <code>az login</code> command from the Developer PowerShell panel and follow the prompts to authenticate with the tenant.</p>
+</blockquote>
+</li>
+<li><p>When key encryption is active, keys in the key file include the comment, &quot;&quot; After starting the app, select the <strong>View/edit</strong> command from the context menu at the end of the key row to confirm that a key is present with key vault security applied.</p>
+</li>
+<li><p>Optionally, you can enable automatic key vault key rotation without concern about decrypting payloads with data protection keys based on expired/rotated key vault keys. Each generated data protection key includes a reference to the key vault key used to encrypted it. Just make sure that you retain expired key vault keys, don&#39;t delete them in the key vault. Also, use a versionless key identifier in the app&#39;s key vault configuration, where no key GUID is placed at the end of the identifier (example: <code>https://contoso.vault.azure.net/keys/data-protection</code>). Use a similar rotation period for both keys with the key vault key rotating more frequently than the data protection key to ensure that a new key vault key is used at the time of data protection key rotation.</p>
+</li>
+</ul>
+<p>Protecting keys with Azure Key Vault implements an <code>IXmlEncryptor</code> that disables automatic data protection settings, including the key ring storage location. To configure the Azure Blob Storage provider to store the keys in blob storage, follow the guidance in <a href="#/doc/aspnet/security/data-protection/implementation/key-storage-providers@azure-storage">Key storage providers in ASP.NET Core</a> and call one of the <code>PersistKeysToAzureBlobStorage</code> overloads in the app. The following example uses the overload that accepts a blob URI and token credential (<code>TokenCredential</code>), relying on an Azure Managed Identity for role-based access control (RBAC).</p>
+<p>To configure the Azure Key Vault provider, call one of the <code>ProtectKeysWithAzureKeyVault</code> overloads. The following example uses the overload that accepts key identifier and token credential (<code>TokenCredential</code>), relying on a Managed Identity for RBAC in production (<code>ManagedIdentityCredential</code>) or a <code>DefaultAzureCredential</code> during development and testing. Other overloads accept either a key vault client or an app client ID with client secret. For more information, see <a href="#/doc/aspnet/security/data-protection/implementation/key-storage-providers@azure-storage">Key storage providers in ASP.NET Core</a>.</p>
+<p>For more information on the Azure SDK&#39;s API and authentication, see <a href="/dotnet/azure/sdk/authentication/">Authenticate .NET apps to Azure services using the Azure Identity library</a> and <a href="/azure/key-vault/general/rbac-guide?tabs=azure-cli">Provide access to Key Vault keys, certificates, and secrets with Azure role-based access control</a>. For logging guidance, see <a href="/dotnet/azure/sdk/logging#logging-without-client-registration">Logging with the Azure SDK for .NET: Logging without client registration</a>. For apps using dependency injection, an app can call <code>AddAzureClientsCore</code>, passing <code>true</code> for <code>enableLogForwarding</code>, to create and wire up the logging infrastructure.</p>
+<p>To create a key in the Azure portal, see <a href="/azure/key-vault/keys/quick-create-portal">Quickstart: Set and retrieve a key from Azure Key Vault using the Azure portal</a>. Give the key at least <code>Get</code>, <code>Unwrap Key</code>, and <code>Wrap Key</code> permissions. Record the key identifier for use with the app&#39;s configuration. If you plan to enable automatic rotation of the key vault key, record the <em>versionless</em> key identifier, where no key GUID is placed at the end of the identifier (example: <code>https://contoso.vault.azure.net/keys/data-protection</code>).</p>
+<p>In the <code>Program</code> file where services are registered:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">TokenCredential? credential;
+
+if (builder.Environment.IsProduction())
+{
+    credential = new ManagedIdentityCredential(&quot;{MANAGED IDENTITY CLIENT ID}&quot;);
+}
+else
+{
+    // Local development and testing only
+    DefaultAzureCredentialOptions options = new()
+    {
+        // Specify the tenant ID to use the dev credentials when running the app locally
+        // in Visual Studio.
+        VisualStudioTenantId = &quot;{TENANT ID}&quot;,
+        SharedTokenCacheTenantId = &quot;{TENANT ID}&quot;
+    };
+
+    credential = new DefaultAzureCredential(options);
+}
+
+services.AddDataProtection()
+    .SetApplicationName(&quot;{APPLICATION NAME}&quot;)
+    .PersistKeysToAzureBlobStorage(new Uri(&quot;{BLOB URI}&quot;), credential)
+    .ProtectKeysWithAzureKeyVault(new Uri(&quot;{KEY IDENTIFIER}&quot;), credential);</code></pre></div></figure>
+<p><code>{MANAGED IDENTITY CLIENT ID}</code>: The Azure Managed Identity Client ID (GUID).</p>
+<p><code>{TENANT ID}</code>: Tenant ID.</p>
+<p><code>{APPLICATION NAME}</code>: <code>SetApplicationName</code> sets the unique name of this app within the data protection system. The value should match across deployments of the app.</p>
+<p><code>{BLOB URI}</code>: Full URI to the key file. The URI is generated by Azure Storage when you create the key file. Do not use a SAS.</p>
+<p><code>{KEY IDENTIFIER}</code>: Azure Key Vault key identifier used for key encryption. An access policy allows the application to access the key vault with <code>Get</code>, <code>Unwrap Key</code>, and <code>Wrap Key</code> permissions. The version of the key is obtained from the key in the Entra or Azure portal after it&#39;s created. If you enable automatic rotation of the key vault key, make sure that you use a <em>versionless</em> key identifier in the app&#39;s key vault configuration, where no key GUID is placed at the end of the identifier (example: <code>https://contoso.vault.azure.net/keys/data-protection</code>).</p>
+<p>For an app to communicate and authorize itself with Azure Key Vault, the <a target="_blank" rel="noopener" href="https://www.nuget.org/packages/Azure.Identity/"><code>Azure.Identity</code> NuGet package</a> must be referenced by the app.</p>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>For guidance on adding packages to .NET apps, see the articles under <em>Install and manage packages</em> at <a href="/nuget/consume-packages/overview-and-workflow">Package consumption workflow (NuGet documentation)</a>. Confirm correct package versions at <a target="_blank" rel="noopener" href="https://www.nuget.org">NuGet.org</a>.</p>
+</div></aside>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>In non-<code>Production</code> environments, the preceding example uses <code>DefaultAzureCredential</code> to simplify authentication while developing apps that deploy to Azure by combining credentials used in Azure hosting environments with credentials used in local development. For more information, see <a href="/dotnet/azure/sdk/authentication/system-assigned-managed-identity">Authenticate Azure-hosted .NET apps to Azure resources using a system-assigned managed identity</a>.</p>
+</div></aside>
+<p>If the app uses the older Azure packages (<code>Microsoft.AspNetCore.DataProtection.AzureStorage</code> and <code>Microsoft.AspNetCore.DataProtection.AzureKeyVault</code>), we recommend <em><strong>removing</strong></em> these references and upgrading to the <a target="_blank" rel="noopener" href="https://www.nuget.org/packages/Azure.Extensions.AspNetCore.DataProtection.Blobs"><code>Azure.Extensions.AspNetCore.DataProtection.Blobs</code></a> and <a target="_blank" rel="noopener" href="https://www.nuget.org/packages/Azure.Extensions.AspNetCore.DataProtection.Keys"><code>Azure.Extensions.AspNetCore.DataProtection.Keys</code></a> packages. The newer packages address key security and stability issues.</p>
+<p><strong>Alternative shared-access signature (SAS) approach</strong>: As an alternative to using a Managed Identity for access to the key blob in Azure Blob Storage, you can call the <code>PersistKeysToAzureBlobStorage</code> overload that accepts a blob URI with a SAS token. The following example continues to use either a <code>ManagedIdentityCredential</code> (production) or <code>DefaultAzureCredential</code> (development and testing) for its <code>TokenCredential</code>, as seen in the preceding example:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">services.AddDataProtection()
+    .SetApplicationName(&quot;{APPLICATION NAME}&quot;)
+    .PersistKeysToAzureBlobStorage(new Uri(&quot;{BLOB URI WITH SAS}&quot;))
+    .ProtectKeysWithAzureKeyVault(new Uri(&quot;{KEY IDENTIFIER}&quot;), credential);</code></pre></div></figure>
+<p><code>{APPLICATION NAME}</code>: <code>SetApplicationName</code> sets the unique name of this app within the data protection system. The value should match across deployments of the app.</p>
+<p><code>{BLOB URI WITH SAS}</code>: The full URI where the key file should be stored with the SAS token as a query string parameter. The URI is generated by Azure Storage when you request a SAS for the uploaded key file.</p>
+<p><code>{KEY IDENTIFIER}</code>: Azure Key Vault key identifier used for key encryption. An access policy allows the application to access the key vault with <code>Get</code>, <code>Unwrap Key</code>, and <code>Wrap Key</code> permissions. The version of the key is obtained from the key in the Entra or Azure portal after it&#39;s created. If you enable automatic rotation of the key vault key, make sure that you use a versionless key identifier in the app&#39;s key vault configuration, where no key GUID is placed at the end of the identifier (example: <code>https://contoso.vault.azure.net/keys/data-protection</code>).</p>
+<h2 id="persist-keys-to-the-file-system-persistkeystofilesystem">Persist keys to the file system (<code>PersistKeysToFileSystem</code>)</h2>
+<p>To store keys on a UNC share instead of at the <em>%LOCALAPPDATA%</em> default location, configure the system with <code>PersistKeysToFileSystem</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">public void ConfigureServices(IServiceCollection services)
+{
+    services.AddDataProtection()
+        .PersistKeysToFileSystem(new DirectoryInfo(@&quot;\\server\share\directory\&quot;));
+}</code></pre></div></figure>
+<aside class="callout callout-warning"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 4 2.8 20h18.4L12 4z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M12 10v4.4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="17" r="1.3" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Warning</p><p>If you change the key persistence location, the system no longer automatically encrypts keys at rest, since it doesn&#39;t know whether DPAPI is an appropriate encryption mechanism.</p>
+</div></aside>
+<h2 id="persist-keys-in-a-database-persistkeystodbcontext">Persist keys in a database (<code>PersistKeysToDbContext</code>)</h2>
+<p>To store keys in a database using EntityFramework, configure the system with the <a target="_blank" rel="noopener" href="https://www.nuget.org/packages/Microsoft.AspNetCore.DataProtection.EntityFrameworkCore/">Microsoft.AspNetCore.DataProtection.EntityFrameworkCore</a> package:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">public void ConfigureServices(IServiceCollection services)
+{
+    services.AddDataProtection()
+        .PersistKeysToDbContext()
+}</code></pre></div></figure>
+<p>The preceding code stores the keys in the configured database. The database context being used must implement <code>IDataProtectionKeyContext</code>.  <code>IDataProtectionKeyContext</code> exposes the property <code>DataProtectionKeys</code></p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">public DbSet DataProtectionKeys { get; set; }</code></pre></div></figure>
+<p>This property represents the table in which the keys are stored. Create the table manually or with <code>DbContext</code> Migrations. For more information, see <code>DataProtectionKey</code>.</p>
+<h2 id="protect-keys-configuration-api-protectkeyswith">Protect keys configuration API (<code>ProtectKeysWith\*</code>)</h2>
+<p>You can configure the system to protect keys at rest by calling any of the <code>ProtectKeysWith\*</code> configuration APIs. Consider the example below, which stores keys on a UNC share and encrypts those keys at rest with a specific X.509 certificate:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">public void ConfigureServices(IServiceCollection services)
+{
+    services.AddDataProtection()
+        .PersistKeysToFileSystem(new DirectoryInfo(@&quot;\\server\share\directory\&quot;))
+        .ProtectKeysWithCertificate(Configuration[&quot;Thumbprint&quot;]);
+}</code></pre></div></figure>
+<p>You can provide an <code>X509Certificate2</code> to <code>ProtectKeysWithCertificate</code>, such as a certificate loaded from a file:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">public void ConfigureServices(IServiceCollection services)
+{
+    services.AddDataProtection()
+        .PersistKeysToFileSystem(new DirectoryInfo(@&quot;\\server\share\directory\&quot;))
+        .ProtectKeysWithCertificate(
+            new X509Certificate2(&quot;certificate.pfx&quot;, Configuration[&quot;Thumbprint&quot;]));
+}</code></pre></div></figure>
+<p>For more examples and discussion on the built-in key encryption mechanisms, see <a href="#/doc/aspnet/security/data-protection/implementation/key-encryption-at-rest">Key encryption at rest in Windows and Azure using ASP.NET Core</a>.</p>
+<h2 id="unprotect-keys-with-any-certificate-unprotectkeyswithanycertificate">Unprotect keys with any certificate (<code>UnprotectKeysWithAnyCertificate</code>)</h2>
+<p>You can rotate certificates and decrypt keys at rest using an array of <code>X509Certificate2</code> certificates with <code>UnprotectKeysWithAnyCertificate</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">public void ConfigureServices(IServiceCollection services)
+{
+    services.AddDataProtection()
+        .PersistKeysToFileSystem(new DirectoryInfo(@&quot;\\server\share\directory\&quot;))
+        .ProtectKeysWithCertificate(
+            new X509Certificate2(&quot;certificate.pfx&quot;, Configuration[&quot;MyPasswordKey&quot;));
+        .UnprotectKeysWithAnyCertificate(
+            new X509Certificate2(&quot;certificate_old_1.pfx&quot;, Configuration[&quot;MyPasswordKey_1&quot;]),
+            new X509Certificate2(&quot;certificate_old_2.pfx&quot;, Configuration[&quot;MyPasswordKey_2&quot;]));
+}</code></pre></div></figure>
+<h2 id="set-the-default-key-lifetime-setdefaultkeylifetime">Set the default key lifetime (<code>SetDefaultKeyLifetime</code>)</h2>
+<p>To configure the system to use a key lifetime of 14 days instead of the default 90 days, use <code>SetDefaultKeyLifetime</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">public void ConfigureServices(IServiceCollection services)
+{
+    services.AddDataProtection()
+        .SetDefaultKeyLifetime(TimeSpan.FromDays(14));
+}</code></pre></div></figure>
+<h2 id="set-the-application-name-setapplicationname">Set the application name (<code>SetApplicationName</code>)</h2>
+<p>By default, the Data Protection system isolates apps from one another based on their <a href="#/doc/aspnet/fundamentals/index@content-root">content root</a> paths, even if they share the same physical key repository. This isolation prevents the apps from understanding each other&#39;s protected payloads.</p>
+<p>To share protected payloads among apps:</p>
+<ul>
+<li>Configure <code>SetApplicationName</code> in each app with the same value.</li>
+<li>Use the same version of the Data Protection API stack across the apps. Perform <strong>either</strong> of the following in the apps&#39; project files:<ul>
+<li>Reference the same shared framework version via the <a href="#/doc/aspnet/fundamentals/metapackage-app">Microsoft.AspNetCore.App metapackage</a>.</li>
+<li>Reference the same <a href="#/doc/aspnet/security/data-protection/introduction@package-layout">Data Protection package</a> version.</li>
+</ul>
+</li>
+</ul>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">public void ConfigureServices(IServiceCollection services)
+{
+    services.AddDataProtection()
+        .SetApplicationName(&quot;{APPLICATION NAME}&quot;);
+}</code></pre></div></figure>
+<p><code>SetApplicationName</code> internally sets <code>ApplicationDiscriminator?displayProperty=nameWithType</code>. For more information on how the discriminator is used, see the following sections later in this article:</p>
+<ul>
+<li><a href="#per-application-isolation">Per-application isolation</a></li>
+<li><a href="#data-protection-and-app-isolation">Data Protection and app isolation</a></li>
+</ul>
+<h2 id="disable-automatic-key-generation-disableautomatickeygeneration">Disable automatic key generation (<code>DisableAutomaticKeyGeneration</code>)</h2>
+<p>You may have a scenario where you don&#39;t want an app to automatically roll keys (create new keys) as they approach expiration. One example of this scenario might be apps set up in a primary/secondary relationship, where only the primary app is responsible for key management concerns and secondary apps simply have a read-only view of the key ring. The secondary apps can be configured to treat the key ring as read-only by configuring the system with <code>DisableAutomaticKeyGeneration</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">public void ConfigureServices(IServiceCollection services)
+{
+    services.AddDataProtection()
+        .DisableAutomaticKeyGeneration();
+}</code></pre></div></figure>
+<h2 id="per-application-isolation">Per-application isolation</h2>
+<p>When the Data Protection system is provided by an ASP.NET Core host, it automatically isolates apps from one another, even if those apps are running under the same worker process account and are using the same master keying material. This is similar to the IsolateApps modifier from System.Web&#39;s <code>&lt;machineKey&gt;</code> element.</p>
+<p>The isolation mechanism works by considering each app on the local machine as a unique tenant, thus the <code>IDataProtector</code> rooted for any given app automatically includes the app ID as a discriminator (<code>ApplicationDiscriminator</code>). The app&#39;s unique ID is the app&#39;s physical path:</p>
+<ul>
+<li>For apps hosted in IIS, the unique ID is the IIS physical path of the app. If an app is deployed in a web farm environment, this value is stable assuming that the IIS environments are configured similarly across all machines in the web farm.</li>
+<li>For self-hosted apps running on the <a href="#/doc/aspnet/fundamentals/servers/index@kestrel">Kestrel server</a>, the unique ID is the physical path to the app on disk.</li>
+</ul>
+<p>The unique identifier is designed to survive resets&mdash;both of the individual app and of the machine itself.</p>
+<p>This isolation mechanism assumes that the apps aren&#39;t malicious. A malicious app can always impact any other app running under the same worker process account. In a shared hosting environment where apps are mutually untrusted, the hosting provider should take steps to ensure OS-level isolation between apps, including separating the apps&#39; underlying key repositories.</p>
+<p>If the Data Protection system isn&#39;t provided by an ASP.NET Core host (for example, if you instantiate it via the <code>DataProtectionProvider</code> concrete type) app isolation is disabled by default. When app isolation is disabled, all apps backed by the same keying material can share payloads as long as they provide the appropriate <a href="#/doc/aspnet/security/data-protection/consumer-apis/purpose-strings">purposes</a>. To provide app isolation in this environment, call the <a href="#set-the-application-name-setapplicationname">SetApplicationName</a> method on the configuration object and provide a unique name for each app.</p>
+<h3 id="data-protection-and-app-isolation">Data Protection and app isolation</h3>
+<p>Consider the following points for app isolation:</p>
+<ul>
+<li><p>When multiple apps are pointed at the same key repository, the intention is that the apps share the same master key material. Data Protection is developed with the assumption that all apps sharing a key ring can access all items in that key ring. The application unique identifier is used to isolate application specific keys derived from the key ring provided keys. It doesn&#39;t expect item level permissions, such as those provided by Azure KeyVault to be used to enforce extra isolation. Attempting item level permissions generates application errors. If you don&#39;t want to rely on the built-in application isolation, separate key store locations should be used and not shared between applications.</p>
+</li>
+<li><p>The application discriminator (<code>ApplicationDiscriminator</code>) is used to allow different apps to share the same master key material but to keep their cryptographic payloads distinct from one another. <!-- The docs already draw an analogy between this and multi-tenancy.--> For the apps to be able to read each other&#39;s cryptographic payloads, they must have the same application discriminator, which can be set by calling <a href="#set-the-application-name-setapplicationname"><code>SetApplicationName</code></a>.</p>
+</li>
+<li><p>If an app is compromised (for example, by an RCE attack), all master key material accessible to that app must also be considered compromised, regardless of its protection-at-rest state. This implies that if two apps are pointed at the same repository, even if they use different app discriminators, a compromise of one is functionally equivalent to a compromise of both.</p>
+<p>This &quot;functionally equivalent to a compromise of both&quot; clause holds even if the two apps use different mechanisms for key protection at rest. Typically, this isn&#39;t an expected configuration. The protection-at-rest mechanism is intended to provide protection in the event a cyberattacker gains read access to the repository. A cyberattacker who gains write access to the repository (perhaps because they attained code execution permission within an app) can insert malicious keys into storage. The Data Protection system intentionally doesn&#39;t provide protection against a cyberattacker who gains write access to the key repository.</p>
+</li>
+<li><p>If apps need to remain truly isolated from one another, they should use different key repositories. This naturally falls out of the definition of &quot;isolated&quot;. Apps are <em><strong>not</strong></em> isolated if they all have Read and Write access to each other&#39;s data stores.</p>
+</li>
+</ul>
+<h2 id="changing-algorithms-with-usecryptographicalgorithms">Changing algorithms with <code>UseCryptographicAlgorithms</code></h2>
+<p>The Data Protection stack allows you to change the default algorithm used by newly generated keys. The simplest way to do this is to call <code>UseCryptographicAlgorithms</code> from the configuration callback:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">services.AddDataProtection()
+    .UseCryptographicAlgorithms(
+        new AuthenticatedEncryptorConfiguration()
+    {
+        EncryptionAlgorithm = EncryptionAlgorithm.AES_256_CBC,
+        ValidationAlgorithm = ValidationAlgorithm.HMACSHA256
+    });</code></pre></div></figure>
+<p>The default EncryptionAlgorithm is AES-256-CBC, and the default ValidationAlgorithm is HMACSHA256. The default policy can be set by a system administrator via a <a href="#/doc/aspnet/security/data-protection/configuration/machine-wide-policy">machine-wide policy</a>, but an explicit call to <code>UseCryptographicAlgorithms</code> overrides the default policy.</p>
+<p>Calling <code>UseCryptographicAlgorithms</code> allows you to specify the desired algorithm from a predefined built-in list. You don&#39;t need to worry about the implementation of the algorithm. In the scenario above, the Data Protection system attempts to use the CNG implementation of AES if running on Windows. Otherwise, it falls back to the managed <code>Aes?displayProperty=fullName</code> class.</p>
+<p>You can manually specify an implementation via a call to <code>UseCustomCryptographicAlgorithms</code>.</p>
+<aside class="callout callout-tip"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M9.5 18h5M10.5 21h3M12 3a6 6 0 0 0-3.6 10.8c.7.6 1.1 1.3 1.3 2.2h4.6c.2-.9.6-1.6 1.3-2.2A6 6 0 0 0 12 3Z" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round"/></svg></span><div class="callout-body"><p class="callout-title">Tip</p><p>Changing algorithms doesn&#39;t affect existing keys in the key ring. It only affects newly-generated keys.</p>
+</div></aside>
+<h3 id="specifying-custom-managed-algorithms">Specifying custom managed algorithms</h3>
+<p>To specify custom managed algorithms, create a <code>ManagedAuthenticatedEncryptorConfiguration</code> instance that points to the implementation types:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">serviceCollection.AddDataProtection()
+    .UseCustomCryptographicAlgorithms(
+        new ManagedAuthenticatedEncryptorConfiguration()
+    {
+        // A type that subclasses SymmetricAlgorithm
+        EncryptionAlgorithmType = typeof(Aes),
+
+        // Specified in bits
+        EncryptionAlgorithmKeySize = 256,
+
+        // A type that subclasses KeyedHashAlgorithm
+        ValidationAlgorithmType = typeof(HMACSHA256)
+    });</code></pre></div></figure>
+<p>Generally the *Type properties must point to concrete, instantiable (via a public parameterless ctor) implementations of <code>SymmetricAlgorithm</code> and <code>KeyedHashAlgorithm</code>, though the system special-cases some values like <code>typeof(Aes)</code> for convenience.</p>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>The SymmetricAlgorithm must have a key length of ≥ 128 bits and a block size of ≥ 64 bits, and it must support CBC-mode encryption with PKCS #7 padding. The KeyedHashAlgorithm must have a digest size of &gt;= 128 bits, and it must support keys of length equal to the hash algorithm&#39;s digest length. The KeyedHashAlgorithm isn&#39;t strictly required to be HMAC.</p>
+</div></aside>
+<h3 id="specifying-custom-windows-cng-algorithms">Specifying custom Windows CNG algorithms</h3>
+<p>To specify a custom Windows CNG algorithm using CBC-mode encryption with HMAC validation, create a <code>CngCbcAuthenticatedEncryptorConfiguration</code> instance that contains the algorithmic information:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">services.AddDataProtection()
+    .UseCustomCryptographicAlgorithms(
+        new CngCbcAuthenticatedEncryptorConfiguration()
+    {
+        // Passed to BCryptOpenAlgorithmProvider
+        EncryptionAlgorithm = &quot;AES&quot;,
+        EncryptionAlgorithmProvider = null,
+
+        // Specified in bits
+        EncryptionAlgorithmKeySize = 256,
+
+        // Passed to BCryptOpenAlgorithmProvider
+        HashAlgorithm = &quot;SHA256&quot;,
+        HashAlgorithmProvider = null
+    });</code></pre></div></figure>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>The symmetric block cipher algorithm must have a key length of &gt;= 128 bits, a block size of &gt;= 64 bits, and it must support CBC-mode encryption with PKCS #7 padding. The hash algorithm must have a digest size of &gt;= 128 bits and must support being opened with the BCRYPT_ALG_HANDLE_HMAC_FLAG flag. The *Provider properties can be set to null to use the default provider for the specified algorithm. For more information, see the <a href="/windows/win32/api/bcrypt/nf-bcrypt-bcryptopenalgorithmprovider">BCryptOpenAlgorithmProvider</a> documentation.</p>
+</div></aside>
+<p>To specify a custom Windows CNG algorithm using Galois/Counter Mode encryption with validation, create a <code>CngGcmAuthenticatedEncryptorConfiguration</code> instance that contains the algorithmic information:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">services.AddDataProtection()
+    .UseCustomCryptographicAlgorithms(
+        new CngGcmAuthenticatedEncryptorConfiguration()
+    {
+        // Passed to BCryptOpenAlgorithmProvider
+        EncryptionAlgorithm = &quot;AES&quot;,
+        EncryptionAlgorithmProvider = null,
+
+        // Specified in bits
+        EncryptionAlgorithmKeySize = 256
+    });</code></pre></div></figure>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>The symmetric block cipher algorithm must have a key length of &gt;= 128 bits, a block size of exactly 128 bits, and it must support GCM encryption. You can set the <code>EncryptionAlgorithmProvider</code> property to null to use the default provider for the specified algorithm. For more information, see the <a href="/windows/win32/api/bcrypt/nf-bcrypt-bcryptopenalgorithmprovider">BCryptOpenAlgorithmProvider</a> documentation.</p>
+</div></aside>
+<h3 id="specifying-other-custom-algorithms">Specifying other custom algorithms</h3>
+<p>Though not exposed as a first-class API, the Data Protection system is extensible enough to allow specifying almost any kind of algorithm. For example, it&#39;s possible to keep all keys contained within a Hardware Security Module (HSM) and to provide a custom implementation of the core encryption and decryption routines. For more information, see <code>IAuthenticatedEncryptor</code> in <a href="#/doc/aspnet/security/data-protection/extensibility/core-crypto">Core cryptography extensibility</a>.</p>
+<h2 id="persisting-keys-when-hosting-in-a-docker-container">Persisting keys when hosting in a Docker container</h2>
+<p>When hosting in a <a href="/dotnet/standard/microservices-architecture/container-docker-introduction/">Docker</a> container, keys should be maintained in either:</p>
+<ul>
+<li>A folder that&#39;s a Docker volume that persists beyond the container&#39;s lifetime, such as a shared volume or a host-mounted volume.</li>
+<li>An external provider, such as <a href="/azure/storage/blobs/storage-blobs-introduction">Azure Blob Storage</a> (shown in the <a href="#protect-keys-with-azure-key-vault-protectkeyswithazurekeyvault">Protect keys with Azure Key Vault (<code>ProtectKeysWithAzureKeyVault</code>)</a> section) or <a target="_blank" rel="noopener" href="https://redis.io">Redis</a>.</li>
+</ul>
+<h2 id="persisting-keys-with-redis">Persisting keys with Redis</h2>
+<p>Only Redis versions supporting <a href="/azure/azure-cache-for-redis/cache-how-to-premium-persistence">Redis Data Persistence</a> should be used to store keys. <a href="/azure/storage/blobs/storage-blobs-introduction">Azure Blob storage</a> is persistent and can be used to store keys. For more information, see <a target="_blank" rel="noopener" href="https://github.com/dotnet/AspNetCore/issues/13476">this GitHub issue</a>.</p>
+<h2 id="logging">Logging</h2>
+<p>Enable the <code>Information</code> or lower level of logging to diagnose problems. The following <code>appsettings.json</code> file enables information logging of the Data Protection API:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JSON</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-json"><span class="hljs-punctuation">{</span>
+  <span class="hljs-attr">&quot;Logging&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-punctuation">{</span>
+    <span class="hljs-attr">&quot;LogLevel&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-punctuation">{</span>
+      <span class="hljs-attr">&quot;Microsoft.AspNetCore.DataProtection&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;Information&quot;</span>
+    <span class="hljs-punctuation">}</span>
+  <span class="hljs-punctuation">}</span>
+<span class="hljs-punctuation">}</span></code></pre></div></figure>
+<p>For more information on logging, see <a href="#/doc/aspnet/fundamentals/logging/index">Logging in .NET and ASP.NET Core</a>.</p>
+<h2 id="additional-resources">Additional resources</h2>
+<ul>
+<li><a href="#/doc/aspnet/security/data-protection/configuration/non-di-scenarios">Non-DI aware scenarios for Data Protection in ASP.NET Core</a></li>
+<li><a href="#/doc/aspnet/security/data-protection/configuration/machine-wide-policy">Data Protection machine-wide policy support in ASP.NET Core</a></li>
+<li><a href="#/doc/aspnet/host-and-deploy/web-farm">Host ASP.NET Core in a web farm</a></li>
+<li><a href="#/doc/aspnet/security/data-protection/implementation/key-storage-providers">Key storage providers in ASP.NET Core</a></li>
+</ul>
+<p>:::moniker-end</p>

@@ -1,0 +1,503 @@
+<p>:::moniker range=&quot;&gt;= aspnetcore-6.0&quot;</p>
+<p>This article describes how to authenticate and authorize users in ASP.NET Core applications with SignalR.</p>
+<h2 id="authenticate-users-connecting-to-a-signalr-hub">Authenticate users connecting to a SignalR hub</h2>
+<p>SignalR can be used with <a href="#/doc/aspnet/security/authentication/identity">ASP.NET Core authentication</a> to associate a user with each connection. In a hub, authentication data can be accessed from the <code>User?displayProperty=nameWithType</code> property. Authentication allows the hub to call methods on all connections associated with a user. For more information, see <a href="#/doc/aspnet/signalr/groups">Manage users and groups in SignalR</a>. Multiple connections can be associated with a single user.</p>
+<p>The following code is an example that uses SignalR and ASP.NET Core authentication:</p>
+<p>[!code-csharp<a href="authn-and-authz/samples/6.0/SignalRAuthenticationSample/Program.cs?name=snippet1"></a>]</p>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>If a token expires during the lifetime of a connection, by default the connection continues to work. <code>LongPolling</code> and <code>ServerSentEvents</code> connections fail on subsequent requests if they don&#39;t send new access tokens. For connections to close when the authentication token expires, set the <a href="#/doc/aspnet/signalr/configuration@configure-advanced-http-options">CloseOnAuthenticationExpiration</a> option.</p>
+</div></aside>
+<h3 id="user-and-role-changes-during-the-connection-lifetime">User and role changes during the connection lifetime</h3>
+<p>SignalR captures the authenticated user when a connection is established and caches it for the lifetime of the connection. The cached principal is exposed to hub methods through the <code>Context.User</code> property (<code>User?displayProperty=nameWithType</code>) and is used to authorize hub method invocations. SignalR doesn&#39;t automatically revalidate the user during the life of the connection, regardless of the authentication scheme. This behavior applies to all schemes, including cookie authentication and bearer token authentication.</p>
+<p>Changes to a user&#39;s identity, roles, or claims that occur after the connection is established aren&#39;t reflected on an existing connection. This behavior applies even when the underlying transport makes new HTTP requests, such as the <code>LongPolling</code> and <code>ServerSentEvents</code> transports. Although the ASP.NET Core authentication middleware reauthenticates each of these HTTP requests, SignalR continues to use the principal that was cached when the connection was established.</p>
+<p>Consider the following scenario:</p>
+<ul>
+<li>An app uses cookie authentication and the <code>LongPolling</code> transport. The same behavior applies to bearer token authentication and the <code>ServerSentEvents</code> transport.</li>
+<li>A user is signed in with the <code>Editor</code> role and has an open SignalR connection.</li>
+<li>The app removes the <code>Editor</code> role from that user.</li>
+</ul>
+<p>On the next long-poll request, the authentication middleware might authenticate the user without the <code>Editor</code> role. For example, this can happen if roles are loaded from a data store or the cookie is refreshed. However, the hub continues to authorize the user&#39;s <code>[Authorize(Roles = &quot;Editor&quot;)]</code> hub method invocations because <code>Context.User</code> (<code>User?displayProperty=nameWithType</code>) still holds the principal that was cached before the role was removed. The user can keep calling <code>Editor</code>-only hub methods until the connection is closed.</p>
+<p>To enforce updated authorization on an active connection, take one of the following approaches:</p>
+<ul>
+<li>Close affected connections so that clients reconnect and reauthenticate. For bearer token authentication, the <a href="#/doc/aspnet/signalr/configuration@configure-advanced-http-options">CloseOnAuthenticationExpiration</a> option closes connections when the authentication token expires.</li>
+<li>Perform authorization checks in hub methods against current data, such as the user&#39;s current roles or claims from a data store, instead of relying only on the cached principal.</li>
+</ul>
+<p>:::moniker-end</p>
+<p>:::moniker range=&quot;&gt;= aspnetcore-11.0&quot;</p>
+<p>In .NET 11 and later, a client can refresh the credentials for an active connection without reconnecting. When the client presents an updated token, the server re-authenticates it and replaces the cached <code>Context.User</code> in place, so later hub method invocations authorize against the refreshed roles and claims. The refreshed principal must map to the same SignalR user, so a refresh updates roles and claims but doesn&#39;t change the connection&#39;s user identity or routing. For more information, see <a href="#authentication-refresh">Authentication refresh</a>.</p>
+<p>:::moniker-end</p>
+<p>:::moniker range=&quot;&gt;= aspnetcore-6.0&quot;</p>
+<h3 id="cookie-authentication">Cookie authentication</h3>
+<p>In a browser-based app, cookie authentication allows existing user credentials to automatically flow to SignalR connections. When the browser client is used, no extra configuration is needed. If the user is signed in to an app, the SignalR connection automatically inherits this authentication.</p>
+<p>Cookies are a browser-specific way to send access tokens, but nonbrowser clients can send them. When the <a href="#/doc/aspnet/signalr/dotnet-client">.NET client</a> is used, the <code>Cookies</code> property can be configured in the <code>.WithUrl</code> call to provide a cookie. However, using cookie authentication from the .NET client requires the app to provide an API to exchange authentication data for a cookie.</p>
+<p>:::moniker-end</p>
+<p>:::moniker range=&quot;&gt;= aspnetcore-10.0&quot;</p>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>Starting with ASP.NET Core 10, known API endpoints no longer redirect to login pages when using cookie authentication. Instead, they return 401/403 status codes. For details, see <a href="#/doc/aspnet/security/authentication/api-endpoint-auth">API endpoint authentication behavior in ASP.NET Core</a>.</p>
+</div></aside>
+<p>:::moniker-end</p>
+<p>:::moniker range=&quot;&gt;= aspnetcore-6.0&quot;</p>
+<h3 id="bearer-token-authentication">Bearer token authentication</h3>
+<p>The client can provide an access token instead of using a cookie. The server validates the token and uses it to identify the user. For transports that make multiple HTTP requests (for example, <code>LongPolling</code> and <code>ServerSentEvents</code>), authentication runs on each request, but SignalR caches the resulting principal for the lifetime of the connection. As with cookie authentication, SignalR doesn&#39;t automatically revalidate the user during the life of the connection to check for token revocation or for changes to the user&#39;s roles or claims. For more information, see <a href="#user-and-role-changes-during-the-connection-lifetime">User and role changes during the connection lifetime</a>.</p>
+<p>In the JavaScript client, the token can be provided by using the <a href="#/doc/aspnet/signalr/configuration@configure-bearer-authentication">accessTokenFactory</a> option.</p>
+<p>[!code-typescript<a href="authn-and-authz/samples/wwwroot/js/chat.ts?range=52-55">Configure Access Token</a>]</p>
+<p>In the .NET client, there&#39;s a similar <a href="#/doc/aspnet/signalr/configuration@configure-bearer-authentication">AccessTokenProvider</a> property that can be used to configure the token:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">var connection = new HubConnectionBuilder()
+    .WithUrl(&quot;https://example.com/chathub&quot;, options =&gt;
+    {
+        options.AccessTokenProvider = () =&gt; Task.FromResult(_myAccessToken);
+    })
+    .Build();</code></pre></div></figure>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>The access token function is called before <strong>every</strong> HTTP request made by SignalR. If the token needs to be renewed in order to keep the connection active, do the renewal from within this function and return the updated token. The token might need to be renewed so it doesn&#39;t expire during the connection.</p>
+</div></aside>
+<p>In standard web APIs, bearer tokens are sent in an HTTP header. However, browsers can&#39;t set custom headers, such as <code>Authorization</code>, on the WebSocket and Server-Sent Events APIs. Because of this browser limitation, SignalR sends the token as a query string parameter for those transports when the client runs in a browser.</p>
+<p>The query string fallback is a browser API constraint, not a limitation of SignalR or the WebSocket protocol. Non-browser clients, such as the <a href="#/doc/aspnet/signalr/dotnet-client">.NET client</a>, send the token in the <code>Authorization</code> header. A reverse proxy, such as <a target="_blank" rel="noopener" href="https://dotnet.github.io/yarp/">YARP</a> fronting a backend-for-frontend (BFF), can also add the <code>Authorization</code> header to the proxied WebSocket request, so the backend authenticates with the header instead of the query string.</p>
+<h4 id="built-in-jwt-authentication">Built-in JWT authentication</h4>
+<p>On the server, bearer token authentication is configured by using the JSON web token (JWT) Bearer middleware:</p>
+<p>[!code-csharp<a href="authn-and-authz/samples/6.0/SignalRAuthenticationSample/Program.cs?name=snippet2&amp;highlight=25-60"></a>]</p>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>The query string is used on browsers when connecting with WebSockets and Server-Sent Events due to browser API limitations. When you use HTTPS, the TLS connection secures the query string values. However, many servers log query string values. For more information, see <a href="#/doc/aspnet/signalr/security">Security considerations in ASP.NET Core SignalR</a>. SignalR uses headers to transmit tokens in environments that support them, such as the .NET and Java clients.</p>
+</div></aside>
+<h4 id="identity-server-jwt-authentication">Identity Server JWT authentication</h4>
+<p>When using Duende IdentityServer, add a <code>PostConfigureOptions1</code> service to the project:</p>
+<p>[!code-csharp<a href="authn-and-authz/samples/6.0/SignalRAuthenticationSample/ConfigureJwtBearerOptions.cs"></a>]</p>
+<p>Register the service after adding services for authentication (with the <code>AddAuthentication</code> method) and the authentication handler for Identity Server (with the <code>AddIdentityServerJwt</code> method):</p>
+<p>[!code-csharp<a href="authn-and-authz/samples/6.0/SignalRAuthenticationSample/Program.cs?name=snippet_i&amp;highlight=7-11"></a>]</p>
+<p>:::moniker-end</p>
+<p>:::moniker range=&quot;&gt;= aspnetcore-11.0&quot;</p>
+<h3 id="authentication-refresh">Authentication refresh</h3>
+<p>A SignalR connection can outlive the access token that established it. When <a href="#/doc/aspnet/signalr/configuration@configure-advanced-http-options">CloseOnAuthenticationExpiration</a> is enabled, the server closes the connection after the token expires, and the client must reconnect to continue. Messages sent during the gap are missed, and group and user routing are disrupted until the client reconnects.</p>
+<p>Authentication refresh, available in .NET 11 and later, lets a client update the credentials for an active connection without reconnecting. The server re-authenticates the refresh request through the normal endpoint authorization pipeline and replaces the connection&#39;s <code>ClaimsPrincipal</code> in place, as long as the refreshed principal maps to the same SignalR user.</p>
+<h4 id="enable-authentication-refresh-on-the-server">Enable authentication refresh on the server</h4>
+<p>Enable authentication refresh in the hub&#39;s <code>MapHub</code> options by setting <code>EnableAuthenticationRefresh</code> to <code>true</code>. Enable it together with <code>CloseOnAuthenticationExpiration</code> so that a connection whose token expires without being refreshed in time is closed, rather than left open with stale credentials:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">app.MapHub(&quot;/chat&quot;, options =&gt;
+{
+    options.CloseOnAuthenticationExpiration = true;
+    options.EnableAuthenticationRefresh = true;
+});</code></pre></div></figure>
+<p>When authentication refresh is enabled and the authentication ticket has an expiration, the negotiate response reports the remaining token lifetime so the client can schedule refreshes.</p>
+<p>Setting <code>EnableAuthenticationRefresh</code> to <code>true</code> adds a <code>/refresh</code> endpoint to the app&#39;s route table, alongside the hub&#39;s existing <code>/negotiate</code> endpoint. For a hub mapped at <code>/chat</code>, the endpoint is <code>/chat/refresh</code>. The endpoint isn&#39;t registered when <code>EnableAuthenticationRefresh</code> is <code>false</code>, so it only appears in the route table for hubs that opt in.</p>
+<p>The endpoint behaves as follows:</p>
+<ul>
+<li>It accepts <code>POST</code> only. Any other HTTP method returns a 405 status code.</li>
+<li>The client identifies its connection with the connection token in the <code>id</code> query string, the same way that send, poll, and delete requests do.</li>
+<li>The request is authenticated by the app&#39;s normal authentication and authorization middleware before it reaches the endpoint, and the hub&#39;s authorization metadata applies to it.</li>
+<li>A successful refresh returns a 200 status code with a JSON body. When the refreshed ticket has an expiration, the body contains a <code>tokenLifetimeSeconds</code> property that the client uses to reschedule automatic refreshes.</li>
+<li>A rejected or invalid refresh returns a JSON body with an <code>error</code> property. The status code indicates the reason:<ul>
+<li>403: The connection&#39;s identity check or <code>OnAuthenticationRefresh</code> rejected the refresh.</li>
+<li>404: The connection token doesn&#39;t match a known connection.</li>
+<li>400: The request omits the connection token, the connection negotiated protocol version 0, or either the connection&#39;s current user or the refreshed principal is a Windows identity.</li>
+</ul>
+</li>
+</ul>
+<p>Include the <code>/refresh</code> route when configuring a reverse proxy, firewall, or web application firewall in front of the app, and when writing route-scoped authorization or CORS policies. A proxy that forwards <code>/negotiate</code> but blocks <code>/refresh</code> causes every refresh attempt to fail, and connections close when their tokens expire if <code>CloseOnAuthenticationExpiration</code> is enabled.</p>
+<p>To inspect or reject a refresh, set the <code>OnAuthenticationRefresh</code> callback. It runs after the refresh request is authenticated but before the connection&#39;s user is replaced. Return <code>false</code> to reject the refresh, in which case the endpoint responds with an HTTP 403 status code and the connection keeps its current user.</p>
+<p>The built-in check compares the first <code>sub</code>, <code>ClaimTypes.NameIdentifier</code>, or <code>ClaimTypes.Upn</code> claim in each principal, in that order. The following examples show how the check works:</p>
+<ul>
+<li><strong>Same identity claim:</strong> The connection&#39;s current principal and refreshed principal both have a <code>sub</code> claim whose value is <code>123</code> and issuer is <code>https://login.example.com</code>. The refresh succeeds even if the refreshed principal has a different tenant, role, or scope claim.</li>
+<li><strong>Changed identity claim:</strong> The connection&#39;s current principal has a <code>sub</code> claim whose value is <code>123</code> and issuer is <code>https://login.example.com</code>, but the refreshed principal has a different value, issuer, or claim type. The refresh is rejected.</li>
+<li><strong>No identity claim:</strong> When neither principal has one of the identity claims, the refresh succeeds if both principals are unauthenticated. Otherwise, the principals&#39; identities and claims must be identical, including their order, authentication type, name and role claim types, label, and each claim&#39;s type, value, value type, issuer, and original issuer.</li>
+</ul>
+<p>The callback is an additional policy check. Use it when a refresh must preserve or validate information beyond the built-in identity claim, such as a tenant, role, scope, account status, or a custom claim. It can reject a refresh, but it can&#39;t approve one that fails the built-in check:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">app.MapHub(&quot;/chat&quot;, options =&gt;
+{
+    options.CloseOnAuthenticationExpiration = true;
+    options.EnableAuthenticationRefresh = true;
+    options.OnAuthenticationRefresh = context =&gt;
+    {
+        if (!context.NewUser.HasClaim(&quot;tenant&quot;, &quot;contoso&quot;))
+        {
+            return Task.FromResult(false);
+        }
+
+        return Task.FromResult(true);
+    };
+});</code></pre></div></figure>
+<p>The callback receives an <code>AuthenticationRefreshContext</code> with the following properties:</p>
+<ul>
+<li><code>PreviousUser</code>: The <code>ClaimsPrincipal</code> currently associated with the connection. Compare it with <code>NewUser</code> to detect claim changes, such as a change of tenant or scope.</li>
+<li><code>NewUser</code>: The principal produced by authenticating the refresh request. This principal replaces <code>PreviousUser</code> only if the callback returns <code>true</code> and the built-in identity check passes.</li>
+<li><code>NewExpiration</code>: The expiration that the refreshed authentication ticket takes if the refresh is accepted, or <code>null</code> when the ticket doesn&#39;t set one. <code>MaximumAuthenticationExpiration</code> is applied before the callback runs.</li>
+<li><code>ConnectionId</code>: The ID of the connection being refreshed.</li>
+<li><code>HttpContext</code>: The <code>HttpContext</code> of the refresh request.</li>
+</ul>
+<p>An exception thrown by the callback isn&#39;t caught by SignalR. The exception propagates out of the refresh request, and the connection keeps its current user.</p>
+<p>The refreshed principal must map to the same SignalR user as the connection. If it maps to a different user ID, the refresh is rejected: the endpoint responds with an HTTP 403 status code, and the connection keeps its current user and stays connected. A refresh never changes the connection&#39;s <code>Context.UserIdentifier</code> or reroutes messages sent with <code>Clients.User</code>, even for a successful refresh. The routing identifier is fixed when the connection starts. To change it, reconnect the client.</p>
+<p>To bound how far a refresh can extend a connection&#39;s authentication expiration, set <code>MaximumAuthenticationExpiration</code>. The refreshed expiration is capped to at most this amount of time from the current time, even when the token reports a longer lifetime. This cap applies whenever authentication refresh is enabled, including when the token doesn&#39;t set an expiration of its own. In that case, the cap gives the connection a known expiration, so the negotiate response reports a token lifetime and the client can schedule automatic refreshes. The value must be greater than zero and doesn&#39;t apply to Windows authentication, which is never tracked or refreshed.</p>
+<h4 id="refresh-authentication-from-the-net-client">Refresh authentication from the .NET client</h4>
+<p>The .NET client refreshes credentials using the <code>AccessTokenProvider</code> configured on the connection. Each refresh calls <code>AccessTokenProvider</code> to fetch a fresh access token rather than reusing the token cached when the connection started.</p>
+<p>To refresh explicitly, call <code>RefreshAuthenticationAsync</code>, which returns the new token lifetime reported by the server:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">var connection = new HubConnectionBuilder()
+    .WithUrl(&quot;https://example.com/chat&quot;, options =&gt;
+    {
+        options.AccessTokenProvider = GetAccessTokenAsync;
+    })
+    .Build();
+
+await connection.StartAsync();
+
+TimeSpan? newLifetime = await connection.RefreshAuthenticationAsync();</code></pre></div></figure>
+<p>Automatic refresh is enabled by default. The client schedules a refresh ahead of the reported expiration whenever the server reports a token lifetime. To change the timing or to turn automatic refresh off, call <code>WithAuthenticationRefresh</code> and configure <code>AuthenticationRefreshOptions</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">var connection = new HubConnectionBuilder()
+    .WithUrl(&quot;https://example.com/chat&quot;, options =&gt;
+    {
+        options.AccessTokenProvider = GetAccessTokenAsync;
+    })
+    .WithAuthenticationRefresh(options =&gt;
+    {
+        options.RefreshBeforeExpiration = TimeSpan.FromMinutes(2);
+    })
+    .Build();</code></pre></div></figure>
+<p><code>AuthenticationRefreshOptions</code> provides the following settings:</p>
+<ul>
+<li><code>EnableAutoRefresh</code>: Enables automatic refresh before the token expires. Defaults to <code>true</code>. The client only schedules a refresh when the server reports a token lifetime. If the server doesn&#39;t report a lifetime, no automatic refresh is scheduled, and <code>RefreshAuthenticationAsync</code> can still be called manually.</li>
+<li><code>RefreshBeforeExpiration</code>: How far ahead of the reported expiration to refresh. Defaults to five minutes.</li>
+</ul>
+<p>To observe refreshes, handle the <code>AuthenticationRefreshed</code> and <code>AuthenticationRefreshFailed</code> events on the connection. Both automatic and manual refreshes raise these events:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">connection.AuthenticationRefreshed += context =&gt;
+{
+    Console.WriteLine(
+        $&quot;Authentication refreshed. New lifetime: {context.NewTokenLifetime}&quot;);
+    return Task.CompletedTask;
+};
+
+connection.AuthenticationRefreshFailed += context =&gt;
+{
+    Console.WriteLine(
+        $&quot;Authentication refresh failed: {context.Exception}&quot;);
+    return Task.CompletedTask;
+};</code></pre></div></figure>
+<h4 id="refresh-authentication-from-the-javascript-client">Refresh authentication from the JavaScript client</h4>
+<p>The JavaScript client refreshes credentials using the <code>accessTokenFactory</code> configured on the connection. Each refresh calls <code>accessTokenFactory</code> to fetch a fresh access token.</p>
+<p>To refresh explicitly, call <code>refreshAuthentication</code>, which resolves with the new token lifetime in seconds reported by the server:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JavaScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript"><span class="hljs-keyword">const</span> newLifetimeInSeconds = <span class="hljs-keyword">await</span> connection.<span class="hljs-title function_">refreshAuthentication</span>();</code></pre></div></figure>
+<p>To refresh automatically before the token expires, call <code>withAuthenticationRefresh</code> and optionally configure <code>IAuthenticationRefreshOptions</code>. Handle refresh results with <code>onAuthenticationRefreshed</code> and <code>onAuthenticationRefreshFailed</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JavaScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript"><span class="hljs-keyword">const</span> connection = <span class="hljs-keyword">new</span> signalR.<span class="hljs-title class_">HubConnectionBuilder</span>()
+    .<span class="hljs-title function_">withUrl</span>(<span class="hljs-string">&quot;/chat&quot;</span>, {
+        <span class="hljs-attr">accessTokenFactory</span>: <span class="hljs-function">() =&gt;</span> <span class="hljs-title function_">getAccessToken</span>()
+    })
+    .<span class="hljs-title function_">withAuthenticationRefresh</span>({
+        <span class="hljs-attr">refreshBeforeExpirationInMilliseconds</span>: <span class="hljs-number">120000</span>
+    })
+    .<span class="hljs-title function_">build</span>();
+
+connection.<span class="hljs-title function_">onAuthenticationRefreshed</span>(<span class="hljs-function"><span class="hljs-params">context</span> =&gt;</span> {
+    <span class="hljs-variable language_">console</span>.<span class="hljs-title function_">log</span>(
+        <span class="hljs-string">`Authentication refreshed. New lifetime: <span class="hljs-subst">${context.newTokenLifetimeInSeconds}</span>`</span>);
+});
+
+connection.<span class="hljs-title function_">onAuthenticationRefreshFailed</span>(<span class="hljs-function"><span class="hljs-params">context</span> =&gt;</span> {
+    <span class="hljs-variable language_">console</span>.<span class="hljs-title function_">log</span>(<span class="hljs-string">`Authentication refresh failed: <span class="hljs-subst">${context.error}</span>`</span>);
+});</code></pre></div></figure>
+<p><code>IAuthenticationRefreshOptions</code> provides the following settings:</p>
+<ul>
+<li><code>enableAutoRefresh</code>: Enables automatic refresh before the token expires. Defaults to <code>true</code>. As with the .NET client, automatic refresh is only scheduled when the server reports a token lifetime.</li>
+<li><code>refreshBeforeExpirationInMilliseconds</code>: How far ahead of the reported expiration to refresh, in milliseconds. Defaults to 300,000 (five minutes).</li>
+</ul>
+<p>The context passed to <code>onAuthenticationRefreshed</code> provides:</p>
+<ul>
+<li><code>connection</code>: The <code>HubConnection</code> that was refreshed.</li>
+<li><code>newTokenLifetimeInSeconds</code>: The new token lifetime reported by the server, or <code>undefined</code> when the server doesn&#39;t report one.</li>
+<li><code>refreshedAt</code>: The time the refresh completed.</li>
+</ul>
+<p>The context passed to <code>onAuthenticationRefreshFailed</code> provides <code>connection</code> and <code>error</code>. Both automatic and manual refreshes invoke these handlers, and a failed call to <code>refreshAuthentication</code> also rejects with the same error.</p>
+<p>A refresh fails when the server responds with any status code other than 200. That includes the HTTP 403 status code returned when the refreshed principal maps to a different SignalR user or when <code>OnAuthenticationRefresh</code> rejects the refresh, which is a policy decision rather than a transient error. A failed refresh doesn&#39;t close the connection on its own and isn&#39;t retried automatically. The connection continues with its existing credentials until the token expires, and is then closed if <code>CloseOnAuthenticationExpiration</code> is enabled. Handle <code>onAuthenticationRefreshFailed</code> to prompt the user to sign in again, and call <code>refreshAuthentication</code> after the app obtains new credentials.</p>
+<h4 id="react-to-a-refresh-in-the-hub">React to a refresh in the hub</h4>
+<p>Override <code>OnAuthenticationRefreshedAsync</code> in the hub to run code after the refreshed principal is applied to the connection. <code>Context.User</code> reflects the refreshed principal. As described earlier, <code>Context.UserIdentifier</code> and SignalR user routing don&#39;t change on a refresh:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">public class ChatHub : Hub
+{
+    public override Task OnAuthenticationRefreshedAsync()
+    {
+        return Clients.Caller.SendAsync(
+            &quot;AuthenticationRefreshed&quot;, Context.UserIdentifier);
+    }
+}</code></pre></div></figure>
+<p>A hub method that&#39;s already running keeps the <code>Context.User</code> it started with. Later invocations observe the refreshed <code>Context.User</code>. For more information about how SignalR caches the authenticated user, see <a href="#user-and-role-changes-during-the-connection-lifetime">User and role changes during the connection lifetime</a>.</p>
+<p>Authentication refresh requires a connection that negotiated protocol version 1 or later. Automatic refresh is scheduled only when the server reports a token lifetime, which typically comes from an authentication scheme that sets an expiration, such as bearer tokens. Windows authentication doesn&#39;t report an expiration and isn&#39;t tracked or refreshed by this feature.</p>
+<p>:::moniker-end</p>
+<p>:::moniker range=&quot;&gt;= aspnetcore-6.0&quot;</p>
+<h3 id="cookies-versus-bearer-tokens">Cookies versus bearer tokens</h3>
+<p>Cookies are specific to browsers. Sending them from other kinds of clients adds complexity compared to sending bearer tokens. Cookie authentication isn&#39;t recommended unless the app only needs to authenticate users from the browser client. Bearer token authentication is the recommended approach when using clients other than the browser client.</p>
+<h3 id="windows-authentication">Windows authentication</h3>
+<p>If <a href="#/doc/aspnet/security/authentication/windowsauth">Windows authentication</a> is configured in the app, SignalR can use that identity to secure hubs. However, to send messages to individual users, add a custom User ID provider. The Windows authentication system doesn&#39;t provide the &quot;Name Identifier&quot; claim. SignalR uses the claim to determine the user name.</p>
+<p>Add a new class that implements <code>IUserIdProvider</code> and retrieve one of the claims from the user for use as the identifier. For example, to use the &quot;Name&quot; claim (which is the Windows username in the form <code>[Domain]/[Username]</code>), create the following class:</p>
+<p>[!code-csharp<a href="authn-and-authz/samples/NameUserIdProvider.cs?name=NameUserIdProvider">Name based provider</a>]</p>
+<p>Rather than <code>ClaimTypes.Name</code>, use any value from the <code>User</code>, such as the Windows SID identifier, and so on.</p>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>The specified value must be unique among all the users in the system. Otherwise, a message intended for one user might end up reaching a different user.</p>
+</div></aside>
+<p>Register this component in the <code>Program.cs</code> file:</p>
+<p>[!code-csharp<a href="authn-and-authz/samples/6.0/SignalRAuthenticationSample/Program.cs?name=snippet_win&amp;highlight=17-18"></a>]</p>
+<p>In the .NET client, Windows authentication must be enabled by setting the <code>UseDefaultCredentials</code> property:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">var connection = new HubConnectionBuilder()
+    .WithUrl(&quot;https://example.com/chathub&quot;, options =&gt;
+    {
+        options.UseDefaultCredentials = true;
+    })
+    .Build();</code></pre></div></figure>
+<p>Windows authentication is supported in Microsoft Edge, but not in all browsers. For example, in Chrome and Safari, attempting to use Windows authentication and WebSockets fails. When Windows authentication fails, the client attempts to fall back to other transports, which might work.</p>
+<h3 id="use-claims-to-customize-identity-handling">Use claims to customize identity handling</h3>
+<p>An app that authenticates users can derive SignalR user IDs from user claims. To specify how SignalR creates user IDs, implement <code>IUserIdProvider</code> and register the implementation.</p>
+<p>The sample code demonstrates how to use claims to select the user&#39;s email address as the identifying property.</p>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>The specified value must be unique among all the users in the system. Otherwise, a message intended for one user might end up reaching a different user.</p>
+</div></aside>
+<p>[!code-csharp<a href="authn-and-authz/samples/6.0/SignalRAuthenticationSample/EmailBasedUserIdProvider.cs?name=EmailBasedUserIdProvider">Email provider</a>]</p>
+<p>The account registration adds a claim with type <code>ClaimTypes.Email</code> to the ASP.NET identity database.</p>
+<p>[!code-csharp<a href="authn-and-authz/samples/6.0/SignalRAuthenticationSample/Areas/Identity/Pages/Account/Register.cshtml.cs?name=AddEmailClaim&amp;highlight=14">Adding the email to the ASP.NET identity claims</a>]</p>
+<p>Register this component in the <code>Program.cs</code> file:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">builder.Services.AddSingleton&lt;IUserIdProvider, EmailBasedUserIdProvider&gt;();</code></pre></div></figure>
+<h2 id="authorize-users-to-access-hubs-and-hub-methods">Authorize users to access hubs and hub methods</h2>
+<p>By default, an unauthenticated user can call all methods in a hub. To require authentication, apply the <code>AuthorizeAttribute</code> attribute to the hub:</p>
+<p>[!code-csharp<a href="authn-and-authz/samples/Hubs/ChatHub.cs?range=8-10,32">Restrict a hub to only authorized users</a>]</p>
+<p>The constructor arguments and properties of the <code>[Authorize]</code> attribute can be used to restrict access to only users matching specific <a href="#/doc/aspnet/security/authorization/policies">authorization policies</a>. For example, with the custom authorization policy called <code>MyAuthorizationPolicy</code>, only users matching that policy can access the hub by using the following code:</p>
+<p>[!code-csharp<a href="authn-and-authz/samples/6.0/SignalRAuthenticationSample/Hubs/ChatPolicyHub.cs?name=snippet&amp;highlight=1">Restrict a hub to only authorized users</a>]</p>
+<p>The <code>[Authorize]</code> attribute can be applied to individual hub methods. If the current user doesn&#39;t match the policy applied to the method, an error is returned to the caller:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">[Authorize]
+public class ChatHub : Hub
+{
+    public async Task Send(string message)
+    {
+        // ... Send a message to all users ...
+    }
+
+    [Authorize(&quot;Administrators&quot;)]
+    public void BanUser(string userName)
+    {
+        // ... Ban a user from the chat room (something only Administrators can do) ...
+    }
+}</code></pre></div></figure>
+<h3 id="use-authorization-handlers-to-customize-hub-method-authorization">Use authorization handlers to customize hub method authorization</h3>
+<p>SignalR provides a custom resource to authorization handlers when a hub method requires authorization. The resource is an instance of <code>HubInvocationContext</code>. The <code>HubInvocationContext</code> includes the <code>HubCallerContext</code>, the name of the hub method being invoked, and the arguments to the hub method.</p>
+<p>Consider the example of a chat room that allows multiple organizations to sign in via Microsoft Entra ID. Anyone with a Microsoft account can sign in to chat, but only members of the owning organization should be able to ban users or view users&#39; chat histories. Also, there might be a need to restrict some functionality from specific users. In this scenario, notice how the <code>DomainRestrictedRequirement</code> serves as a custom <code>IAuthorizationRequirement</code>. Because the <code>HubInvocationContext</code> resource parameter is passed in, the internal logic can inspect the context in which the hub is being called, and make decisions on allowing the user to execute individual hub methods:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">[Authorize]
+public class ChatHub : Hub
+{
+    public void SendMessage(string message)
+    {
+    }
+
+    [Authorize(&quot;DomainRestricted&quot;)]
+    public void BanUser(string username)
+    {
+    }
+
+    [Authorize(&quot;DomainRestricted&quot;)]
+    public void ViewUserHistory(string username)
+    {
+    }
+}</code></pre></div></figure>
+<p>[!code-csharp<a href="authn-and-authz/samples/6.0/SignalRAuthenticationSample/DomainRestrictedRequirement.cs">Restrict a hub only DomainRestrictedRequirement users</a>]</p>
+<p>In the <code>Program.cs</code> file, add the new policy, providing the custom <code>DomainRestrictedRequirement</code> requirement as a parameter to create the <code>DomainRestricted</code> policy:</p>
+<p>[!code-csharp<a href="authn-and-authz/samples/6.0/SignalRAuthenticationSample/Program.cs?name=snippet_drr&amp;highlight=19-25"></a>]</p>
+<p>In the preceding example, the <code>DomainRestrictedRequirement</code> class is both an <code>IAuthorizationRequirement</code> and its own <code>AuthorizationHandler</code> for that requirement. It&#39;s acceptable to split these two components into separate classes to separate concerns. The approach in this example provides the benefit of not having to inject the <code>AuthorizationHandler</code> during startup because the requirement and the handler are the same thing.</p>
+<p>:::moniker-end</p>
+<p>:::moniker range=&quot;&gt;= aspnetcore-11.0&quot;</p>
+<p>As an alternative to registering the <code>DomainRestricted</code> policy and referencing it with <code>[Authorize(&quot;DomainRestricted&quot;)]</code>, you can apply an <code>IAuthorizationRequirementData</code> attribute directly to a hub or hub method. SignalR combines the attribute&#39;s requirements into the effective policy for the method invocation. For more information, see <a href="#/doc/aspnet/security/authorization/custom-authorization-policies-with-iauthorizationrequirementdata">Custom authorization policies with `IAuthorizationRequirementData`</a>.</p>
+<p>:::moniker-end</p>
+<p>:::moniker range=&quot;&gt;= aspnetcore-6.0&quot;</p>
+<h2 id="additional-resources">Additional resources</h2>
+<ul>
+<li><a target="_blank" rel="noopener" href="https://devblogs.microsoft.com/dotnet/bearer-token-authentication-in-asp-net-core/">Bearer token authentication in ASP.NET Core (blog)</a></li>
+<li><a href="#/doc/aspnet/security/authorization/resource-based">Resource-based authorization</a></li>
+<li><a target="_blank" rel="noopener" href="https://github.com/dotnet/AspNetCore.Docs/tree/main/aspnetcore/signalr/authn-and-authz/samples/">View or download sample code</a> <a href="#/doc/aspnet/fundamentals/index@how-to-download-a-sample">(how to download)</a></li>
+</ul>
+<p>:::moniker-end</p>
+<p>:::moniker range=&quot;&lt; aspnetcore-6.0&quot;</p>
+<p><a target="_blank" rel="noopener" href="https://github.com/dotnet/AspNetCore.Docs/tree/main/aspnetcore/signalr/authn-and-authz/samples/">View or download sample code</a> <a href="#/doc/aspnet/fundamentals/index@how-to-download-a-sample">(how to download)</a></p>
+<h2 id="authenticate-users-connecting-to-a-signalr-hub">Authenticate users connecting to a SignalR hub</h2>
+<p>SignalR can be used with <a href="#/doc/aspnet/security/authentication/identity">ASP.NET Core authentication</a> to associate a user with each connection. In a hub, authentication data can be accessed from the <code>User?displayProperty=nameWithType</code> property. Authentication allows the hub to call methods on all connections associated with a user. For more information, see <a href="#/doc/aspnet/signalr/groups">Manage users and groups in SignalR</a>. Multiple connections may be associated with a single user.</p>
+<p>The following is an example of <code>Startup.Configure</code> which uses SignalR and ASP.NET Core authentication:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">public void Configure(IApplicationBuilder app)
+{
+    ...
+
+    app.UseStaticFiles();
+
+    app.UseRouting();
+
+    app.UseAuthentication();
+    app.UseAuthorization();
+
+    app.UseEndpoints(endpoints =&gt;
+    {
+        endpoints.MapHub(&quot;/chat&quot;);
+        endpoints.MapControllerRoute(&quot;default&quot;, &quot;{controller=Home}/{action=Index}/{id?}&quot;);
+    });
+}</code></pre></div></figure>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>If a token expires during the lifetime of a connection, the connection continues to work. <code>LongPolling</code> and <code>ServerSentEvents</code> connections fail on subsequent requests if they don&#39;t send new access tokens.</p>
+</div></aside>
+<h3 id="cookie-authentication">Cookie authentication</h3>
+<p>In a browser-based app, cookie authentication allows your existing user credentials to automatically flow to SignalR connections. When using the browser client, no additional configuration is needed. If the user is logged in to your app, the SignalR connection automatically inherits this authentication.</p>
+<p>Cookies are a browser-specific way to send access tokens, but non-browser clients can send them. When using the <a href="#/doc/aspnet/signalr/dotnet-client">.NET Client</a>, the <code>Cookies</code> property can be configured in the <code>.WithUrl</code> call to provide a cookie. However, using cookie authentication from the .NET client requires the app to provide an API to exchange authentication data for a cookie.</p>
+<h3 id="bearer-token-authentication">Bearer token authentication</h3>
+<p>The client can provide an access token instead of using a cookie. The server validates the token and uses it to identify the user. This validation is done only when the connection is established. During the life of the connection, the server doesn&#39;t automatically revalidate to check for token revocation.</p>
+<p>In the JavaScript client, the token can be provided using the <a href="#/doc/aspnet/signalr/configuration@configure-bearer-authentication">accessTokenFactory</a> option.</p>
+<p>[!code-typescript<a href="authn-and-authz/samples/wwwroot/js/chat.ts?range=52-55">Configure Access Token</a>]</p>
+<p>In the .NET client, there&#39;s a similar <a href="#/doc/aspnet/signalr/configuration@configure-bearer-authentication">AccessTokenProvider</a> property that can be used to configure the token:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">var connection = new HubConnectionBuilder()
+    .WithUrl(&quot;https://example.com/chathub&quot;, options =&gt;
+    {
+        options.AccessTokenProvider = () =&gt; Task.FromResult(_myAccessToken);
+    })
+    .Build();</code></pre></div></figure>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>The access token function you provide is called before <strong>every</strong> HTTP request made by SignalR. If you need to renew the token in order to keep the connection active (because it may expire during the connection), do so from within this function and return the updated token.</p>
+</div></aside>
+<p>In standard web APIs, bearer tokens are sent in an HTTP header. However, browsers can&#39;t set custom headers, such as <code>Authorization</code>, on the WebSocket and Server-Sent Events APIs. Because of this browser limitation, SignalR sends the token as a query string parameter for those transports when the client runs in a browser.</p>
+<p>The query string fallback is a browser API constraint, not a limitation of SignalR or the WebSocket protocol. Non-browser clients, such as the <a href="#/doc/aspnet/signalr/dotnet-client">.NET client</a>, send the token in the <code>Authorization</code> header. A reverse proxy, such as <a target="_blank" rel="noopener" href="https://dotnet.github.io/yarp/">YARP</a> fronting a backend-for-frontend (BFF), can also add the <code>Authorization</code> header to the proxied WebSocket request, so the backend authenticates with the header instead of the query string.</p>
+<h4 id="built-in-jwt-authentication">Built-in JWT authentication</h4>
+<p>On the server, bearer token authentication is configured using the JWT bearer middleware:</p>
+<p>[!code-csharp<a href="authn-and-authz/samples/Startup.cs?name=snippet">Configure Server to accept access token from Query String</a>]</p>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>The query string is used on browsers when connecting with WebSockets and Server-Sent Events due to browser API limitations. When using HTTPS, query string values are secured by the TLS connection. However, many servers log query string values. For more information, see <a href="#/doc/aspnet/signalr/security">Security considerations in ASP.NET Core SignalR</a>. SignalR uses headers to transmit tokens in environments which support them (such as the .NET and Java clients).</p>
+</div></aside>
+<h4 id="identity-server-jwt-authentication">Identity Server JWT authentication</h4>
+<p>When using Identity Server, add a <code>PostConfigureOptions1</code> service to the project:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.Extensions.Options;
+public class ConfigureJwtBearerOptions : IPostConfigureOptions
+{
+    public void PostConfigure(string name, JwtBearerOptions options)
+    {
+        var originalOnMessageReceived = options.Events.OnMessageReceived;
+        options.Events.OnMessageReceived = async context =&gt;
+        {
+            await originalOnMessageReceived(context);
+
+            if (string.IsNullOrEmpty(context.Token))
+            {
+                var accessToken = context.Request.Query[&quot;access_token&quot;];
+                var path = context.HttpContext.Request.Path;
+
+                if (!string.IsNullOrEmpty(accessToken) &amp;&amp;
+                    path.StartsWithSegments(&quot;/hubs&quot;))
+                {
+                    context.Token = accessToken;
+                }
+            }
+        };
+    }
+}</code></pre></div></figure>
+<p>Register the service in <code>Startup.ConfigureServices</code> after adding services for authentication (<code>AddAuthentication</code>) and the authentication handler for Identity Server (<code>AddIdentityServerJwt</code>):</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">services.AddAuthentication()
+    .AddIdentityServerJwt();
+services.TryAddEnumerable(
+    ServiceDescriptor.Singleton&lt;IPostConfigureOptions,
+        ConfigureJwtBearerOptions&gt;());</code></pre></div></figure>
+<h3 id="cookies-vs-bearer-tokens">Cookies vs. bearer tokens</h3>
+<p>Cookies are specific to browsers. Sending them from other kinds of clients adds complexity compared to sending bearer tokens. Consequently, cookie authentication isn&#39;t recommended unless the app only needs to authenticate users from the browser client. Bearer token authentication is the recommended approach when using clients other than the browser client.</p>
+<h3 id="windows-authentication">Windows authentication</h3>
+<p>If <a href="#/doc/aspnet/security/authentication/windowsauth">Windows authentication</a> is configured in your app, SignalR can use that identity to secure hubs. However, to send messages to individual users, you need to add a custom User ID provider. The Windows authentication system doesn&#39;t provide the &quot;Name Identifier&quot; claim. SignalR uses the claim to determine the user name.</p>
+<p>Add a new class that implements <code>IUserIdProvider</code> and retrieve one of the claims from the user to use as the identifier. For example, to use the &quot;Name&quot; claim (which is the Windows username in the form <code>[Domain]\[Username]</code>), create the following class:</p>
+<p>[!code-csharp<a href="authn-and-authz/samples/NameUserIdProvider.cs?name=NameUserIdProvider">Name based provider</a>]</p>
+<p>Rather than <code>ClaimTypes.Name</code>, you can use any value from the <code>User</code> (such as the Windows SID identifier, and so on).</p>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>The value you choose must be unique among all the users in your system. Otherwise, a message intended for one user could end up going to a different user.</p>
+</div></aside>
+<p>Register this component in your <code>Startup.ConfigureServices</code> method.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">public void ConfigureServices(IServiceCollection services)
+{
+    // ... other services ...
+
+    services.AddSignalR();
+    services.AddSingleton&lt;IUserIdProvider, NameUserIdProvider&gt;();
+}</code></pre></div></figure>
+<p>In the .NET Client, Windows Authentication must be enabled by setting the <code>UseDefaultCredentials</code> property:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">var connection = new HubConnectionBuilder()
+    .WithUrl(&quot;https://example.com/chathub&quot;, options =&gt;
+    {
+        options.UseDefaultCredentials = true;
+    })
+    .Build();</code></pre></div></figure>
+<p>Windows authentication is supported in Internet Explorer and Microsoft Edge, but not in all browsers. For example, in Chrome and Safari, attempting to use Windows authentication and WebSockets fails. When Windows authentication fails, the client attempts to fall back to other transports which might work.</p>
+<h3 id="use-claims-to-customize-identity-handling">Use claims to customize identity handling</h3>
+<p>An app that authenticates users can derive SignalR user IDs from user claims. To specify how SignalR creates user IDs, implement <code>IUserIdProvider</code> and register the implementation.</p>
+<p>The sample code demonstrates how you would use claims to select the user&#39;s email address as the identifying property.</p>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>The value you choose must be unique among all the users in your system. Otherwise, a message intended for one user could end up going to a different user.</p>
+</div></aside>
+<p>[!code-csharp<a href="authn-and-authz/samples/EmailBasedUserIdProvider.cs?name=EmailBasedUserIdProvider">Email provider</a>]</p>
+<p>The account registration adds a claim with type <code>ClaimTypes.Email</code> to the ASP.NET identity database.</p>
+<p>[!code-csharp<a href="authn-and-authz/samples/Pages/Account/Register.cshtml.cs?name=AddEmailClaim">Adding the email to the ASP.NET identity claims</a>]</p>
+<p>Register this component in your <code>Startup.ConfigureServices</code>.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">services.AddSingleton&lt;IUserIdProvider, EmailBasedUserIdProvider&gt;();</code></pre></div></figure>
+<h2 id="authorize-users-to-access-hubs-and-hub-methods">Authorize users to access hubs and hub methods</h2>
+<p>By default, all methods in a hub can be called by an unauthenticated user. To require authentication, apply the <code>AuthorizeAttribute</code> attribute to the hub:</p>
+<p>[!code-csharp<a href="authn-and-authz/samples/Hubs/ChatHub.cs?range=8-10,32">Restrict a hub to only authorized users</a>]</p>
+<p>You can use the constructor arguments and properties of the <code>[Authorize]</code> attribute to restrict access to only users matching specific <a href="#/doc/aspnet/security/authorization/policies">authorization policies</a>. For example, if you have a custom authorization policy called <code>MyAuthorizationPolicy</code> you can ensure that only users matching that policy can access the hub using the following code:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">[Authorize(&quot;MyAuthorizationPolicy&quot;)]
+public class ChatHub : Hub
+{
+}</code></pre></div></figure>
+<p>Individual hub methods can have the <code>[Authorize]</code> attribute applied as well. If the current user doesn&#39;t match the policy applied to the method, an error is returned to the caller:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">[Authorize]
+public class ChatHub : Hub
+{
+    public async Task Send(string message)
+    {
+        // ... send a message to all users ...
+    }
+
+    [Authorize(&quot;Administrators&quot;)]
+    public void BanUser(string userName)
+    {
+        // ... ban a user from the chat room (something only Administrators can do) ...
+    }
+}</code></pre></div></figure>
+<h3 id="use-authorization-handlers-to-customize-hub-method-authorization">Use authorization handlers to customize hub method authorization</h3>
+<p>SignalR provides a custom resource to authorization handlers when a hub method requires authorization. The resource is an instance of <code>HubInvocationContext</code>. The <code>HubInvocationContext</code> includes the <code>HubCallerContext</code>, the name of the hub method being invoked, and the arguments to the hub method.</p>
+<p>Consider the example of a chat room allowing multiple organization sign-in via Microsoft Entra ID. Anyone with a Microsoft account can sign in to chat, but only members of the owning organization should be able to ban users or view users&#39; chat histories. Furthermore, we might want to restrict certain functionality from certain users. Using the updated features in ASP.NET Core 3.0, this is entirely possible. Note how the <code>DomainRestrictedRequirement</code> serves as a custom <code>IAuthorizationRequirement</code>. Now that the <code>HubInvocationContext</code> resource parameter is being passed in, the internal logic can inspect the context in which the Hub is being called and make decisions on allowing the user to execute individual Hub methods.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">[Authorize]
+public class ChatHub : Hub
+{
+    public void SendMessage(string message)
+    {
+    }
+
+    [Authorize(&quot;DomainRestricted&quot;)]
+    public void BanUser(string username)
+    {
+    }
+
+    [Authorize(&quot;DomainRestricted&quot;)]
+    public void ViewUserHistory(string username)
+    {
+    }
+}
+
+public class DomainRestrictedRequirement :
+    AuthorizationHandler&lt;DomainRestrictedRequirement, HubInvocationContext&gt;,
+    IAuthorizationRequirement
+{
+    protected override Task HandleRequirementAsync(AuthorizationHandlerContext context,
+        DomainRestrictedRequirement requirement,
+        HubInvocationContext resource)
+    {
+        if (IsUserAllowedToDoThis(resource.HubMethodName, context.User.Identity.Name) &amp;&amp;
+            context.User.Identity.Name.EndsWith(&quot;@microsoft.com&quot;))
+        {
+            context.Succeed(requirement);
+        }
+        return Task.CompletedTask;
+    }
+
+    private bool IsUserAllowedToDoThis(string hubMethodName,
+        string currentUsername)
+    {
+        return !(currentUsername.Equals(&quot;asdf42@microsoft.com&quot;) &amp;&amp;
+            hubMethodName.Equals(&quot;banUser&quot;, StringComparison.OrdinalIgnoreCase));
+    }
+}</code></pre></div></figure>
+<p>In <code>Startup.ConfigureServices</code>, add the new policy, providing the custom <code>DomainRestrictedRequirement</code> requirement as a parameter to create the <code>DomainRestricted</code> policy.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">public void ConfigureServices(IServiceCollection services)
+{
+    // ... other services ...
+
+    services
+        .AddAuthorization(options =&gt;
+        {
+            options.AddPolicy(&quot;DomainRestricted&quot;, policy =&gt;
+            {
+                policy.Requirements.Add(new DomainRestrictedRequirement());
+            });
+        });
+}</code></pre></div></figure>
+<p>In the preceding example, the <code>DomainRestrictedRequirement</code> class is both an <code>IAuthorizationRequirement</code> and its own <code>AuthorizationHandler</code> for that requirement. It&#39;s acceptable to split these two components into separate classes to separate concerns. A benefit of the example&#39;s approach is there&#39;s no need to inject the <code>AuthorizationHandler</code> during startup, as the requirement and the handler are the same thing.</p>
+<h2 id="additional-resources">Additional resources</h2>
+<ul>
+<li><a target="_blank" rel="noopener" href="https://blogs.msdn.microsoft.com/webdev/2016/10/27/bearer-token-authentication-in-asp-net-core/">Bearer Token Authentication in ASP.NET Core</a></li>
+<li><a href="#/doc/aspnet/security/authorization/resource-based">Resource-based authorization</a></li>
+</ul>
+<p>:::moniker-end</p>

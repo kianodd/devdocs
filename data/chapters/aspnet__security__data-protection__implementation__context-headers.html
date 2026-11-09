@@ -1,0 +1,136 @@
+<p><a name="data-protection-implementation-context-headers"></a></p>
+<h2 id="background-and-theory">Background and theory</h2>
+<p>In the data protection system, a &quot;key&quot; means an object that can provide authenticated encryption services. Each key is identified by a unique id (a GUID), and it carries with it algorithmic information and entropic material. It&#39;s intended that each key carry unique entropy, but the system cannot enforce that, and we also need to account for developers who might change the key ring manually by modifying the algorithmic information of an existing key in the key ring. To achieve our security requirements given these cases the data protection system has a concept of <a target="_blank" rel="noopener" href="https://www.microsoft.com/research/publication/cryptographic-agility-and-its-relation-to-circular-encryption">cryptographic agility</a>, which allows securely using a single entropic value across multiple cryptographic algorithms.</p>
+<p>Most systems which support cryptographic agility do so by including some identifying information about the algorithm inside the payload. The algorithm&#39;s OID is generally a good candidate for this. However, one problem that we ran into is that there are multiple ways to specify the same algorithm: &quot;AES&quot; (CNG) and the managed Aes, AesManaged, AesCryptoServiceProvider, AesCng, and RijndaelManaged (given specific parameters) classes are all actually the same thing, and we&#39;d need to maintain a mapping of all of these to the correct OID. If a developer wanted to provide a custom algorithm (or even another implementation of AES!), they&#39;d have to tell us its OID. This extra registration step makes system configuration particularly painful.</p>
+<p>Stepping back, we decided that we were approaching the problem from the wrong direction. An OID tells you what the algorithm is, but we don&#39;t actually care about this. If we need to use a single entropic value securely in two different algorithms, it&#39;s not necessary for us to know what the algorithms actually are. What we actually care about is how they behave. Any decent symmetric block cipher algorithm is also a strong pseudorandom permutation (PRP): fix the inputs (key, chaining mode, IV, plaintext) and the ciphertext output will with overwhelming probability be distinct from any other symmetric block cipher algorithm given the same inputs. Similarly, any decent keyed hash function is also a strong pseudorandom function (PRF), and given a fixed input set its output will overwhelmingly be distinct from any other keyed hash function.</p>
+<p>We use this concept of strong PRPs and PRFs to build up a context header. This context header essentially acts as a stable thumbprint over the algorithms in use for any given operation, and it provides the cryptographic agility needed by the data protection system. This header is reproducible and is used later as part of the <a href="#/doc/aspnet/security/data-protection/implementation/subkeyderivation@data-protection-implementation-subkey-derivation">subkey derivation process</a>. There are two different ways to build the context header depending on the modes of operation of the underlying algorithms.</p>
+<h2 id="cbc-mode-encryption-hmac-authentication">CBC-mode encryption + HMAC authentication</h2>
+<p><a name="data-protection-implementation-context-headers-cbc-components"></a></p>
+<p>The context header consists of the following components:</p>
+<ul>
+<li><p>[16 bits] The value 00 00, which is a marker meaning &quot;CBC encryption + HMAC authentication&quot;.</p>
+</li>
+<li><p>[32 bits] The key length (in bytes, big-endian) of the symmetric block cipher algorithm.</p>
+</li>
+<li><p>[32 bits] The block size (in bytes, big-endian) of the symmetric block cipher algorithm.</p>
+</li>
+<li><p>[32 bits] The key length (in bytes, big-endian) of the HMAC algorithm. (Currently the key size always matches the digest size.)</p>
+</li>
+<li><p>[32 bits] The digest size (in bytes, big-endian) of the HMAC algorithm.</p>
+</li>
+<li><p><code>EncCBC(K_E, IV, &quot;&quot;)</code>, which is the output of the symmetric block cipher algorithm given an empty string input and where IV is an all-zero vector. The construction of <code>K_E</code> is described below.</p>
+</li>
+<li><p><code>MAC(K_H, &quot;&quot;)</code>, which is the output of the HMAC algorithm given an empty string input. The construction of <code>K_H</code> is described below.</p>
+</li>
+</ul>
+<p>Ideally, we could pass all-zero vectors for <code>K_E</code> and <code>K_H</code>. However, we want to avoid the situation where the underlying algorithm checks for the existence of weak keys before performing any operations (notably DES and 3DES), which precludes using a simple or repeatable pattern like an all-zero vector.</p>
+<p>Instead, we use the NIST SP800-108 KDF in Counter Mode (see <a target="_blank" rel="noopener" href="https://nvlpubs.nist.gov/nistpubs/Legacy/SP/nistspecialpublication800-108.pdf">NIST SP800-108</a>, Sec. 5.1) with a zero-length key, label, and context and HMACSHA512 as the underlying PRF. We derive <code>| K_E | + | K_H |</code> bytes of output, then decompose the result into <code>K_E</code> and <code>K_H</code> themselves. Mathematically, this is represented as follows.</p>
+<p><code>( K_E || K_H ) = SP800_108_CTR(prf = HMACSHA512, key = &quot;&quot;, label = &quot;&quot;, context = &quot;&quot;)</code></p>
+<h3 id="example-aes-192-cbc-hmacsha256">Example: AES-192-CBC + HMACSHA256</h3>
+<p>As an example, consider the case where the symmetric block cipher algorithm is AES-192-CBC and the validation algorithm is HMACSHA256. The system would generate the context header using the following steps.</p>
+<p>First, let <code>( K_E || K_H ) = SP800_108_CTR(prf = HMACSHA512, key = &quot;&quot;, label = &quot;&quot;, context = &quot;&quot;)</code>, where <code>| K_E | = 192 bits</code> and <code>| K_H | = 256 bits</code> per the specified algorithms. This leads to <code>K_E = 5BB6..21DD</code> and <code>K_H = A04A..00A9</code> in the example below:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">5B B6 C9 83 13 78 22 1D 8E 10 73 CA CF 65 8E B0
+61 62 42 71 CB 83 21 DD A0 4A 05 00 5B AB C0 A2
+49 6F A5 61 E3 E2 49 87 AA 63 55 CD 74 0A DA C4
+B7 92 3D BF 59 90 00 A9</code></pre></div></figure>
+<p>Next, compute <code>Enc_CBC (K_E, IV, &quot;&quot;)</code> for AES-192-CBC given <code>IV = 0*</code> and <code>K_E</code> as above.</p>
+<p><code>result := F474B1872B3B53E4721DE19C0841DB6F</code></p>
+<p>Next, compute <code>MAC(K_H, &quot;&quot;)</code> for HMACSHA256 given <code>K_H</code> as above.</p>
+<p><code>result := D4791184B996092EE1202F36E8608FA8FBD98ABDFF5402F264B1D7211536220C</code></p>
+<p>This produces the full context header below:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">00 00 00 00 00 18 00 00 00 10 00 00 00 20 00 00
+00 20 F4 74 B1 87 2B 3B 53 E4 72 1D E1 9C 08 41
+DB 6F D4 79 11 84 B9 96 09 2E E1 20 2F 36 E8 60
+8F A8 FB D9 8A BD FF 54 02 F2 64 B1 D7 21 15 36
+22 0C</code></pre></div></figure>
+<p>This context header is the thumbprint of the authenticated encryption algorithm pair (AES-192-CBC encryption + HMACSHA256 validation). The components, as described <a href="#/doc/aspnet/security/data-protection/implementation/context-headers@data-protection-implementation-context-headers-cbc-components">above</a> are:</p>
+<ul>
+<li><p>the marker <code>(00 00)</code></p>
+</li>
+<li><p>the block cipher key length <code>(00 00 00 18)</code></p>
+</li>
+<li><p>the block cipher block size <code>(00 00 00 10)</code></p>
+</li>
+<li><p>the HMAC key length <code>(00 00 00 20)</code></p>
+</li>
+<li><p>the HMAC digest size <code>(00 00 00 20)</code></p>
+</li>
+<li><p>the block cipher PRP output <code>(F4 74 - DB 6F)</code> and</p>
+</li>
+<li><p>the HMAC PRF output <code>(D4 79 - end)</code>.</p>
+</li>
+</ul>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>The CBC-mode encryption + HMAC authentication context header is built the same way regardless of whether the algorithms implementations are provided by Windows CNG or by managed SymmetricAlgorithm and KeyedHashAlgorithm types. This allows applications running on different operating systems to reliably produce the same context header even though the implementations of the algorithms differ between OSes. (In practice, the KeyedHashAlgorithm doesn&#39;t have to be a proper HMAC. It can be any keyed hash algorithm type.)</p>
+</div></aside>
+<h3 id="example-3des-192-cbc-hmacsha1">Example: 3DES-192-CBC + HMACSHA1</h3>
+<p>First, let <code>( K_E || K_H ) = SP800_108_CTR(prf = HMACSHA512, key = &quot;&quot;, label = &quot;&quot;, context = &quot;&quot;)</code>, where <code>| K_E | = 192 bits</code> and <code>| K_H | = 160 bits</code> per the specified algorithms. This leads to <code>K_E = A219..E2BB</code> and <code>K_H = DC4A..B464</code> in the example below:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">A2 19 60 2F 83 A9 13 EA B0 61 3A 39 B8 A6 7E 22
+61 D9 F8 6C 10 51 E2 BB DC 4A 00 D7 03 A2 48 3E
+D1 F7 5A 34 EB 28 3E D7 D4 67 B4 64</code></pre></div></figure>
+<p>Next, compute <code>Enc_CBC (K_E, IV, &quot;&quot;)</code> for 3DES-192-CBC given <code>IV = 0*</code> and <code>K_E</code> as above.</p>
+<p><code>result := ABB100F81E53E10E</code></p>
+<p>Next, compute <code>MAC(K_H, &quot;&quot;)</code> for HMACSHA1 given <code>K_H</code> as above.</p>
+<p><code>result := 76EB189B35CF03461DDF877CD9F4B1B4D63A7555</code></p>
+<p>This produces the full context header which is a thumbprint of the authenticated encryption algorithm pair (3DES-192-CBC encryption + HMACSHA1 validation), shown below:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">00 00 00 00 00 18 00 00 00 08 00 00 00 14 00 00
+00 14 AB B1 00 F8 1E 53 E1 0E 76 EB 18 9B 35 CF
+03 46 1D DF 87 7C D9 F4 B1 B4 D6 3A 75 55</code></pre></div></figure>
+<p>The components break down as follows:</p>
+<ul>
+<li><p>the marker <code>(00 00)</code></p>
+</li>
+<li><p>the block cipher key length <code>(00 00 00 18)</code></p>
+</li>
+<li><p>the block cipher block size <code>(00 00 00 08)</code></p>
+</li>
+<li><p>the HMAC key length <code>(00 00 00 14)</code></p>
+</li>
+<li><p>the HMAC digest size <code>(00 00 00 14)</code></p>
+</li>
+<li><p>the block cipher PRP output <code>(AB B1 - E1 0E)</code> and</p>
+</li>
+<li><p>the HMAC PRF output <code>(76 EB - end)</code>.</p>
+</li>
+</ul>
+<h2 id="galoiscounter-mode-encryption-authentication">Galois/Counter Mode encryption + authentication</h2>
+<p>The context header consists of the following components:</p>
+<ul>
+<li><p>[16 bits] The value 00 01, which is a marker meaning &quot;GCM encryption + authentication&quot;.</p>
+</li>
+<li><p>[32 bits] The key length (in bytes, big-endian) of the symmetric block cipher algorithm.</p>
+</li>
+<li><p>[32 bits] The nonce size (in bytes, big-endian) used during authenticated encryption operations. (For our system, this is fixed at nonce size = 96 bits.)</p>
+</li>
+<li><p>[32 bits] The block size (in bytes, big-endian) of the symmetric block cipher algorithm. (For GCM, this is fixed at block size = 128 bits.)</p>
+</li>
+<li><p>[32 bits] The authentication tag size (in bytes, big-endian) produced by the authenticated encryption function. (For our system, this is fixed at tag size = 128 bits.)</p>
+</li>
+<li><p>[128 bits] The tag of <code>Enc_GCM (K_E, nonce, &quot;&quot;)</code>, which is the output of the symmetric block cipher algorithm given an empty string input and where nonce is a 96-bit all-zero vector.</p>
+</li>
+</ul>
+<p><code>K_E</code> is derived using the same mechanism as in the CBC encryption + HMAC authentication scenario. However, since there&#39;s no <code>K_H</code> in play here, we essentially have <code>| K_H | = 0</code>, and the algorithm collapses to the below form.</p>
+<p><code>K_E = SP800_108_CTR(prf = HMACSHA512, key = &quot;&quot;, label = &quot;&quot;, context = &quot;&quot;)</code></p>
+<h3 id="example-aes-256-gcm">Example: AES-256-GCM</h3>
+<p>First, let <code>K_E = SP800_108_CTR(prf = HMACSHA512, key = &quot;&quot;, label = &quot;&quot;, context = &quot;&quot;)</code>, where <code>| K_E | = 256 bits</code>.</p>
+<p><code>K_E := 22BC6F1B171C08C4AE2F27444AF8FC8B3087A90006CAEA91FDCFB47C1B8733B8</code></p>
+<p>Next, compute the authentication tag of <code>Enc_GCM (K_E, nonce, &quot;&quot;)</code> for AES-256-GCM given <code>nonce = 096</code> and <code>K_E</code> as above.</p>
+<p><code>result := E7DCCE66DF855A323A6BB7BD7A59BE45</code></p>
+<p>This produces the full context header below:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">00 01 00 00 00 20 00 00 00 0C 00 00 00 10 00 00
+00 10 E7 DC CE 66 DF 85 5A 32 3A 6B B7 BD 7A 59
+BE 45</code></pre></div></figure>
+<p>The components break down as follows:</p>
+<ul>
+<li><p>the marker <code>(00 01)</code></p>
+</li>
+<li><p>the block cipher key length <code>(00 00 00 20)</code></p>
+</li>
+<li><p>the nonce size <code>(00 00 00 0C)</code></p>
+</li>
+<li><p>the block cipher block size <code>(00 00 00 10)</code></p>
+</li>
+<li><p>the authentication tag size <code>(00 00 00 10)</code> and</p>
+</li>
+<li><p>the authentication tag from running the block cipher <code>(E7 DC - end)</code>.</p>
+</li>
+</ul>
