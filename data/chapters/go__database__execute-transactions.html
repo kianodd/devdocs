@@ -1,0 +1,161 @@
+<!--{
+  "Title": "Executing transactions"
+}--><p>You can execute database transactions using an
+<a target="_blank" rel="noopener" href="https://pkg.go.dev/database/sql#Tx"><code>sql.Tx,</code></a> which represents a transaction.
+In addition to <code>Commit</code> and <code>Rollback</code> methods representing transaction-specific
+semantics, <code>sql.Tx</code> has all of the methods you use to perform common database
+operations. To get the <code>sql.Tx</code>, you call <code>DB.Begin</code> or <code>DB.BeginTx</code>.</p>
+<p>A <a target="_blank" rel="noopener" href="https://en.wikipedia.org/wiki/Database_transaction">database transaction</a>
+groups multiple operations as part of a larger goal. All of the operations must
+succeed or none can, with the data&#39;s integrity preserved in either case.
+Typically, a transaction workflow includes:</p>
+<ol>
+<li>Beginning the transaction.</li>
+<li>Performing a set of database operations.</li>
+<li>If no error occurs, committing the transaction to make database changes.</li>
+<li>If an error occurs, rolling back the transaction to leave the database
+ unchanged.</li>
+</ol>
+<p>The <code>sql</code> package provides methods for beginning and concluding a transaction,
+as well as methods for performing the intervening database operations. These
+methods correspond to the four steps in the workflow above.</p>
+<ul>
+<li><p>Begin a transaction.</p>
+<p><a target="_blank" rel="noopener" href="https://pkg.go.dev/database/sql#DB.Begin"><code>DB.Begin</code></a> or
+<a target="_blank" rel="noopener" href="https://pkg.go.dev/database/sql#DB.BeginTx"><code>DB.BeginTx</code></a> begin a new
+database transaction, returning an <code>sql.Tx</code> that represents it.</p>
+</li>
+<li><p>Perform database operations.</p>
+<p>Using an <code>sql.Tx</code>, you can query or update the database in a series of
+operations that use a single connection. To support this, <code>Tx</code> exports the
+following methods:</p>
+<ul>
+<li><p><a target="_blank" rel="noopener" href="https://pkg.go.dev/database/sql#Tx.Exec"><code>Exec</code></a> and
+<a target="_blank" rel="noopener" href="https://pkg.go.dev/database/sql#Tx.ExecContext"><code>ExecContext</code></a> for making
+database changes through SQL statements such as <code>INSERT</code>, <code>UPDATE</code>, and
+<code>DELETE</code>.</p>
+<p>For more, see <a href="#/doc/go/database/change-data">Executing SQL statements that don&#39;t return data</a>.</p>
+</li>
+<li><p><a target="_blank" rel="noopener" href="https://pkg.go.dev/database/sql#Tx.Query"><code>Query</code></a>,
+<a target="_blank" rel="noopener" href="https://pkg.go.dev/database/sql#Tx.QueryContext"><code>QueryContext</code></a>,
+<a target="_blank" rel="noopener" href="https://pkg.go.dev/database/sql#Tx.QueryRow"><code>QueryRow</code></a>, and
+<a target="_blank" rel="noopener" href="https://pkg.go.dev/database/sql#Tx.QueryRowContext"><code>QueryRowContext</code></a>
+for operations that return rows.</p>
+<p>For more, see <a href="#/doc/go/database/querying">Querying for data</a>.</p>
+</li>
+<li><p><a target="_blank" rel="noopener" href="https://pkg.go.dev/database/sql#Tx.Prepare"><code>Prepare</code></a>,
+<a target="_blank" rel="noopener" href="https://pkg.go.dev/database/sql#Tx.PrepareContext"><code>PrepareContext</code></a>,
+<a target="_blank" rel="noopener" href="https://pkg.go.dev/database/sql#Tx.Stmt"><code>Stmt</code></a>, and
+<a target="_blank" rel="noopener" href="https://pkg.go.dev/database/sql#Tx.StmtContext"><code>StmtContext</code></a> for
+pre-defining prepared statements.</p>
+<p>For more, see <a href="#/doc/go/database/prepared-statements">Using prepared statements</a>.</p>
+</li>
+</ul>
+</li>
+<li><p>End the transaction with <em>one</em> of the following:</p>
+<ul>
+<li><p>Commit the transaction using
+<a target="_blank" rel="noopener" href="https://pkg.go.dev/database/sql#Tx.Commit"><code>Tx.Commit</code></a>.</p>
+<p>If <code>Commit</code> succeeds (returns a <code>nil</code> error), then all the query results
+are confirmed as valid and all the executed updates are applied to the
+database as a single atomic change. If <code>Commit</code> fails, then all the
+results from <code>Query</code> and <code>Exec</code> on the <code>Tx</code> should be discarded as
+invalid.</p>
+</li>
+<li><p>Roll back the transaction using
+<a target="_blank" rel="noopener" href="https://pkg.go.dev/database/sql#Tx.Rollback"><code>Tx.Rollback</code></a>.</p>
+<p>Even if <code>Tx.Rollback</code> fails, the transaction will no longer be valid,
+nor will it have been committed to the database.</p>
+</li>
+</ul>
+</li>
+</ul>
+<h3 id="best-practices-bestpractices">Best practices {#best_practices}</h3>
+<p>Follow the best practices below to better navigate the complicated semantics
+and connection management that transactions sometimes require.</p>
+<ul>
+<li>Use the APIs described in this section to manage transactions. Do <em>not</em>
+use transaction-related SQL statements such as <code>BEGIN</code> and <code>COMMIT</code>
+directly—doing so can leave your database in an unpredictable state,
+especially in concurrent programs.</li>
+<li>When using a transaction, take care not to call the non-transaction
+<code>sql.DB</code> methods directly, too, as those will execute outside the
+transaction, giving your code an inconsistent view of the state of the
+database or even causing deadlocks.</li>
+</ul>
+<h3 id="example-example">Example {#example}</h3>
+<p>Code in the following example uses a transaction to create a new customer order
+for an album. Along the way, the code will:</p>
+<ol>
+<li>Begin a transaction.</li>
+<li>Defer the transaction&#39;s rollback. If the transaction succeeds, it will be
+ committed before the function exits, making the deferred rollback call a
+ no-op. If the transaction fails it won&#39;t be committed, meaning that the
+ rollback will be called as the function exits.</li>
+<li>Confirm that there&#39;s sufficient inventory for the album the customer is
+ ordering.</li>
+<li>If there&#39;s enough, update the inventory count, reducing it by the number
+ of albums ordered.</li>
+<li>Create a new order and retrieve the new order&#39;s generated ID for the client.</li>
+<li>Commit the transaction and return the ID.</li>
+</ol>
+<p>This example uses <code>Tx</code> methods that take a <code>context.Context</code> argument. This
+makes it possible for the function&#39;s execution – including database operations
+-- to be canceled if it runs too long or the client connection closes. For
+more, see <a href="#/doc/go/database/cancel-operations">Canceling in-progress operations</a>.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">// CreateOrder creates an order for an album and returns the new order ID.
+func CreateOrder(ctx context.Context, albumID, quantity, custID int) (orderID int64, err error) {
+
+	// Create a helper function for preparing failure results.
+	fail := func(err error) (int64, error) {
+		return 0, fmt.Errorf(&quot;CreateOrder: %v&quot;, err)
+	}
+
+	// Get a Tx for making transaction requests.
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fail(err)
+	}
+	// Defer a rollback in case anything fails.
+	defer tx.Rollback()
+
+	// Confirm that album inventory is enough for the order.
+	var enough bool
+	if err = tx.QueryRowContext(ctx, &quot;SELECT (quantity &gt;= ?) from album where id = ?&quot;,
+		quantity, albumID).Scan(&amp;enough); err != nil {
+		if err == sql.ErrNoRows {
+			return fail(fmt.Errorf(&quot;no such album&quot;))
+		}
+		return fail(err)
+	}
+	if !enough {
+		return fail(fmt.Errorf(&quot;not enough inventory&quot;))
+	}
+
+	// Update the album inventory to remove the quantity in the order.
+	_, err = tx.ExecContext(ctx, &quot;UPDATE album SET quantity = quantity - ? WHERE id = ?&quot;,
+		quantity, albumID)
+	if err != nil {
+		return fail(err)
+	}
+
+	// Create a new row in the album_order table.
+	result, err := tx.ExecContext(ctx, &quot;INSERT INTO album_order (album_id, cust_id, quantity, date) VALUES (?, ?, ?, ?)&quot;,
+		albumID, custID, quantity, time.Now())
+	if err != nil {
+		return fail(err)
+	}
+	// Get the ID of the order item just created.
+	orderID, err = result.LastInsertId()
+	if err != nil {
+		return fail(err)
+	}
+
+	// Commit the transaction.
+	if err = tx.Commit(); err != nil {
+		return fail(err)
+	}
+
+	// Return the order ID.
+	return orderID, nil
+}</code></pre></div></figure>

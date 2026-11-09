@@ -1,0 +1,4634 @@
+<p>The .NET Compiler Platform SDK provides the tools you need to create custom diagnostics (analyzers), code fixes, code refactoring, and diagnostic suppressors that target C# or Visual Basic code. An <strong>analyzer</strong> contains code that recognizes violations of your rule. Your <strong>code fix</strong> contains the code that fixes the violation. The rules you implement can be anything from code structure to coding style to naming conventions and more. The .NET Compiler Platform provides the framework for running analysis as developers are writing code, and all the Visual Studio UI features for fixing code: showing squiggles in the editor, populating the Visual Studio Error List, creating the &quot;light bulb&quot; suggestions, and showing the rich preview of the suggested fixes.</p>
+<p>In this tutorial, you explore the creation of an <strong>analyzer</strong> and an accompanying <strong>code fix</strong> using the Roslyn APIs. An analyzer is a way to perform source code analysis and report a problem to the user. Optionally, you can associate a code fix with the analyzer to represent a modification to the user&#39;s source code. This tutorial creates an analyzer that finds local variable declarations that could be declared using the <code>const</code> modifier but aren&#39;t. The accompanying code fix modifies those declarations to add the <code>const</code> modifier.</p>
+<h2 id="prerequisites">Prerequisites</h2>
+<ul>
+<li><a target="_blank" rel="noopener" href="https://www.visualstudio.com/downloads">Visual Studio</a></li>
+</ul>
+<p>You need to install the <strong>.NET Compiler Platform SDK</strong> by using the Visual Studio Installer:</p>
+<p>Creating and validating your analyzer involves several steps:</p>
+<ol>
+<li>Create the solution.</li>
+<li>Register the analyzer name and description.</li>
+<li>Report analyzer warnings and recommendations.</li>
+<li>Implement the code fix to accept recommendations.</li>
+<li>Improve the analysis through unit tests.</li>
+</ol>
+<h2 id="create-the-solution">Create the solution</h2>
+<ol>
+<li>In Visual Studio, select <strong>File</strong> &gt; <strong>New</strong> &gt; <strong>Project/Solution</strong> to open the New Project dialog.</li>
+<li>In the search box, type <strong>Analyzer</strong> to find the <strong>Analyzer with Code Fix (.NET Standard)</strong> template.</li>
+<li>Select <strong>Next</strong>.</li>
+<li>Name your project &quot;<strong>MakeConst</strong>&quot; and select <strong>Create</strong>.</li>
+</ol>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>You might get a compilation error (<em>MSB4062: The &quot;CompareBuildTaskVersion&quot; task couldn&#39;t be loaded</em>). To fix this error, update the NuGet packages in the solution by using NuGet Package Manager or use <code>Update-Package</code> in the Package Manager Console window.</p>
+</div></aside>
+<h2 id="explore-the-analyzer-template">Explore the analyzer template</h2>
+<p>The analyzer with code fix template creates five projects:</p>
+<ul>
+<li><strong>MakeConst</strong>, which contains the analyzer.</li>
+<li><strong>MakeConst.CodeFixes</strong>, which contains the code fix.</li>
+<li><strong>MakeConst.Package</strong>, which is used to produce NuGet package for the analyzer and code fix.</li>
+<li><strong>MakeConst.Test</strong>, which is a unit test project.</li>
+<li><strong>MakeConst.Vsix</strong>, which is the default startup project that starts a second instance of Visual Studio that has loaded your new analyzer. Press <kbd>F5</kbd> to start the VSIX project.</li>
+</ul>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>Analyzers should target .NET Standard 2.0 because they can run in .NET Core environment (command line builds) and .NET Framework environment (Visual Studio).</p>
+</div></aside>
+<aside class="callout callout-tip"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M9.5 18h5M10.5 21h3M12 3a6 6 0 0 0-3.6 10.8c.7.6 1.1 1.3 1.3 2.2h4.6c.2-.9.6-1.6 1.3-2.2A6 6 0 0 0 12 3Z" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round"/></svg></span><div class="callout-body"><p class="callout-title">Tip</p><p>When you run your analyzer, you start a second copy of Visual Studio. This second copy uses a different registry hive to store settings. That difference enables you to differentiate the visual settings in the two copies of Visual Studio. You can pick a different theme for the experimental run of Visual Studio. In addition, don&#39;t roam your settings or sign in to your Visual Studio account by using the experimental run of Visual Studio. That keeps the settings different.</p>
+<p>The hive includes not only the analyzer under development, but also any previous analyzers opened. To reset Roslyn hive, you need to manually delete it from <em>%LocalAppData%\Microsoft\VisualStudio</em>. The folder name of Roslyn hive ends in <code>Roslyn</code>, for example, <code>16.0_9ae182f9Roslyn</code>. You might need to clean the solution and rebuild it after deleting the hive.</p>
+</div></aside>
+<p>In the second Visual Studio instance that you just started, create a new C# Console Application project (any target framework will work -- analyzers work at the source level.) Hover over the token with a wavy underline, and the warning text provided by an analyzer appears.</p>
+<p>The template creates an analyzer that reports a warning on each type declaration where the type name contains lowercase letters, as shown in the following figure:</p>
+<p><img src="media/how-to-write-csharp-analyzer-code-fix/report-warning.png" alt="Analyzer reporting warning"></p>
+<p>The template also provides a code fix that changes any type name containing lower case characters to all upper case. You can select the light bulb displayed with the warning to see the suggested changes. Accepting the suggested changes updates the type name and all references to that type in the solution. Now that you see the initial analyzer in action, close the second Visual Studio instance and return to your analyzer project.</p>
+<p>You don&#39;t have to start a second copy of Visual Studio and create new code to test every change in your analyzer. The template also creates a unit test project for you. That project contains two tests. <code>TestMethod1</code> shows the typical format of a test that analyzes code without triggering a diagnostic. <code>TestMethod2</code> shows the format of a test that triggers a diagnostic, and then applies a suggested code fix. As you build your analyzer and code fix, you&#39;ll write tests for different code structures to verify your work. Unit tests for analyzers are much quicker than testing them interactively with Visual Studio.</p>
+<aside class="callout callout-tip"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M9.5 18h5M10.5 21h3M12 3a6 6 0 0 0-3.6 10.8c.7.6 1.1 1.3 1.3 2.2h4.6c.2-.9.6-1.6 1.3-2.2A6 6 0 0 0 12 3Z" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round"/></svg></span><div class="callout-body"><p class="callout-title">Tip</p><p>Analyzer unit tests are a great tool when you know what code constructs should and shouldn&#39;t trigger your analyzer. Loading your analyzer in another copy of Visual Studio is a great tool to explore and find constructs you might not have thought about yet.</p>
+</div></aside>
+<p>In this tutorial, you write an analyzer that reports to the user any local variable declarations that can be converted to local constants. For example, consider the following code:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">int x = 0;
+Console.WriteLine(x);</code></pre></div></figure>
+<p>In the code preceding, <code>x</code> is assigned a constant value and is never modified. It can be declared by using the <code>const</code> modifier:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">const int x = 0;
+Console.WriteLine(x);</code></pre></div></figure>
+<p>The analysis to determine whether a variable can be made constant is involved, requiring syntactic analysis, constant analysis of the initializer expression, and dataflow analysis to ensure that the variable is never written to. The .NET Compiler Platform provides APIs that make it easier to perform this analysis.</p>
+<h2 id="create-analyzer-registrations">Create analyzer registrations</h2>
+<p>The template creates the initial <code>DiagnosticAnalyzer</code> class in the <em>MakeConstAnalyzer.cs</em> file. This initial analyzer shows two important properties of every analyzer.</p>
+<ul>
+<li>Every diagnostic analyzer must provide a <code>[DiagnosticAnalyzer]</code> attribute that describes the language it operates on.</li>
+<li>Every diagnostic analyzer must derive (directly or indirectly) from the <code>DiagnosticAnalyzer</code> class.</li>
+</ul>
+<p>The template also shows the basic features that are part of any analyzer:</p>
+<ol>
+<li>Register actions. The actions represent code changes that should trigger your analyzer to examine code for violations. When Visual Studio detects code edits that match a registered action, it calls your analyzer&#39;s registered method.</li>
+<li>Create diagnostics. When your analyzer detects a violation, it creates a diagnostic object that Visual Studio uses to notify the user of the violation.</li>
+</ol>
+<p>You register actions in your override of <code>AnalysisContext)?displayProperty=nameWithType</code> method. In this tutorial, you&#39;ll visit <strong>syntax nodes</strong> looking for local declarations, and see which of those have constant values. If a declaration could be constant, your analyzer creates and reports a diagnostic.</p>
+<p>The first step is to update the registration constants and <code>Initialize</code> method so these constants indicate your &quot;Make Const&quot; analyzer. Most of the string constants are defined in the string resource file. Follow that practice for easier localization. Open the <em>Resources.resx</em> file for the <strong>MakeConst</strong> analyzer project. This action displays the resource editor. Update the string resources as follows:</p>
+<ul>
+<li>Change <code>AnalyzerDescription</code> to &quot;&quot;.</li>
+<li>Change <code>AnalyzerMessageFormat</code> to &quot;&quot;.</li>
+<li>Change <code>AnalyzerTitle</code> to &quot;&quot;.</li>
+</ul>
+<p>When you finish, the resource editor should appear as shown in the following figure:</p>
+<p><img src="media/how-to-write-csharp-analyzer-code-fix/update-string-resources.png" alt="Update string resources"></p>
+<p>Make the remaining changes in the analyzer file. Open <em>MakeConstAnalyzer.cs</em> in Visual Studio. Change the registered action from one that acts on symbols to one that acts on syntax. In the <code>MakeConstAnalyzerAnalyzer.Initialize</code> method, find the line that registers the action on symbols:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">context.RegisterSymbolAction(AnalyzeSymbol, SymbolKind.NamedType);</code></pre></div></figure>
+<p>Replace it with the following line:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">﻿using System;
+using System.Collections.Generic;
+using System.Collections.Immutable;
+using System.Linq;
+using System.Threading;
+using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
+using Microsoft.CodeAnalysis.Diagnostics;
+
+namespace MakeConst
+{
+    [DiagnosticAnalyzer(LanguageNames.CSharp)]
+    public class MakeConstAnalyzer : DiagnosticAnalyzer
+    {
+        public const string DiagnosticId = &quot;MakeConst&quot;;
+
+        // You can change these strings in the Resources.resx file. If you do not want your analyzer to be localize-able, you can use regular strings for Title and MessageFormat.
+        // See https://github.com/dotnet/roslyn/blob/main/docs/analyzers/Localizing%20Analyzers.md for more on localization
+        private static readonly LocalizableString Title = new LocalizableResourceString(nameof(Resources.AnalyzerTitle), Resources.ResourceManager, typeof(Resources));
+        private static readonly LocalizableString MessageFormat = new LocalizableResourceString(nameof(Resources.AnalyzerMessageFormat), Resources.ResourceManager, typeof(Resources));
+        private static readonly LocalizableString Description = new LocalizableResourceString(nameof(Resources.AnalyzerDescription), Resources.ResourceManager, typeof(Resources));
+        // 
+        private const string Category = &quot;Usage&quot;;
+        // 
+
+        private static DiagnosticDescriptor Rule = new DiagnosticDescriptor(DiagnosticId, Title, MessageFormat, Category, DiagnosticSeverity.Warning, isEnabledByDefault: true, description: Description);
+
+        public override ImmutableArray SupportedDiagnostics { get { return ImmutableArray.Create(Rule); } }
+
+        public override void Initialize(AnalysisContext context)
+        {
+             // See https://github.com/dotnet/roslyn/blob/main/docs/analyzers/Analyzer%20Actions%20Semantics.md for more information
+            context.ConfigureGeneratedCodeAnalysis(GeneratedCodeAnalysisFlags.None);
+            context.EnableConcurrentExecution();
+            // 
+            context.RegisterSyntaxNodeAction(AnalyzeNode, SyntaxKind.LocalDeclarationStatement);
+            // 
+        }
+
+        private void AnalyzeNode(SyntaxNodeAnalysisContext context)
+        {
+            // 
+            var localDeclaration = (LocalDeclarationStatementSyntax)context.Node;
+            // 
+
+            // 
+            // make sure the declaration isn&#x27;t already const:
+            if (localDeclaration.Modifiers.Any(SyntaxKind.ConstKeyword))
+            {
+                return;
+            }
+            // 
+
+            // 
+            TypeSyntax variableTypeName = localDeclaration.Declaration.Type;
+            ITypeSymbol variableType = context.SemanticModel.GetTypeInfo(variableTypeName, context.CancellationToken).ConvertedType;
+            // 
+
+            // Ensure that all variables in the local declaration have initializers that
+            // are assigned with constant values.
+            foreach (VariableDeclaratorSyntax variable in localDeclaration.Declaration.Variables)
+            {
+                EqualsValueClauseSyntax initializer = variable.Initializer;
+                if (initializer == null)
+                {
+                    return;
+                }
+
+                Optional&lt;object&gt; constantValue = context.SemanticModel.GetConstantValue(initializer.Value, context.CancellationToken);
+                if (!constantValue.HasValue)
+                {
+                    return;
+                }
+
+                // 
+                // Ensure that the initializer value can be converted to the type of the
+                // local declaration without a user-defined conversion.
+                Conversion conversion = context.SemanticModel.ClassifyConversion(initializer.Value, variableType);
+                if (!conversion.Exists || conversion.IsUserDefined)
+                {
+                    return;
+                }
+                // 
+
+                // 
+                // Special cases:
+                //  * If the constant value is a string, the type of the local declaration
+                //    must be System.String.
+                //  * If the constant value is null, the type of the local declaration must
+                //    be a reference type.
+                if (constantValue.Value is string)
+                {
+                    if (variableType.SpecialType != SpecialType.System_String)
+                    {
+                        return;
+                    }
+                }
+                else if (variableType.IsReferenceType &amp;&amp; constantValue.Value != null)
+                {
+                    return;
+                }
+                // 
+            }
+
+            // Perform data flow analysis on the local declaration.
+            DataFlowAnalysis dataFlowAnalysis = context.SemanticModel.AnalyzeDataFlow(localDeclaration);
+
+            foreach (VariableDeclaratorSyntax variable in localDeclaration.Declaration.Variables)
+            {
+                // Retrieve the local symbol for each variable in the local declaration
+                // and ensure that it is not written outside of the data flow analysis region.
+                ISymbol variableSymbol = context.SemanticModel.GetDeclaredSymbol(variable, context.CancellationToken);
+                if (dataFlowAnalysis.WrittenOutside.Contains(variableSymbol))
+                {
+                    return;
+                }
+            }
+
+            // 
+            context.ReportDiagnostic(Diagnostic.Create(Rule, context.Node.GetLocation(), localDeclaration.Declaration.Variables.First().Identifier.ValueText));
+            // 
+        }
+    }
+}</code></pre></div></figure>
+<p>After that change, you can delete the <code>AnalyzeSymbol</code> method. This analyzer examines <code>LocalDeclarationStatement?displayProperty=nameWithType</code>, not <code>NamedType?displayProperty=nameWithType</code> statements. Notice that <code>AnalyzeNode</code> has red squiggles under it. The code you just added references an <code>AnalyzeNode</code> method that isn&#39;t declared. Declare that method by using the following code:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">private void AnalyzeNode(SyntaxNodeAnalysisContext context)
+{
+}</code></pre></div></figure>
+<p>Change the <code>Category</code> to &quot;&quot; in <em>MakeConstAnalyzer.cs</em> as shown in the following code:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">﻿using System;
+using System.Collections.Generic;
+using System.Collections.Immutable;
+using System.Linq;
+using System.Threading;
+using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
+using Microsoft.CodeAnalysis.Diagnostics;
+
+namespace MakeConst
+{
+    [DiagnosticAnalyzer(LanguageNames.CSharp)]
+    public class MakeConstAnalyzer : DiagnosticAnalyzer
+    {
+        public const string DiagnosticId = &quot;MakeConst&quot;;
+
+        // You can change these strings in the Resources.resx file. If you do not want your analyzer to be localize-able, you can use regular strings for Title and MessageFormat.
+        // See https://github.com/dotnet/roslyn/blob/main/docs/analyzers/Localizing%20Analyzers.md for more on localization
+        private static readonly LocalizableString Title = new LocalizableResourceString(nameof(Resources.AnalyzerTitle), Resources.ResourceManager, typeof(Resources));
+        private static readonly LocalizableString MessageFormat = new LocalizableResourceString(nameof(Resources.AnalyzerMessageFormat), Resources.ResourceManager, typeof(Resources));
+        private static readonly LocalizableString Description = new LocalizableResourceString(nameof(Resources.AnalyzerDescription), Resources.ResourceManager, typeof(Resources));
+        // 
+        private const string Category = &quot;Usage&quot;;
+        // 
+
+        private static DiagnosticDescriptor Rule = new DiagnosticDescriptor(DiagnosticId, Title, MessageFormat, Category, DiagnosticSeverity.Warning, isEnabledByDefault: true, description: Description);
+
+        public override ImmutableArray SupportedDiagnostics { get { return ImmutableArray.Create(Rule); } }
+
+        public override void Initialize(AnalysisContext context)
+        {
+             // See https://github.com/dotnet/roslyn/blob/main/docs/analyzers/Analyzer%20Actions%20Semantics.md for more information
+            context.ConfigureGeneratedCodeAnalysis(GeneratedCodeAnalysisFlags.None);
+            context.EnableConcurrentExecution();
+            // 
+            context.RegisterSyntaxNodeAction(AnalyzeNode, SyntaxKind.LocalDeclarationStatement);
+            // 
+        }
+
+        private void AnalyzeNode(SyntaxNodeAnalysisContext context)
+        {
+            // 
+            var localDeclaration = (LocalDeclarationStatementSyntax)context.Node;
+            // 
+
+            // 
+            // make sure the declaration isn&#x27;t already const:
+            if (localDeclaration.Modifiers.Any(SyntaxKind.ConstKeyword))
+            {
+                return;
+            }
+            // 
+
+            // 
+            TypeSyntax variableTypeName = localDeclaration.Declaration.Type;
+            ITypeSymbol variableType = context.SemanticModel.GetTypeInfo(variableTypeName, context.CancellationToken).ConvertedType;
+            // 
+
+            // Ensure that all variables in the local declaration have initializers that
+            // are assigned with constant values.
+            foreach (VariableDeclaratorSyntax variable in localDeclaration.Declaration.Variables)
+            {
+                EqualsValueClauseSyntax initializer = variable.Initializer;
+                if (initializer == null)
+                {
+                    return;
+                }
+
+                Optional&lt;object&gt; constantValue = context.SemanticModel.GetConstantValue(initializer.Value, context.CancellationToken);
+                if (!constantValue.HasValue)
+                {
+                    return;
+                }
+
+                // 
+                // Ensure that the initializer value can be converted to the type of the
+                // local declaration without a user-defined conversion.
+                Conversion conversion = context.SemanticModel.ClassifyConversion(initializer.Value, variableType);
+                if (!conversion.Exists || conversion.IsUserDefined)
+                {
+                    return;
+                }
+                // 
+
+                // 
+                // Special cases:
+                //  * If the constant value is a string, the type of the local declaration
+                //    must be System.String.
+                //  * If the constant value is null, the type of the local declaration must
+                //    be a reference type.
+                if (constantValue.Value is string)
+                {
+                    if (variableType.SpecialType != SpecialType.System_String)
+                    {
+                        return;
+                    }
+                }
+                else if (variableType.IsReferenceType &amp;&amp; constantValue.Value != null)
+                {
+                    return;
+                }
+                // 
+            }
+
+            // Perform data flow analysis on the local declaration.
+            DataFlowAnalysis dataFlowAnalysis = context.SemanticModel.AnalyzeDataFlow(localDeclaration);
+
+            foreach (VariableDeclaratorSyntax variable in localDeclaration.Declaration.Variables)
+            {
+                // Retrieve the local symbol for each variable in the local declaration
+                // and ensure that it is not written outside of the data flow analysis region.
+                ISymbol variableSymbol = context.SemanticModel.GetDeclaredSymbol(variable, context.CancellationToken);
+                if (dataFlowAnalysis.WrittenOutside.Contains(variableSymbol))
+                {
+                    return;
+                }
+            }
+
+            // 
+            context.ReportDiagnostic(Diagnostic.Create(Rule, context.Node.GetLocation(), localDeclaration.Declaration.Variables.First().Identifier.ValueText));
+            // 
+        }
+    }
+}</code></pre></div></figure>
+<h2 id="find-local-declarations-that-could-be-const">Find local declarations that could be const</h2>
+<p>Now you&#39;re ready to write the first version of the <code>AnalyzeNode</code> method. It should look for a single local declaration that could be <code>const</code> but isn&#39;t, like the following code:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">int x = 0;
+Console.WriteLine(x);</code></pre></div></figure>
+<p>The first step is to find local declarations. Add the following code to <code>AnalyzeNode</code> in <em>MakeConstAnalyzer.cs</em>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">﻿using System;
+using System.Collections.Generic;
+using System.Collections.Immutable;
+using System.Linq;
+using System.Threading;
+using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
+using Microsoft.CodeAnalysis.Diagnostics;
+
+namespace MakeConst
+{
+    [DiagnosticAnalyzer(LanguageNames.CSharp)]
+    public class MakeConstAnalyzer : DiagnosticAnalyzer
+    {
+        public const string DiagnosticId = &quot;MakeConst&quot;;
+
+        // You can change these strings in the Resources.resx file. If you do not want your analyzer to be localize-able, you can use regular strings for Title and MessageFormat.
+        // See https://github.com/dotnet/roslyn/blob/main/docs/analyzers/Localizing%20Analyzers.md for more on localization
+        private static readonly LocalizableString Title = new LocalizableResourceString(nameof(Resources.AnalyzerTitle), Resources.ResourceManager, typeof(Resources));
+        private static readonly LocalizableString MessageFormat = new LocalizableResourceString(nameof(Resources.AnalyzerMessageFormat), Resources.ResourceManager, typeof(Resources));
+        private static readonly LocalizableString Description = new LocalizableResourceString(nameof(Resources.AnalyzerDescription), Resources.ResourceManager, typeof(Resources));
+        // 
+        private const string Category = &quot;Usage&quot;;
+        // 
+
+        private static DiagnosticDescriptor Rule = new DiagnosticDescriptor(DiagnosticId, Title, MessageFormat, Category, DiagnosticSeverity.Warning, isEnabledByDefault: true, description: Description);
+
+        public override ImmutableArray SupportedDiagnostics { get { return ImmutableArray.Create(Rule); } }
+
+        public override void Initialize(AnalysisContext context)
+        {
+             // See https://github.com/dotnet/roslyn/blob/main/docs/analyzers/Analyzer%20Actions%20Semantics.md for more information
+            context.ConfigureGeneratedCodeAnalysis(GeneratedCodeAnalysisFlags.None);
+            context.EnableConcurrentExecution();
+            // 
+            context.RegisterSyntaxNodeAction(AnalyzeNode, SyntaxKind.LocalDeclarationStatement);
+            // 
+        }
+
+        private void AnalyzeNode(SyntaxNodeAnalysisContext context)
+        {
+            // 
+            var localDeclaration = (LocalDeclarationStatementSyntax)context.Node;
+            // 
+
+            // 
+            // make sure the declaration isn&#x27;t already const:
+            if (localDeclaration.Modifiers.Any(SyntaxKind.ConstKeyword))
+            {
+                return;
+            }
+            // 
+
+            // 
+            TypeSyntax variableTypeName = localDeclaration.Declaration.Type;
+            ITypeSymbol variableType = context.SemanticModel.GetTypeInfo(variableTypeName, context.CancellationToken).ConvertedType;
+            // 
+
+            // Ensure that all variables in the local declaration have initializers that
+            // are assigned with constant values.
+            foreach (VariableDeclaratorSyntax variable in localDeclaration.Declaration.Variables)
+            {
+                EqualsValueClauseSyntax initializer = variable.Initializer;
+                if (initializer == null)
+                {
+                    return;
+                }
+
+                Optional&lt;object&gt; constantValue = context.SemanticModel.GetConstantValue(initializer.Value, context.CancellationToken);
+                if (!constantValue.HasValue)
+                {
+                    return;
+                }
+
+                // 
+                // Ensure that the initializer value can be converted to the type of the
+                // local declaration without a user-defined conversion.
+                Conversion conversion = context.SemanticModel.ClassifyConversion(initializer.Value, variableType);
+                if (!conversion.Exists || conversion.IsUserDefined)
+                {
+                    return;
+                }
+                // 
+
+                // 
+                // Special cases:
+                //  * If the constant value is a string, the type of the local declaration
+                //    must be System.String.
+                //  * If the constant value is null, the type of the local declaration must
+                //    be a reference type.
+                if (constantValue.Value is string)
+                {
+                    if (variableType.SpecialType != SpecialType.System_String)
+                    {
+                        return;
+                    }
+                }
+                else if (variableType.IsReferenceType &amp;&amp; constantValue.Value != null)
+                {
+                    return;
+                }
+                // 
+            }
+
+            // Perform data flow analysis on the local declaration.
+            DataFlowAnalysis dataFlowAnalysis = context.SemanticModel.AnalyzeDataFlow(localDeclaration);
+
+            foreach (VariableDeclaratorSyntax variable in localDeclaration.Declaration.Variables)
+            {
+                // Retrieve the local symbol for each variable in the local declaration
+                // and ensure that it is not written outside of the data flow analysis region.
+                ISymbol variableSymbol = context.SemanticModel.GetDeclaredSymbol(variable, context.CancellationToken);
+                if (dataFlowAnalysis.WrittenOutside.Contains(variableSymbol))
+                {
+                    return;
+                }
+            }
+
+            // 
+            context.ReportDiagnostic(Diagnostic.Create(Rule, context.Node.GetLocation(), localDeclaration.Declaration.Variables.First().Identifier.ValueText));
+            // 
+        }
+    }
+}</code></pre></div></figure>
+<p>This cast always succeeds because your analyzer registered for changes to local declarations, and only local declarations. No other node type triggers a call to your <code>AnalyzeNode</code> method. Next, check the declaration for any <code>const</code> modifiers. If you find them, return immediately. The following code looks for any <code>const</code> modifiers on the local declaration:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">﻿using System;
+using System.Collections.Generic;
+using System.Collections.Immutable;
+using System.Linq;
+using System.Threading;
+using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
+using Microsoft.CodeAnalysis.Diagnostics;
+
+namespace MakeConst
+{
+    [DiagnosticAnalyzer(LanguageNames.CSharp)]
+    public class MakeConstAnalyzer : DiagnosticAnalyzer
+    {
+        public const string DiagnosticId = &quot;MakeConst&quot;;
+
+        // You can change these strings in the Resources.resx file. If you do not want your analyzer to be localize-able, you can use regular strings for Title and MessageFormat.
+        // See https://github.com/dotnet/roslyn/blob/main/docs/analyzers/Localizing%20Analyzers.md for more on localization
+        private static readonly LocalizableString Title = new LocalizableResourceString(nameof(Resources.AnalyzerTitle), Resources.ResourceManager, typeof(Resources));
+        private static readonly LocalizableString MessageFormat = new LocalizableResourceString(nameof(Resources.AnalyzerMessageFormat), Resources.ResourceManager, typeof(Resources));
+        private static readonly LocalizableString Description = new LocalizableResourceString(nameof(Resources.AnalyzerDescription), Resources.ResourceManager, typeof(Resources));
+        // 
+        private const string Category = &quot;Usage&quot;;
+        // 
+
+        private static DiagnosticDescriptor Rule = new DiagnosticDescriptor(DiagnosticId, Title, MessageFormat, Category, DiagnosticSeverity.Warning, isEnabledByDefault: true, description: Description);
+
+        public override ImmutableArray SupportedDiagnostics { get { return ImmutableArray.Create(Rule); } }
+
+        public override void Initialize(AnalysisContext context)
+        {
+             // See https://github.com/dotnet/roslyn/blob/main/docs/analyzers/Analyzer%20Actions%20Semantics.md for more information
+            context.ConfigureGeneratedCodeAnalysis(GeneratedCodeAnalysisFlags.None);
+            context.EnableConcurrentExecution();
+            // 
+            context.RegisterSyntaxNodeAction(AnalyzeNode, SyntaxKind.LocalDeclarationStatement);
+            // 
+        }
+
+        private void AnalyzeNode(SyntaxNodeAnalysisContext context)
+        {
+            // 
+            var localDeclaration = (LocalDeclarationStatementSyntax)context.Node;
+            // 
+
+            // 
+            // make sure the declaration isn&#x27;t already const:
+            if (localDeclaration.Modifiers.Any(SyntaxKind.ConstKeyword))
+            {
+                return;
+            }
+            // 
+
+            // 
+            TypeSyntax variableTypeName = localDeclaration.Declaration.Type;
+            ITypeSymbol variableType = context.SemanticModel.GetTypeInfo(variableTypeName, context.CancellationToken).ConvertedType;
+            // 
+
+            // Ensure that all variables in the local declaration have initializers that
+            // are assigned with constant values.
+            foreach (VariableDeclaratorSyntax variable in localDeclaration.Declaration.Variables)
+            {
+                EqualsValueClauseSyntax initializer = variable.Initializer;
+                if (initializer == null)
+                {
+                    return;
+                }
+
+                Optional&lt;object&gt; constantValue = context.SemanticModel.GetConstantValue(initializer.Value, context.CancellationToken);
+                if (!constantValue.HasValue)
+                {
+                    return;
+                }
+
+                // 
+                // Ensure that the initializer value can be converted to the type of the
+                // local declaration without a user-defined conversion.
+                Conversion conversion = context.SemanticModel.ClassifyConversion(initializer.Value, variableType);
+                if (!conversion.Exists || conversion.IsUserDefined)
+                {
+                    return;
+                }
+                // 
+
+                // 
+                // Special cases:
+                //  * If the constant value is a string, the type of the local declaration
+                //    must be System.String.
+                //  * If the constant value is null, the type of the local declaration must
+                //    be a reference type.
+                if (constantValue.Value is string)
+                {
+                    if (variableType.SpecialType != SpecialType.System_String)
+                    {
+                        return;
+                    }
+                }
+                else if (variableType.IsReferenceType &amp;&amp; constantValue.Value != null)
+                {
+                    return;
+                }
+                // 
+            }
+
+            // Perform data flow analysis on the local declaration.
+            DataFlowAnalysis dataFlowAnalysis = context.SemanticModel.AnalyzeDataFlow(localDeclaration);
+
+            foreach (VariableDeclaratorSyntax variable in localDeclaration.Declaration.Variables)
+            {
+                // Retrieve the local symbol for each variable in the local declaration
+                // and ensure that it is not written outside of the data flow analysis region.
+                ISymbol variableSymbol = context.SemanticModel.GetDeclaredSymbol(variable, context.CancellationToken);
+                if (dataFlowAnalysis.WrittenOutside.Contains(variableSymbol))
+                {
+                    return;
+                }
+            }
+
+            // 
+            context.ReportDiagnostic(Diagnostic.Create(Rule, context.Node.GetLocation(), localDeclaration.Declaration.Variables.First().Identifier.ValueText));
+            // 
+        }
+    }
+}</code></pre></div></figure>
+<p>Finally, you need to check that the variable could be <code>const</code>. That check makes sure the variable is never assigned after it&#39;s initialized.</p>
+<p>Perform some semantic analysis by using the <code>SyntaxNodeAnalysisContext</code>. Use the <code>context</code> argument to determine whether the local variable declaration can be made <code>const</code>. A <code>SemanticModel?displayProperty=nameWithType</code> represents all of semantic information in a single source file. You can learn more in the article that covers <a href="#/doc/csharp/roslyn-sdk/work-with-semantics">semantic models</a>. Use the <code>SemanticModel?displayProperty=nameWithType</code> to perform data flow analysis on the local declaration statement. Then, use the results of this data flow analysis to ensure that the local variable isn&#39;t written with a new value anywhere else. Call the <code>GetDeclaredSymbol</code> extension member to retrieve the <code>ILocalSymbol</code> for the variable and check that it isn&#39;t contained within the <code>WrittenOutside?displayProperty=nameWithType</code> collection of the data flow analysis. Add the following code to the end of the <code>AnalyzeNode</code> method:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">// Perform data flow analysis on the local declaration.
+DataFlowAnalysis dataFlowAnalysis = context.SemanticModel.AnalyzeDataFlow(localDeclaration);
+
+// Retrieve the local symbol for each variable in the local declaration
+// and ensure that it is not written outside of the data flow analysis region.
+VariableDeclaratorSyntax variable = localDeclaration.Declaration.Variables.Single();
+ISymbol variableSymbol = context.SemanticModel.GetDeclaredSymbol(variable, context.CancellationToken);
+if (dataFlowAnalysis.WrittenOutside.Contains(variableSymbol))
+{
+    return;
+}</code></pre></div></figure>
+<p>The code you just added ensures that the variable isn&#39;t modified, and can therefore be made <code>const</code>. It&#39;s time to raise the diagnostic. Add the following code as the last line in <code>AnalyzeNode</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">﻿using System;
+using System.Collections.Generic;
+using System.Collections.Immutable;
+using System.Linq;
+using System.Threading;
+using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
+using Microsoft.CodeAnalysis.Diagnostics;
+
+namespace MakeConst
+{
+    [DiagnosticAnalyzer(LanguageNames.CSharp)]
+    public class MakeConstAnalyzer : DiagnosticAnalyzer
+    {
+        public const string DiagnosticId = &quot;MakeConst&quot;;
+
+        // You can change these strings in the Resources.resx file. If you do not want your analyzer to be localize-able, you can use regular strings for Title and MessageFormat.
+        // See https://github.com/dotnet/roslyn/blob/main/docs/analyzers/Localizing%20Analyzers.md for more on localization
+        private static readonly LocalizableString Title = new LocalizableResourceString(nameof(Resources.AnalyzerTitle), Resources.ResourceManager, typeof(Resources));
+        private static readonly LocalizableString MessageFormat = new LocalizableResourceString(nameof(Resources.AnalyzerMessageFormat), Resources.ResourceManager, typeof(Resources));
+        private static readonly LocalizableString Description = new LocalizableResourceString(nameof(Resources.AnalyzerDescription), Resources.ResourceManager, typeof(Resources));
+        // 
+        private const string Category = &quot;Usage&quot;;
+        // 
+
+        private static DiagnosticDescriptor Rule = new DiagnosticDescriptor(DiagnosticId, Title, MessageFormat, Category, DiagnosticSeverity.Warning, isEnabledByDefault: true, description: Description);
+
+        public override ImmutableArray SupportedDiagnostics { get { return ImmutableArray.Create(Rule); } }
+
+        public override void Initialize(AnalysisContext context)
+        {
+             // See https://github.com/dotnet/roslyn/blob/main/docs/analyzers/Analyzer%20Actions%20Semantics.md for more information
+            context.ConfigureGeneratedCodeAnalysis(GeneratedCodeAnalysisFlags.None);
+            context.EnableConcurrentExecution();
+            // 
+            context.RegisterSyntaxNodeAction(AnalyzeNode, SyntaxKind.LocalDeclarationStatement);
+            // 
+        }
+
+        private void AnalyzeNode(SyntaxNodeAnalysisContext context)
+        {
+            // 
+            var localDeclaration = (LocalDeclarationStatementSyntax)context.Node;
+            // 
+
+            // 
+            // make sure the declaration isn&#x27;t already const:
+            if (localDeclaration.Modifiers.Any(SyntaxKind.ConstKeyword))
+            {
+                return;
+            }
+            // 
+
+            // 
+            TypeSyntax variableTypeName = localDeclaration.Declaration.Type;
+            ITypeSymbol variableType = context.SemanticModel.GetTypeInfo(variableTypeName, context.CancellationToken).ConvertedType;
+            // 
+
+            // Ensure that all variables in the local declaration have initializers that
+            // are assigned with constant values.
+            foreach (VariableDeclaratorSyntax variable in localDeclaration.Declaration.Variables)
+            {
+                EqualsValueClauseSyntax initializer = variable.Initializer;
+                if (initializer == null)
+                {
+                    return;
+                }
+
+                Optional&lt;object&gt; constantValue = context.SemanticModel.GetConstantValue(initializer.Value, context.CancellationToken);
+                if (!constantValue.HasValue)
+                {
+                    return;
+                }
+
+                // 
+                // Ensure that the initializer value can be converted to the type of the
+                // local declaration without a user-defined conversion.
+                Conversion conversion = context.SemanticModel.ClassifyConversion(initializer.Value, variableType);
+                if (!conversion.Exists || conversion.IsUserDefined)
+                {
+                    return;
+                }
+                // 
+
+                // 
+                // Special cases:
+                //  * If the constant value is a string, the type of the local declaration
+                //    must be System.String.
+                //  * If the constant value is null, the type of the local declaration must
+                //    be a reference type.
+                if (constantValue.Value is string)
+                {
+                    if (variableType.SpecialType != SpecialType.System_String)
+                    {
+                        return;
+                    }
+                }
+                else if (variableType.IsReferenceType &amp;&amp; constantValue.Value != null)
+                {
+                    return;
+                }
+                // 
+            }
+
+            // Perform data flow analysis on the local declaration.
+            DataFlowAnalysis dataFlowAnalysis = context.SemanticModel.AnalyzeDataFlow(localDeclaration);
+
+            foreach (VariableDeclaratorSyntax variable in localDeclaration.Declaration.Variables)
+            {
+                // Retrieve the local symbol for each variable in the local declaration
+                // and ensure that it is not written outside of the data flow analysis region.
+                ISymbol variableSymbol = context.SemanticModel.GetDeclaredSymbol(variable, context.CancellationToken);
+                if (dataFlowAnalysis.WrittenOutside.Contains(variableSymbol))
+                {
+                    return;
+                }
+            }
+
+            // 
+            context.ReportDiagnostic(Diagnostic.Create(Rule, context.Node.GetLocation(), localDeclaration.Declaration.Variables.First().Identifier.ValueText));
+            // 
+        }
+    }
+}</code></pre></div></figure>
+<p>You can check your progress by pressing <kbd>F5</kbd> to run your analyzer. You can load the console application you created earlier and then add the following test code:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">int x = 0;
+Console.WriteLine(x);</code></pre></div></figure>
+<p>The light bulb should appear, and your analyzer should report a diagnostic. However, depending on your version of Visual Studio, you&#39;ll either see:</p>
+<ul>
+<li>The light bulb, which still uses the template generated code fix, will tell you it can be made upper case.</li>
+<li>A banner message at the top of the editor saying the &#39;MakeConstCodeFixProvider&#39; encountered an error and has been disabled. This error occurs because the code fix provider hasn&#39;t yet been changed and still expects to find <code>TypeDeclarationSyntax</code> elements instead of <code>LocalDeclarationStatementSyntax</code> elements.</li>
+</ul>
+<p>The next section explains how to write the code fix.</p>
+<h2 id="write-the-code-fix">Write the code fix</h2>
+<p>An analyzer can provide one or more code fixes. A code fix defines an edit that addresses the reported issue. For the analyzer that you created, you can provide a code fix that inserts the const keyword:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Diff</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-diff"><span class="hljs-deletion">- int x = 0;</span>
+<span class="hljs-addition">+ const int x = 0;</span>
+Console.WriteLine(x);</code></pre></div></figure>
+<p>The user chooses it from the light bulb UI in the editor and Visual Studio changes the code.</p>
+<p>Open <em>CodeFixResources.resx</em> file and change <code>CodeFixTitle</code> to &quot;&quot;.</p>
+<p>Open the <em>MakeConstCodeFixProvider.cs</em> file added by the template. This code fix is already wired up to the Diagnostic ID produced by your diagnostic analyzer, but it doesn&#39;t yet implement the right code transform.</p>
+<p>Next, delete the <code>MakeUppercaseAsync</code> method. It no longer applies.</p>
+<p>All code fix providers derive from <code>CodeFixProvider</code>. They all override <code>CodeFixContext)?displayProperty=nameWithType</code> to report available code fixes. In <code>RegisterCodeFixesAsync</code>, change the ancestor node type you&#39;re searching for to a <code>LocalDeclarationStatementSyntax</code> to match the diagnostic:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">﻿using System;
+using System.Collections.Generic;
+using System.Collections.Immutable;
+using System.Composition;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
+using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CodeFixes;
+using Microsoft.CodeAnalysis.CodeActions;
+using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
+using Microsoft.CodeAnalysis.Rename;
+using Microsoft.CodeAnalysis.Text;
+using Microsoft.CodeAnalysis.Formatting;
+using Microsoft.CodeAnalysis.Simplification;
+
+namespace MakeConst
+{
+    [ExportCodeFixProvider(LanguageNames.CSharp, Name = nameof(MakeConstCodeFixProvider)), Shared]
+    public class MakeConstCodeFixProvider : CodeFixProvider
+    {
+        public sealed override ImmutableArray&lt;string&gt; FixableDiagnosticIds
+        {
+            get { return ImmutableArray.Create(MakeConstAnalyzer.DiagnosticId); }
+        }
+
+        public sealed override FixAllProvider GetFixAllProvider()
+        {
+            // See https://github.com/dotnet/roslyn/blob/main/docs/analyzers/FixAllProvider.md for more information on Fix All Providers
+            return WellKnownFixAllProviders.BatchFixer;
+        }
+
+        public sealed override async Task RegisterCodeFixesAsync(CodeFixContext context)
+        {
+            var root = await context.Document.GetSyntaxRootAsync(context.CancellationToken).ConfigureAwait(false);
+
+            // TODO: Replace the following code with your own analysis, generating a CodeAction for each fix to suggest
+            var diagnostic = context.Diagnostics.First();
+            var diagnosticSpan = diagnostic.Location.SourceSpan;
+
+            // Find the type declaration identified by the diagnostic.
+            // 
+            var declaration = root.FindToken(diagnosticSpan.Start).Parent.AncestorsAndSelf().OfType().First();
+            // 
+
+            // 
+            // Register a code action that will invoke the fix.
+            context.RegisterCodeFix(
+                CodeAction.Create(
+                    title: CodeFixResources.CodeFixTitle,
+                    createChangedDocument: c =&gt; MakeConstAsync(context.Document, declaration, c),
+                    equivalenceKey: nameof(CodeFixResources.CodeFixTitle)),
+                diagnostic);
+            // 
+        }
+
+        private static async Task MakeConstAsync(Document document,
+            LocalDeclarationStatementSyntax localDeclaration,
+            CancellationToken cancellationToken)
+        {
+            // 
+            // Remove the leading trivia from the local declaration.
+            SyntaxToken firstToken = localDeclaration.GetFirstToken();
+            SyntaxTriviaList leadingTrivia = firstToken.LeadingTrivia;
+            LocalDeclarationStatementSyntax trimmedLocal = localDeclaration.ReplaceToken(
+                firstToken, firstToken.WithLeadingTrivia(SyntaxTriviaList.Empty));
+
+            // Create a const token with the leading trivia.
+            SyntaxToken constToken = SyntaxFactory.Token(leadingTrivia, SyntaxKind.ConstKeyword, SyntaxFactory.TriviaList(SyntaxFactory.ElasticMarker));
+            // 
+
+            // Insert the const token into the modifiers list, creating a new modifiers list.
+            SyntaxTokenList newModifiers = trimmedLocal.Modifiers.Insert(0, constToken);
+
+            //
+            // If the type of the declaration is &#x27;var&#x27;, create a new type name
+            // for the inferred type.
+            VariableDeclarationSyntax variableDeclaration = localDeclaration.Declaration;
+            TypeSyntax variableTypeName = variableDeclaration.Type;
+            if (variableTypeName.IsVar)
+            {
+                SemanticModel semanticModel = await document.GetSemanticModelAsync(cancellationToken).ConfigureAwait(false);
+
+                // Special case: Ensure that &#x27;var&#x27; isn&#x27;t actually an alias to another type
+                // (e.g. using var = System.String).
+                IAliasSymbol aliasInfo = semanticModel.GetAliasInfo(variableTypeName, cancellationToken);
+                if (aliasInfo == null)
+                {
+                    // Retrieve the type inferred for var.
+                    ITypeSymbol type = semanticModel.GetTypeInfo(variableTypeName, cancellationToken).ConvertedType;
+
+                    // Special case: Ensure that &#x27;var&#x27; isn&#x27;t actually a type named &#x27;var&#x27;.
+                    if (type.Name != &quot;var&quot;)
+                    {
+                        // Create a new TypeSyntax for the inferred type. Be careful
+                        // to keep any leading and trailing trivia from the var keyword.
+                        TypeSyntax typeName = SyntaxFactory.ParseTypeName(type.ToDisplayString())
+                            .WithLeadingTrivia(variableTypeName.GetLeadingTrivia())
+                            .WithTrailingTrivia(variableTypeName.GetTrailingTrivia());
+
+                        // Add an annotation to simplify the type name.
+                        TypeSyntax simplifiedTypeName = typeName.WithAdditionalAnnotations(Simplifier.Annotation);
+
+                        // Replace the type in the variable declaration.
+                        variableDeclaration = variableDeclaration.WithType(simplifiedTypeName);
+                    }
+                }
+            }
+            // Produce the new local declaration.
+            LocalDeclarationStatementSyntax newLocal = trimmedLocal.WithModifiers(newModifiers)
+                                       .WithDeclaration(variableDeclaration);
+            //
+
+            // 
+            // Add an annotation to format the new local declaration.
+            LocalDeclarationStatementSyntax formattedLocal = newLocal.WithAdditionalAnnotations(Formatter.Annotation);
+            // 
+
+            // 
+            // Replace the old local declaration with the new local declaration.
+            SyntaxNode oldRoot = await document.GetSyntaxRootAsync(cancellationToken).ConfigureAwait(false);
+            SyntaxNode newRoot = oldRoot.ReplaceNode(localDeclaration, formattedLocal);
+
+            // Return document with transformed tree.
+            return document.WithSyntaxRoot(newRoot);
+            // 
+        }
+    }
+}</code></pre></div></figure>
+<p>Next, change the last line to register a code fix. Your fix creates a new document that results from adding the <code>const</code> modifier to an existing declaration:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">﻿using System;
+using System.Collections.Generic;
+using System.Collections.Immutable;
+using System.Composition;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
+using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CodeFixes;
+using Microsoft.CodeAnalysis.CodeActions;
+using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
+using Microsoft.CodeAnalysis.Rename;
+using Microsoft.CodeAnalysis.Text;
+using Microsoft.CodeAnalysis.Formatting;
+using Microsoft.CodeAnalysis.Simplification;
+
+namespace MakeConst
+{
+    [ExportCodeFixProvider(LanguageNames.CSharp, Name = nameof(MakeConstCodeFixProvider)), Shared]
+    public class MakeConstCodeFixProvider : CodeFixProvider
+    {
+        public sealed override ImmutableArray&lt;string&gt; FixableDiagnosticIds
+        {
+            get { return ImmutableArray.Create(MakeConstAnalyzer.DiagnosticId); }
+        }
+
+        public sealed override FixAllProvider GetFixAllProvider()
+        {
+            // See https://github.com/dotnet/roslyn/blob/main/docs/analyzers/FixAllProvider.md for more information on Fix All Providers
+            return WellKnownFixAllProviders.BatchFixer;
+        }
+
+        public sealed override async Task RegisterCodeFixesAsync(CodeFixContext context)
+        {
+            var root = await context.Document.GetSyntaxRootAsync(context.CancellationToken).ConfigureAwait(false);
+
+            // TODO: Replace the following code with your own analysis, generating a CodeAction for each fix to suggest
+            var diagnostic = context.Diagnostics.First();
+            var diagnosticSpan = diagnostic.Location.SourceSpan;
+
+            // Find the type declaration identified by the diagnostic.
+            // 
+            var declaration = root.FindToken(diagnosticSpan.Start).Parent.AncestorsAndSelf().OfType().First();
+            // 
+
+            // 
+            // Register a code action that will invoke the fix.
+            context.RegisterCodeFix(
+                CodeAction.Create(
+                    title: CodeFixResources.CodeFixTitle,
+                    createChangedDocument: c =&gt; MakeConstAsync(context.Document, declaration, c),
+                    equivalenceKey: nameof(CodeFixResources.CodeFixTitle)),
+                diagnostic);
+            // 
+        }
+
+        private static async Task MakeConstAsync(Document document,
+            LocalDeclarationStatementSyntax localDeclaration,
+            CancellationToken cancellationToken)
+        {
+            // 
+            // Remove the leading trivia from the local declaration.
+            SyntaxToken firstToken = localDeclaration.GetFirstToken();
+            SyntaxTriviaList leadingTrivia = firstToken.LeadingTrivia;
+            LocalDeclarationStatementSyntax trimmedLocal = localDeclaration.ReplaceToken(
+                firstToken, firstToken.WithLeadingTrivia(SyntaxTriviaList.Empty));
+
+            // Create a const token with the leading trivia.
+            SyntaxToken constToken = SyntaxFactory.Token(leadingTrivia, SyntaxKind.ConstKeyword, SyntaxFactory.TriviaList(SyntaxFactory.ElasticMarker));
+            // 
+
+            // Insert the const token into the modifiers list, creating a new modifiers list.
+            SyntaxTokenList newModifiers = trimmedLocal.Modifiers.Insert(0, constToken);
+
+            //
+            // If the type of the declaration is &#x27;var&#x27;, create a new type name
+            // for the inferred type.
+            VariableDeclarationSyntax variableDeclaration = localDeclaration.Declaration;
+            TypeSyntax variableTypeName = variableDeclaration.Type;
+            if (variableTypeName.IsVar)
+            {
+                SemanticModel semanticModel = await document.GetSemanticModelAsync(cancellationToken).ConfigureAwait(false);
+
+                // Special case: Ensure that &#x27;var&#x27; isn&#x27;t actually an alias to another type
+                // (e.g. using var = System.String).
+                IAliasSymbol aliasInfo = semanticModel.GetAliasInfo(variableTypeName, cancellationToken);
+                if (aliasInfo == null)
+                {
+                    // Retrieve the type inferred for var.
+                    ITypeSymbol type = semanticModel.GetTypeInfo(variableTypeName, cancellationToken).ConvertedType;
+
+                    // Special case: Ensure that &#x27;var&#x27; isn&#x27;t actually a type named &#x27;var&#x27;.
+                    if (type.Name != &quot;var&quot;)
+                    {
+                        // Create a new TypeSyntax for the inferred type. Be careful
+                        // to keep any leading and trailing trivia from the var keyword.
+                        TypeSyntax typeName = SyntaxFactory.ParseTypeName(type.ToDisplayString())
+                            .WithLeadingTrivia(variableTypeName.GetLeadingTrivia())
+                            .WithTrailingTrivia(variableTypeName.GetTrailingTrivia());
+
+                        // Add an annotation to simplify the type name.
+                        TypeSyntax simplifiedTypeName = typeName.WithAdditionalAnnotations(Simplifier.Annotation);
+
+                        // Replace the type in the variable declaration.
+                        variableDeclaration = variableDeclaration.WithType(simplifiedTypeName);
+                    }
+                }
+            }
+            // Produce the new local declaration.
+            LocalDeclarationStatementSyntax newLocal = trimmedLocal.WithModifiers(newModifiers)
+                                       .WithDeclaration(variableDeclaration);
+            //
+
+            // 
+            // Add an annotation to format the new local declaration.
+            LocalDeclarationStatementSyntax formattedLocal = newLocal.WithAdditionalAnnotations(Formatter.Annotation);
+            // 
+
+            // 
+            // Replace the old local declaration with the new local declaration.
+            SyntaxNode oldRoot = await document.GetSyntaxRootAsync(cancellationToken).ConfigureAwait(false);
+            SyntaxNode newRoot = oldRoot.ReplaceNode(localDeclaration, formattedLocal);
+
+            // Return document with transformed tree.
+            return document.WithSyntaxRoot(newRoot);
+            // 
+        }
+    }
+}</code></pre></div></figure>
+<p>You&#39;ll notice red squiggles in the code you just added on the symbol <code>MakeConstAsync</code>. Add a declaration for <code>MakeConstAsync</code> like the following code:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">private static async Task MakeConstAsync(Document document,
+    LocalDeclarationStatementSyntax localDeclaration,
+    CancellationToken cancellationToken)
+{
+}</code></pre></div></figure>
+<p>Your new <code>MakeConstAsync</code> method transforms the <code>Document</code> representing the user&#39;s source file into a new <code>Document</code> that now contains a <code>const</code> declaration.</p>
+<p>You create a new <code>const</code> keyword token to insert at the front of the declaration statement. Be careful to first remove any leading trivia from the first token of the declaration statement and attach it to the <code>const</code> token. Add the following code to the <code>MakeConstAsync</code> method:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">﻿using System;
+using System.Collections.Generic;
+using System.Collections.Immutable;
+using System.Composition;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
+using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CodeFixes;
+using Microsoft.CodeAnalysis.CodeActions;
+using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
+using Microsoft.CodeAnalysis.Rename;
+using Microsoft.CodeAnalysis.Text;
+using Microsoft.CodeAnalysis.Formatting;
+using Microsoft.CodeAnalysis.Simplification;
+
+namespace MakeConst
+{
+    [ExportCodeFixProvider(LanguageNames.CSharp, Name = nameof(MakeConstCodeFixProvider)), Shared]
+    public class MakeConstCodeFixProvider : CodeFixProvider
+    {
+        public sealed override ImmutableArray&lt;string&gt; FixableDiagnosticIds
+        {
+            get { return ImmutableArray.Create(MakeConstAnalyzer.DiagnosticId); }
+        }
+
+        public sealed override FixAllProvider GetFixAllProvider()
+        {
+            // See https://github.com/dotnet/roslyn/blob/main/docs/analyzers/FixAllProvider.md for more information on Fix All Providers
+            return WellKnownFixAllProviders.BatchFixer;
+        }
+
+        public sealed override async Task RegisterCodeFixesAsync(CodeFixContext context)
+        {
+            var root = await context.Document.GetSyntaxRootAsync(context.CancellationToken).ConfigureAwait(false);
+
+            // TODO: Replace the following code with your own analysis, generating a CodeAction for each fix to suggest
+            var diagnostic = context.Diagnostics.First();
+            var diagnosticSpan = diagnostic.Location.SourceSpan;
+
+            // Find the type declaration identified by the diagnostic.
+            // 
+            var declaration = root.FindToken(diagnosticSpan.Start).Parent.AncestorsAndSelf().OfType().First();
+            // 
+
+            // 
+            // Register a code action that will invoke the fix.
+            context.RegisterCodeFix(
+                CodeAction.Create(
+                    title: CodeFixResources.CodeFixTitle,
+                    createChangedDocument: c =&gt; MakeConstAsync(context.Document, declaration, c),
+                    equivalenceKey: nameof(CodeFixResources.CodeFixTitle)),
+                diagnostic);
+            // 
+        }
+
+        private static async Task MakeConstAsync(Document document,
+            LocalDeclarationStatementSyntax localDeclaration,
+            CancellationToken cancellationToken)
+        {
+            // 
+            // Remove the leading trivia from the local declaration.
+            SyntaxToken firstToken = localDeclaration.GetFirstToken();
+            SyntaxTriviaList leadingTrivia = firstToken.LeadingTrivia;
+            LocalDeclarationStatementSyntax trimmedLocal = localDeclaration.ReplaceToken(
+                firstToken, firstToken.WithLeadingTrivia(SyntaxTriviaList.Empty));
+
+            // Create a const token with the leading trivia.
+            SyntaxToken constToken = SyntaxFactory.Token(leadingTrivia, SyntaxKind.ConstKeyword, SyntaxFactory.TriviaList(SyntaxFactory.ElasticMarker));
+            // 
+
+            // Insert the const token into the modifiers list, creating a new modifiers list.
+            SyntaxTokenList newModifiers = trimmedLocal.Modifiers.Insert(0, constToken);
+
+            //
+            // If the type of the declaration is &#x27;var&#x27;, create a new type name
+            // for the inferred type.
+            VariableDeclarationSyntax variableDeclaration = localDeclaration.Declaration;
+            TypeSyntax variableTypeName = variableDeclaration.Type;
+            if (variableTypeName.IsVar)
+            {
+                SemanticModel semanticModel = await document.GetSemanticModelAsync(cancellationToken).ConfigureAwait(false);
+
+                // Special case: Ensure that &#x27;var&#x27; isn&#x27;t actually an alias to another type
+                // (e.g. using var = System.String).
+                IAliasSymbol aliasInfo = semanticModel.GetAliasInfo(variableTypeName, cancellationToken);
+                if (aliasInfo == null)
+                {
+                    // Retrieve the type inferred for var.
+                    ITypeSymbol type = semanticModel.GetTypeInfo(variableTypeName, cancellationToken).ConvertedType;
+
+                    // Special case: Ensure that &#x27;var&#x27; isn&#x27;t actually a type named &#x27;var&#x27;.
+                    if (type.Name != &quot;var&quot;)
+                    {
+                        // Create a new TypeSyntax for the inferred type. Be careful
+                        // to keep any leading and trailing trivia from the var keyword.
+                        TypeSyntax typeName = SyntaxFactory.ParseTypeName(type.ToDisplayString())
+                            .WithLeadingTrivia(variableTypeName.GetLeadingTrivia())
+                            .WithTrailingTrivia(variableTypeName.GetTrailingTrivia());
+
+                        // Add an annotation to simplify the type name.
+                        TypeSyntax simplifiedTypeName = typeName.WithAdditionalAnnotations(Simplifier.Annotation);
+
+                        // Replace the type in the variable declaration.
+                        variableDeclaration = variableDeclaration.WithType(simplifiedTypeName);
+                    }
+                }
+            }
+            // Produce the new local declaration.
+            LocalDeclarationStatementSyntax newLocal = trimmedLocal.WithModifiers(newModifiers)
+                                       .WithDeclaration(variableDeclaration);
+            //
+
+            // 
+            // Add an annotation to format the new local declaration.
+            LocalDeclarationStatementSyntax formattedLocal = newLocal.WithAdditionalAnnotations(Formatter.Annotation);
+            // 
+
+            // 
+            // Replace the old local declaration with the new local declaration.
+            SyntaxNode oldRoot = await document.GetSyntaxRootAsync(cancellationToken).ConfigureAwait(false);
+            SyntaxNode newRoot = oldRoot.ReplaceNode(localDeclaration, formattedLocal);
+
+            // Return document with transformed tree.
+            return document.WithSyntaxRoot(newRoot);
+            // 
+        }
+    }
+}</code></pre></div></figure>
+<p>Next, add the <code>const</code> token to the declaration using the following code:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">// Insert the const token into the modifiers list, creating a new modifiers list.
+SyntaxTokenList newModifiers = trimmedLocal.Modifiers.Insert(0, constToken);
+// Produce the new local declaration.
+LocalDeclarationStatementSyntax newLocal = trimmedLocal
+    .WithModifiers(newModifiers)
+    .WithDeclaration(localDeclaration.Declaration);</code></pre></div></figure>
+<p>Next, format the new declaration to match C# formatting rules. Formatting your changes to match existing code creates a better experience. Add the following statement immediately after the existing code:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">﻿using System;
+using System.Collections.Generic;
+using System.Collections.Immutable;
+using System.Composition;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
+using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CodeFixes;
+using Microsoft.CodeAnalysis.CodeActions;
+using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
+using Microsoft.CodeAnalysis.Rename;
+using Microsoft.CodeAnalysis.Text;
+using Microsoft.CodeAnalysis.Formatting;
+using Microsoft.CodeAnalysis.Simplification;
+
+namespace MakeConst
+{
+    [ExportCodeFixProvider(LanguageNames.CSharp, Name = nameof(MakeConstCodeFixProvider)), Shared]
+    public class MakeConstCodeFixProvider : CodeFixProvider
+    {
+        public sealed override ImmutableArray&lt;string&gt; FixableDiagnosticIds
+        {
+            get { return ImmutableArray.Create(MakeConstAnalyzer.DiagnosticId); }
+        }
+
+        public sealed override FixAllProvider GetFixAllProvider()
+        {
+            // See https://github.com/dotnet/roslyn/blob/main/docs/analyzers/FixAllProvider.md for more information on Fix All Providers
+            return WellKnownFixAllProviders.BatchFixer;
+        }
+
+        public sealed override async Task RegisterCodeFixesAsync(CodeFixContext context)
+        {
+            var root = await context.Document.GetSyntaxRootAsync(context.CancellationToken).ConfigureAwait(false);
+
+            // TODO: Replace the following code with your own analysis, generating a CodeAction for each fix to suggest
+            var diagnostic = context.Diagnostics.First();
+            var diagnosticSpan = diagnostic.Location.SourceSpan;
+
+            // Find the type declaration identified by the diagnostic.
+            // 
+            var declaration = root.FindToken(diagnosticSpan.Start).Parent.AncestorsAndSelf().OfType().First();
+            // 
+
+            // 
+            // Register a code action that will invoke the fix.
+            context.RegisterCodeFix(
+                CodeAction.Create(
+                    title: CodeFixResources.CodeFixTitle,
+                    createChangedDocument: c =&gt; MakeConstAsync(context.Document, declaration, c),
+                    equivalenceKey: nameof(CodeFixResources.CodeFixTitle)),
+                diagnostic);
+            // 
+        }
+
+        private static async Task MakeConstAsync(Document document,
+            LocalDeclarationStatementSyntax localDeclaration,
+            CancellationToken cancellationToken)
+        {
+            // 
+            // Remove the leading trivia from the local declaration.
+            SyntaxToken firstToken = localDeclaration.GetFirstToken();
+            SyntaxTriviaList leadingTrivia = firstToken.LeadingTrivia;
+            LocalDeclarationStatementSyntax trimmedLocal = localDeclaration.ReplaceToken(
+                firstToken, firstToken.WithLeadingTrivia(SyntaxTriviaList.Empty));
+
+            // Create a const token with the leading trivia.
+            SyntaxToken constToken = SyntaxFactory.Token(leadingTrivia, SyntaxKind.ConstKeyword, SyntaxFactory.TriviaList(SyntaxFactory.ElasticMarker));
+            // 
+
+            // Insert the const token into the modifiers list, creating a new modifiers list.
+            SyntaxTokenList newModifiers = trimmedLocal.Modifiers.Insert(0, constToken);
+
+            //
+            // If the type of the declaration is &#x27;var&#x27;, create a new type name
+            // for the inferred type.
+            VariableDeclarationSyntax variableDeclaration = localDeclaration.Declaration;
+            TypeSyntax variableTypeName = variableDeclaration.Type;
+            if (variableTypeName.IsVar)
+            {
+                SemanticModel semanticModel = await document.GetSemanticModelAsync(cancellationToken).ConfigureAwait(false);
+
+                // Special case: Ensure that &#x27;var&#x27; isn&#x27;t actually an alias to another type
+                // (e.g. using var = System.String).
+                IAliasSymbol aliasInfo = semanticModel.GetAliasInfo(variableTypeName, cancellationToken);
+                if (aliasInfo == null)
+                {
+                    // Retrieve the type inferred for var.
+                    ITypeSymbol type = semanticModel.GetTypeInfo(variableTypeName, cancellationToken).ConvertedType;
+
+                    // Special case: Ensure that &#x27;var&#x27; isn&#x27;t actually a type named &#x27;var&#x27;.
+                    if (type.Name != &quot;var&quot;)
+                    {
+                        // Create a new TypeSyntax for the inferred type. Be careful
+                        // to keep any leading and trailing trivia from the var keyword.
+                        TypeSyntax typeName = SyntaxFactory.ParseTypeName(type.ToDisplayString())
+                            .WithLeadingTrivia(variableTypeName.GetLeadingTrivia())
+                            .WithTrailingTrivia(variableTypeName.GetTrailingTrivia());
+
+                        // Add an annotation to simplify the type name.
+                        TypeSyntax simplifiedTypeName = typeName.WithAdditionalAnnotations(Simplifier.Annotation);
+
+                        // Replace the type in the variable declaration.
+                        variableDeclaration = variableDeclaration.WithType(simplifiedTypeName);
+                    }
+                }
+            }
+            // Produce the new local declaration.
+            LocalDeclarationStatementSyntax newLocal = trimmedLocal.WithModifiers(newModifiers)
+                                       .WithDeclaration(variableDeclaration);
+            //
+
+            // 
+            // Add an annotation to format the new local declaration.
+            LocalDeclarationStatementSyntax formattedLocal = newLocal.WithAdditionalAnnotations(Formatter.Annotation);
+            // 
+
+            // 
+            // Replace the old local declaration with the new local declaration.
+            SyntaxNode oldRoot = await document.GetSyntaxRootAsync(cancellationToken).ConfigureAwait(false);
+            SyntaxNode newRoot = oldRoot.ReplaceNode(localDeclaration, formattedLocal);
+
+            // Return document with transformed tree.
+            return document.WithSyntaxRoot(newRoot);
+            // 
+        }
+    }
+}</code></pre></div></figure>
+<p>A new namespace is required for this code. Add the following <code>using</code> directive to the top of the file:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">using Microsoft.CodeAnalysis.Formatting;</code></pre></div></figure>
+<p>The final step is to make your edit. There are three steps to this process:</p>
+<ol>
+<li>Get a handle to the existing document.</li>
+<li>Create a new document by replacing the existing declaration with the new declaration.</li>
+<li>Return the new document.</li>
+</ol>
+<p>Add the following code to the end of the <code>MakeConstAsync</code> method:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">﻿using System;
+using System.Collections.Generic;
+using System.Collections.Immutable;
+using System.Composition;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
+using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CodeFixes;
+using Microsoft.CodeAnalysis.CodeActions;
+using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
+using Microsoft.CodeAnalysis.Rename;
+using Microsoft.CodeAnalysis.Text;
+using Microsoft.CodeAnalysis.Formatting;
+using Microsoft.CodeAnalysis.Simplification;
+
+namespace MakeConst
+{
+    [ExportCodeFixProvider(LanguageNames.CSharp, Name = nameof(MakeConstCodeFixProvider)), Shared]
+    public class MakeConstCodeFixProvider : CodeFixProvider
+    {
+        public sealed override ImmutableArray&lt;string&gt; FixableDiagnosticIds
+        {
+            get { return ImmutableArray.Create(MakeConstAnalyzer.DiagnosticId); }
+        }
+
+        public sealed override FixAllProvider GetFixAllProvider()
+        {
+            // See https://github.com/dotnet/roslyn/blob/main/docs/analyzers/FixAllProvider.md for more information on Fix All Providers
+            return WellKnownFixAllProviders.BatchFixer;
+        }
+
+        public sealed override async Task RegisterCodeFixesAsync(CodeFixContext context)
+        {
+            var root = await context.Document.GetSyntaxRootAsync(context.CancellationToken).ConfigureAwait(false);
+
+            // TODO: Replace the following code with your own analysis, generating a CodeAction for each fix to suggest
+            var diagnostic = context.Diagnostics.First();
+            var diagnosticSpan = diagnostic.Location.SourceSpan;
+
+            // Find the type declaration identified by the diagnostic.
+            // 
+            var declaration = root.FindToken(diagnosticSpan.Start).Parent.AncestorsAndSelf().OfType().First();
+            // 
+
+            // 
+            // Register a code action that will invoke the fix.
+            context.RegisterCodeFix(
+                CodeAction.Create(
+                    title: CodeFixResources.CodeFixTitle,
+                    createChangedDocument: c =&gt; MakeConstAsync(context.Document, declaration, c),
+                    equivalenceKey: nameof(CodeFixResources.CodeFixTitle)),
+                diagnostic);
+            // 
+        }
+
+        private static async Task MakeConstAsync(Document document,
+            LocalDeclarationStatementSyntax localDeclaration,
+            CancellationToken cancellationToken)
+        {
+            // 
+            // Remove the leading trivia from the local declaration.
+            SyntaxToken firstToken = localDeclaration.GetFirstToken();
+            SyntaxTriviaList leadingTrivia = firstToken.LeadingTrivia;
+            LocalDeclarationStatementSyntax trimmedLocal = localDeclaration.ReplaceToken(
+                firstToken, firstToken.WithLeadingTrivia(SyntaxTriviaList.Empty));
+
+            // Create a const token with the leading trivia.
+            SyntaxToken constToken = SyntaxFactory.Token(leadingTrivia, SyntaxKind.ConstKeyword, SyntaxFactory.TriviaList(SyntaxFactory.ElasticMarker));
+            // 
+
+            // Insert the const token into the modifiers list, creating a new modifiers list.
+            SyntaxTokenList newModifiers = trimmedLocal.Modifiers.Insert(0, constToken);
+
+            //
+            // If the type of the declaration is &#x27;var&#x27;, create a new type name
+            // for the inferred type.
+            VariableDeclarationSyntax variableDeclaration = localDeclaration.Declaration;
+            TypeSyntax variableTypeName = variableDeclaration.Type;
+            if (variableTypeName.IsVar)
+            {
+                SemanticModel semanticModel = await document.GetSemanticModelAsync(cancellationToken).ConfigureAwait(false);
+
+                // Special case: Ensure that &#x27;var&#x27; isn&#x27;t actually an alias to another type
+                // (e.g. using var = System.String).
+                IAliasSymbol aliasInfo = semanticModel.GetAliasInfo(variableTypeName, cancellationToken);
+                if (aliasInfo == null)
+                {
+                    // Retrieve the type inferred for var.
+                    ITypeSymbol type = semanticModel.GetTypeInfo(variableTypeName, cancellationToken).ConvertedType;
+
+                    // Special case: Ensure that &#x27;var&#x27; isn&#x27;t actually a type named &#x27;var&#x27;.
+                    if (type.Name != &quot;var&quot;)
+                    {
+                        // Create a new TypeSyntax for the inferred type. Be careful
+                        // to keep any leading and trailing trivia from the var keyword.
+                        TypeSyntax typeName = SyntaxFactory.ParseTypeName(type.ToDisplayString())
+                            .WithLeadingTrivia(variableTypeName.GetLeadingTrivia())
+                            .WithTrailingTrivia(variableTypeName.GetTrailingTrivia());
+
+                        // Add an annotation to simplify the type name.
+                        TypeSyntax simplifiedTypeName = typeName.WithAdditionalAnnotations(Simplifier.Annotation);
+
+                        // Replace the type in the variable declaration.
+                        variableDeclaration = variableDeclaration.WithType(simplifiedTypeName);
+                    }
+                }
+            }
+            // Produce the new local declaration.
+            LocalDeclarationStatementSyntax newLocal = trimmedLocal.WithModifiers(newModifiers)
+                                       .WithDeclaration(variableDeclaration);
+            //
+
+            // 
+            // Add an annotation to format the new local declaration.
+            LocalDeclarationStatementSyntax formattedLocal = newLocal.WithAdditionalAnnotations(Formatter.Annotation);
+            // 
+
+            // 
+            // Replace the old local declaration with the new local declaration.
+            SyntaxNode oldRoot = await document.GetSyntaxRootAsync(cancellationToken).ConfigureAwait(false);
+            SyntaxNode newRoot = oldRoot.ReplaceNode(localDeclaration, formattedLocal);
+
+            // Return document with transformed tree.
+            return document.WithSyntaxRoot(newRoot);
+            // 
+        }
+    }
+}</code></pre></div></figure>
+<p>Your code fix is ready to try.  Press <kbd>F5</kbd> to run the analyzer project in a second instance of Visual Studio. In the second Visual Studio instance, create a new C# Console Application project and add a few local variable declarations initialized with constant values to the Main method. You see that they&#39;re reported as warnings as shown in the following image.</p>
+<p><img src="media/how-to-write-csharp-analyzer-code-fix/make-const-warning.png" alt="Can make const warnings"></p>
+<p>You&#39;ve made a lot of progress. There are squiggles under the declarations that can be made <code>const</code>. But there is still work to do. This works fine if you add <code>const</code> to the declarations starting with <code>i</code>, then <code>j</code>, and finally <code>k</code>. But, if you add the <code>const</code> modifier in a different order, starting with <code>k</code>, your analyzer creates errors: <code>k</code> can&#39;t be declared <code>const</code>, unless <code>i</code> and <code>j</code> are both already <code>const</code>. You need to do more analysis to ensure you handle the different ways variables can be declared and initialized.</p>
+<h2 id="build-unit-tests">Build unit tests</h2>
+<p>Your analyzer and code fix work on a simple case of a single declaration that you can make const. Numerous possible declaration statements exist where this implementation makes mistakes. You&#39;ll address these cases by working with the unit test library written by the template. It&#39;s much faster than repeatedly opening a second copy of Visual Studio.</p>
+<p>Open the <em>MakeConstUnitTests.cs</em> file in the unit test project. The template created two tests that follow the two common patterns for an analyzer and code fix unit test. <code>TestMethod1</code> shows the pattern for a test that ensures the analyzer doesn&#39;t report a diagnostic when it shouldn&#39;t. <code>TestMethod2</code> shows the pattern for reporting a diagnostic and running the code fix.</p>
+<p>The template uses <a target="_blank" rel="noopener" href="https://github.com/dotnet/roslyn-sdk/blob/main/src/RoslynSdk/Microsoft.CodeAnalysis.Testing/README.md">Microsoft.CodeAnalysis.Testing</a> packages for unit testing.</p>
+<aside class="callout callout-tip"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M9.5 18h5M10.5 21h3M12 3a6 6 0 0 0-3.6 10.8c.7.6 1.1 1.3 1.3 2.2h4.6c.2-.9.6-1.6 1.3-2.2A6 6 0 0 0 12 3Z" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round"/></svg></span><div class="callout-body"><p class="callout-title">Tip</p><p>The testing library supports a special markup syntax, including the following:</p>
+<ul>
+<li><code>[|text|]</code>: indicates that a diagnostic is reported for <code>text</code>. By default, this form may only be used for testing analyzers with exactly one <code>DiagnosticDescriptor</code> provided by <code>DiagnosticAnalyzer.SupportedDiagnostics</code>.</li>
+<li><code>{|ExpectedDiagnosticId:text|}</code>: indicates that a diagnostic with <code>Id</code> <code>ExpectedDiagnosticId</code> is reported for <code>text</code>.</li>
+</ul>
+</div></aside>
+<p>Replace the template tests in the <code>MakeConstUnitTest</code> class with the following test method:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">﻿using System.Threading.Tasks;
+using Microsoft.VisualStudio.TestTools.UnitTesting;
+using VerifyCS = MakeConst.Test.CSharpCodeFixVerifier&lt;
+    MakeConst.MakeConstAnalyzer,
+    MakeConst.MakeConstCodeFixProvider&gt;;
+
+namespace MakeConst.Test
+{
+    [TestClass]
+    public class MakeConstUnitTest
+    {
+        // 
+        [TestMethod]
+        public async Task VariableIsAssigned_NoDiagnostic()
+        {
+            await VerifyCS.VerifyAnalyzerAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        int i = 0;
+        Console.WriteLine(i++);
+    }
+}
+&quot;);
+        }
+        // 
+
+        // 
+        [TestMethod]
+        public async Task VariableIsAlreadyConst_NoDiagnostic()
+        {
+            await VerifyCS.VerifyAnalyzerAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        const int i = 0;
+        Console.WriteLine(i);
+    }
+}
+&quot;);
+        }
+        // 
+
+        // 
+        [TestMethod]
+        public async Task NoInitializer_NoDiagnostic()
+        {
+            await VerifyCS.VerifyAnalyzerAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        int i;
+        i = 0;
+        Console.WriteLine(i);
+    }
+}
+&quot;);
+        }
+        // 
+
+        // 
+        [TestMethod]
+        public async Task InitializerIsNotConstant_NoDiagnostic()
+        {
+            await VerifyCS.VerifyAnalyzerAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        int i = DateTime.Now.DayOfYear;
+        Console.WriteLine(i);
+    }
+}
+&quot;);
+        }
+        // 
+
+        // 
+        [TestMethod]
+        public async Task MultipleInitializers_NoDiagnostic()
+        {
+            await VerifyCS.VerifyAnalyzerAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        int i = 0, j = DateTime.Now.DayOfYear;
+        Console.WriteLine(i);
+        Console.WriteLine(j);
+    }
+}
+&quot;);
+        }
+        // 
+
+        // 
+        [TestMethod]
+        public async Task DeclarationIsInvalid_NoDiagnostic()
+        {
+            await VerifyCS.VerifyAnalyzerAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        int x = {|CS0029:&quot;&quot;abc&quot;&quot;|};
+    }
+}
+&quot;);
+        }
+        // 
+
+        // 
+        [TestMethod]
+        public async Task DeclarationIsNotString_NoDiagnostic()
+        {
+            await VerifyCS.VerifyAnalyzerAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        object s = &quot;&quot;abc&quot;&quot;;
+    }
+}
+&quot;);
+        }
+        // 
+
+
+        //
+        [TestMethod]
+        public async Task LocalIntCouldBeConstant_Diagnostic()
+        {
+            await VerifyCS.VerifyCodeFixAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        [|int i = 0;|]
+        Console.WriteLine(i);
+    }
+}
+&quot;, @&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        const int i = 0;
+        Console.WriteLine(i);
+    }
+}
+&quot;);
+        }
+        //
+
+
+        // 
+        [TestMethod]
+        public async Task StringCouldBeConstant_Diagnostic()
+        {
+            await VerifyCS.VerifyCodeFixAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        [|string s = &quot;&quot;abc&quot;&quot;;|]
+    }
+}
+&quot;, @&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        const string s = &quot;&quot;abc&quot;&quot;;
+    }
+}
+&quot;);
+        }
+        // 
+
+        // 
+        [TestMethod]
+        public async Task VarIntDeclarationCouldBeConstant_Diagnostic()
+        {
+            await VerifyCS.VerifyCodeFixAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        [|var item = 4;|]
+    }
+}
+&quot;, @&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        const int item = 4;
+    }
+}
+&quot;);
+        }
+
+        [TestMethod]
+        public async Task VarStringDeclarationCouldBeConstant_Diagnostic()
+        {
+            await VerifyCS.VerifyCodeFixAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        [|var item = &quot;&quot;abc&quot;&quot;;|]
+    }
+}
+&quot;, @&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        const string item = &quot;&quot;abc&quot;&quot;;
+    }
+}
+&quot;);
+        }
+        // 
+    }
+}</code></pre></div></figure>
+<p>Run this test to make sure it passes. In Visual Studio, open the <strong>Test Explorer</strong> by selecting <strong>Test</strong> &gt; <strong>Windows</strong> &gt; <strong>Test Explorer</strong>. Then select <strong>Run All</strong>.</p>
+<h2 id="create-tests-for-valid-declarations">Create tests for valid declarations</h2>
+<p>As a general rule, analyzers should exit as quickly as possible, doing minimal work. Visual Studio calls registered analyzers as the user edits code. Responsiveness is a key requirement. Several test cases exist for code that shouldn&#39;t raise your diagnostic. Your analyzer already handles several of those tests. Add the following test methods to represent those cases:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">﻿using System.Threading.Tasks;
+using Microsoft.VisualStudio.TestTools.UnitTesting;
+using VerifyCS = MakeConst.Test.CSharpCodeFixVerifier&lt;
+    MakeConst.MakeConstAnalyzer,
+    MakeConst.MakeConstCodeFixProvider&gt;;
+
+namespace MakeConst.Test
+{
+    [TestClass]
+    public class MakeConstUnitTest
+    {
+        // 
+        [TestMethod]
+        public async Task VariableIsAssigned_NoDiagnostic()
+        {
+            await VerifyCS.VerifyAnalyzerAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        int i = 0;
+        Console.WriteLine(i++);
+    }
+}
+&quot;);
+        }
+        // 
+
+        // 
+        [TestMethod]
+        public async Task VariableIsAlreadyConst_NoDiagnostic()
+        {
+            await VerifyCS.VerifyAnalyzerAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        const int i = 0;
+        Console.WriteLine(i);
+    }
+}
+&quot;);
+        }
+        // 
+
+        // 
+        [TestMethod]
+        public async Task NoInitializer_NoDiagnostic()
+        {
+            await VerifyCS.VerifyAnalyzerAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        int i;
+        i = 0;
+        Console.WriteLine(i);
+    }
+}
+&quot;);
+        }
+        // 
+
+        // 
+        [TestMethod]
+        public async Task InitializerIsNotConstant_NoDiagnostic()
+        {
+            await VerifyCS.VerifyAnalyzerAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        int i = DateTime.Now.DayOfYear;
+        Console.WriteLine(i);
+    }
+}
+&quot;);
+        }
+        // 
+
+        // 
+        [TestMethod]
+        public async Task MultipleInitializers_NoDiagnostic()
+        {
+            await VerifyCS.VerifyAnalyzerAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        int i = 0, j = DateTime.Now.DayOfYear;
+        Console.WriteLine(i);
+        Console.WriteLine(j);
+    }
+}
+&quot;);
+        }
+        // 
+
+        // 
+        [TestMethod]
+        public async Task DeclarationIsInvalid_NoDiagnostic()
+        {
+            await VerifyCS.VerifyAnalyzerAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        int x = {|CS0029:&quot;&quot;abc&quot;&quot;|};
+    }
+}
+&quot;);
+        }
+        // 
+
+        // 
+        [TestMethod]
+        public async Task DeclarationIsNotString_NoDiagnostic()
+        {
+            await VerifyCS.VerifyAnalyzerAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        object s = &quot;&quot;abc&quot;&quot;;
+    }
+}
+&quot;);
+        }
+        // 
+
+
+        //
+        [TestMethod]
+        public async Task LocalIntCouldBeConstant_Diagnostic()
+        {
+            await VerifyCS.VerifyCodeFixAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        [|int i = 0;|]
+        Console.WriteLine(i);
+    }
+}
+&quot;, @&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        const int i = 0;
+        Console.WriteLine(i);
+    }
+}
+&quot;);
+        }
+        //
+
+
+        // 
+        [TestMethod]
+        public async Task StringCouldBeConstant_Diagnostic()
+        {
+            await VerifyCS.VerifyCodeFixAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        [|string s = &quot;&quot;abc&quot;&quot;;|]
+    }
+}
+&quot;, @&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        const string s = &quot;&quot;abc&quot;&quot;;
+    }
+}
+&quot;);
+        }
+        // 
+
+        // 
+        [TestMethod]
+        public async Task VarIntDeclarationCouldBeConstant_Diagnostic()
+        {
+            await VerifyCS.VerifyCodeFixAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        [|var item = 4;|]
+    }
+}
+&quot;, @&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        const int item = 4;
+    }
+}
+&quot;);
+        }
+
+        [TestMethod]
+        public async Task VarStringDeclarationCouldBeConstant_Diagnostic()
+        {
+            await VerifyCS.VerifyCodeFixAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        [|var item = &quot;&quot;abc&quot;&quot;;|]
+    }
+}
+&quot;, @&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        const string item = &quot;&quot;abc&quot;&quot;;
+    }
+}
+&quot;);
+        }
+        // 
+    }
+}</code></pre></div></figure>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">﻿using System.Threading.Tasks;
+using Microsoft.VisualStudio.TestTools.UnitTesting;
+using VerifyCS = MakeConst.Test.CSharpCodeFixVerifier&lt;
+    MakeConst.MakeConstAnalyzer,
+    MakeConst.MakeConstCodeFixProvider&gt;;
+
+namespace MakeConst.Test
+{
+    [TestClass]
+    public class MakeConstUnitTest
+    {
+        // 
+        [TestMethod]
+        public async Task VariableIsAssigned_NoDiagnostic()
+        {
+            await VerifyCS.VerifyAnalyzerAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        int i = 0;
+        Console.WriteLine(i++);
+    }
+}
+&quot;);
+        }
+        // 
+
+        // 
+        [TestMethod]
+        public async Task VariableIsAlreadyConst_NoDiagnostic()
+        {
+            await VerifyCS.VerifyAnalyzerAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        const int i = 0;
+        Console.WriteLine(i);
+    }
+}
+&quot;);
+        }
+        // 
+
+        // 
+        [TestMethod]
+        public async Task NoInitializer_NoDiagnostic()
+        {
+            await VerifyCS.VerifyAnalyzerAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        int i;
+        i = 0;
+        Console.WriteLine(i);
+    }
+}
+&quot;);
+        }
+        // 
+
+        // 
+        [TestMethod]
+        public async Task InitializerIsNotConstant_NoDiagnostic()
+        {
+            await VerifyCS.VerifyAnalyzerAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        int i = DateTime.Now.DayOfYear;
+        Console.WriteLine(i);
+    }
+}
+&quot;);
+        }
+        // 
+
+        // 
+        [TestMethod]
+        public async Task MultipleInitializers_NoDiagnostic()
+        {
+            await VerifyCS.VerifyAnalyzerAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        int i = 0, j = DateTime.Now.DayOfYear;
+        Console.WriteLine(i);
+        Console.WriteLine(j);
+    }
+}
+&quot;);
+        }
+        // 
+
+        // 
+        [TestMethod]
+        public async Task DeclarationIsInvalid_NoDiagnostic()
+        {
+            await VerifyCS.VerifyAnalyzerAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        int x = {|CS0029:&quot;&quot;abc&quot;&quot;|};
+    }
+}
+&quot;);
+        }
+        // 
+
+        // 
+        [TestMethod]
+        public async Task DeclarationIsNotString_NoDiagnostic()
+        {
+            await VerifyCS.VerifyAnalyzerAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        object s = &quot;&quot;abc&quot;&quot;;
+    }
+}
+&quot;);
+        }
+        // 
+
+
+        //
+        [TestMethod]
+        public async Task LocalIntCouldBeConstant_Diagnostic()
+        {
+            await VerifyCS.VerifyCodeFixAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        [|int i = 0;|]
+        Console.WriteLine(i);
+    }
+}
+&quot;, @&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        const int i = 0;
+        Console.WriteLine(i);
+    }
+}
+&quot;);
+        }
+        //
+
+
+        // 
+        [TestMethod]
+        public async Task StringCouldBeConstant_Diagnostic()
+        {
+            await VerifyCS.VerifyCodeFixAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        [|string s = &quot;&quot;abc&quot;&quot;;|]
+    }
+}
+&quot;, @&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        const string s = &quot;&quot;abc&quot;&quot;;
+    }
+}
+&quot;);
+        }
+        // 
+
+        // 
+        [TestMethod]
+        public async Task VarIntDeclarationCouldBeConstant_Diagnostic()
+        {
+            await VerifyCS.VerifyCodeFixAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        [|var item = 4;|]
+    }
+}
+&quot;, @&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        const int item = 4;
+    }
+}
+&quot;);
+        }
+
+        [TestMethod]
+        public async Task VarStringDeclarationCouldBeConstant_Diagnostic()
+        {
+            await VerifyCS.VerifyCodeFixAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        [|var item = &quot;&quot;abc&quot;&quot;;|]
+    }
+}
+&quot;, @&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        const string item = &quot;&quot;abc&quot;&quot;;
+    }
+}
+&quot;);
+        }
+        // 
+    }
+}</code></pre></div></figure>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">﻿using System.Threading.Tasks;
+using Microsoft.VisualStudio.TestTools.UnitTesting;
+using VerifyCS = MakeConst.Test.CSharpCodeFixVerifier&lt;
+    MakeConst.MakeConstAnalyzer,
+    MakeConst.MakeConstCodeFixProvider&gt;;
+
+namespace MakeConst.Test
+{
+    [TestClass]
+    public class MakeConstUnitTest
+    {
+        // 
+        [TestMethod]
+        public async Task VariableIsAssigned_NoDiagnostic()
+        {
+            await VerifyCS.VerifyAnalyzerAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        int i = 0;
+        Console.WriteLine(i++);
+    }
+}
+&quot;);
+        }
+        // 
+
+        // 
+        [TestMethod]
+        public async Task VariableIsAlreadyConst_NoDiagnostic()
+        {
+            await VerifyCS.VerifyAnalyzerAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        const int i = 0;
+        Console.WriteLine(i);
+    }
+}
+&quot;);
+        }
+        // 
+
+        // 
+        [TestMethod]
+        public async Task NoInitializer_NoDiagnostic()
+        {
+            await VerifyCS.VerifyAnalyzerAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        int i;
+        i = 0;
+        Console.WriteLine(i);
+    }
+}
+&quot;);
+        }
+        // 
+
+        // 
+        [TestMethod]
+        public async Task InitializerIsNotConstant_NoDiagnostic()
+        {
+            await VerifyCS.VerifyAnalyzerAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        int i = DateTime.Now.DayOfYear;
+        Console.WriteLine(i);
+    }
+}
+&quot;);
+        }
+        // 
+
+        // 
+        [TestMethod]
+        public async Task MultipleInitializers_NoDiagnostic()
+        {
+            await VerifyCS.VerifyAnalyzerAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        int i = 0, j = DateTime.Now.DayOfYear;
+        Console.WriteLine(i);
+        Console.WriteLine(j);
+    }
+}
+&quot;);
+        }
+        // 
+
+        // 
+        [TestMethod]
+        public async Task DeclarationIsInvalid_NoDiagnostic()
+        {
+            await VerifyCS.VerifyAnalyzerAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        int x = {|CS0029:&quot;&quot;abc&quot;&quot;|};
+    }
+}
+&quot;);
+        }
+        // 
+
+        // 
+        [TestMethod]
+        public async Task DeclarationIsNotString_NoDiagnostic()
+        {
+            await VerifyCS.VerifyAnalyzerAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        object s = &quot;&quot;abc&quot;&quot;;
+    }
+}
+&quot;);
+        }
+        // 
+
+
+        //
+        [TestMethod]
+        public async Task LocalIntCouldBeConstant_Diagnostic()
+        {
+            await VerifyCS.VerifyCodeFixAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        [|int i = 0;|]
+        Console.WriteLine(i);
+    }
+}
+&quot;, @&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        const int i = 0;
+        Console.WriteLine(i);
+    }
+}
+&quot;);
+        }
+        //
+
+
+        // 
+        [TestMethod]
+        public async Task StringCouldBeConstant_Diagnostic()
+        {
+            await VerifyCS.VerifyCodeFixAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        [|string s = &quot;&quot;abc&quot;&quot;;|]
+    }
+}
+&quot;, @&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        const string s = &quot;&quot;abc&quot;&quot;;
+    }
+}
+&quot;);
+        }
+        // 
+
+        // 
+        [TestMethod]
+        public async Task VarIntDeclarationCouldBeConstant_Diagnostic()
+        {
+            await VerifyCS.VerifyCodeFixAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        [|var item = 4;|]
+    }
+}
+&quot;, @&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        const int item = 4;
+    }
+}
+&quot;);
+        }
+
+        [TestMethod]
+        public async Task VarStringDeclarationCouldBeConstant_Diagnostic()
+        {
+            await VerifyCS.VerifyCodeFixAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        [|var item = &quot;&quot;abc&quot;&quot;;|]
+    }
+}
+&quot;, @&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        const string item = &quot;&quot;abc&quot;&quot;;
+    }
+}
+&quot;);
+        }
+        // 
+    }
+}</code></pre></div></figure>
+<p>These tests pass because your analyzer already handles these conditions:</p>
+<ul>
+<li>Variables assigned after initialization are detected by data flow analysis.</li>
+<li>Declarations that are already <code>const</code> are filtered out by checking for the <code>const</code> keyword.</li>
+<li>Declarations with no initializer are handled by the data flow analysis that detects assignments outside the declaration.</li>
+</ul>
+<p>Next, add test methods for conditions you haven&#39;t handled yet:</p>
+<ul>
+<li>Declarations where the initializer isn&#39;t a constant, because they can&#39;t be compile-time constants:</li>
+</ul>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">﻿using System.Threading.Tasks;
+using Microsoft.VisualStudio.TestTools.UnitTesting;
+using VerifyCS = MakeConst.Test.CSharpCodeFixVerifier&lt;
+    MakeConst.MakeConstAnalyzer,
+    MakeConst.MakeConstCodeFixProvider&gt;;
+
+namespace MakeConst.Test
+{
+    [TestClass]
+    public class MakeConstUnitTest
+    {
+        // 
+        [TestMethod]
+        public async Task VariableIsAssigned_NoDiagnostic()
+        {
+            await VerifyCS.VerifyAnalyzerAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        int i = 0;
+        Console.WriteLine(i++);
+    }
+}
+&quot;);
+        }
+        // 
+
+        // 
+        [TestMethod]
+        public async Task VariableIsAlreadyConst_NoDiagnostic()
+        {
+            await VerifyCS.VerifyAnalyzerAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        const int i = 0;
+        Console.WriteLine(i);
+    }
+}
+&quot;);
+        }
+        // 
+
+        // 
+        [TestMethod]
+        public async Task NoInitializer_NoDiagnostic()
+        {
+            await VerifyCS.VerifyAnalyzerAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        int i;
+        i = 0;
+        Console.WriteLine(i);
+    }
+}
+&quot;);
+        }
+        // 
+
+        // 
+        [TestMethod]
+        public async Task InitializerIsNotConstant_NoDiagnostic()
+        {
+            await VerifyCS.VerifyAnalyzerAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        int i = DateTime.Now.DayOfYear;
+        Console.WriteLine(i);
+    }
+}
+&quot;);
+        }
+        // 
+
+        // 
+        [TestMethod]
+        public async Task MultipleInitializers_NoDiagnostic()
+        {
+            await VerifyCS.VerifyAnalyzerAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        int i = 0, j = DateTime.Now.DayOfYear;
+        Console.WriteLine(i);
+        Console.WriteLine(j);
+    }
+}
+&quot;);
+        }
+        // 
+
+        // 
+        [TestMethod]
+        public async Task DeclarationIsInvalid_NoDiagnostic()
+        {
+            await VerifyCS.VerifyAnalyzerAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        int x = {|CS0029:&quot;&quot;abc&quot;&quot;|};
+    }
+}
+&quot;);
+        }
+        // 
+
+        // 
+        [TestMethod]
+        public async Task DeclarationIsNotString_NoDiagnostic()
+        {
+            await VerifyCS.VerifyAnalyzerAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        object s = &quot;&quot;abc&quot;&quot;;
+    }
+}
+&quot;);
+        }
+        // 
+
+
+        //
+        [TestMethod]
+        public async Task LocalIntCouldBeConstant_Diagnostic()
+        {
+            await VerifyCS.VerifyCodeFixAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        [|int i = 0;|]
+        Console.WriteLine(i);
+    }
+}
+&quot;, @&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        const int i = 0;
+        Console.WriteLine(i);
+    }
+}
+&quot;);
+        }
+        //
+
+
+        // 
+        [TestMethod]
+        public async Task StringCouldBeConstant_Diagnostic()
+        {
+            await VerifyCS.VerifyCodeFixAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        [|string s = &quot;&quot;abc&quot;&quot;;|]
+    }
+}
+&quot;, @&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        const string s = &quot;&quot;abc&quot;&quot;;
+    }
+}
+&quot;);
+        }
+        // 
+
+        // 
+        [TestMethod]
+        public async Task VarIntDeclarationCouldBeConstant_Diagnostic()
+        {
+            await VerifyCS.VerifyCodeFixAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        [|var item = 4;|]
+    }
+}
+&quot;, @&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        const int item = 4;
+    }
+}
+&quot;);
+        }
+
+        [TestMethod]
+        public async Task VarStringDeclarationCouldBeConstant_Diagnostic()
+        {
+            await VerifyCS.VerifyCodeFixAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        [|var item = &quot;&quot;abc&quot;&quot;;|]
+    }
+}
+&quot;, @&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        const string item = &quot;&quot;abc&quot;&quot;;
+    }
+}
+&quot;);
+        }
+        // 
+    }
+}</code></pre></div></figure>
+<p>It can be even more complicated because C# allows multiple declarations as one statement. Consider the following test case string constant:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">﻿using System.Threading.Tasks;
+using Microsoft.VisualStudio.TestTools.UnitTesting;
+using VerifyCS = MakeConst.Test.CSharpCodeFixVerifier&lt;
+    MakeConst.MakeConstAnalyzer,
+    MakeConst.MakeConstCodeFixProvider&gt;;
+
+namespace MakeConst.Test
+{
+    [TestClass]
+    public class MakeConstUnitTest
+    {
+        // 
+        [TestMethod]
+        public async Task VariableIsAssigned_NoDiagnostic()
+        {
+            await VerifyCS.VerifyAnalyzerAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        int i = 0;
+        Console.WriteLine(i++);
+    }
+}
+&quot;);
+        }
+        // 
+
+        // 
+        [TestMethod]
+        public async Task VariableIsAlreadyConst_NoDiagnostic()
+        {
+            await VerifyCS.VerifyAnalyzerAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        const int i = 0;
+        Console.WriteLine(i);
+    }
+}
+&quot;);
+        }
+        // 
+
+        // 
+        [TestMethod]
+        public async Task NoInitializer_NoDiagnostic()
+        {
+            await VerifyCS.VerifyAnalyzerAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        int i;
+        i = 0;
+        Console.WriteLine(i);
+    }
+}
+&quot;);
+        }
+        // 
+
+        // 
+        [TestMethod]
+        public async Task InitializerIsNotConstant_NoDiagnostic()
+        {
+            await VerifyCS.VerifyAnalyzerAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        int i = DateTime.Now.DayOfYear;
+        Console.WriteLine(i);
+    }
+}
+&quot;);
+        }
+        // 
+
+        // 
+        [TestMethod]
+        public async Task MultipleInitializers_NoDiagnostic()
+        {
+            await VerifyCS.VerifyAnalyzerAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        int i = 0, j = DateTime.Now.DayOfYear;
+        Console.WriteLine(i);
+        Console.WriteLine(j);
+    }
+}
+&quot;);
+        }
+        // 
+
+        // 
+        [TestMethod]
+        public async Task DeclarationIsInvalid_NoDiagnostic()
+        {
+            await VerifyCS.VerifyAnalyzerAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        int x = {|CS0029:&quot;&quot;abc&quot;&quot;|};
+    }
+}
+&quot;);
+        }
+        // 
+
+        // 
+        [TestMethod]
+        public async Task DeclarationIsNotString_NoDiagnostic()
+        {
+            await VerifyCS.VerifyAnalyzerAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        object s = &quot;&quot;abc&quot;&quot;;
+    }
+}
+&quot;);
+        }
+        // 
+
+
+        //
+        [TestMethod]
+        public async Task LocalIntCouldBeConstant_Diagnostic()
+        {
+            await VerifyCS.VerifyCodeFixAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        [|int i = 0;|]
+        Console.WriteLine(i);
+    }
+}
+&quot;, @&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        const int i = 0;
+        Console.WriteLine(i);
+    }
+}
+&quot;);
+        }
+        //
+
+
+        // 
+        [TestMethod]
+        public async Task StringCouldBeConstant_Diagnostic()
+        {
+            await VerifyCS.VerifyCodeFixAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        [|string s = &quot;&quot;abc&quot;&quot;;|]
+    }
+}
+&quot;, @&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        const string s = &quot;&quot;abc&quot;&quot;;
+    }
+}
+&quot;);
+        }
+        // 
+
+        // 
+        [TestMethod]
+        public async Task VarIntDeclarationCouldBeConstant_Diagnostic()
+        {
+            await VerifyCS.VerifyCodeFixAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        [|var item = 4;|]
+    }
+}
+&quot;, @&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        const int item = 4;
+    }
+}
+&quot;);
+        }
+
+        [TestMethod]
+        public async Task VarStringDeclarationCouldBeConstant_Diagnostic()
+        {
+            await VerifyCS.VerifyCodeFixAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        [|var item = &quot;&quot;abc&quot;&quot;;|]
+    }
+}
+&quot;, @&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        const string item = &quot;&quot;abc&quot;&quot;;
+    }
+}
+&quot;);
+        }
+        // 
+    }
+}</code></pre></div></figure>
+<p>The variable <code>i</code> can be constant, but the variable <code>j</code> can&#39;t. Therefore, this statement can&#39;t be a const declaration.</p>
+<p>Run your tests again, and you see these last two test cases fail.</p>
+<h2 id="update-your-analyzer-to-ignore-correct-declarations">Update your analyzer to ignore correct declarations</h2>
+<p>You need to enhance your analyzer&#39;s <code>AnalyzeNode</code> method to filter out code that matches these conditions. These conditions are all related, so similar changes fix all these conditions. Make the following changes to <code>AnalyzeNode</code>:</p>
+<ul>
+<li>Your semantic analysis examined a single variable declaration. This code needs to be in a <code>foreach</code> loop that examines all the variables declared in the same statement.</li>
+<li>Each declared variable needs to have an initializer.</li>
+<li>Each declared variable&#39;s initializer must be a compile-time constant.</li>
+</ul>
+<p>In your <code>AnalyzeNode</code> method, replace the original semantic analysis:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">// Perform data flow analysis on the local declaration.
+DataFlowAnalysis dataFlowAnalysis = context.SemanticModel.AnalyzeDataFlow(localDeclaration);
+
+// Retrieve the local symbol for each variable in the local declaration
+// and ensure that it is not written outside of the data flow analysis region.
+VariableDeclaratorSyntax variable = localDeclaration.Declaration.Variables.Single();
+ISymbol variableSymbol = context.SemanticModel.GetDeclaredSymbol(variable, context.CancellationToken);
+if (dataFlowAnalysis.WrittenOutside.Contains(variableSymbol))
+{
+    return;
+}</code></pre></div></figure>
+<p>with the following code snippet:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">// Ensure that all variables in the local declaration have initializers that
+// are assigned with constant values.
+foreach (VariableDeclaratorSyntax variable in localDeclaration.Declaration.Variables)
+{
+    EqualsValueClauseSyntax initializer = variable.Initializer;
+    if (initializer == null)
+    {
+        return;
+    }
+
+    Optional&lt;object&gt; constantValue = context.SemanticModel.GetConstantValue(initializer.Value, context.CancellationToken);
+    if (!constantValue.HasValue)
+    {
+        return;
+    }
+}
+
+// Perform data flow analysis on the local declaration.
+DataFlowAnalysis dataFlowAnalysis = context.SemanticModel.AnalyzeDataFlow(localDeclaration);
+
+foreach (VariableDeclaratorSyntax variable in localDeclaration.Declaration.Variables)
+{
+    // Retrieve the local symbol for each variable in the local declaration
+    // and ensure that it is not written outside of the data flow analysis region.
+    ISymbol variableSymbol = context.SemanticModel.GetDeclaredSymbol(variable, context.CancellationToken);
+    if (dataFlowAnalysis.WrittenOutside.Contains(variableSymbol))
+    {
+        return;
+    }
+}</code></pre></div></figure>
+<p>The first <code>foreach</code> loop examines each variable declaration by using syntactic analysis. The first check guarantees that the variable has an initializer. The second check guarantees that the initializer is a constant. The second loop has the original semantic analysis. The semantic checks are in a separate loop because they have a greater impact on performance. Run your tests again, and you should see them all pass.</p>
+<h2 id="add-the-final-polish">Add the final polish</h2>
+<p>You&#39;re almost done. There are a few more conditions for your analyzer to handle. Visual Studio calls analyzers while the user is writing code. It&#39;s often the case that your analyzer is called for code that doesn&#39;t compile. The diagnostic analyzer&#39;s <code>AnalyzeNode</code> method doesn&#39;t check if the constant value is convertible to the variable type. So, the current implementation happily converts an incorrect declaration such as <code>int i = &quot;abc&quot;</code> to a local constant. Add a test method for this case:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">﻿using System.Threading.Tasks;
+using Microsoft.VisualStudio.TestTools.UnitTesting;
+using VerifyCS = MakeConst.Test.CSharpCodeFixVerifier&lt;
+    MakeConst.MakeConstAnalyzer,
+    MakeConst.MakeConstCodeFixProvider&gt;;
+
+namespace MakeConst.Test
+{
+    [TestClass]
+    public class MakeConstUnitTest
+    {
+        // 
+        [TestMethod]
+        public async Task VariableIsAssigned_NoDiagnostic()
+        {
+            await VerifyCS.VerifyAnalyzerAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        int i = 0;
+        Console.WriteLine(i++);
+    }
+}
+&quot;);
+        }
+        // 
+
+        // 
+        [TestMethod]
+        public async Task VariableIsAlreadyConst_NoDiagnostic()
+        {
+            await VerifyCS.VerifyAnalyzerAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        const int i = 0;
+        Console.WriteLine(i);
+    }
+}
+&quot;);
+        }
+        // 
+
+        // 
+        [TestMethod]
+        public async Task NoInitializer_NoDiagnostic()
+        {
+            await VerifyCS.VerifyAnalyzerAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        int i;
+        i = 0;
+        Console.WriteLine(i);
+    }
+}
+&quot;);
+        }
+        // 
+
+        // 
+        [TestMethod]
+        public async Task InitializerIsNotConstant_NoDiagnostic()
+        {
+            await VerifyCS.VerifyAnalyzerAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        int i = DateTime.Now.DayOfYear;
+        Console.WriteLine(i);
+    }
+}
+&quot;);
+        }
+        // 
+
+        // 
+        [TestMethod]
+        public async Task MultipleInitializers_NoDiagnostic()
+        {
+            await VerifyCS.VerifyAnalyzerAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        int i = 0, j = DateTime.Now.DayOfYear;
+        Console.WriteLine(i);
+        Console.WriteLine(j);
+    }
+}
+&quot;);
+        }
+        // 
+
+        // 
+        [TestMethod]
+        public async Task DeclarationIsInvalid_NoDiagnostic()
+        {
+            await VerifyCS.VerifyAnalyzerAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        int x = {|CS0029:&quot;&quot;abc&quot;&quot;|};
+    }
+}
+&quot;);
+        }
+        // 
+
+        // 
+        [TestMethod]
+        public async Task DeclarationIsNotString_NoDiagnostic()
+        {
+            await VerifyCS.VerifyAnalyzerAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        object s = &quot;&quot;abc&quot;&quot;;
+    }
+}
+&quot;);
+        }
+        // 
+
+
+        //
+        [TestMethod]
+        public async Task LocalIntCouldBeConstant_Diagnostic()
+        {
+            await VerifyCS.VerifyCodeFixAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        [|int i = 0;|]
+        Console.WriteLine(i);
+    }
+}
+&quot;, @&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        const int i = 0;
+        Console.WriteLine(i);
+    }
+}
+&quot;);
+        }
+        //
+
+
+        // 
+        [TestMethod]
+        public async Task StringCouldBeConstant_Diagnostic()
+        {
+            await VerifyCS.VerifyCodeFixAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        [|string s = &quot;&quot;abc&quot;&quot;;|]
+    }
+}
+&quot;, @&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        const string s = &quot;&quot;abc&quot;&quot;;
+    }
+}
+&quot;);
+        }
+        // 
+
+        // 
+        [TestMethod]
+        public async Task VarIntDeclarationCouldBeConstant_Diagnostic()
+        {
+            await VerifyCS.VerifyCodeFixAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        [|var item = 4;|]
+    }
+}
+&quot;, @&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        const int item = 4;
+    }
+}
+&quot;);
+        }
+
+        [TestMethod]
+        public async Task VarStringDeclarationCouldBeConstant_Diagnostic()
+        {
+            await VerifyCS.VerifyCodeFixAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        [|var item = &quot;&quot;abc&quot;&quot;;|]
+    }
+}
+&quot;, @&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        const string item = &quot;&quot;abc&quot;&quot;;
+    }
+}
+&quot;);
+        }
+        // 
+    }
+}</code></pre></div></figure>
+<p>In addition, reference types aren&#39;t handled properly. The only constant value allowed for a reference type is <code>null</code>, except in the case of <code>String?displayProperty=nameWithType</code>, which allows string literals. In other words, <code>const string s = &quot;abc&quot;</code> is legal, but <code>const object s = &quot;abc&quot;</code> is not. This code snippet verifies that condition:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">﻿using System.Threading.Tasks;
+using Microsoft.VisualStudio.TestTools.UnitTesting;
+using VerifyCS = MakeConst.Test.CSharpCodeFixVerifier&lt;
+    MakeConst.MakeConstAnalyzer,
+    MakeConst.MakeConstCodeFixProvider&gt;;
+
+namespace MakeConst.Test
+{
+    [TestClass]
+    public class MakeConstUnitTest
+    {
+        // 
+        [TestMethod]
+        public async Task VariableIsAssigned_NoDiagnostic()
+        {
+            await VerifyCS.VerifyAnalyzerAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        int i = 0;
+        Console.WriteLine(i++);
+    }
+}
+&quot;);
+        }
+        // 
+
+        // 
+        [TestMethod]
+        public async Task VariableIsAlreadyConst_NoDiagnostic()
+        {
+            await VerifyCS.VerifyAnalyzerAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        const int i = 0;
+        Console.WriteLine(i);
+    }
+}
+&quot;);
+        }
+        // 
+
+        // 
+        [TestMethod]
+        public async Task NoInitializer_NoDiagnostic()
+        {
+            await VerifyCS.VerifyAnalyzerAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        int i;
+        i = 0;
+        Console.WriteLine(i);
+    }
+}
+&quot;);
+        }
+        // 
+
+        // 
+        [TestMethod]
+        public async Task InitializerIsNotConstant_NoDiagnostic()
+        {
+            await VerifyCS.VerifyAnalyzerAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        int i = DateTime.Now.DayOfYear;
+        Console.WriteLine(i);
+    }
+}
+&quot;);
+        }
+        // 
+
+        // 
+        [TestMethod]
+        public async Task MultipleInitializers_NoDiagnostic()
+        {
+            await VerifyCS.VerifyAnalyzerAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        int i = 0, j = DateTime.Now.DayOfYear;
+        Console.WriteLine(i);
+        Console.WriteLine(j);
+    }
+}
+&quot;);
+        }
+        // 
+
+        // 
+        [TestMethod]
+        public async Task DeclarationIsInvalid_NoDiagnostic()
+        {
+            await VerifyCS.VerifyAnalyzerAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        int x = {|CS0029:&quot;&quot;abc&quot;&quot;|};
+    }
+}
+&quot;);
+        }
+        // 
+
+        // 
+        [TestMethod]
+        public async Task DeclarationIsNotString_NoDiagnostic()
+        {
+            await VerifyCS.VerifyAnalyzerAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        object s = &quot;&quot;abc&quot;&quot;;
+    }
+}
+&quot;);
+        }
+        // 
+
+
+        //
+        [TestMethod]
+        public async Task LocalIntCouldBeConstant_Diagnostic()
+        {
+            await VerifyCS.VerifyCodeFixAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        [|int i = 0;|]
+        Console.WriteLine(i);
+    }
+}
+&quot;, @&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        const int i = 0;
+        Console.WriteLine(i);
+    }
+}
+&quot;);
+        }
+        //
+
+
+        // 
+        [TestMethod]
+        public async Task StringCouldBeConstant_Diagnostic()
+        {
+            await VerifyCS.VerifyCodeFixAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        [|string s = &quot;&quot;abc&quot;&quot;;|]
+    }
+}
+&quot;, @&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        const string s = &quot;&quot;abc&quot;&quot;;
+    }
+}
+&quot;);
+        }
+        // 
+
+        // 
+        [TestMethod]
+        public async Task VarIntDeclarationCouldBeConstant_Diagnostic()
+        {
+            await VerifyCS.VerifyCodeFixAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        [|var item = 4;|]
+    }
+}
+&quot;, @&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        const int item = 4;
+    }
+}
+&quot;);
+        }
+
+        [TestMethod]
+        public async Task VarStringDeclarationCouldBeConstant_Diagnostic()
+        {
+            await VerifyCS.VerifyCodeFixAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        [|var item = &quot;&quot;abc&quot;&quot;;|]
+    }
+}
+&quot;, @&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        const string item = &quot;&quot;abc&quot;&quot;;
+    }
+}
+&quot;);
+        }
+        // 
+    }
+}</code></pre></div></figure>
+<p>To be thorough, you need to add another test to make sure that you can create a constant declaration for a string. The following snippet defines both the code that raises the diagnostic, and the code after the fix is applied:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">﻿using System.Threading.Tasks;
+using Microsoft.VisualStudio.TestTools.UnitTesting;
+using VerifyCS = MakeConst.Test.CSharpCodeFixVerifier&lt;
+    MakeConst.MakeConstAnalyzer,
+    MakeConst.MakeConstCodeFixProvider&gt;;
+
+namespace MakeConst.Test
+{
+    [TestClass]
+    public class MakeConstUnitTest
+    {
+        // 
+        [TestMethod]
+        public async Task VariableIsAssigned_NoDiagnostic()
+        {
+            await VerifyCS.VerifyAnalyzerAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        int i = 0;
+        Console.WriteLine(i++);
+    }
+}
+&quot;);
+        }
+        // 
+
+        // 
+        [TestMethod]
+        public async Task VariableIsAlreadyConst_NoDiagnostic()
+        {
+            await VerifyCS.VerifyAnalyzerAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        const int i = 0;
+        Console.WriteLine(i);
+    }
+}
+&quot;);
+        }
+        // 
+
+        // 
+        [TestMethod]
+        public async Task NoInitializer_NoDiagnostic()
+        {
+            await VerifyCS.VerifyAnalyzerAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        int i;
+        i = 0;
+        Console.WriteLine(i);
+    }
+}
+&quot;);
+        }
+        // 
+
+        // 
+        [TestMethod]
+        public async Task InitializerIsNotConstant_NoDiagnostic()
+        {
+            await VerifyCS.VerifyAnalyzerAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        int i = DateTime.Now.DayOfYear;
+        Console.WriteLine(i);
+    }
+}
+&quot;);
+        }
+        // 
+
+        // 
+        [TestMethod]
+        public async Task MultipleInitializers_NoDiagnostic()
+        {
+            await VerifyCS.VerifyAnalyzerAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        int i = 0, j = DateTime.Now.DayOfYear;
+        Console.WriteLine(i);
+        Console.WriteLine(j);
+    }
+}
+&quot;);
+        }
+        // 
+
+        // 
+        [TestMethod]
+        public async Task DeclarationIsInvalid_NoDiagnostic()
+        {
+            await VerifyCS.VerifyAnalyzerAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        int x = {|CS0029:&quot;&quot;abc&quot;&quot;|};
+    }
+}
+&quot;);
+        }
+        // 
+
+        // 
+        [TestMethod]
+        public async Task DeclarationIsNotString_NoDiagnostic()
+        {
+            await VerifyCS.VerifyAnalyzerAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        object s = &quot;&quot;abc&quot;&quot;;
+    }
+}
+&quot;);
+        }
+        // 
+
+
+        //
+        [TestMethod]
+        public async Task LocalIntCouldBeConstant_Diagnostic()
+        {
+            await VerifyCS.VerifyCodeFixAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        [|int i = 0;|]
+        Console.WriteLine(i);
+    }
+}
+&quot;, @&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        const int i = 0;
+        Console.WriteLine(i);
+    }
+}
+&quot;);
+        }
+        //
+
+
+        // 
+        [TestMethod]
+        public async Task StringCouldBeConstant_Diagnostic()
+        {
+            await VerifyCS.VerifyCodeFixAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        [|string s = &quot;&quot;abc&quot;&quot;;|]
+    }
+}
+&quot;, @&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        const string s = &quot;&quot;abc&quot;&quot;;
+    }
+}
+&quot;);
+        }
+        // 
+
+        // 
+        [TestMethod]
+        public async Task VarIntDeclarationCouldBeConstant_Diagnostic()
+        {
+            await VerifyCS.VerifyCodeFixAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        [|var item = 4;|]
+    }
+}
+&quot;, @&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        const int item = 4;
+    }
+}
+&quot;);
+        }
+
+        [TestMethod]
+        public async Task VarStringDeclarationCouldBeConstant_Diagnostic()
+        {
+            await VerifyCS.VerifyCodeFixAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        [|var item = &quot;&quot;abc&quot;&quot;;|]
+    }
+}
+&quot;, @&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        const string item = &quot;&quot;abc&quot;&quot;;
+    }
+}
+&quot;);
+        }
+        // 
+    }
+}</code></pre></div></figure>
+<p>Finally, if a variable is declared with the <code>var</code> keyword, the code fix does the wrong thing and generates a <code>const var</code> declaration, which the C# language doesn&#39;t support. To fix this bug, the code fix must replace the <code>var</code> keyword with the inferred type&#39;s name:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">﻿using System.Threading.Tasks;
+using Microsoft.VisualStudio.TestTools.UnitTesting;
+using VerifyCS = MakeConst.Test.CSharpCodeFixVerifier&lt;
+    MakeConst.MakeConstAnalyzer,
+    MakeConst.MakeConstCodeFixProvider&gt;;
+
+namespace MakeConst.Test
+{
+    [TestClass]
+    public class MakeConstUnitTest
+    {
+        // 
+        [TestMethod]
+        public async Task VariableIsAssigned_NoDiagnostic()
+        {
+            await VerifyCS.VerifyAnalyzerAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        int i = 0;
+        Console.WriteLine(i++);
+    }
+}
+&quot;);
+        }
+        // 
+
+        // 
+        [TestMethod]
+        public async Task VariableIsAlreadyConst_NoDiagnostic()
+        {
+            await VerifyCS.VerifyAnalyzerAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        const int i = 0;
+        Console.WriteLine(i);
+    }
+}
+&quot;);
+        }
+        // 
+
+        // 
+        [TestMethod]
+        public async Task NoInitializer_NoDiagnostic()
+        {
+            await VerifyCS.VerifyAnalyzerAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        int i;
+        i = 0;
+        Console.WriteLine(i);
+    }
+}
+&quot;);
+        }
+        // 
+
+        // 
+        [TestMethod]
+        public async Task InitializerIsNotConstant_NoDiagnostic()
+        {
+            await VerifyCS.VerifyAnalyzerAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        int i = DateTime.Now.DayOfYear;
+        Console.WriteLine(i);
+    }
+}
+&quot;);
+        }
+        // 
+
+        // 
+        [TestMethod]
+        public async Task MultipleInitializers_NoDiagnostic()
+        {
+            await VerifyCS.VerifyAnalyzerAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        int i = 0, j = DateTime.Now.DayOfYear;
+        Console.WriteLine(i);
+        Console.WriteLine(j);
+    }
+}
+&quot;);
+        }
+        // 
+
+        // 
+        [TestMethod]
+        public async Task DeclarationIsInvalid_NoDiagnostic()
+        {
+            await VerifyCS.VerifyAnalyzerAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        int x = {|CS0029:&quot;&quot;abc&quot;&quot;|};
+    }
+}
+&quot;);
+        }
+        // 
+
+        // 
+        [TestMethod]
+        public async Task DeclarationIsNotString_NoDiagnostic()
+        {
+            await VerifyCS.VerifyAnalyzerAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        object s = &quot;&quot;abc&quot;&quot;;
+    }
+}
+&quot;);
+        }
+        // 
+
+
+        //
+        [TestMethod]
+        public async Task LocalIntCouldBeConstant_Diagnostic()
+        {
+            await VerifyCS.VerifyCodeFixAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        [|int i = 0;|]
+        Console.WriteLine(i);
+    }
+}
+&quot;, @&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        const int i = 0;
+        Console.WriteLine(i);
+    }
+}
+&quot;);
+        }
+        //
+
+
+        // 
+        [TestMethod]
+        public async Task StringCouldBeConstant_Diagnostic()
+        {
+            await VerifyCS.VerifyCodeFixAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        [|string s = &quot;&quot;abc&quot;&quot;;|]
+    }
+}
+&quot;, @&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        const string s = &quot;&quot;abc&quot;&quot;;
+    }
+}
+&quot;);
+        }
+        // 
+
+        // 
+        [TestMethod]
+        public async Task VarIntDeclarationCouldBeConstant_Diagnostic()
+        {
+            await VerifyCS.VerifyCodeFixAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        [|var item = 4;|]
+    }
+}
+&quot;, @&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        const int item = 4;
+    }
+}
+&quot;);
+        }
+
+        [TestMethod]
+        public async Task VarStringDeclarationCouldBeConstant_Diagnostic()
+        {
+            await VerifyCS.VerifyCodeFixAsync(@&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        [|var item = &quot;&quot;abc&quot;&quot;;|]
+    }
+}
+&quot;, @&quot;
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        const string item = &quot;&quot;abc&quot;&quot;;
+    }
+}
+&quot;);
+        }
+        // 
+    }
+}</code></pre></div></figure>
+<p>Fortunately, you can address all of the above bugs by using the same techniques that you just learned.</p>
+<p>To fix the first bug, open <em>MakeConstAnalyzer.cs</em> and locate the <code>foreach</code> loop where each of the local declaration&#39;s initializers are checked to ensure that they&#39;re assigned constant values. Immediately <em>before</em> the first <code>foreach</code> loop, call <code>context.SemanticModel.GetTypeInfo()</code> to retrieve detailed information about the declared type of the local declaration:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">﻿using System;
+using System.Collections.Generic;
+using System.Collections.Immutable;
+using System.Linq;
+using System.Threading;
+using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
+using Microsoft.CodeAnalysis.Diagnostics;
+
+namespace MakeConst
+{
+    [DiagnosticAnalyzer(LanguageNames.CSharp)]
+    public class MakeConstAnalyzer : DiagnosticAnalyzer
+    {
+        public const string DiagnosticId = &quot;MakeConst&quot;;
+
+        // You can change these strings in the Resources.resx file. If you do not want your analyzer to be localize-able, you can use regular strings for Title and MessageFormat.
+        // See https://github.com/dotnet/roslyn/blob/main/docs/analyzers/Localizing%20Analyzers.md for more on localization
+        private static readonly LocalizableString Title = new LocalizableResourceString(nameof(Resources.AnalyzerTitle), Resources.ResourceManager, typeof(Resources));
+        private static readonly LocalizableString MessageFormat = new LocalizableResourceString(nameof(Resources.AnalyzerMessageFormat), Resources.ResourceManager, typeof(Resources));
+        private static readonly LocalizableString Description = new LocalizableResourceString(nameof(Resources.AnalyzerDescription), Resources.ResourceManager, typeof(Resources));
+        // 
+        private const string Category = &quot;Usage&quot;;
+        // 
+
+        private static DiagnosticDescriptor Rule = new DiagnosticDescriptor(DiagnosticId, Title, MessageFormat, Category, DiagnosticSeverity.Warning, isEnabledByDefault: true, description: Description);
+
+        public override ImmutableArray SupportedDiagnostics { get { return ImmutableArray.Create(Rule); } }
+
+        public override void Initialize(AnalysisContext context)
+        {
+             // See https://github.com/dotnet/roslyn/blob/main/docs/analyzers/Analyzer%20Actions%20Semantics.md for more information
+            context.ConfigureGeneratedCodeAnalysis(GeneratedCodeAnalysisFlags.None);
+            context.EnableConcurrentExecution();
+            // 
+            context.RegisterSyntaxNodeAction(AnalyzeNode, SyntaxKind.LocalDeclarationStatement);
+            // 
+        }
+
+        private void AnalyzeNode(SyntaxNodeAnalysisContext context)
+        {
+            // 
+            var localDeclaration = (LocalDeclarationStatementSyntax)context.Node;
+            // 
+
+            // 
+            // make sure the declaration isn&#x27;t already const:
+            if (localDeclaration.Modifiers.Any(SyntaxKind.ConstKeyword))
+            {
+                return;
+            }
+            // 
+
+            // 
+            TypeSyntax variableTypeName = localDeclaration.Declaration.Type;
+            ITypeSymbol variableType = context.SemanticModel.GetTypeInfo(variableTypeName, context.CancellationToken).ConvertedType;
+            // 
+
+            // Ensure that all variables in the local declaration have initializers that
+            // are assigned with constant values.
+            foreach (VariableDeclaratorSyntax variable in localDeclaration.Declaration.Variables)
+            {
+                EqualsValueClauseSyntax initializer = variable.Initializer;
+                if (initializer == null)
+                {
+                    return;
+                }
+
+                Optional&lt;object&gt; constantValue = context.SemanticModel.GetConstantValue(initializer.Value, context.CancellationToken);
+                if (!constantValue.HasValue)
+                {
+                    return;
+                }
+
+                // 
+                // Ensure that the initializer value can be converted to the type of the
+                // local declaration without a user-defined conversion.
+                Conversion conversion = context.SemanticModel.ClassifyConversion(initializer.Value, variableType);
+                if (!conversion.Exists || conversion.IsUserDefined)
+                {
+                    return;
+                }
+                // 
+
+                // 
+                // Special cases:
+                //  * If the constant value is a string, the type of the local declaration
+                //    must be System.String.
+                //  * If the constant value is null, the type of the local declaration must
+                //    be a reference type.
+                if (constantValue.Value is string)
+                {
+                    if (variableType.SpecialType != SpecialType.System_String)
+                    {
+                        return;
+                    }
+                }
+                else if (variableType.IsReferenceType &amp;&amp; constantValue.Value != null)
+                {
+                    return;
+                }
+                // 
+            }
+
+            // Perform data flow analysis on the local declaration.
+            DataFlowAnalysis dataFlowAnalysis = context.SemanticModel.AnalyzeDataFlow(localDeclaration);
+
+            foreach (VariableDeclaratorSyntax variable in localDeclaration.Declaration.Variables)
+            {
+                // Retrieve the local symbol for each variable in the local declaration
+                // and ensure that it is not written outside of the data flow analysis region.
+                ISymbol variableSymbol = context.SemanticModel.GetDeclaredSymbol(variable, context.CancellationToken);
+                if (dataFlowAnalysis.WrittenOutside.Contains(variableSymbol))
+                {
+                    return;
+                }
+            }
+
+            // 
+            context.ReportDiagnostic(Diagnostic.Create(Rule, context.Node.GetLocation(), localDeclaration.Declaration.Variables.First().Identifier.ValueText));
+            // 
+        }
+    }
+}</code></pre></div></figure>
+<p>Then, inside your <code>foreach</code> loop, check each initializer to make sure it&#39;s convertible to the variable type. Add the following check after ensuring that the initializer is a constant:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">﻿using System;
+using System.Collections.Generic;
+using System.Collections.Immutable;
+using System.Linq;
+using System.Threading;
+using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
+using Microsoft.CodeAnalysis.Diagnostics;
+
+namespace MakeConst
+{
+    [DiagnosticAnalyzer(LanguageNames.CSharp)]
+    public class MakeConstAnalyzer : DiagnosticAnalyzer
+    {
+        public const string DiagnosticId = &quot;MakeConst&quot;;
+
+        // You can change these strings in the Resources.resx file. If you do not want your analyzer to be localize-able, you can use regular strings for Title and MessageFormat.
+        // See https://github.com/dotnet/roslyn/blob/main/docs/analyzers/Localizing%20Analyzers.md for more on localization
+        private static readonly LocalizableString Title = new LocalizableResourceString(nameof(Resources.AnalyzerTitle), Resources.ResourceManager, typeof(Resources));
+        private static readonly LocalizableString MessageFormat = new LocalizableResourceString(nameof(Resources.AnalyzerMessageFormat), Resources.ResourceManager, typeof(Resources));
+        private static readonly LocalizableString Description = new LocalizableResourceString(nameof(Resources.AnalyzerDescription), Resources.ResourceManager, typeof(Resources));
+        // 
+        private const string Category = &quot;Usage&quot;;
+        // 
+
+        private static DiagnosticDescriptor Rule = new DiagnosticDescriptor(DiagnosticId, Title, MessageFormat, Category, DiagnosticSeverity.Warning, isEnabledByDefault: true, description: Description);
+
+        public override ImmutableArray SupportedDiagnostics { get { return ImmutableArray.Create(Rule); } }
+
+        public override void Initialize(AnalysisContext context)
+        {
+             // See https://github.com/dotnet/roslyn/blob/main/docs/analyzers/Analyzer%20Actions%20Semantics.md for more information
+            context.ConfigureGeneratedCodeAnalysis(GeneratedCodeAnalysisFlags.None);
+            context.EnableConcurrentExecution();
+            // 
+            context.RegisterSyntaxNodeAction(AnalyzeNode, SyntaxKind.LocalDeclarationStatement);
+            // 
+        }
+
+        private void AnalyzeNode(SyntaxNodeAnalysisContext context)
+        {
+            // 
+            var localDeclaration = (LocalDeclarationStatementSyntax)context.Node;
+            // 
+
+            // 
+            // make sure the declaration isn&#x27;t already const:
+            if (localDeclaration.Modifiers.Any(SyntaxKind.ConstKeyword))
+            {
+                return;
+            }
+            // 
+
+            // 
+            TypeSyntax variableTypeName = localDeclaration.Declaration.Type;
+            ITypeSymbol variableType = context.SemanticModel.GetTypeInfo(variableTypeName, context.CancellationToken).ConvertedType;
+            // 
+
+            // Ensure that all variables in the local declaration have initializers that
+            // are assigned with constant values.
+            foreach (VariableDeclaratorSyntax variable in localDeclaration.Declaration.Variables)
+            {
+                EqualsValueClauseSyntax initializer = variable.Initializer;
+                if (initializer == null)
+                {
+                    return;
+                }
+
+                Optional&lt;object&gt; constantValue = context.SemanticModel.GetConstantValue(initializer.Value, context.CancellationToken);
+                if (!constantValue.HasValue)
+                {
+                    return;
+                }
+
+                // 
+                // Ensure that the initializer value can be converted to the type of the
+                // local declaration without a user-defined conversion.
+                Conversion conversion = context.SemanticModel.ClassifyConversion(initializer.Value, variableType);
+                if (!conversion.Exists || conversion.IsUserDefined)
+                {
+                    return;
+                }
+                // 
+
+                // 
+                // Special cases:
+                //  * If the constant value is a string, the type of the local declaration
+                //    must be System.String.
+                //  * If the constant value is null, the type of the local declaration must
+                //    be a reference type.
+                if (constantValue.Value is string)
+                {
+                    if (variableType.SpecialType != SpecialType.System_String)
+                    {
+                        return;
+                    }
+                }
+                else if (variableType.IsReferenceType &amp;&amp; constantValue.Value != null)
+                {
+                    return;
+                }
+                // 
+            }
+
+            // Perform data flow analysis on the local declaration.
+            DataFlowAnalysis dataFlowAnalysis = context.SemanticModel.AnalyzeDataFlow(localDeclaration);
+
+            foreach (VariableDeclaratorSyntax variable in localDeclaration.Declaration.Variables)
+            {
+                // Retrieve the local symbol for each variable in the local declaration
+                // and ensure that it is not written outside of the data flow analysis region.
+                ISymbol variableSymbol = context.SemanticModel.GetDeclaredSymbol(variable, context.CancellationToken);
+                if (dataFlowAnalysis.WrittenOutside.Contains(variableSymbol))
+                {
+                    return;
+                }
+            }
+
+            // 
+            context.ReportDiagnostic(Diagnostic.Create(Rule, context.Node.GetLocation(), localDeclaration.Declaration.Variables.First().Identifier.ValueText));
+            // 
+        }
+    }
+}</code></pre></div></figure>
+<p>The next change builds upon the last one. Before the closing curly brace of the first <code>foreach</code> loop, add the following code to check the type of the local declaration when the constant is a string or null.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">﻿using System;
+using System.Collections.Generic;
+using System.Collections.Immutable;
+using System.Linq;
+using System.Threading;
+using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
+using Microsoft.CodeAnalysis.Diagnostics;
+
+namespace MakeConst
+{
+    [DiagnosticAnalyzer(LanguageNames.CSharp)]
+    public class MakeConstAnalyzer : DiagnosticAnalyzer
+    {
+        public const string DiagnosticId = &quot;MakeConst&quot;;
+
+        // You can change these strings in the Resources.resx file. If you do not want your analyzer to be localize-able, you can use regular strings for Title and MessageFormat.
+        // See https://github.com/dotnet/roslyn/blob/main/docs/analyzers/Localizing%20Analyzers.md for more on localization
+        private static readonly LocalizableString Title = new LocalizableResourceString(nameof(Resources.AnalyzerTitle), Resources.ResourceManager, typeof(Resources));
+        private static readonly LocalizableString MessageFormat = new LocalizableResourceString(nameof(Resources.AnalyzerMessageFormat), Resources.ResourceManager, typeof(Resources));
+        private static readonly LocalizableString Description = new LocalizableResourceString(nameof(Resources.AnalyzerDescription), Resources.ResourceManager, typeof(Resources));
+        // 
+        private const string Category = &quot;Usage&quot;;
+        // 
+
+        private static DiagnosticDescriptor Rule = new DiagnosticDescriptor(DiagnosticId, Title, MessageFormat, Category, DiagnosticSeverity.Warning, isEnabledByDefault: true, description: Description);
+
+        public override ImmutableArray SupportedDiagnostics { get { return ImmutableArray.Create(Rule); } }
+
+        public override void Initialize(AnalysisContext context)
+        {
+             // See https://github.com/dotnet/roslyn/blob/main/docs/analyzers/Analyzer%20Actions%20Semantics.md for more information
+            context.ConfigureGeneratedCodeAnalysis(GeneratedCodeAnalysisFlags.None);
+            context.EnableConcurrentExecution();
+            // 
+            context.RegisterSyntaxNodeAction(AnalyzeNode, SyntaxKind.LocalDeclarationStatement);
+            // 
+        }
+
+        private void AnalyzeNode(SyntaxNodeAnalysisContext context)
+        {
+            // 
+            var localDeclaration = (LocalDeclarationStatementSyntax)context.Node;
+            // 
+
+            // 
+            // make sure the declaration isn&#x27;t already const:
+            if (localDeclaration.Modifiers.Any(SyntaxKind.ConstKeyword))
+            {
+                return;
+            }
+            // 
+
+            // 
+            TypeSyntax variableTypeName = localDeclaration.Declaration.Type;
+            ITypeSymbol variableType = context.SemanticModel.GetTypeInfo(variableTypeName, context.CancellationToken).ConvertedType;
+            // 
+
+            // Ensure that all variables in the local declaration have initializers that
+            // are assigned with constant values.
+            foreach (VariableDeclaratorSyntax variable in localDeclaration.Declaration.Variables)
+            {
+                EqualsValueClauseSyntax initializer = variable.Initializer;
+                if (initializer == null)
+                {
+                    return;
+                }
+
+                Optional&lt;object&gt; constantValue = context.SemanticModel.GetConstantValue(initializer.Value, context.CancellationToken);
+                if (!constantValue.HasValue)
+                {
+                    return;
+                }
+
+                // 
+                // Ensure that the initializer value can be converted to the type of the
+                // local declaration without a user-defined conversion.
+                Conversion conversion = context.SemanticModel.ClassifyConversion(initializer.Value, variableType);
+                if (!conversion.Exists || conversion.IsUserDefined)
+                {
+                    return;
+                }
+                // 
+
+                // 
+                // Special cases:
+                //  * If the constant value is a string, the type of the local declaration
+                //    must be System.String.
+                //  * If the constant value is null, the type of the local declaration must
+                //    be a reference type.
+                if (constantValue.Value is string)
+                {
+                    if (variableType.SpecialType != SpecialType.System_String)
+                    {
+                        return;
+                    }
+                }
+                else if (variableType.IsReferenceType &amp;&amp; constantValue.Value != null)
+                {
+                    return;
+                }
+                // 
+            }
+
+            // Perform data flow analysis on the local declaration.
+            DataFlowAnalysis dataFlowAnalysis = context.SemanticModel.AnalyzeDataFlow(localDeclaration);
+
+            foreach (VariableDeclaratorSyntax variable in localDeclaration.Declaration.Variables)
+            {
+                // Retrieve the local symbol for each variable in the local declaration
+                // and ensure that it is not written outside of the data flow analysis region.
+                ISymbol variableSymbol = context.SemanticModel.GetDeclaredSymbol(variable, context.CancellationToken);
+                if (dataFlowAnalysis.WrittenOutside.Contains(variableSymbol))
+                {
+                    return;
+                }
+            }
+
+            // 
+            context.ReportDiagnostic(Diagnostic.Create(Rule, context.Node.GetLocation(), localDeclaration.Declaration.Variables.First().Identifier.ValueText));
+            // 
+        }
+    }
+}</code></pre></div></figure>
+<p>You must write a bit more code in your code fix provider to replace the <code>var</code> keyword with the correct type name. Return to <em>MakeConstCodeFixProvider.cs</em>. The code you&#39;ll add does the following steps:</p>
+<ul>
+<li>Check if the declaration is a <code>var</code> declaration, and if it is:</li>
+<li>Create a new type for the inferred type.</li>
+<li>Make sure the type declaration is not an alias. If so, it is legal to declare <code>const var</code>.</li>
+<li>Make sure that <code>var</code> isn&#39;t a type name in this program. (If so, <code>const var</code> is legal).</li>
+<li>Simplify the full type name</li>
+</ul>
+<p>That sounds like a lot of code. It&#39;s not. Replace the line that declares and initializes <code>newLocal</code> with the following code. It goes immediately after the initialization of <code>newModifiers</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">﻿using System;
+using System.Collections.Generic;
+using System.Collections.Immutable;
+using System.Composition;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
+using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CodeFixes;
+using Microsoft.CodeAnalysis.CodeActions;
+using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
+using Microsoft.CodeAnalysis.Rename;
+using Microsoft.CodeAnalysis.Text;
+using Microsoft.CodeAnalysis.Formatting;
+using Microsoft.CodeAnalysis.Simplification;
+
+namespace MakeConst
+{
+    [ExportCodeFixProvider(LanguageNames.CSharp, Name = nameof(MakeConstCodeFixProvider)), Shared]
+    public class MakeConstCodeFixProvider : CodeFixProvider
+    {
+        public sealed override ImmutableArray&lt;string&gt; FixableDiagnosticIds
+        {
+            get { return ImmutableArray.Create(MakeConstAnalyzer.DiagnosticId); }
+        }
+
+        public sealed override FixAllProvider GetFixAllProvider()
+        {
+            // See https://github.com/dotnet/roslyn/blob/main/docs/analyzers/FixAllProvider.md for more information on Fix All Providers
+            return WellKnownFixAllProviders.BatchFixer;
+        }
+
+        public sealed override async Task RegisterCodeFixesAsync(CodeFixContext context)
+        {
+            var root = await context.Document.GetSyntaxRootAsync(context.CancellationToken).ConfigureAwait(false);
+
+            // TODO: Replace the following code with your own analysis, generating a CodeAction for each fix to suggest
+            var diagnostic = context.Diagnostics.First();
+            var diagnosticSpan = diagnostic.Location.SourceSpan;
+
+            // Find the type declaration identified by the diagnostic.
+            // 
+            var declaration = root.FindToken(diagnosticSpan.Start).Parent.AncestorsAndSelf().OfType().First();
+            // 
+
+            // 
+            // Register a code action that will invoke the fix.
+            context.RegisterCodeFix(
+                CodeAction.Create(
+                    title: CodeFixResources.CodeFixTitle,
+                    createChangedDocument: c =&gt; MakeConstAsync(context.Document, declaration, c),
+                    equivalenceKey: nameof(CodeFixResources.CodeFixTitle)),
+                diagnostic);
+            // 
+        }
+
+        private static async Task MakeConstAsync(Document document,
+            LocalDeclarationStatementSyntax localDeclaration,
+            CancellationToken cancellationToken)
+        {
+            // 
+            // Remove the leading trivia from the local declaration.
+            SyntaxToken firstToken = localDeclaration.GetFirstToken();
+            SyntaxTriviaList leadingTrivia = firstToken.LeadingTrivia;
+            LocalDeclarationStatementSyntax trimmedLocal = localDeclaration.ReplaceToken(
+                firstToken, firstToken.WithLeadingTrivia(SyntaxTriviaList.Empty));
+
+            // Create a const token with the leading trivia.
+            SyntaxToken constToken = SyntaxFactory.Token(leadingTrivia, SyntaxKind.ConstKeyword, SyntaxFactory.TriviaList(SyntaxFactory.ElasticMarker));
+            // 
+
+            // Insert the const token into the modifiers list, creating a new modifiers list.
+            SyntaxTokenList newModifiers = trimmedLocal.Modifiers.Insert(0, constToken);
+
+            //
+            // If the type of the declaration is &#x27;var&#x27;, create a new type name
+            // for the inferred type.
+            VariableDeclarationSyntax variableDeclaration = localDeclaration.Declaration;
+            TypeSyntax variableTypeName = variableDeclaration.Type;
+            if (variableTypeName.IsVar)
+            {
+                SemanticModel semanticModel = await document.GetSemanticModelAsync(cancellationToken).ConfigureAwait(false);
+
+                // Special case: Ensure that &#x27;var&#x27; isn&#x27;t actually an alias to another type
+                // (e.g. using var = System.String).
+                IAliasSymbol aliasInfo = semanticModel.GetAliasInfo(variableTypeName, cancellationToken);
+                if (aliasInfo == null)
+                {
+                    // Retrieve the type inferred for var.
+                    ITypeSymbol type = semanticModel.GetTypeInfo(variableTypeName, cancellationToken).ConvertedType;
+
+                    // Special case: Ensure that &#x27;var&#x27; isn&#x27;t actually a type named &#x27;var&#x27;.
+                    if (type.Name != &quot;var&quot;)
+                    {
+                        // Create a new TypeSyntax for the inferred type. Be careful
+                        // to keep any leading and trailing trivia from the var keyword.
+                        TypeSyntax typeName = SyntaxFactory.ParseTypeName(type.ToDisplayString())
+                            .WithLeadingTrivia(variableTypeName.GetLeadingTrivia())
+                            .WithTrailingTrivia(variableTypeName.GetTrailingTrivia());
+
+                        // Add an annotation to simplify the type name.
+                        TypeSyntax simplifiedTypeName = typeName.WithAdditionalAnnotations(Simplifier.Annotation);
+
+                        // Replace the type in the variable declaration.
+                        variableDeclaration = variableDeclaration.WithType(simplifiedTypeName);
+                    }
+                }
+            }
+            // Produce the new local declaration.
+            LocalDeclarationStatementSyntax newLocal = trimmedLocal.WithModifiers(newModifiers)
+                                       .WithDeclaration(variableDeclaration);
+            //
+
+            // 
+            // Add an annotation to format the new local declaration.
+            LocalDeclarationStatementSyntax formattedLocal = newLocal.WithAdditionalAnnotations(Formatter.Annotation);
+            // 
+
+            // 
+            // Replace the old local declaration with the new local declaration.
+            SyntaxNode oldRoot = await document.GetSyntaxRootAsync(cancellationToken).ConfigureAwait(false);
+            SyntaxNode newRoot = oldRoot.ReplaceNode(localDeclaration, formattedLocal);
+
+            // Return document with transformed tree.
+            return document.WithSyntaxRoot(newRoot);
+            // 
+        }
+    }
+}</code></pre></div></figure>
+<p>You&#39;ll need to add one <code>using</code> directive to use the <code>Simplifier</code> type:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">using Microsoft.CodeAnalysis.Simplification;</code></pre></div></figure>
+<p>Run your tests, and they should all pass. Congratulate yourself by running your finished analyzer. Press <kbd>Ctrl</kbd>+<kbd>F5</kbd> to run the analyzer project in a second instance of Visual Studio with the Roslyn Preview extension loaded.</p>
+<ul>
+<li>In the second Visual Studio instance, create a new C# Console Application project and add <code>int x = &quot;abc&quot;;</code> to the Main method. Thanks to the first bug fix, no warning is reported for this local variable declaration (though there&#39;s a compiler error as expected).</li>
+<li>Next, add <code>object s = &quot;abc&quot;;</code> to the Main method. Because of the second bug fix, no warning is reported.</li>
+<li>Finally, add another local variable that uses the <code>var</code> keyword. You see that a warning is reported and a suggestion appears beneath to the left.</li>
+<li>Move the editor caret over the squiggly underline and press <kbd>Ctrl</kbd>+<kbd>.</kbd>. to display the suggested code fix. Upon selecting your code fix, note that the <code>var</code> keyword is now handled correctly.</li>
+</ul>
+<p>Finally, add the following code:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">int i = 2;
+int j = 32;
+int k = i + j;</code></pre></div></figure>
+<p>After these changes, you get red squiggles only on the first two variables. Add <code>const</code> to both <code>i</code> and <code>j</code>, and you get a new warning on <code>k</code> because it can now be <code>const</code>.</p>
+<p>Congratulations! You created your first .NET Compiler Platform extension that performs on-the-fly code analysis to detect an issue and provides a quick fix to correct it. Along the way, you learned many of the code APIs that are part of the .NET Compiler Platform SDK (Roslyn APIs). You can check your work against the <a target="_blank" rel="noopener" href="https://github.com/dotnet/samples/tree/main/csharp/roslyn-sdk/Tutorials/MakeConst">completed sample</a> in the samples GitHub repository.</p>
+<h2 id="other-resources">Other resources</h2>
+<ul>
+<li><a href="#/doc/csharp/roslyn-sdk/get-started/syntax-analysis">Get started with syntax analysis</a></li>
+<li><a href="#/doc/csharp/roslyn-sdk/get-started/semantic-analysis">Get started with semantic analysis</a></li>
+</ul>

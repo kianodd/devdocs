@@ -1,0 +1,215 @@
+<h2 id="introduction-to-go-1-introduction">Introduction to Go 1 {#introduction}</h2>
+<p>Go version 1, Go 1 for short, defines a language and a set of core libraries
+that provide a stable foundation for creating reliable products, projects, and
+publications.</p>
+<p>The driving motivation for Go 1 is stability for its users. People should be able to
+write Go programs and expect that they will continue to compile and run without
+change, on a time scale of years, including in production environments such as
+Google App Engine. Similarly, people should be able to write books about Go, be
+able to say which version of Go the book is describing, and have that version
+number still be meaningful much later.</p>
+<p>Code that compiles in Go 1 should, with few exceptions, continue to compile and
+run throughout the lifetime of that version, even as we issue updates and bug
+fixes such as Go version 1.1, 1.2, and so on. Other than critical fixes, changes
+made to the language and library for subsequent releases of Go 1 may
+add functionality but will not break existing Go 1 programs.
+<a href="go1compat.html">The Go 1 compatibility document</a>
+explains the compatibility guidelines in more detail.</p>
+<p>Go 1 is a representation of Go as it used today, not a wholesale rethinking of
+the language. We avoided designing new features and instead focused on cleaning
+up problems and inconsistencies and improving portability. There are a number
+changes to the Go language and packages that we had considered for some time and
+prototyped but not released primarily because they are significant and
+backwards-incompatible. Go 1 was an opportunity to get them out, which is
+helpful for the long term, but also means that Go 1 introduces incompatibilities
+for old programs. Fortunately, the <code>go</code> <code>fix</code> tool can
+automate much of the work needed to bring programs up to the Go 1 standard.</p>
+<p>This document outlines the major changes in Go 1 that will affect programmers
+updating existing code; its reference point is the prior release, r60 (tagged as
+r60.3). It also explains how to update code from r60 to run under Go 1.</p>
+<h2 id="changes-to-the-language-language">Changes to the language {#language}</h2>
+<h3 id="append-append">Append {#append}</h3>
+<p>The <code>append</code> predeclared variadic function makes it easy to grow a slice
+by adding elements to the end.
+A common use is to add bytes to the end of a byte slice when generating output.
+However, <code>append</code> did not provide a way to append a string to a <code>[]byte</code>,
+which is another common case.</p>
+<p>{{code &quot;/doc/progs/go1.go&quot; <code>/greeting := ..byte/</code> <code>/append.*hello/</code>}}</p>
+<p>By analogy with the similar property of <code>copy</code>, Go 1
+permits a string to be appended (byte-wise) directly to a byte
+slice, reducing the friction between strings and byte slices.
+The conversion is no longer necessary:</p>
+<p>{{code &quot;/doc/progs/go1.go&quot; <code>/append.*world/</code>}}</p>
+<p><em>Updating</em>:
+This is a new feature, so existing code needs no changes.</p>
+<h3 id="close-close">Close {#close}</h3>
+<p>The <code>close</code> predeclared function provides a mechanism
+for a sender to signal that no more values will be sent.
+It is important to the implementation of <code>for</code> <code>range</code>
+loops over channels and is helpful in other situations.
+Partly by design and partly because of race conditions that can occur otherwise,
+it is intended for use only by the goroutine sending on the channel,
+not by the goroutine receiving data.
+However, before Go 1 there was no compile-time checking that <code>close</code>
+was being used correctly.</p>
+<p>To close this gap, at least in part, Go 1 disallows <code>close</code> on receive-only channels.
+Attempting to close such a channel is a compile-time error.</p>
+<p>{{code &quot;/doc/progs/go1.go&quot; <code>/STARTCLOSE/</code> <code>/ENDCLOSE/</code>}}</p>
+<p><em>Updating</em>:
+Existing code that attempts to close a receive-only channel was
+erroneous even before Go 1 and should be fixed. The compiler will
+now reject such code.</p>
+<h3 id="composite-literals-literals">Composite literals {#literals}</h3>
+<p>In Go 1, a composite literal of array, slice, or map type can elide the
+type specification for the elements&#39; initializers if they are of pointer type.
+All four of the initializations in this example are legal; the last one was illegal before Go 1.</p>
+<p>{{code &quot;/doc/progs/go1.go&quot; <code>/type Date struct/</code> <code>/STOP/</code>}}</p>
+<p><em>Updating</em>:
+This change has no effect on existing code, but the command
+<code>gofmt</code> <code>-s</code> applied to existing source
+will, among other things, elide explicit element types wherever permitted.</p>
+<h3 id="goroutines-during-init-init">Goroutines during init {#init}</h3>
+<p>The old language defined that <code>go</code> statements executed during initialization created goroutines but that they did not begin to run until initialization of the entire program was complete.
+This introduced clumsiness in many places and, in effect, limited the utility
+of the <code>init</code> construct:
+if it was possible for another package to use the library during initialization, the library
+was forced to avoid goroutines.
+This design was done for reasons of simplicity and safety but,
+as our confidence in the language grew, it seemed unnecessary.
+Running goroutines during initialization is no more complex or unsafe than running them during normal execution.</p>
+<p>In Go 1, code that uses goroutines can be called from
+<code>init</code> routines and global initialization expressions
+without introducing a deadlock.</p>
+<p>{{code &quot;/doc/progs/go1.go&quot; <code>/PackageGlobal/</code> <code>/^}/</code>}}</p>
+<p><em>Updating</em>:
+This is a new feature, so existing code needs no changes,
+although it&#39;s possible that code that depends on goroutines not starting before <code>main</code> will break.
+There was no such code in the standard repository.</p>
+<h3 id="the-rune-type-rune">The rune type {#rune}</h3>
+<p>The language spec allows the <code>int</code> type to be 32 or 64 bits wide, but current implementations set <code>int</code> to 32 bits even on 64-bit platforms.
+It would be preferable to have <code>int</code> be 64 bits on 64-bit platforms.
+(There are important consequences for indexing large slices.)
+However, this change would waste space when processing Unicode characters with
+the old language because the <code>int</code> type was also used to hold Unicode code points: each code point would waste an extra 32 bits of storage if <code>int</code> grew from 32 bits to 64.</p>
+<p>To make changing to 64-bit <code>int</code> feasible,
+Go 1 introduces a new basic type, <code>rune</code>, to represent
+individual Unicode code points.
+It is an alias for <code>int32</code>, analogous to <code>byte</code>
+as an alias for <code>uint8</code>.</p>
+<p>Character literals such as <code>&#39;a&#39;</code>, <code>&#39;語&#39;</code>, and <code>&#39;\u0345&#39;</code>
+now have default type <code>rune</code>,
+analogous to <code>1.0</code> having default type <code>float64</code>.
+A variable initialized to a character constant will therefore
+have type <code>rune</code> unless otherwise specified.</p>
+<p>Libraries have been updated to use <code>rune</code> rather than <code>int</code>
+when appropriate. For instance, the functions <code>unicode.ToLower</code> and
+relatives now take and return a <code>rune</code>.</p>
+<p>{{code &quot;/doc/progs/go1.go&quot; <code>/STARTRUNE/</code> <code>/ENDRUNE/</code>}}</p>
+<p><em>Updating</em>:
+Most source code will be unaffected by this because the type inference from
+<code>:=</code> initializers introduces the new type silently, and it propagates
+from there.
+Some code may get type errors that a trivial conversion will resolve.</p>
+<h3 id="the-error-type-error">The error type {#error}</h3>
+<p>Go 1 introduces a new built-in type, <code>error</code>, which has the following definition:</p>
+<pre><code>    type error interface {
+        Error() string
+    }
+</code></pre>
+<p>Since the consequences of this type are all in the package library,
+it is discussed <a href="#errors">below</a>.</p>
+<h3 id="deleting-from-maps-delete">Deleting from maps {#delete}</h3>
+<p>In the old language, to delete the entry with key <code>k</code> from map <code>m</code>, one wrote the statement,</p>
+<pre><code>    m[k] = value, false
+</code></pre>
+<p>This syntax was a peculiar special case, the only two-to-one assignment.
+It required passing a value (usually ignored) that is evaluated but discarded,
+plus a boolean that was nearly always the constant <code>false</code>.
+It did the job but was odd and a point of contention.</p>
+<p>In Go 1, that syntax has gone; instead there is a new built-in
+function, <code>delete</code>. The call</p>
+<p>{{code &quot;/doc/progs/go1.go&quot; <code>/delete\(m, k\)/</code>}}</p>
+<p>will delete the map entry retrieved by the expression <code>m[k]</code>.
+There is no return value. Deleting a non-existent entry is a no-op.</p>
+<p><em>Updating</em>:
+Running <code>go</code> <code>fix</code> will convert expressions of the form <code>m[k] = value, false</code> into <code>delete(m, k)</code> when it is clear that
+the ignored value can be safely discarded from the program and
+<code>false</code> refers to the predefined boolean constant.
+The fix tool
+will flag other uses of the syntax for inspection by the programmer.</p>
+<h3 id="iterating-in-maps-iteration">Iterating in maps {#iteration}</h3>
+<p>The old language specification did not define the order of iteration for maps,
+and in practice it differed across hardware platforms.
+This caused tests that iterated over maps to be fragile and non-portable, with the
+unpleasant property that a test might always pass on one machine but break on another.</p>
+<p>In Go 1, the order in which elements are visited when iterating
+over a map using a <code>for</code> <code>range</code> statement
+is defined to be unpredictable, even if the same loop is run multiple
+times with the same map.
+Code should not assume that the elements are visited in any particular order.</p>
+<p>This change means that code that depends on iteration order is very likely to break early and be fixed long before it becomes a problem.
+Just as important, it allows the map implementation to ensure better map balancing even when programs are using range loops to select an element from a mapl.</p>
+<p>{{code &quot;/doc/progs/go1.go&quot; <code>/Sunday/</code> <code>/^	}/</code>}}</p>
+<p><em>Updating</em>:
+This is one change where tools cannot help. Most existing code
+will be unaffected, but some programs may break or misbehave; we
+recommend manual checking of all range statements over maps to
+verify they do not depend on iteration order. There were a few such
+examples in the standard repository; they have been fixed.
+Note that it was already incorrect to depend on the iteration order, which
+was unspecified. This change codifies the unpredictability.</p>
+<h3 id="multiple-assignment-multipleassignment">Multiple assignment {#multiple_assignment}</h3>
+<p>The language specification has long guaranteed that in assignments
+the right-hand-side expressions are all evaluated before any left-hand-side expressions are assigned.
+To guarantee predictable behavior,
+Go 1 refines the specification further.</p>
+<p>If the left-hand side of the assignment
+statement contains expressions that require evaluation, such as
+function calls or array indexing operations, these will all be done
+using the usual left-to-right rule before any variables are assigned
+their value. Once everything is evaluated, the actual assignments
+proceed in left-to-right order.</p>
+<p>These examples illustrate the behavior.</p>
+<p>{{code &quot;/doc/progs/go1.go&quot; <code>/sa :=/</code> <code>/then sc.0. = 2/</code>}}</p>
+<p><em>Updating</em>:
+This is one change where tools cannot help, but breakage is unlikely.
+No code in the standard repository was broken by this change, and code
+that depended on the previous unspecified behavior was already incorrect.</p>
+<h3 id="returns-and-shadowed-variables-shadowing">Returns and shadowed variables {#shadowing}</h3>
+<p>A common mistake is to use <code>return</code> (without arguments) after an assignment to a variable that has the same name as a result variable but is not the same variable.
+This situation is called <em>shadowing</em>: the result variable has been shadowed by another variable with the same name declared in an inner scope.</p>
+<p>In functions with named return values,
+the Go 1 compilers disallow return statements without arguments if any of the named return values is shadowed at the point of the return statement.
+(It isn&#39;t part of the specification, because this is one area we are still exploring;
+the situation is analogous to the compilers rejecting functions that do not end with an explicit return statement.)</p>
+<p>This function implicitly returns a shadowed return value and will be rejected by the compiler:</p>
+<p>{{code &quot;/doc/progs/go1.go&quot; <code>/^func Bug/</code> <code>/^}$/</code>}}</p>
+<p><em>Updating</em>:
+Code that shadows return values in this way will be rejected by the compiler and will need to be fixed by hand.
+The few cases that arose in the standard repository were mostly bugs.</p>
+<h3 id="copying-structs-with-unexported-fields-unexported">Copying structs with unexported fields {#unexported}</h3>
+<p>The old language did not allow a package to make a copy of a struct value containing unexported fields belonging to a different package.
+There was, however, a required exception for a method receiver;
+also, the implementations of <code>copy</code> and <code>append</code> have never honored the restriction.</p>
+<p>Go 1 will allow packages to copy struct values containing unexported fields from other packages.
+Besides resolving the inconsistency,
+this change admits a new kind of API: a package can return an opaque value without resorting to a pointer or interface.
+The new implementations of <code>time.Time</code> and
+<code>reflect.Value</code> are examples of types taking advantage of this new property.</p>
+<p>As an example, if package <code>p</code> includes the definitions,</p>
+<pre><code>    type Struct struct {
+        Public int
+        secret int
+    }
+    func NewStruct(a int) Struct {  // Note: not a pointer.
+        return Struct{a, f(a)}
+    }
+    func (s Struct) String() string {
+        return fmt.Sprintf(&quot;{%d (secret %d)}&quot;, s.Public, s.secret)
+    }
+</code></pre>
+<p>a package that imports <code>p</code> can assign and copy values of type
+<code>p.Struct</code> at will.
+Behind the scenes the unexported fields will be assigned and copied just
+as if they were exported,
+but the client code will never be aware of them. The code</p>

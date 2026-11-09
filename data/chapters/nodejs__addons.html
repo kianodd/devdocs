@@ -1,0 +1,1190 @@
+<p><em>Addons</em> are dynamically-linked shared objects that can be loaded via the
+<a href="#/doc/nodejs/modules@requireid"><code>require()</code></a> function as ordinary Node.js modules.
+Addons provide a foreign function interface between JavaScript and native code.</p>
+<p>There are three options for implementing addons:</p>
+<ul>
+<li><a href="#/doc/nodejs/n-api">Node-API</a> (recommended)</li>
+<li><code>nan</code> (<a target="_blank" rel="noopener" href="https://github.com/nodejs/nan">Native Abstractions for Node.js</a>)</li>
+<li>direct use of public V8, libuv, and Node.js interfaces</li>
+</ul>
+<p>The rest of this document focuses on the latter, requiring
+knowledge of multiple components and APIs:</p>
+<ul>
+<li><p><a target="_blank" rel="noopener" href="https://v8.dev/">V8</a>: the C++ library Node.js uses to provide the
+JavaScript implementation. It provides the mechanisms for creating objects,
+calling functions, etc. The V8&#39;s API is documented mostly in the
+<code>v8.h</code> header file (<code>deps/v8/include/v8.h</code> in the Node.js source
+tree), and is also available <a target="_blank" rel="noopener" href="https://v8docs.nodesource.com/">online</a>.</p>
+</li>
+<li><p><a target="_blank" rel="noopener" href="https://github.com/libuv/libuv"><code>libuv</code></a>: The C library that implements the Node.js event loop, its worker
+threads and all of the asynchronous behaviors of the platform. It also
+serves as a cross-platform abstraction library, giving easy, POSIX-like
+access across all major operating systems to many common system tasks, such
+as interacting with the file system, sockets, timers, and system events. libuv
+also provides a threading abstraction similar to POSIX threads for
+more sophisticated asynchronous addons that need to move beyond the
+standard event loop. Addon authors should
+avoid blocking the event loop with I/O or other time-intensive tasks by
+offloading work via libuv to non-blocking system operations, worker threads,
+or a custom use of libuv threads.</p>
+</li>
+<li><p>Public Node.js interfaces: Node.js itself exports C++ APIs that addons
+and embedders can make use of.</p>
+</li>
+<li><p>Other statically linked libraries (including OpenSSL): These
+other libraries are located in the <code>deps/</code> directory in the Node.js source
+tree. Only the libuv, OpenSSL, V8, and zlib symbols are purposefully
+re-exported by Node.js and may be used to various extents by addons. See
+<a href="#linking-to-libraries-included-with-nodejs">Linking to libraries included with Node.js</a> for additional information.</p>
+</li>
+</ul>
+<p>All of the following examples are available for <a target="_blank" rel="noopener" href="https://github.com/nodejs/node-addon-examples">download</a> and may
+be used as the starting-point for an addon.</p>
+<h2 id="hello-world">Hello world</h2>
+<p>This &quot;Hello world&quot; example is a simple addon, written in C++, that is the
+equivalent of the following JavaScript code:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JavaScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript"><span class="hljs-variable language_">module</span>.<span class="hljs-property">exports</span>.<span class="hljs-property">hello</span> = <span class="hljs-function">() =&gt;</span> <span class="hljs-string">&#x27;world&#x27;</span>;</code></pre></div></figure>
+<p>First, create the file <code>hello.cc</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">// hello.cc
+#include &lt;node.h&gt;
+
+namespace demo {
+
+using v8::FunctionCallbackInfo;
+using v8::Isolate;
+using v8::Local;
+using v8::NewStringType;
+using v8::Object;
+using v8::String;
+using v8::Value;
+
+void Method(const FunctionCallbackInfo&amp; args) {
+  Isolate* isolate = args.GetIsolate();
+  args.GetReturnValue().Set(String::NewFromUtf8(
+      isolate, &quot;world&quot;, NewStringType::kNormal).ToLocalChecked());
+}
+
+void Initialize(Local exports) {
+  NODE_SET_METHOD(exports, &quot;hello&quot;, Method);
+}
+
+NODE_MODULE(NODE_GYP_MODULE_NAME, Initialize) // N.B.: no semi-colon, this is not a function
+
+}  // namespace demo</code></pre></div></figure>
+<p>On most platforms, the following <code>Makefile</code> can get us started:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Terminal</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-bash"><span class="tk-cmd">NODEJS_DEV_ROOT</span> ?= <span class="tk-var">$(shell</span> dirname <span class="tk-str">"$$(command -v node)"</span>)/..
+<span class="tk-cmd">CXXFLAGS</span> = <span class="tk-flag">-std</span>=c++23 <span class="tk-flag">-I</span><span class="tk-var">$(NODEJS_DEV_ROOT)/include/node</span> <span class="tk-flag">-fPIC</span> <span class="tk-flag">-shared</span> <span class="tk-flag">-Wl</span>,-undefined,dynamic_lookup
+
+<span class="tk-cmd">hello.node:</span> hello.cc
+	<span class="tk-var">$(CXX)</span> <span class="tk-var">$(CXXFLAGS)</span> <span class="tk-flag">-o</span> <span class="tk-var">$@</span> <span class="tk-var">$&lt;</span></code></pre></div></figure>
+<p>Then running the following commands will compile and run the code:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Terminal</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-bash"><span class="tk-prompt">$ </span><span class="tk-cmd">make</span>
+<span class="tk-prompt">$ </span><span class="tk-cmd">node</span> <span class="tk-flag">-p</span> <span class="tk-str">'require("./hello.node").hello()'</span>
+<span class="tk-cmd">world</span></code></pre></div></figure>
+<p>To integrate with the npm ecosystem, see the <a href="#building">Building</a> section.</p>
+<h3 id="context-aware-addons">Context-aware addons</h3>
+<p>Addons defined with <code>NODE_MODULE()</code> cannot be loaded in multiple contexts or
+multiple threads at the same time.</p>
+<p>There are environments in which Node.js addons may need to be loaded multiple
+times in multiple contexts. For example, the <a target="_blank" rel="noopener" href="https://electronjs.org/">Electron</a> runtime runs multiple
+instances of Node.js in a single process. Each instance will have its own
+<code>require()</code> cache, and thus each instance will need a native addon to behave
+correctly when loaded via <code>require()</code>. This means that the addon
+must support multiple initializations.</p>
+<p>A context-aware addon can be constructed by using the macro
+<code>NODE_MODULE_INITIALIZER</code>, which expands to the name of a function which Node.js
+will expect to find when it loads an addon. An addon can thus be initialized as
+in the following example:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">using namespace v8;
+
+extern &quot;C&quot; NODE_MODULE_EXPORT void
+NODE_MODULE_INITIALIZER(Local exports,
+                        Local module,
+                        Local context) {
+  /* Perform addon initialization steps here. */
+}</code></pre></div></figure>
+<p>Another option is to use the macro <code>NODE_MODULE_INIT()</code>, which will also
+construct a context-aware addon. Unlike <code>NODE_MODULE()</code>, which is used to
+construct an addon around a given addon initializer function,
+<code>NODE_MODULE_INIT()</code> serves as the declaration of such an initializer to be
+followed by a function body.</p>
+<p>The following three variables may be used inside the function body following an
+invocation of <code>NODE_MODULE_INIT()</code>:</p>
+<ul>
+<li><code>Local exports</code>,</li>
+<li><code>Local module</code>, and</li>
+<li><code>Local context</code></li>
+</ul>
+<p>Building a context-aware addon requires careful management of global static data
+to ensure stability and correctness. Since the addon may be loaded multiple
+times, potentially even from different threads, any global static data stored
+in the addon must be properly protected, and must not contain any persistent
+references to JavaScript objects. The reason for this is that JavaScript
+objects are only valid in one context, and will likely cause a crash when
+accessed from the wrong context or from a different thread than the one on which
+they were created.</p>
+<p>The context-aware addon can be structured to avoid global static data by
+performing the following steps:</p>
+<ul>
+<li>Define a class which will hold per-addon-instance data and which has a static
+member of the form<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">static void DeleteInstance(void* data) {
+  // Cast `data` to an instance of the class and delete it.
+}</code></pre></div></figure>
+</li>
+<li>Heap-allocate an instance of this class in the addon initializer. This can be
+accomplished using the <code>new</code> keyword.</li>
+<li>Call <code>node::AddEnvironmentCleanupHook()</code>, passing it the above-created
+instance and a pointer to <code>DeleteInstance()</code>. This will ensure the instance is
+deleted when the environment is torn down.</li>
+<li>Store the instance of the class in a <code>v8::External</code>, and</li>
+<li>Pass the <code>v8::External</code> to all methods exposed to JavaScript by passing it
+to <code>v8::FunctionTemplate::New()</code> or <code>v8::Function::New()</code> which creates the
+native-backed JavaScript functions. The third parameter of
+<code>v8::FunctionTemplate::New()</code> or <code>v8::Function::New()</code>  accepts the
+<code>v8::External</code> and makes it available in the native callback using the
+<code>v8::FunctionCallbackInfo::Data()</code> method.</li>
+</ul>
+<p>This will ensure that the per-addon-instance data reaches each binding that can
+be called from JavaScript. The per-addon-instance data must also be passed into
+any asynchronous callbacks the addon may create.</p>
+<p>The following example illustrates the implementation of a context-aware addon:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">#include &lt;node.h&gt;
+
+using namespace v8;
+
+class AddonData {
+ public:
+  explicit AddonData(Isolate* isolate):
+      call_count(0) {
+    // Ensure this per-addon-instance data is deleted at environment cleanup.
+    node::AddEnvironmentCleanupHook(isolate, DeleteInstance, this);
+  }
+
+  // Per-addon data.
+  int call_count;
+
+  static void DeleteInstance(void* data) {
+    delete static_cast&lt;AddonData*&gt;(data);
+  }
+};
+
+static void Method(const v8::FunctionCallbackInfo&lt;v8::Value&gt;&amp; info) {
+  // Retrieve the per-addon-instance data.
+  AddonData* data =
+      reinterpret_cast&lt;AddonData*&gt;(info.Data().As()-&gt;Value());
+  data-&gt;call_count++;
+  info.GetReturnValue().Set((double)data-&gt;call_count);
+}
+
+// Initialize this addon to be context-aware.
+NODE_MODULE_INIT(/* exports, module, context */) {
+  Isolate* isolate = Isolate::GetCurrent();
+
+  // Create a new instance of `AddonData` for this instance of the addon and
+  // tie its life cycle to that of the Node.js environment.
+  AddonData* data = new AddonData(isolate);
+
+  // Wrap the data in a `v8::External` so we can pass it to the method we
+  // expose.
+  Local external = External::New(isolate, data);
+
+  // Expose the method `Method` to JavaScript, and make sure it receives the
+  // per-addon-instance data we created above by passing `external` as the
+  // third parameter to the `FunctionTemplate` constructor.
+  exports-&gt;Set(context,
+               String::NewFromUtf8(isolate, &quot;method&quot;).ToLocalChecked(),
+               FunctionTemplate::New(isolate, Method, external)
+                  -&gt;GetFunction(context).ToLocalChecked()).FromJust();
+}</code></pre></div></figure>
+<h4 id="worker-support">Worker support</h4>
+<p>In order to be loaded from multiple Node.js environments,
+such as a main thread and a Worker thread, an add-on needs to either:</p>
+<ul>
+<li>Be a <a href="#/doc/nodejs/n-api">Node-API</a> addon.</li>
+<li>Be declared as context-aware using <code>NODE_MODULE_INIT()</code> as described above.</li>
+</ul>
+<p>In order to support <a href="#/doc/nodejs/worker_threads@class-worker"><code>Worker</code></a> threads, addons need to clean up any resources
+they may have allocated when such a thread exits. This can be achieved through
+the usage of the <code>AddEnvironmentCleanupHook()</code> function:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">void AddEnvironmentCleanupHook(v8::Isolate* isolate,
+                               void (*fun)(void* arg),
+                               void* arg);</code></pre></div></figure>
+<p>This function adds a hook that will run before a given Node.js instance shuts
+down. If necessary, such hooks can be removed before they are run using
+<code>RemoveEnvironmentCleanupHook()</code>, which has the same signature. Callbacks are
+run in last-in first-out order.</p>
+<p>If necessary, there is an additional pair of <code>AddEnvironmentCleanupHook()</code>
+and <code>RemoveEnvironmentCleanupHook()</code> overloads, where the cleanup hook takes a
+callback function. This can be used for shutting down asynchronous resources,
+such as any libuv handles registered by the addon.</p>
+<p>The following <code>addon.cc</code> uses <code>AddEnvironmentCleanupHook</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">// addon.cc
+#include &lt;node.h&gt;
+#include &lt;assert.h&gt;
+#include &lt;stdlib.h&gt;
+
+using node::AddEnvironmentCleanupHook;
+using v8::HandleScope;
+using v8::Isolate;
+using v8::Local;
+using v8::Object;
+
+// Note: In a real-world application, do not rely on static/global data.
+static char cookie[] = &quot;yum yum&quot;;
+static int cleanup_cb1_called = 0;
+static int cleanup_cb2_called = 0;
+
+static void cleanup_cb1(void* arg) {
+  Isolate* isolate = static_cast&lt;Isolate*&gt;(arg);
+  HandleScope scope(isolate);
+  Local obj = Object::New(isolate);
+  assert(!obj.IsEmpty());  // assert VM is still alive
+  assert(obj-&gt;IsObject());
+  cleanup_cb1_called++;
+}
+
+static void cleanup_cb2(void* arg) {
+  assert(arg == static_cast&lt;void*&gt;(cookie));
+  cleanup_cb2_called++;
+}
+
+static void sanity_check(void*) {
+  assert(cleanup_cb1_called == 1);
+  assert(cleanup_cb2_called == 1);
+}
+
+// Initialize this addon to be context-aware.
+NODE_MODULE_INIT(/* exports, module, context */) {
+  Isolate* isolate = Isolate::GetCurrent();
+
+  AddEnvironmentCleanupHook(isolate, sanity_check, nullptr);
+  AddEnvironmentCleanupHook(isolate, cleanup_cb2, cookie);
+  AddEnvironmentCleanupHook(isolate, cleanup_cb1, isolate);
+}</code></pre></div></figure>
+<p>Test in JavaScript by running:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JavaScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript"><span class="hljs-comment">// test.js</span>
+<span class="hljs-built_in">require</span>(<span class="hljs-string">&#x27;./build/Release/addon&#x27;</span>);</code></pre></div></figure>
+<h3 id="building">Building</h3>
+<p>Once the source code has been written, it must be compiled into the binary
+<code>addon.node</code> file. To do so, create a file called <code>binding.gyp</code> in the
+top-level of the project describing the build configuration of the module
+using a JSON-like format. This file is used by <a target="_blank" rel="noopener" href="https://github.com/nodejs/node-gyp"><code>node-gyp</code></a>, a tool written
+specifically to compile Node.js addons.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JSON</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-json"><span class="hljs-punctuation">{</span>
+  <span class="hljs-attr">&quot;targets&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-punctuation">[</span>
+    <span class="hljs-punctuation">{</span>
+      <span class="hljs-attr">&quot;target_name&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;addon&quot;</span><span class="hljs-punctuation">,</span>
+      <span class="hljs-attr">&quot;sources&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-punctuation">[</span> <span class="hljs-string">&quot;hello.cc&quot;</span> <span class="hljs-punctuation">]</span>
+    <span class="hljs-punctuation">}</span>
+  <span class="hljs-punctuation">]</span>
+<span class="hljs-punctuation">}</span></code></pre></div></figure>
+<p>A version of the <code>node-gyp</code> utility is bundled and distributed with
+Node.js as part of <code>npm</code>. This version is not made directly available for
+developers to use and is intended only to support the ability to use the
+<code>npm install</code> command to compile and install addons. Developers who wish to
+use <code>node-gyp</code> directly can install it using the command
+<code>npm install -g node-gyp</code>. See the <code>node-gyp</code> <a target="_blank" rel="noopener" href="https://github.com/nodejs/node-gyp#installation">installation instructions</a> for
+more information, including platform-specific requirements.</p>
+<p>Once the <code>binding.gyp</code> file has been created, use <code>node-gyp configure</code> to
+generate the appropriate project build files for the current platform. This
+will generate either a <code>Makefile</code> (on Unix platforms) or a <code>vcxproj</code> file
+(on Windows) in the <code>build/</code> directory.</p>
+<p>Next, invoke the <code>node-gyp build</code> command to generate the compiled <code>addon.node</code>
+file. This will be put into the <code>build/Release/</code> directory.</p>
+<p>When using <code>npm install</code> to install a Node.js addon, npm uses its own bundled
+version of <code>node-gyp</code> to perform this same set of actions, generating a
+compiled version of the addon for the user&#39;s platform on demand.</p>
+<p>Once built, the binary addon can be used from within Node.js by pointing
+<a href="#/doc/nodejs/modules@requireid"><code>require()</code></a> to the built <code>addon.node</code> module:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JavaScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript"><span class="hljs-comment">// hello.js</span>
+<span class="hljs-keyword">const</span> addon = <span class="hljs-built_in">require</span>(<span class="hljs-string">&#x27;./build/Release/addon&#x27;</span>);
+
+<span class="hljs-variable language_">console</span>.<span class="hljs-title function_">log</span>(addon.<span class="hljs-title function_">hello</span>());
+<span class="hljs-comment">// Prints: &#x27;world&#x27;</span></code></pre></div></figure>
+<p>Because the exact path to the compiled addon binary can vary depending on how
+it is compiled (i.e. sometimes it may be in <code>./build/Debug/</code>), addons can use
+the <a target="_blank" rel="noopener" href="https://github.com/TooTallNate/node-bindings">bindings</a> package to load the compiled module.</p>
+<p>While the <code>bindings</code> package implementation is more sophisticated in how it
+locates addon modules, it is essentially using a <code>try…catch</code> pattern similar to:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JavaScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript"><span class="hljs-keyword">try</span> {
+  <span class="hljs-keyword">return</span> <span class="hljs-built_in">require</span>(<span class="hljs-string">&#x27;./build/Release/addon.node&#x27;</span>);
+} <span class="hljs-keyword">catch</span> (err) {
+  <span class="hljs-keyword">return</span> <span class="hljs-built_in">require</span>(<span class="hljs-string">&#x27;./build/Debug/addon.node&#x27;</span>);
+}</code></pre></div></figure>
+<h3 id="linking-to-libraries-included-with-nodejs">Linking to libraries included with Node.js</h3>
+<p>Node.js uses statically linked libraries such as V8, libuv, and OpenSSL. All
+addons are required to link to V8 and may link to any of the other dependencies
+as well. Typically, this is as simple as including the appropriate
+<code>#include &lt;...&gt;</code> statements (e.g. <code>#include &lt;v8.h&gt;</code>) and <code>node-gyp</code> will locate
+the appropriate headers automatically. However, there are a few caveats to be
+aware of:</p>
+<ul>
+<li><p>When <code>node-gyp</code> runs, it will detect the specific release version of Node.js
+and download either the full source tarball or just the headers. If the full
+source is downloaded, addons will have complete access to the full set of
+Node.js dependencies. However, if only the Node.js headers are downloaded,
+then only the symbols exported by Node.js will be available.</p>
+</li>
+<li><p><code>node-gyp</code> can be run using the <code>--nodedir</code> flag pointing at a local Node.js
+source image. Using this option, the addon will have access to the full set of
+dependencies.</p>
+</li>
+</ul>
+<h3 id="loading-addons-using-require">Loading addons using <code>require()</code></h3>
+<p>The filename extension of the compiled addon binary is <code>.node</code> (as opposed
+to <code>.dll</code> or <code>.so</code>). The <a href="#/doc/nodejs/modules@requireid"><code>require()</code></a> function is written to look for
+files with the <code>.node</code> file extension and initialize those as dynamically-linked
+libraries.</p>
+<p>When calling <a href="#/doc/nodejs/modules@requireid"><code>require()</code></a>, the <code>.node</code> extension can usually be
+omitted and Node.js will still find and initialize the addon. One caveat,
+however, is that Node.js will first attempt to locate and load modules or
+JavaScript files that happen to share the same base name. For instance, if
+there is a file <code>addon.js</code> in the same directory as the binary <code>addon.node</code>,
+then <a href="#/doc/nodejs/modules@requireid"><code>require(&#39;addon&#39;)</code></a> will give precedence to the <code>addon.js</code> file
+and load it instead.</p>
+<h3 id="loading-addons-using-import">Loading addons using <code>import</code></h3>
+<blockquote>
+<p>Stability: 1.0 - Early development</p>
+</blockquote>
+<p>You can use the <a href="#/doc/nodejs/cli@--experimental-addon-modules"><code>--experimental-addon-modules</code></a> flag to enable support for
+both static <code>import</code> and dynamic <code>import()</code> to load binary addons.</p>
+<p>If we reuse the Hello World example from earlier, you could do:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">// hello.mjs
+
+// N.B.: import {hello} from &#x27;./hello.node&#x27; would not work
+
+console.log(myAddon.hello());</code></pre></div></figure>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Terminal</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-bash"><span class="tk-prompt">$ </span><span class="tk-cmd">node</span> <span class="tk-flag">--experimental-addon-modules</span> hello.mjs
+<span class="tk-cmd">world</span></code></pre></div></figure>
+<h2 id="native-abstractions-for-nodejs">Native abstractions for Node.js</h2>
+<p>Each of the examples illustrated in this document directly use the
+Node.js and V8 APIs for implementing addons. The V8 API can, and has, changed
+dramatically from one V8 release to the next (and one major Node.js release to
+the next). With each change, addons may need to be updated and recompiled in
+order to continue functioning. The Node.js release schedule is designed to
+minimize the frequency and impact of such changes but there is little that
+Node.js can do to ensure stability of the V8 APIs.</p>
+<p>The <a target="_blank" rel="noopener" href="https://github.com/nodejs/nan">Native Abstractions for Node.js</a> (or <code>nan</code>) provide a set of tools that
+addon developers are recommended to use to keep compatibility between past and
+future releases of V8 and Node.js. See the <code>nan</code> <a target="_blank" rel="noopener" href="https://github.com/nodejs/nan/tree/HEAD/examples/">examples</a> for an
+illustration of how it can be used.</p>
+<h2 id="node-api">Node-API</h2>
+<blockquote>
+<p>Stability: 2 - Stable</p>
+</blockquote>
+<p>See <a href="#/doc/nodejs/n-api">C/C++ addons with Node-API</a>.</p>
+<h2 id="addon-examples">Addon examples</h2>
+<p>The following are some example addons intended to help developers get started. The
+examples use the V8 APIs. Refer to the online <a target="_blank" rel="noopener" href="https://v8docs.nodesource.com/">V8 reference</a>
+for help with the various V8 calls, and V8&#39;s <a target="_blank" rel="noopener" href="https://v8.dev/docs/embed">Embedder&#39;s Guide</a> for an
+explanation of several concepts used such as handles, scopes, function
+templates, etc.</p>
+<p>Each of these examples uses the following <code>binding.gyp</code> file:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JSON</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-json"><span class="hljs-punctuation">{</span>
+  <span class="hljs-attr">&quot;targets&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-punctuation">[</span>
+    <span class="hljs-punctuation">{</span>
+      <span class="hljs-attr">&quot;target_name&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;addon&quot;</span><span class="hljs-punctuation">,</span>
+      <span class="hljs-attr">&quot;sources&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-punctuation">[</span> <span class="hljs-string">&quot;addon.cc&quot;</span> <span class="hljs-punctuation">]</span>
+    <span class="hljs-punctuation">}</span>
+  <span class="hljs-punctuation">]</span>
+<span class="hljs-punctuation">}</span></code></pre></div></figure>
+<p>In cases where there is more than one <code>.cc</code> file, simply add the additional
+filename to the <code>sources</code> array:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JSON</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-json"><span class="hljs-attr">&quot;sources&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-punctuation">[</span><span class="hljs-string">&quot;addon.cc&quot;</span><span class="hljs-punctuation">,</span> <span class="hljs-string">&quot;myexample.cc&quot;</span><span class="hljs-punctuation">]</span></code></pre></div></figure>
+<p>Once the <code>binding.gyp</code> file is ready, the example addons can be configured and
+built using <code>node-gyp</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Terminal</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-bash"><span class="tk-cmd">node-gyp</span> configure build</code></pre></div></figure>
+<h3 id="function-arguments">Function arguments</h3>
+<p>Addons will typically expose objects and functions that can be accessed from
+JavaScript running within Node.js. When functions are invoked from JavaScript,
+the input arguments and return value must be mapped to and from the C/C++
+code.</p>
+<p>The following example illustrates how to read function arguments passed from
+JavaScript and how to return a result:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">// addon.cc
+#include &lt;node.h&gt;
+
+namespace demo {
+
+using v8::Exception;
+using v8::FunctionCallbackInfo;
+using v8::Isolate;
+using v8::Local;
+using v8::Number;
+using v8::Object;
+using v8::String;
+using v8::Value;
+
+// This is the implementation of the &quot;add&quot; method
+// Input arguments are passed using the
+// const FunctionCallbackInfo&amp; args struct
+void Add(const FunctionCallbackInfo&amp; args) {
+  Isolate* isolate = args.GetIsolate();
+
+  // Check the number of arguments passed.
+  if (args.Length() &lt; 2) {
+    // Throw an Error that is passed back to JavaScript
+    isolate-&gt;ThrowException(Exception::TypeError(
+        String::NewFromUtf8(isolate,
+                            &quot;Wrong number of arguments&quot;).ToLocalChecked()));
+    return;
+  }
+
+  // Check the argument types
+  if (!args[0]-&gt;IsNumber() || !args[1]-&gt;IsNumber()) {
+    isolate-&gt;ThrowException(Exception::TypeError(
+        String::NewFromUtf8(isolate,
+                            &quot;Wrong arguments&quot;).ToLocalChecked()));
+    return;
+  }
+
+  // Perform the operation
+  double value =
+      args[0].As()-&gt;Value() + args[1].As()-&gt;Value();
+  Local num = Number::New(isolate, value);
+
+  // Set the return value (using the passed in
+  // FunctionCallbackInfo&amp;)
+  args.GetReturnValue().Set(num);
+}
+
+void Init(Local exports) {
+  NODE_SET_METHOD(exports, &quot;add&quot;, Add);
+}
+
+NODE_MODULE(NODE_GYP_MODULE_NAME, Init)
+
+}  // namespace demo</code></pre></div></figure>
+<p>Once compiled, the example addon can be required and used from within Node.js:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JavaScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript"><span class="hljs-comment">// test.js</span>
+<span class="hljs-keyword">const</span> addon = <span class="hljs-built_in">require</span>(<span class="hljs-string">&#x27;./build/Release/addon&#x27;</span>);
+
+<span class="hljs-variable language_">console</span>.<span class="hljs-title function_">log</span>(<span class="hljs-string">&#x27;This should be eight:&#x27;</span>, addon.<span class="hljs-title function_">add</span>(<span class="hljs-number">3</span>, <span class="hljs-number">5</span>));</code></pre></div></figure>
+<h3 id="callbacks">Callbacks</h3>
+<p>It is common practice within addons to pass JavaScript functions to a C++
+function and execute them from there. The following example illustrates how
+to invoke such callbacks:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">// addon.cc
+#include &lt;node.h&gt;
+
+namespace demo {
+
+using v8::Context;
+using v8::Function;
+using v8::FunctionCallbackInfo;
+using v8::Isolate;
+using v8::Local;
+using v8::Null;
+using v8::Object;
+using v8::String;
+using v8::Value;
+
+void RunCallback(const FunctionCallbackInfo&amp; args) {
+  Isolate* isolate = args.GetIsolate();
+  Local context = isolate-&gt;GetCurrentContext();
+  Local cb = Local::Cast(args[0]);
+  const unsigned argc = 1;
+  Local argv[argc] = {
+      String::NewFromUtf8(isolate,
+                          &quot;hello world&quot;).ToLocalChecked() };
+  cb-&gt;Call(context, Null(isolate), argc, argv).ToLocalChecked();
+}
+
+void Init(Local exports, Local module) {
+  NODE_SET_METHOD(module, &quot;exports&quot;, RunCallback);
+}
+
+NODE_MODULE(NODE_GYP_MODULE_NAME, Init)
+
+}  // namespace demo</code></pre></div></figure>
+<p>This example uses a two-argument form of <code>Init()</code> that receives the full
+<code>module</code> object as the second argument. This allows the addon to completely
+overwrite <code>exports</code> with a single function instead of adding the function as a
+property of <code>exports</code>.</p>
+<p>To test it, run the following JavaScript:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JavaScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript"><span class="hljs-comment">// test.js</span>
+<span class="hljs-keyword">const</span> addon = <span class="hljs-built_in">require</span>(<span class="hljs-string">&#x27;./build/Release/addon&#x27;</span>);
+
+<span class="hljs-title function_">addon</span>(<span class="hljs-function">(<span class="hljs-params">msg</span>) =&gt;</span> {
+  <span class="hljs-variable language_">console</span>.<span class="hljs-title function_">log</span>(msg);
+<span class="hljs-comment">// Prints: &#x27;hello world&#x27;</span>
+});</code></pre></div></figure>
+<p>In this example, the callback function is invoked synchronously.</p>
+<h3 id="object-factory">Object factory</h3>
+<p>Addons can create and return new objects from within a C++ function as
+illustrated in the following example. An object is created and returned with a
+property <code>msg</code> that echoes the string passed to <code>createObject()</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">// addon.cc
+#include &lt;node.h&gt;
+
+namespace demo {
+
+using v8::Context;
+using v8::FunctionCallbackInfo;
+using v8::Isolate;
+using v8::Local;
+using v8::Object;
+using v8::String;
+using v8::Value;
+
+void CreateObject(const FunctionCallbackInfo&amp; args) {
+  Isolate* isolate = args.GetIsolate();
+  Local context = isolate-&gt;GetCurrentContext();
+
+  Local obj = Object::New(isolate);
+  obj-&gt;Set(context,
+           String::NewFromUtf8(isolate,
+                               &quot;msg&quot;).ToLocalChecked(),
+                               args[0]-&gt;ToString(context).ToLocalChecked())
+           .FromJust();
+
+  args.GetReturnValue().Set(obj);
+}
+
+void Init(Local exports, Local module) {
+  NODE_SET_METHOD(module, &quot;exports&quot;, CreateObject);
+}
+
+NODE_MODULE(NODE_GYP_MODULE_NAME, Init)
+
+}  // namespace demo</code></pre></div></figure>
+<p>To test it in JavaScript:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JavaScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript"><span class="hljs-comment">// test.js</span>
+<span class="hljs-keyword">const</span> addon = <span class="hljs-built_in">require</span>(<span class="hljs-string">&#x27;./build/Release/addon&#x27;</span>);
+
+<span class="hljs-keyword">const</span> obj1 = <span class="hljs-title function_">addon</span>(<span class="hljs-string">&#x27;hello&#x27;</span>);
+<span class="hljs-keyword">const</span> obj2 = <span class="hljs-title function_">addon</span>(<span class="hljs-string">&#x27;world&#x27;</span>);
+<span class="hljs-variable language_">console</span>.<span class="hljs-title function_">log</span>(obj1.<span class="hljs-property">msg</span>, obj2.<span class="hljs-property">msg</span>);
+<span class="hljs-comment">// Prints: &#x27;hello world&#x27;</span></code></pre></div></figure>
+<h3 id="function-factory">Function factory</h3>
+<p>Another common scenario is creating JavaScript functions that wrap C++
+functions and returning those back to JavaScript:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">// addon.cc
+#include &lt;node.h&gt;
+
+namespace demo {
+
+using v8::Context;
+using v8::Function;
+using v8::FunctionCallbackInfo;
+using v8::FunctionTemplate;
+using v8::Isolate;
+using v8::Local;
+using v8::Object;
+using v8::String;
+using v8::Value;
+
+void MyFunction(const FunctionCallbackInfo&amp; args) {
+  Isolate* isolate = args.GetIsolate();
+  args.GetReturnValue().Set(String::NewFromUtf8(
+      isolate, &quot;hello world&quot;).ToLocalChecked());
+}
+
+void CreateFunction(const FunctionCallbackInfo&amp; args) {
+  Isolate* isolate = args.GetIsolate();
+
+  Local context = isolate-&gt;GetCurrentContext();
+  Local tpl = FunctionTemplate::New(isolate, MyFunction);
+  Local fn = tpl-&gt;GetFunction(context).ToLocalChecked();
+
+  // omit this to make it anonymous
+  fn-&gt;SetName(String::NewFromUtf8(
+      isolate, &quot;theFunction&quot;).ToLocalChecked());
+
+  args.GetReturnValue().Set(fn);
+}
+
+void Init(Local exports, Local module) {
+  NODE_SET_METHOD(module, &quot;exports&quot;, CreateFunction);
+}
+
+NODE_MODULE(NODE_GYP_MODULE_NAME, Init)
+
+}  // namespace demo</code></pre></div></figure>
+<p>To test:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JavaScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript"><span class="hljs-comment">// test.js</span>
+<span class="hljs-keyword">const</span> addon = <span class="hljs-built_in">require</span>(<span class="hljs-string">&#x27;./build/Release/addon&#x27;</span>);
+
+<span class="hljs-keyword">const</span> fn = <span class="hljs-title function_">addon</span>();
+<span class="hljs-variable language_">console</span>.<span class="hljs-title function_">log</span>(<span class="hljs-title function_">fn</span>());
+<span class="hljs-comment">// Prints: &#x27;hello world&#x27;</span></code></pre></div></figure>
+<h3 id="wrapping-c-objects">Wrapping C++ objects</h3>
+<p>It is also possible to wrap C++ objects/classes in a way that allows new
+instances to be created using the JavaScript <code>new</code> operator:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">// addon.cc
+#include &lt;node.h&gt;
+#include &quot;myobject.h&quot;
+
+namespace demo {
+
+using v8::Local;
+using v8::Object;
+
+void InitAll(Local exports) {
+  MyObject::Init(exports);
+}
+
+NODE_MODULE(NODE_GYP_MODULE_NAME, InitAll)
+
+}  // namespace demo</code></pre></div></figure>
+<p>Then, in <code>myobject.h</code>, the wrapper class inherits from a helper <code>ObjectWrap</code>
+which handles tying the lifetime of the C++ object to the exposed JS object:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">// myobject.h
+#ifndef MYOBJECT_H
+#define MYOBJECT_H
+
+#include &lt;node.h&gt;
+#include &quot;object_wrap.h&quot;
+
+namespace demo {
+
+class MyObject : public ObjectWrap {
+ public:
+  static void Init(v8::Local&lt;v8::Object&gt; exports);
+
+ private:
+  explicit MyObject(double value = 0);
+  ~MyObject();
+
+  static void New(const v8::FunctionCallbackInfo&lt;v8::Value&gt;&amp; args);
+  static void PlusOne(const v8::FunctionCallbackInfo&lt;v8::Value&gt;&amp; args);
+
+  double value_;
+};
+
+}  // namespace demo
+
+#endif</code></pre></div></figure>
+<p>where <code>ObjectWrap</code> is defined as</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">// object_wrap.h
+#ifndef OBJECTWRAP_H
+#define OBJECTWRAP_H
+
+#include &lt;node.h&gt;
+
+namespace demo {
+
+class ObjectWrap {
+ public:
+  ObjectWrap() : isolate_(v8::Isolate::GetCurrent()) {
+    node::AddEnvironmentCleanupHook(isolate_, CleanupHook, this);
+  }
+
+  virtual ~ObjectWrap() {
+    node::RemoveEnvironmentCleanupHook(isolate_, CleanupHook, this);
+  }
+
+  template &lt;class T&gt;
+  static T* Unwrap(v8::Local&lt;v8::Object&gt; handle) {
+    void* ptr = handle-&gt;GetAlignedPointerFromInternalField(
+        0, v8::kEmbedderDataTypeTagDefault);
+    ObjectWrap* wrap = static_cast&lt;ObjectWrap*&gt;(ptr);
+    return static_cast&lt;T*&gt;(wrap);
+  }
+
+  v8::Local&lt;v8::Object&gt; object() {
+    return handle_.Get(isolate_);
+  }
+
+ protected:
+  inline void Wrap(v8::Local&lt;v8::Object&gt; handle) {
+    handle-&gt;SetAlignedPointerInInternalField(
+        0, this, v8::kEmbedderDataTypeTagDefault);
+    handle_.Reset(isolate_, handle);
+  }
+
+  inline void MakeWeak() {
+    handle_.SetWeak(this, WeakCallback, v8::WeakCallbackType::kParameter);
+  }
+
+ private:
+  static void WeakCallback(
+      const v8::WeakCallbackInfo&amp; data) {
+    delete data.GetParameter();
+  }
+
+  static void CleanupHook(void* arg) { delete static_cast&lt;ObjectWrap*&gt;(arg); }
+
+  v8::Global&lt;v8::Object&gt; handle_;
+  v8::Isolate* isolate_;
+};
+
+}  // namespace demo
+#endif</code></pre></div></figure>
+<p>In <code>myobject.cc</code>, implement the various methods that are to be exposed.
+In the following code, the method <code>plusOne()</code> is exposed by adding it to the
+constructor&#39;s prototype:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">// myobject.cc
+#include &quot;myobject.h&quot;
+
+namespace demo {
+
+using v8::Context;
+using v8::Function;
+using v8::FunctionCallbackInfo;
+using v8::FunctionTemplate;
+using v8::Isolate;
+using v8::Local;
+using v8::Number;
+using v8::Object;
+using v8::ObjectTemplate;
+using v8::String;
+using v8::Value;
+
+MyObject::MyObject(double value) : value_(value) {
+}
+
+MyObject::~MyObject() {
+}
+
+void MyObject::Init(Local exports) {
+  Isolate* isolate = Isolate::GetCurrent();
+  Local context = isolate-&gt;GetCurrentContext();
+
+  Local addon_data_tpl = ObjectTemplate::New(isolate);
+  addon_data_tpl-&gt;SetInternalFieldCount(1);  // 1 field for the MyObject::New()
+  Local addon_data =
+      addon_data_tpl-&gt;NewInstance(context).ToLocalChecked();
+
+  // Prepare constructor template
+  Local tpl = FunctionTemplate::New(isolate, New, addon_data);
+  tpl-&gt;SetClassName(String::NewFromUtf8(isolate, &quot;MyObject&quot;).ToLocalChecked());
+  tpl-&gt;InstanceTemplate()-&gt;SetInternalFieldCount(1);
+
+  // Prototype
+  NODE_SET_PROTOTYPE_METHOD(tpl, &quot;plusOne&quot;, PlusOne);
+
+  Local constructor = tpl-&gt;GetFunction(context).ToLocalChecked();
+  addon_data-&gt;SetInternalField(0, constructor);
+  exports-&gt;Set(context, String::NewFromUtf8(
+      isolate, &quot;MyObject&quot;).ToLocalChecked(),
+      constructor).FromJust();
+}
+
+void MyObject::New(const FunctionCallbackInfo&amp; args) {
+  Isolate* isolate = args.GetIsolate();
+  Local context = isolate-&gt;GetCurrentContext();
+
+  if (args.IsConstructCall()) {
+    // Invoked as constructor: `new MyObject(...)`
+    double value = args[0]-&gt;IsUndefined() ?
+        0 : args[0]-&gt;NumberValue(context).FromMaybe(0);
+    MyObject* obj = new MyObject(value);
+    obj-&gt;Wrap(args.This());
+    obj-&gt;MakeWeak();
+    args.GetReturnValue().Set(args.This());
+  } else {
+    // Invoked as plain function `MyObject(...)`, turn into construct call.
+    const int argc = 1;
+    Local argv[argc] = { args[0] };
+    Local cons =
+        args.Data().As()-&gt;GetInternalField(0)
+            .As().As();
+    Local result =
+        cons-&gt;NewInstance(context, argc, argv).ToLocalChecked();
+    args.GetReturnValue().Set(result);
+  }
+}
+
+void MyObject::PlusOne(const FunctionCallbackInfo&amp; args) {
+  Isolate* isolate = args.GetIsolate();
+
+  MyObject* obj = ObjectWrap::Unwrap(args.This());
+  obj-&gt;value_ += 1;
+
+  args.GetReturnValue().Set(Number::New(isolate, obj-&gt;value_));
+}
+
+}  // namespace demo</code></pre></div></figure>
+<p>To build this example, the <code>myobject.cc</code> file must be added to the
+<code>binding.gyp</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JSON</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-json"><span class="hljs-punctuation">{</span>
+  <span class="hljs-attr">&quot;targets&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-punctuation">[</span>
+    <span class="hljs-punctuation">{</span>
+      <span class="hljs-attr">&quot;target_name&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;addon&quot;</span><span class="hljs-punctuation">,</span>
+      <span class="hljs-attr">&quot;sources&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-punctuation">[</span>
+        <span class="hljs-string">&quot;addon.cc&quot;</span><span class="hljs-punctuation">,</span>
+        <span class="hljs-string">&quot;myobject.cc&quot;</span>
+      <span class="hljs-punctuation">]</span>
+    <span class="hljs-punctuation">}</span>
+  <span class="hljs-punctuation">]</span>
+<span class="hljs-punctuation">}</span></code></pre></div></figure>
+<p>Test it with:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JavaScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript"><span class="hljs-comment">// test.js</span>
+<span class="hljs-keyword">const</span> addon = <span class="hljs-built_in">require</span>(<span class="hljs-string">&#x27;./build/Release/addon&#x27;</span>);
+
+<span class="hljs-keyword">const</span> obj = <span class="hljs-keyword">new</span> addon.<span class="hljs-title class_">MyObject</span>(<span class="hljs-number">10</span>);
+<span class="hljs-variable language_">console</span>.<span class="hljs-title function_">log</span>(obj.<span class="hljs-title function_">plusOne</span>());
+<span class="hljs-comment">// Prints: 11</span>
+<span class="hljs-variable language_">console</span>.<span class="hljs-title function_">log</span>(obj.<span class="hljs-title function_">plusOne</span>());
+<span class="hljs-comment">// Prints: 12</span>
+<span class="hljs-variable language_">console</span>.<span class="hljs-title function_">log</span>(obj.<span class="hljs-title function_">plusOne</span>());
+<span class="hljs-comment">// Prints: 13</span></code></pre></div></figure>
+<p>The destructor for a wrapper object will run when the object is
+garbage-collected. For destructor testing, there are command-line flags that
+can be used to make it possible to force garbage collection. These flags are
+provided by the underlying V8 JavaScript engine. They are subject to change
+or removal at any time. They are not documented by Node.js or V8, and they
+should never be used outside of testing.</p>
+<p>During shutdown of the process or worker threads, destructors are not called
+by the JS engine. Therefore it&#39;s the responsibility of the user to track
+these objects and ensure proper destruction to avoid resource leaks.</p>
+<h3 id="factory-of-wrapped-objects">Factory of wrapped objects</h3>
+<p>Alternatively, it is possible to use a factory pattern to avoid explicitly
+creating object instances using the JavaScript <code>new</code> operator:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JavaScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript"><span class="hljs-keyword">const</span> obj = addon.<span class="hljs-title function_">createObject</span>();
+<span class="hljs-comment">// instead of:</span>
+<span class="hljs-comment">// const obj = new addon.Object();</span></code></pre></div></figure>
+<p>First, the <code>createObject()</code> method is implemented in <code>addon.cc</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">// addon.cc
+#include &lt;node.h&gt;
+#include &quot;myobject.h&quot;
+
+namespace demo {
+
+using v8::FunctionCallbackInfo;
+using v8::Isolate;
+using v8::Local;
+using v8::Object;
+using v8::String;
+using v8::Value;
+
+void CreateObject(const FunctionCallbackInfo&amp; args) {
+  MyObject::NewInstance(args);
+}
+
+void InitAll(Local exports, Local module) {
+  MyObject::Init();
+
+  NODE_SET_METHOD(module, &quot;exports&quot;, CreateObject);
+}
+
+NODE_MODULE(NODE_GYP_MODULE_NAME, InitAll)
+
+}  // namespace demo</code></pre></div></figure>
+<p>In <code>myobject.h</code>, the static method <code>NewInstance()</code> is added to handle
+instantiating the object. This method takes the place of using <code>new</code> in
+JavaScript:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">// myobject.h
+#ifndef MYOBJECT_H
+#define MYOBJECT_H
+
+#include &lt;node.h&gt;
+#include &quot;object_wrap.h&quot;
+
+namespace demo {
+
+class MyObject : public ObjectWrap {
+ public:
+  static void Init();
+  static void NewInstance(const v8::FunctionCallbackInfo&lt;v8::Value&gt;&amp; args);
+
+ private:
+  explicit MyObject(double value = 0);
+  ~MyObject();
+
+  static void New(const v8::FunctionCallbackInfo&lt;v8::Value&gt;&amp; args);
+  static void PlusOne(const v8::FunctionCallbackInfo&lt;v8::Value&gt;&amp; args);
+  static v8::Global&lt;v8::Function&gt; constructor;
+  double value_;
+};
+
+}  // namespace demo
+
+#endif</code></pre></div></figure>
+<p>Our <code>ObjectWrap</code> helper remains the same as in the previous example,
+and implementation in <code>myobject.cc</code> is similar as well:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">// myobject.cc
+#include &lt;node.h&gt;
+#include &quot;myobject.h&quot;
+
+namespace demo {
+
+using node::AddEnvironmentCleanupHook;
+using v8::Context;
+using v8::Function;
+using v8::FunctionCallbackInfo;
+using v8::FunctionTemplate;
+using v8::Global;
+using v8::Isolate;
+using v8::Local;
+using v8::Number;
+using v8::Object;
+using v8::String;
+using v8::Value;
+
+// Warning! This is not thread-safe, this addon cannot be used for worker
+// threads.
+Global MyObject::constructor;
+
+MyObject::MyObject(double value) : value_(value) {
+}
+
+MyObject::~MyObject() {
+}
+
+void MyObject::Init() {
+  Isolate* isolate = Isolate::GetCurrent();
+  // Prepare constructor template
+  Local tpl = FunctionTemplate::New(isolate, New);
+  tpl-&gt;SetClassName(String::NewFromUtf8(isolate, &quot;MyObject&quot;).ToLocalChecked());
+  tpl-&gt;InstanceTemplate()-&gt;SetInternalFieldCount(1);
+
+  // Prototype
+  NODE_SET_PROTOTYPE_METHOD(tpl, &quot;plusOne&quot;, PlusOne);
+
+  Local context = isolate-&gt;GetCurrentContext();
+  constructor.Reset(isolate, tpl-&gt;GetFunction(context).ToLocalChecked());
+
+  AddEnvironmentCleanupHook(isolate, [](void*) {
+    constructor.Reset();
+  }, nullptr);
+}
+
+void MyObject::New(const FunctionCallbackInfo&amp; args) {
+  Isolate* isolate = args.GetIsolate();
+  Local context = isolate-&gt;GetCurrentContext();
+
+  if (args.IsConstructCall()) {
+    // Invoked as constructor: `new MyObject(...)`
+    double value = args[0]-&gt;IsUndefined() ?
+        0 : args[0]-&gt;NumberValue(context).FromMaybe(0);
+    MyObject* obj = new MyObject(value);
+    obj-&gt;Wrap(args.This());
+    obj-&gt;MakeWeak();
+    args.GetReturnValue().Set(args.This());
+  } else {
+    // Invoked as plain function `MyObject(...)`, turn into construct call.
+    const int argc = 1;
+    Local argv[argc] = { args[0] };
+    Local cons = Local::New(isolate, constructor);
+    Local instance =
+        cons-&gt;NewInstance(context, argc, argv).ToLocalChecked();
+    args.GetReturnValue().Set(instance);
+  }
+}
+
+void MyObject::NewInstance(const FunctionCallbackInfo&amp; args) {
+  Isolate* isolate = args.GetIsolate();
+
+  const unsigned argc = 1;
+  Local argv[argc] = { args[0] };
+  Local cons = Local::New(isolate, constructor);
+  Local context = isolate-&gt;GetCurrentContext();
+  Local instance =
+      cons-&gt;NewInstance(context, argc, argv).ToLocalChecked();
+
+  args.GetReturnValue().Set(instance);
+}
+
+void MyObject::PlusOne(const FunctionCallbackInfo&amp; args) {
+  Isolate* isolate = args.GetIsolate();
+
+  MyObject* obj = ObjectWrap::Unwrap(args.This());
+  obj-&gt;value_ += 1;
+
+  args.GetReturnValue().Set(Number::New(isolate, obj-&gt;value_));
+}
+
+}  // namespace demo</code></pre></div></figure>
+<p>Once again, to build this example, the <code>myobject.cc</code> file must be added to the
+<code>binding.gyp</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JSON</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-json"><span class="hljs-punctuation">{</span>
+  <span class="hljs-attr">&quot;targets&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-punctuation">[</span>
+    <span class="hljs-punctuation">{</span>
+      <span class="hljs-attr">&quot;target_name&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;addon&quot;</span><span class="hljs-punctuation">,</span>
+      <span class="hljs-attr">&quot;sources&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-punctuation">[</span>
+        <span class="hljs-string">&quot;addon.cc&quot;</span><span class="hljs-punctuation">,</span>
+        <span class="hljs-string">&quot;myobject.cc&quot;</span>
+      <span class="hljs-punctuation">]</span>
+    <span class="hljs-punctuation">}</span>
+  <span class="hljs-punctuation">]</span>
+<span class="hljs-punctuation">}</span></code></pre></div></figure>
+<p>Test it with:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JavaScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript"><span class="hljs-comment">// test.js</span>
+<span class="hljs-keyword">const</span> createObject = <span class="hljs-built_in">require</span>(<span class="hljs-string">&#x27;./build/Release/addon&#x27;</span>);
+
+<span class="hljs-keyword">const</span> obj = <span class="hljs-title function_">createObject</span>(<span class="hljs-number">10</span>);
+<span class="hljs-variable language_">console</span>.<span class="hljs-title function_">log</span>(obj.<span class="hljs-title function_">plusOne</span>());
+<span class="hljs-comment">// Prints: 11</span>
+<span class="hljs-variable language_">console</span>.<span class="hljs-title function_">log</span>(obj.<span class="hljs-title function_">plusOne</span>());
+<span class="hljs-comment">// Prints: 12</span>
+<span class="hljs-variable language_">console</span>.<span class="hljs-title function_">log</span>(obj.<span class="hljs-title function_">plusOne</span>());
+<span class="hljs-comment">// Prints: 13</span>
+
+<span class="hljs-keyword">const</span> obj2 = <span class="hljs-title function_">createObject</span>(<span class="hljs-number">20</span>);
+<span class="hljs-variable language_">console</span>.<span class="hljs-title function_">log</span>(obj2.<span class="hljs-title function_">plusOne</span>());
+<span class="hljs-comment">// Prints: 21</span>
+<span class="hljs-variable language_">console</span>.<span class="hljs-title function_">log</span>(obj2.<span class="hljs-title function_">plusOne</span>());
+<span class="hljs-comment">// Prints: 22</span>
+<span class="hljs-variable language_">console</span>.<span class="hljs-title function_">log</span>(obj2.<span class="hljs-title function_">plusOne</span>());
+<span class="hljs-comment">// Prints: 23</span></code></pre></div></figure>
+<h3 id="passing-wrapped-objects-around">Passing wrapped objects around</h3>
+<p>In addition to wrapping and returning C++ objects, it is possible to pass
+wrapped objects around by unwrapping them with the Node.js helper function
+<code>ObjectWrap::Unwrap</code>. The following example shows a function <code>add()</code>
+that can take two <code>MyObject</code> objects as input arguments:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">// addon.cc
+#include &lt;node.h&gt;
+#include &lt;node_object_wrap.h&gt;
+#include &quot;myobject.h&quot;
+
+namespace demo {
+
+using v8::Context;
+using v8::FunctionCallbackInfo;
+using v8::Isolate;
+using v8::Local;
+using v8::Number;
+using v8::Object;
+using v8::String;
+using v8::Value;
+
+void CreateObject(const FunctionCallbackInfo&amp; args) {
+  MyObject::NewInstance(args);
+}
+
+void Add(const FunctionCallbackInfo&amp; args) {
+  Isolate* isolate = args.GetIsolate();
+  Local context = isolate-&gt;GetCurrentContext();
+
+  MyObject* obj1 = ObjectWrap::Unwrap(
+      args[0]-&gt;ToObject(context).ToLocalChecked());
+  MyObject* obj2 = ObjectWrap::Unwrap(
+      args[1]-&gt;ToObject(context).ToLocalChecked());
+
+  double sum = obj1-&gt;value() + obj2-&gt;value();
+  args.GetReturnValue().Set(Number::New(isolate, sum));
+}
+
+void InitAll(Local exports) {
+  MyObject::Init();
+
+  NODE_SET_METHOD(exports, &quot;createObject&quot;, CreateObject);
+  NODE_SET_METHOD(exports, &quot;add&quot;, Add);
+}
+
+NODE_MODULE(NODE_GYP_MODULE_NAME, InitAll)
+
+}  // namespace demo</code></pre></div></figure>
+<p>In <code>myobject.h</code>, a new public method is added to allow access to private values
+after unwrapping the object.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">// myobject.h
+#ifndef MYOBJECT_H
+#define MYOBJECT_H
+
+#include &lt;node.h&gt;
+#include &quot;object_wrap.h&quot;
+
+namespace demo {
+
+class MyObject : public ObjectWrap {
+ public:
+  static void Init();
+  static void NewInstance(const v8::FunctionCallbackInfo&lt;v8::Value&gt;&amp; args);
+  inline double value() const { return value_; }
+
+ private:
+  explicit MyObject(double value = 0);
+  ~MyObject();
+
+  static void New(const v8::FunctionCallbackInfo&lt;v8::Value&gt;&amp; args);
+  static v8::Global&lt;v8::Function&gt; constructor;
+  double value_;
+};
+
+}  // namespace demo
+
+#endif</code></pre></div></figure>
+<p>Our <code>ObjectWrap</code> helper remains the same as in the previous example,
+and implementation in <code>myobject.cc</code> is similar as well:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">// myobject.cc
+#include &lt;node.h&gt;
+#include &quot;myobject.h&quot;
+
+namespace demo {
+
+using node::AddEnvironmentCleanupHook;
+using v8::Context;
+using v8::Function;
+using v8::FunctionCallbackInfo;
+using v8::FunctionTemplate;
+using v8::Global;
+using v8::Isolate;
+using v8::Local;
+using v8::Object;
+using v8::String;
+using v8::Value;
+
+// Warning! This is not thread-safe, this addon cannot be used for worker
+// threads.
+Global MyObject::constructor;
+
+MyObject::MyObject(double value) : value_(value) {
+}
+
+MyObject::~MyObject() {
+}
+
+void MyObject::Init() {
+  Isolate* isolate = Isolate::GetCurrent();
+  // Prepare constructor template
+  Local tpl = FunctionTemplate::New(isolate, New);
+  tpl-&gt;SetClassName(String::NewFromUtf8(isolate, &quot;MyObject&quot;).ToLocalChecked());
+  tpl-&gt;InstanceTemplate()-&gt;SetInternalFieldCount(1);
+
+  Local context = isolate-&gt;GetCurrentContext();
+  constructor.Reset(isolate, tpl-&gt;GetFunction(context).ToLocalChecked());
+
+  AddEnvironmentCleanupHook(isolate, [](void*) {
+    constructor.Reset();
+  }, nullptr);
+}
+
+void MyObject::New(const FunctionCallbackInfo&amp; args) {
+  Isolate* isolate = args.GetIsolate();
+  Local context = isolate-&gt;GetCurrentContext();
+
+  if (args.IsConstructCall()) {
+    // Invoked as constructor: `new MyObject(...)`
+    double value = args[0]-&gt;IsUndefined() ?
+        0 : args[0]-&gt;NumberValue(context).FromMaybe(0);
+    MyObject* obj = new MyObject(value);
+    obj-&gt;Wrap(args.This());
+    obj-&gt;MakeWeak();
+    args.GetReturnValue().Set(args.This());
+  } else {
+    // Invoked as plain function `MyObject(...)`, turn into construct call.
+    const int argc = 1;
+    Local argv[argc] = { args[0] };
+    Local cons = Local::New(isolate, constructor);
+    Local instance =
+        cons-&gt;NewInstance(context, argc, argv).ToLocalChecked();
+    args.GetReturnValue().Set(instance);
+  }
+}
+
+void MyObject::NewInstance(const FunctionCallbackInfo&amp; args) {
+  Isolate* isolate = args.GetIsolate();
+
+  const unsigned argc = 1;
+  Local argv[argc] = { args[0] };
+  Local cons = Local::New(isolate, constructor);
+  Local context = isolate-&gt;GetCurrentContext();
+  Local instance =
+      cons-&gt;NewInstance(context, argc, argv).ToLocalChecked();
+
+  args.GetReturnValue().Set(instance);
+}
+
+}  // namespace demo</code></pre></div></figure>
+<p>Test it with:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JavaScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript"><span class="hljs-comment">// test.js</span>
+<span class="hljs-keyword">const</span> addon = <span class="hljs-built_in">require</span>(<span class="hljs-string">&#x27;./build/Release/addon&#x27;</span>);
+
+<span class="hljs-keyword">const</span> obj1 = addon.<span class="hljs-title function_">createObject</span>(<span class="hljs-number">10</span>);
+<span class="hljs-keyword">const</span> obj2 = addon.<span class="hljs-title function_">createObject</span>(<span class="hljs-number">20</span>);
+<span class="hljs-keyword">const</span> result = addon.<span class="hljs-title function_">add</span>(obj1, obj2);
+
+<span class="hljs-variable language_">console</span>.<span class="hljs-title function_">log</span>(result);
+<span class="hljs-comment">// Prints: 30</span></code></pre></div></figure>

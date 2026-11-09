@@ -1,0 +1,143 @@
+<p>C#14 adds <a href="~/_csharplang/proposals/csharp-14.0/user-defined-compound-assignment.md"><em>user-defined compound assignment operators</em></a> that enable mutating a data structure in place, rather than creating a new instance. In previous versions of C#, the expression:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">a += b;</code></pre></div></figure>
+<p>Was expanded to the following code:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">// compiler-generated code prior to C# 13:
+var tmp = a + b;
+a = tmp;</code></pre></div></figure>
+<p>Depending on the type of <code>a</code>, this expansion leads to excessive allocations to create new instances, or copying the values of several properties to set values on the copy. Adding a user-defined operator for <code>+=</code> indicates a type can do a better job by updating the destination object in place.</p>
+<p>C# supports the existing expansion, but it uses it only when a compound user-defined operator isn&#39;t available.</p>
+<p>In this tutorial, you:</p>
+<blockquote>
+<p>[!div class=&quot;checklist&quot;]</p>
+<ul>
+<li>Run the starting sample.</li>
+<li>Identify bottlenecks in the code.</li>
+<li>Implement new compound assignment operators.</li>
+<li>Analyze the completed sample.</li>
+</ul>
+</blockquote>
+<h2 id="prerequisites">Prerequisites</h2>
+<ul>
+<li>The .NET 10 SDK. Download it from the <a target="_blank" rel="noopener" href="https://dotnet.microsoft.com/download/dotnet/10.0">.NET download site</a>.</li>
+<li>Visual Studio 2026. Download it from the <a target="_blank" rel="noopener" href="https://visualstudio.microsoft.com">Visual Studio page</a>.</li>
+</ul>
+<h2 id="analyze-the-starting-sample">Analyze the starting sample</h2>
+<p>Run the starter application. You can get it from <a target="_blank" rel="noopener" href="https://github.com/dotnet/docs/blob/main/docs/csharp/whats-new/tutorials/snippets/CompoundAssignment">the <code>dotnet/docs</code> GitHub repository</a>. The sample application simulates concert attendance tracking at a theater venue. The simulation models realistic arrival patterns throughout the evening, from early attendees to the main rush before showtime. This simulation demonstrates the object allocations when using traditional operators versus the efficiency gains possible with user-defined compound assignment operators.</p>
+<p>The app tracks attendance through multiple theater gates (main floor and balcony sections) as concert-goers arrive. Each gate maintains a count of attendees using a <code>GateAttendance</code> record. Throughout the simulation, the code frequently updates these counts using increment (<code>++</code>) and addition (<code>+=</code>) operations. The following code shows a portion of that simulation:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">            // Gate 1 - busiest entrance (target: ~100-130 people)
+            gates.MainFloorGates[0] += random.Next(8, 15);     // Corporate group
+            ++gates.MainFloorGates[0];                          // Single patron
+            gates.MainFloorGates[0] += random.Next(20, 30);    // Tour/large group arrival
+            gates.MainFloorGates[0] += random.Next(5, 12);     // Family groups
+            ++gates.MainFloorGates[0];                          // Solo attendee
+
+            // Gate 2 - second busiest (target: ~85-115 people)
+            gates.MainFloorGates[1] = gates.MainFloorGates[1] + random.Next(6, 12);  // Group booking
+            ++gates.MainFloorGates[1];                          // Single patron
+            gates.MainFloorGates[1] += random.Next(18, 28);    // Large family/reunion
+            gates.MainFloorGates[1] += random.Next(8, 15);     // Corporate/business group
+            gates.MainFloorGates[1] += random.Next(4, 8);      // Couples/small groups
+            ++gates.MainFloorGates[1];                          // Individual patron
+            </code></pre></div></figure>
+<h2 id="identify-bottlenecks-in-the-code">Identify bottlenecks in the code</h2>
+<p>With traditional operators, each operation creates a new <code>GateAttendance</code> instance, leading to significant memory allocations. The starter <code>GateAttendance</code> is <em>immutable</em>. Your code can&#39;t modify the state of the object after it&#39;s been initialized. That design decision requires copying objects if you need to modify state.</p>
+<p>When you run the simulation, the detailed output shows:</p>
+<ul>
+<li>Gate-by-gate attendance numbers during different arrival periods.</li>
+<li>Total attendance tracking across all gates.</li>
+<li>A final comprehensive report with attendance statistics.</li>
+</ul>
+<p>The following text displays some of the example output:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">Peak arrival time - all gates busy...
+
+Peak rush period completed - all gates processed heavy traffic.
+
+--- Gate Status After Main Rush (7:15 PM) ---
+Main Floor Gates:
+  Main-Floor-Gate-1: 145 attendees
+  Main-Floor-Gate-2: 168 attendees
+  Main-Floor-Gate-3: 149 attendees
+  Main-Floor-Gate-4:  71 attendees
+  Main Floor Subtotal: 533 attendees
+
+Balcony Gates:
+  Balcony-Gate-Left: 164 attendees
+  Balcony-Gate-Right: 134 attendees
+  Balcony Subtotal: 298 attendees
+
+Total Current Attendance: 831 / 1000
+
+--- Late Arrivals (7:15 PM - 7:30 PM) ---
+Final patrons arriving before curtain...
+
+Final arrivals processed - concert about to begin!</code></pre></div></figure>
+<p>Examine the starter <code>GateAttendance</code> record class:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">public record class GateAttendance(string GateId)
+{
+    public int Count { get; init; }
+
+    public static GateAttendance operator ++(GateAttendance gate)
+    {
+        GateAttendance updateGate = gate with { Count = gate.Count + 1 };
+        return updateGate;
+    }
+
+    public static GateAttendance operator +(GateAttendance gate, int partySize)
+    {
+        GateAttendance updateGate = gate with { Count = gate.Count + partySize };
+        return updateGate;
+    }
+}     </code></pre></div></figure>
+<p>The <code>InitialImplementation.GateAttendance</code> record demonstrates the traditional approach to operator overloading in C#. Notice how both the increment operator (<code>++</code>) and addition operator (<code>+</code>) create entirely new instances of <code>GateAttendance</code> using the <code>with</code> expression. Each time you write <code>gate++</code> or <code>gate += partySize</code>, the operators allocate a new record instance with the updated <code>Count</code> value, then return that new instance. While this approach maintains immutability and thread safety, it comes at the cost of frequent memory allocations. In scenarios with many operations—like the concert simulation with hundreds of attendance updates—these allocations accumulate quickly, potentially impacting performance and increasing garbage collection pressure.</p>
+<p>To measure this allocation behavior, try running the <a href="/visualstudio/profiling/dotnet-alloc-tool">.NET Object Allocation tracking tool</a> in Visual Studio. When you profile the current implementation during the concert simulation, you discover that it allocates 134 <code>GateAttendance</code> objects to complete the relatively small simulation. Each operator call creates a new instance, demonstrating how quickly allocations can accumulate in real-world scenarios. This measurement provides a concrete baseline for comparing the performance improvements you achieve with compound assignment operators.</p>
+<h2 id="implement-compound-assignment-operators">Implement compound assignment operators</h2>
+<p>C# 14 introduces user-defined compound assignment operators that enable in-place mutations instead of creating new instances. These operators provide a more efficient alternative to the traditional pattern while maintaining the familiar compound assignment syntax.</p>
+<p>Compound assignment operators use a new syntax that declares <code>void</code> return methods with the <code>operator</code> keyword. Add the following operators to the <code>GateAttendance</code> class:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">public void operator +=(int value) =&gt; this.property += value;
+public void operator ++() =&gt; this.property++;</code></pre></div></figure>
+<p>The key differences from traditional operators are:</p>
+<ul>
+<li><strong>Mutation</strong>: They modify the current instance directly using <code>this</code>.</li>
+<li><strong>No new instances</strong>: Unlike traditional operators that return new objects, compound operators modify existing ones.</li>
+<li><strong>Return type</strong>: Compound assignment operators return <code>void</code>, not the type itself.</li>
+</ul>
+<p>When the compiler encounters compound assignment expressions like <code>a += b</code> or <code>++a</code>, it follows this resolution order:</p>
+<ol>
+<li><strong>Check for compound assignment operator</strong>: If the type defines a user-defined compound assignment operator (for example, <code>+=</code> or <code>++</code>), use it directly.</li>
+<li><strong>Fallback to traditional expansion</strong>: If no compound operator exists, expand to the traditional form (<code>a = a + b</code>).</li>
+</ol>
+<p>This means you can implement both approaches simultaneously. The compound operators take precedence when available, but the traditional operators serve as fallbacks for scenarios where compound assignment isn&#39;t suitable.</p>
+<p>Compound assignment operators provide several advantages:</p>
+<ul>
+<li><strong>Reduced allocations</strong>: Modify objects in-place instead of creating new instances.</li>
+<li><strong>Improved performance</strong>: Eliminate temporary object creation and reduce garbage collection pressure.</li>
+<li><strong>Familiar syntax</strong>: Use the same <code>+=</code>, <code>++</code> syntax developers already know.</li>
+<li><strong>Backward compatibility</strong>: Traditional operators continue to work as fallbacks.</li>
+</ul>
+<p>The new compound assignment operators are shown in the following code:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">        public void operator ++() =&gt; Count++;
+
+        public void operator +=(int partySize) =&gt; Count += partySize;
+        </code></pre></div></figure>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>Developers familiar with C++ might wonder why only one <code>++</code> or <code>--</code> operator is required. The compiler generates the code to use either the expression before or after modification as the return value. The compiler-generated code performs the assignment using either the original value or the modified value based on whether pre-increment (<code>++x</code>) or post-increment (<code>x++</code>) was called.</p>
+</div></aside>
+<h2 id="analyze-finished-sample">Analyze finished sample</h2>
+<p>Now that you implemented the compound assignment operators, it&#39;s time to measure the performance improvement. To measure the dramatic difference in memory allocations, run the <a href="/visualstudio/profiling/dotnet-alloc-tool">.NET Object Allocation tracking tool</a> again on the updated code.</p>
+<p>When you profile the application with the compound assignment operators enabled, you observe a remarkable reduction: only <strong>10 <code>GateAttendance</code> objects</strong> are allocated during the entire concert simulation, compared to the previous 134 allocations. This update represents a 92% reduction in object allocations!</p>
+<p>The remaining 10 allocations come from the initial creation of the <code>GateAttendance</code> instances for each theater gate (four main floor gates + two balcony gates = six initial instances), plus a few more allocations from other parts of the simulation that don&#39;t use the compound operators.</p>
+<p>This allocation reduction translates to real performance benefits:</p>
+<ul>
+<li><strong>Reduced memory pressure</strong>: Less frequent garbage collection cycles.</li>
+<li><strong>Better cache locality</strong>: Fewer object creations mean less memory fragmentation.</li>
+<li><strong>Improved throughput</strong>: CPU cycles saved from allocation and collection overhead.</li>
+<li><strong>Scalability</strong>: Benefits multiply in scenarios with higher operation volumes.</li>
+</ul>
+<p>The performance improvement becomes even more significant in production applications where similar patterns occur at much larger scales—imagine tracking millions of transactions, updating thousands of counters, or processing high-frequency data streams.</p>
+<p>Try identifying other opportunities for compound assignment operators in the codebase. Look for patterns where you use traditional assignment operations like <code>gates.MainFloorGates[1] = gates.MainFloorGates[1] + 4</code> and consider whether they could benefit from compound assignment syntax. While some of these operations are already using <code>+=</code> in the simulation code, the principle applies to any scenario where you repeatedly modify objects rather than creating new instances.</p>
+<p>As a final experiment, change the <code>GateAttendance</code> type from a <code>record class</code> to a <code>record struct</code>. It&#39;s a different optimization, and it works in this simulation because the struct has a small memory footprint. Copying a <code>GateAttendance</code> struct isn&#39;t an expensive operation. Even so, you achieve small improvements.</p>
+<h2 id="related-content">Related content</h2>
+<ul>
+<li><a href="#/doc/csharp/whats-new/csharp-14">What&#39;s new in C# 14</a></li>
+<li><a href="#/doc/csharp/language-reference/operators/operator-overloading">Operator overloading - define unary, arithmetic, equality, and comparison operators</a></li>
+<li><a href="/visualstudio/profiling/dotnet-alloc-tool">Analyze memory usage by using the .NET Object Allocation tool - Visual Studio</a></li>
+</ul>
