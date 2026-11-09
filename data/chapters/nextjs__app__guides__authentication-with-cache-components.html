@@ -1,0 +1,203 @@
+<p>With <a href="#/doc/nextjs/app/getting-started/caching">Cache Components</a> enabled, a session read happens at request time, so it can&#39;t be prerendered into the static shell. Authenticated UI streams in behind a `` boundary instead, and data derived from the session can still be cached.</p>
+<p>The examples use <a target="_blank" rel="noopener" href="https://github.com/vvo/iron-session">iron-session</a> for encrypted cookie sessions, but the patterns apply to any session or authentication library. For a complete, runnable version, see the <a target="_blank" rel="noopener" href="https://github.com/vercel/next.js/tree/canary/examples/with-iron-session-cache-components">with-iron-session-cache-components example</a>.</p>
+<h2 id="prerequisites">Prerequisites</h2>
+<p>Enable <a href="#/doc/nextjs/app/api-reference/config/next-config-js/cacheComponents"><code>cacheComponents</code></a>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>next.config.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">
+
+<span class="hljs-keyword">const</span> <span class="hljs-attr">nextConfig</span>: <span class="hljs-title class_">NextConfig</span> = {
+  <span class="hljs-attr">cacheComponents</span>: <span class="hljs-literal">true</span>,
+}</code></pre></div></figure>
+<p>This guide covers code patterns for authentication with Cache Components: reading the session at request time, streaming authenticated UI, and caching session-derived data. It assumes you&#39;re comfortable with Cache Components (if not, read <a href="#/doc/nextjs/app/getting-started/caching">Caching</a> first) and that you already have a session set on login.</p>
+<p>For the fundamentals this builds on, we recommend two guides:</p>
+<ul>
+<li><a href="#/doc/nextjs/app/guides/authentication">Authentication</a> covers sign-up, login, session management, authorization, and the Data Access Layer.</li>
+<li><a href="#/doc/nextjs/app/guides/data-security">Data Security</a> covers keeping data access on the server and sensitive data off the client.</li>
+</ul>
+<h2 id="migrating-an-existing-app">Migrating an existing app</h2>
+<p>With Cache Components enabled, instant navigation validation flags every route that reads the session, because a request read can&#39;t be prerendered into the static shell. You don&#39;t have to resolve them all before shipping. Set <a href="#/doc/nextjs/app/guides/instant-navigation@opting-out"><code>export const instant = false</code></a> on the page or layout to let it keep blocking on the server, then adopt the patterns below one route at a time. For the full migration workflow, see <a href="#/doc/nextjs/app/guides/migrating-to-cache-components@following-validation">Migrating to Cache Components</a>.</p>
+<h2 id="step-1-read-the-current-user">Step 1: Read the current user</h2>
+<p>Reading the current user reads the session cookie, then looks the user up. A request read can&#39;t be part of the static shell, so it always sits behind a <a href="#/doc/nextjs/app/api-reference/file-conventions/loading">``</a> boundary and streams in on every navigation.</p>
+<p>Because a user session is valid for a period of time, adding a cache lifetime lets the framework prefetch that content ahead of time.</p>
+<p>The server-side directives can&#39;t give it that lifetime, though: neither a plain <a href="#/doc/nextjs/app/api-reference/directives/use-cache"><code>use cache</code></a> nor <a href="#/doc/nextjs/app/api-reference/directives/use-cache-remote"><code>use cache: remote</code></a> can call <code>cookies()</code>, and you can&#39;t <a href="#/doc/nextjs/app/getting-started/caching@passing-runtime-values-to-cached-functions">extract the value and pass it in</a> either, because:</p>
+<ul>
+<li>A session helper reads the cookie deep inside its own code, so there&#39;s nothing to lift out.</li>
+<li>Validating it compares a token&#39;s expiry against the current time (iron-session&#39;s <code>unsealData</code> rejects an expired seal), so the read is request- and time-dependent.</li>
+</ul>
+<p>That&#39;s what <a href="#/doc/nextjs/app/api-reference/directives/use-cache-private"><code>use cache: private</code></a> is for: it reads <code>cookies()</code> and <code>headers()</code> directly, keeping the result in the browser only, never on the server.</p>
+<p>A private scope stays in the browser, so it never caches on the server. To cache on the server instead, extract a value (the <code>userId</code>, for example) and pass it into a plain <a href="#/doc/nextjs/app/api-reference/directives/use-cache"><code>use cache</code></a> or <a href="#/doc/nextjs/app/api-reference/directives/use-cache-remote"><code>use cache: remote</code></a>. The same pattern caches data derived from the session, covered in <a href="#step-4-cache-session-derived-data">Step 4</a>.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>lib/session.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">
+  <span class="hljs-attr">userId</span>?: <span class="hljs-built_in">string</span>
+}
+
+<span class="hljs-keyword">const</span> <span class="hljs-variable constant_">COOKIE_NAME</span> = <span class="hljs-string">&#x27;app_session&#x27;</span>
+<span class="hljs-keyword">const</span> password = process.<span class="hljs-property">env</span>.<span class="hljs-property">SESSION_PASSWORD</span>!
+
+  <span class="hljs-keyword">const</span> cookie = (<span class="hljs-keyword">await</span> <span class="hljs-title function_">cookies</span>()).<span class="hljs-title function_">get</span>(<span class="hljs-variable constant_">COOKIE_NAME</span>)?.<span class="hljs-property">value</span>
+  <span class="hljs-keyword">if</span> (!cookie) {
+    <span class="hljs-keyword">return</span> {}
+  }
+  <span class="hljs-keyword">return</span> <span class="hljs-title function_">unsealData</span>(cookie, { password })
+}</code></pre></div></figure>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>lib/auth.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">
+  <span class="hljs-attr">id</span>: <span class="hljs-built_in">string</span>
+  <span class="hljs-attr">name</span>: <span class="hljs-built_in">string</span>
+}
+
+  <span class="hljs-string">&#x27;use cache: private&#x27;</span>
+
+  <span class="hljs-keyword">const</span> { userId } = <span class="hljs-keyword">await</span> <span class="hljs-title function_">getSession</span>()
+  <span class="hljs-keyword">if</span> (!userId) {
+    <span class="hljs-title function_">redirect</span>(<span class="hljs-string">&#x27;/login&#x27;</span>)
+  }
+
+  <span class="hljs-keyword">const</span> user = <span class="hljs-keyword">await</span> <span class="hljs-title function_">findUserById</span>(userId)
+  <span class="hljs-keyword">if</span> (!user) {
+    <span class="hljs-title function_">redirect</span>(<span class="hljs-string">&#x27;/login&#x27;</span>)
+  }
+
+  <span class="hljs-keyword">return</span> { <span class="hljs-attr">id</span>: user.<span class="hljs-property">id</span>, <span class="hljs-attr">name</span>: user.<span class="hljs-property">name</span> }
+}</code></pre></div></figure>
+<p>The <code>redirect()</code> calls throw to interrupt rendering rather than return a value, so they aren&#39;t cached. Only a resolved user is.</p>
+<blockquote>
+<p><strong>Good to know:</strong> <code>use cache: private</code> accepts <code>cookies()</code>, <code>headers()</code>, and <code>searchParams</code>, but not <a href="#/doc/nextjs/app/api-reference/functions/connection"><code>connection()</code></a>. See <a href="#/doc/nextjs/app/api-reference/directives/use-cache-private"><code>use cache: private</code></a> for the full list.</p>
+</blockquote>
+<h2 id="step-2-show-the-user-without-blocking-the-page">Step 2: Show the user without blocking the page</h2>
+<p>A component that reads the session must sit behind a <a href="#/doc/nextjs/app/api-reference/file-conventions/loading">``</a> boundary. With Cache Components, reading <code>cookies()</code> outside a boundary is a build error. The boundary is also what keeps the rest of the page fast. Anything outside it prerenders into the <a href="#/doc/nextjs/app/getting-started/caching@prerendering">static shell</a> and loads instantly, as long as it&#39;s static or wrapped in <a href="#/doc/nextjs/app/api-reference/directives/use-cache"><code>use cache</code></a> and doesn&#39;t read runtime data of its own. Only the section behind the boundary waits for the request.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app/page.tsx</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">
+  <span class="hljs-keyword">return</span> (
+    <span class="language-xml"><span class="hljs-tag">&lt;<span class="hljs-name">main</span>&gt;</span>
+      
+      
+
+      
+      Loading your dashboard…<span class="hljs-tag">&lt;/<span class="hljs-name">p</span>&gt;</span></span>}&gt;
+        
+      
+    &lt;/main&gt;
+  )
+}
+
+<span class="hljs-keyword">async</span> <span class="hljs-keyword">function</span> <span class="hljs-title function_">Announcements</span>(<span class="hljs-params"></span>) {
+  <span class="hljs-string">&#x27;use cache&#x27;</span>
+  <span class="hljs-keyword">const</span> announcements = <span class="hljs-keyword">await</span> <span class="hljs-title function_">getAnnouncements</span>()
+  <span class="hljs-keyword">return</span> (
+    <span class="language-xml"><span class="hljs-tag">&lt;<span class="hljs-name">ul</span>&gt;</span>
+      {announcements.map((announcement) =&gt; (
+        <span class="hljs-tag">&lt;<span class="hljs-name">li</span> <span class="hljs-attr">key</span>=<span class="hljs-string">{announcement}</span>&gt;</span>{announcement}<span class="hljs-tag">&lt;/<span class="hljs-name">li</span>&gt;</span>
+      ))}
+    <span class="hljs-tag">&lt;/<span class="hljs-name">ul</span>&gt;</span></span>
+  )
+}
+
+<span class="hljs-keyword">async</span> <span class="hljs-keyword">function</span> <span class="hljs-title function_">Dashboard</span>(<span class="hljs-params"></span>) {
+  <span class="hljs-keyword">const</span> user = <span class="hljs-keyword">await</span> <span class="hljs-title function_">getCurrentUser</span>()
+  <span class="hljs-keyword">return</span> <span class="language-xml"><span class="hljs-tag">&lt;<span class="hljs-name">h1</span>&gt;</span>Welcome, {user.name}<span class="hljs-tag">&lt;/<span class="hljs-name">h1</span>&gt;</span></span>
+}</code></pre></div></figure>
+<p>Keep the session read out of a layout&#39;s top level, too. A top-level <code>await</code> on the session in a layout holds the whole segment, including <code>{children}</code>, behind that request, so push it into a component inside a boundary. See <a href="#/doc/nextjs/app/guides/streaming@push-dynamic-access-down">Push dynamic access down</a>.</p>
+<blockquote>
+<p><strong>Good to know:</strong> <code>getCurrentUser</code> reads the session, checks it, and returns a narrow user. Centralizing those reads in one function is the <a href="#/doc/nextjs/app/guides/authentication@creating-a-data-access-layer-dal">Data Access Layer</a> pattern.</p>
+</blockquote>
+<h2 id="step-3-share-the-user-across-components">Step 3: Share the user across components</h2>
+<p>You don&#39;t have to read the session again in every component that needs the user. Read it once, then hand it to as many Server and Client Components as you like from inside the same boundary.</p>
+<p>Server Components can call <code>getCurrentUser()</code> directly. To reach Client Components without prop drilling, create the promise once, pass it through context, and unwrap it with <a target="_blank" rel="noopener" href="https://react.dev/reference/react/use"><code>use()</code></a>. For the general pattern, see <a href="#/doc/nextjs/app/guides/single-page-applications@using-reacts-use-within-a-context-provider">Using React&#39;s <code>use</code> within a Context Provider</a>. Because <code>getCurrentUser</code> reads the request, create its promise inside the Suspense boundary, not at the top of a layout.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app/user-provider.tsx</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-string">&#x27;use client&#x27;</span>
+
+
+
+
+<span class="hljs-keyword">const</span> <span class="hljs-title class_">UserContext</span> = createContext&lt;<span class="hljs-title class_">Promise</span> | <span class="hljs-literal">null</span>&gt;(<span class="hljs-literal">null</span>)
+
+  userPromise,
+  children,
+}: {
+  <span class="hljs-attr">userPromise</span>: <span class="hljs-title class_">Promise</span>
+  <span class="hljs-attr">children</span>: <span class="hljs-title class_">ReactNode</span>
+}) {
+  <span class="hljs-keyword">return</span> {children}
+}
+
+  <span class="hljs-keyword">const</span> userPromise = <span class="hljs-title function_">use</span>(<span class="hljs-title class_">UserContext</span>)
+  <span class="hljs-keyword">if</span> (!userPromise) {
+    <span class="hljs-keyword">throw</span> <span class="hljs-keyword">new</span> <span class="hljs-title class_">Error</span>(<span class="hljs-string">&#x27;useUser must be used within a UserProvider&#x27;</span>)
+  }
+  <span class="hljs-keyword">return</span> <span class="hljs-title function_">use</span>(userPromise)
+}</code></pre></div></figure>
+<p>The Server Component behind the boundary creates the promise and hands it to the provider without awaiting it. Each consumer then resolves it behind its own boundary, so the shared chrome renders without waiting on the session:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app/page.tsx</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">function</span> <span class="hljs-title function_">Dashboard</span>(<span class="hljs-params"></span>) {
+  <span class="hljs-keyword">const</span> userPromise = <span class="hljs-title function_">getCurrentUser</span>()
+
+  <span class="hljs-keyword">return</span> (
+    
+      <span class="hljs-title class_">Loading</span>…&lt;/span&gt;}&gt;
+        
+      
+    
+  )
+}</code></pre></div></figure>
+<p>Client Components call <code>useUser()</code> to get the current user. Because <code>use()</code> suspends until the promise resolves, keep the component behind a `` boundary:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app/user-badge.tsx</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-string">&#x27;use client&#x27;</span>
+
+  <span class="hljs-keyword">const</span> user = <span class="hljs-title function_">useUser</span>()
+  <span class="hljs-keyword">return</span> <span class="language-xml"><span class="hljs-tag">&lt;<span class="hljs-name">span</span>&gt;</span>Signed in as {user.name}<span class="hljs-tag">&lt;/<span class="hljs-name">span</span>&gt;</span></span>
+}</code></pre></div></figure>
+<blockquote>
+<p><strong>Good to know:</strong> Expose only what the client needs. The <code>getCurrentUser</code> helper returns a narrow <code>{ id, name }</code> rather than the raw session. To keep sensitive fields from reaching the client, see <a target="_blank" rel="noopener" href="https://react.dev/reference/react/experimental_taintUniqueValue"><code>taintUniqueValue</code></a>.</p>
+</blockquote>
+<h2 id="step-4-cache-session-derived-data">Step 4: Cache session-derived data</h2>
+<p>Now that you have the user, you can cache the data you fetch for them in one of two ways. Passing the user id into a plain <a href="#/doc/nextjs/app/api-reference/directives/use-cache"><code>use cache</code></a> function keeps the result on the server, keyed by the id (it becomes part of the <a href="#/doc/nextjs/app/api-reference/directives/use-cache@cache-keys">cache key</a>), where a <a href="#/doc/nextjs/app/api-reference/functions/cacheTag"><code>cacheTag</code></a> can invalidate it later. Reading it inside a <a href="#/doc/nextjs/app/api-reference/directives/use-cache-private"><code>use cache: private</code></a> scope keeps it in the browser only, never on the server, which matters when requirements forbid storing certain data server-side, even ephemerally. The example passes the id, since these notes are tagged and refreshed when they change.</p>
+<p>A plain <code>use cache</code> scope can&#39;t read <code>cookies()</code>, so the exported function resolves the user and passes just the id to the cached function:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>lib/data.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">
+  <span class="hljs-keyword">const</span> user = <span class="hljs-keyword">await</span> <span class="hljs-title function_">getCurrentUser</span>()
+  <span class="hljs-keyword">return</span> <span class="hljs-title function_">getNotesByUserId</span>(user.<span class="hljs-property">id</span>)
+}
+
+<span class="hljs-keyword">async</span> <span class="hljs-keyword">function</span> <span class="hljs-title function_">getNotesByUserId</span>(<span class="hljs-params"><span class="hljs-attr">userId</span>: <span class="hljs-built_in">string</span></span>) {
+  <span class="hljs-string">&#x27;use cache&#x27;</span>
+  <span class="hljs-title function_">cacheTag</span>(<span class="hljs-string">`notes:<span class="hljs-subst">${userId}</span>`</span>)
+  <span class="hljs-title function_">cacheLife</span>(<span class="hljs-string">&#x27;minutes&#x27;</span>)
+
+  <span class="hljs-keyword">return</span> db.<span class="hljs-property">query</span>.<span class="hljs-property">notes</span>.<span class="hljs-title function_">findMany</span>({
+    <span class="hljs-attr">where</span>: <span class="hljs-function">(<span class="hljs-params">notes, { eq }</span>) =&gt;</span> <span class="hljs-title function_">eq</span>(notes.<span class="hljs-property">userId</span>, userId),
+  })
+}</code></pre></div></figure>
+<p>Keep <code>getNotesByUserId</code> unexported so a caller can&#39;t request another user&#39;s notes by passing a different id. Resolving the user inside the exported getter is what makes that safe. See <a href="#/doc/nextjs/app/guides/data-security@data-access-layer">Data Security</a>.</p>
+<p>Call it from a Server Component that renders the notes. There&#39;s no user id to pass, and the <code>getCurrentUser()</code> call inside the getter hits the private cache, so the session isn&#39;t read again:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app/page.tsx</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">async</span> <span class="hljs-keyword">function</span> <span class="hljs-title function_">Notes</span>(<span class="hljs-params"></span>) {
+  <span class="hljs-keyword">const</span> notes = <span class="hljs-keyword">await</span> <span class="hljs-title function_">getNotes</span>()
+  <span class="hljs-comment">// ...</span>
+}</code></pre></div></figure>
+<blockquote>
+<p><strong>Good to know: cache keys and tags are stored in plain text.</strong> A cached function&#39;s arguments and captured variables are serialized into its cache key, and <code>cacheTag</code> values are stored as written. Neither is hashed: the default cache holds them as plain-text map keys and tag lists, and a <a href="#/doc/nextjs/app/api-reference/directives/use-cache-remote">remote cache</a> receives them the same way. Key and tag on a stable identifier like the user id, and keep secrets and sensitive personal data (tokens, passwords, raw emails) out of arguments and tags.</p>
+</blockquote>
+<p>On the server, plain <code>use cache</code> keeps the entry in memory as a best effort: it&#39;s evicted under pressure and, in serverless, doesn&#39;t persist across instances. If that data must survive across instances and requests, opt into <a href="#/doc/nextjs/app/api-reference/directives/use-cache-remote"><code>use cache: remote</code></a> for durable, shared storage, where <a href="#/doc/nextjs/app/api-reference/directives/use-cache-remote@cache-key-considerations">the cache key you choose</a> drives your hit rate.</p>
+<h2 id="step-5-update-session-derived-data">Step 5: Update session-derived data</h2>
+<p>When a <a href="#/doc/nextjs/app/getting-started/mutating-data">Server Action</a> changes a user&#39;s data, call <a href="#/doc/nextjs/app/api-reference/functions/updateTag"><code>updateTag</code></a> with the same tag to refresh the cached entry. Re-read the session inside the action so it authorizes itself rather than trusting the client. See <a href="#/doc/nextjs/app/guides/authentication@server-actions">authentication with Server Actions</a> for why this matters.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app/actions.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-string">&#x27;use server&#x27;</span>
+
+  <span class="hljs-keyword">const</span> { userId } = <span class="hljs-keyword">await</span> <span class="hljs-title function_">getSession</span>()
+  <span class="hljs-keyword">if</span> (!userId) {
+    <span class="hljs-title function_">redirect</span>(<span class="hljs-string">&#x27;/login&#x27;</span>)
+  }
+
+  <span class="hljs-keyword">const</span> note = <span class="hljs-title class_">String</span>(formData.<span class="hljs-title function_">get</span>(<span class="hljs-string">&#x27;note&#x27;</span>) ?? <span class="hljs-string">&#x27;&#x27;</span>).<span class="hljs-title function_">trim</span>()
+  <span class="hljs-keyword">if</span> (note) {
+    <span class="hljs-keyword">await</span> <span class="hljs-title function_">saveNote</span>(userId, note)
+    <span class="hljs-title function_">updateTag</span>(<span class="hljs-string">`notes:<span class="hljs-subst">${userId}</span>`</span>)
+  }
+}</code></pre></div></figure>
+<h2 id="step-6-make-authenticated-navigations-instant">Step 6: Make authenticated navigations instant</h2>
+<p>Cached reads already have a lifetime, so this mostly happens on its own. A <code>use cache: private</code> scope uses the <a href="#/doc/nextjs/app/api-reference/functions/cacheLife@preset-cache-profiles"><code>default</code> profile</a> (a five-minute <code>stale</code>) unless you set one, and a route that reads the session produces a per-session <a href="#/doc/nextjs/app/glossary@app-shell">App Shell</a> with the authenticated content, prefetched and cached per session. Navigations to it are already instant.</p>
+<p>Two things keep it that way:</p>
+<ul>
+<li>If you tune the lifetime with <a href="#/doc/nextjs/app/api-reference/functions/cacheLife"><code>cacheLife</code></a>, keep <code>stale</code> at 30 seconds or more. Below that, the scope drops out of prefetching. See <a href="#/doc/nextjs/app/api-reference/functions/cacheLife@client-cache-behavior"><code>cacheLife</code> client cache behavior</a>.</li>
+<li>A route that <em>also</em> depends on the URL (a <code>params</code> or <code>searchParams</code> value) needs <a href="#/doc/nextjs/app/api-reference/components/link@prefetch">``</a> on the links pointing at it. That opts into <a href="#/doc/nextjs/app/guides/optimizing-prefetching">per-link prefetching</a>, which resolves the per-link data ahead of the click.</li>
+</ul>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app/page.tsx</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">
+  {note.<span class="hljs-property">text</span>}</code></pre></div></figure>
+<p>The destination needs <a href="#/doc/nextjs/app/guides/adopting-partial-prefetching">Partial Prefetching</a> for this, so enable the <a href="#/doc/nextjs/app/api-reference/config/next-config-js/partialPrefetching"><code>partialPrefetching</code></a> flag or set <code>prefetch = &#39;partial&#39;</code> on the segment. Add the prop where the wait is worth it: that prefetch costs one server invocation per link, so a sidebar of <code>/chat/[id]</code> links pays that cost per item.</p>
+<h2 id="common-pitfalls">Common pitfalls</h2>
+<ul>
+<li><strong>Reading <code>cookies()</code> or <code>headers()</code> inside a plain <code>use cache</code> function.</strong> This throws. Read the request outside and pass the value in, or use <code>use cache: private</code>.</li>
+<li><strong>Putting secrets or personal data in cache keys or tags.</strong> Arguments and <code>cacheTag</code> values are stored in plain text. Key and tag on a stable identifier, not on sensitive input.</li>
+<li><strong>Trusting the client for authorization.</strong> UI checks hide elements, but they don&#39;t protect data. Re-verify the session in every Server Action and <a href="#/doc/nextjs/app/api-reference/file-conventions/route">Route Handler</a>, close to the data. See <a href="#/doc/nextjs/app/guides/authentication@authorization">Authorization</a>.</li>
+</ul>
