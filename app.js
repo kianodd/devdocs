@@ -3,7 +3,7 @@
    Courses are built at build time (data/catalog.json). Progress, downloads,
    settings live locally in the browser. */
 
-const APP_VERSION = '2.9.0';
+const APP_VERSION = '2.9.1';
 const $ = (s, el) => (el || document).querySelector(s);
 const $$ = (s, el) => [...(el || document).querySelectorAll(s)];
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -64,7 +64,7 @@ const STR = {
     searching: 'در حال جستجو…', noResults: 'نتیجه‌ای پیدا نشد.', results: 'نتیجه',
     updateTitle: 'نسخه جدید آماده است', updateNow: 'به‌روزرسانی', later: 'بعداً',
     updateNotesT: 'در این نسخه:', upToDate: 'برنامه به‌روز است.', updateReady: 'نسخه جدید آماده نصب است.',
-    copied: 'کپی شد', dlStarted: 'دانلود شروع شد…', dlDoneToast: 'دانلود کامل شد', dlRemoved: 'دانلود حذف شد',
+    copied: 'کپی شد', run: 'اجرا', runOut: 'خروجی', runNA: 'این کد در مرورگر قابل اجرا نیست', runPyWait: 'در حال بارگذاری مفسر پایتون…', runPyErr: 'مفسر پایتون بارگذاری نشد؛ اینترنت لازم است', dlStarted: 'دانلود شروع شد…', dlDoneToast: 'دانلود کامل شد', dlRemoved: 'دانلود حذف شد',
     dlError: 'دانلود ناموفق بود؛ اتصال را بررسی کن', translateError: 'ترجمه ناموفق بود؛ اتصال اینترنت لازم است.',
     translateDone: 'ترجمه شد', ttsNoText: 'متن قابل خواندنی در این فصل نیست.',
     lastRead: 'آخرین مطالعه', backToLibrary: 'کتابخانه', section: 'بخش',
@@ -112,7 +112,7 @@ const STR = {
     searching: 'Searching…', noResults: 'No results found.', results: 'results',
     updateTitle: 'A new version is ready', updateNow: 'Update', later: 'Later',
     updateNotesT: "What's new:", upToDate: 'The app is up to date.', updateReady: 'A new version is ready to install.',
-    copied: 'Copied', dlStarted: 'Downloading…', dlDoneToast: 'Download complete', dlRemoved: 'Download removed',
+    copied: 'Copied', run: 'Run', runOut: 'Output', runNA: 'This code cannot run in the browser', runPyWait: 'Loading the Python runtime…', runPyErr: 'Python runtime failed to load; internet is required', dlStarted: 'Downloading…', dlDoneToast: 'Download complete', dlRemoved: 'Download removed',
     dlError: 'Download failed; check your connection', translateError: 'Translation failed; an internet connection is required.',
     translateDone: 'Translated', ttsNoText: 'Nothing readable in this chapter.',
     lastRead: 'Last read', backToLibrary: 'Library', section: 'Section',
@@ -1212,6 +1212,7 @@ async function importDownloadsZip(file) {
 
 /* ---------------- changelog ---------------- */
 const CHANGELOG = [
+  { v: '2.9.1', fa: ['اجرای زنده کد: روی کارت‌های JavaScript دکمه «اجرا» اضافه شد — کد داخل مرورگر اجرا می‌شود و خروجی کنسول و خطاها زیر همان کارت نمایش داده می‌شوند', 'کدهای HTML پیش‌نمایش زنده و کدهای SVG رندر زنده می‌گیرند؛ زیرساخت اجرای Python (با مفسر داخل مرورگر) هم آماده است و با دوره پایتون فعال می‌شود'], en: ['Live code runner: JavaScript code cards get a Run button — code executes in a sandboxed frame and console output and errors appear right under the card', 'HTML blocks get a live preview and SVG blocks render live; the in-browser Python runtime is wired up too and activates with the Python course'] },
   { v: '2.9.0', fa: ['شش دوره جدید از مستندات رسمی: C#‎ با ۱٬۰۰۰ فصل و ASP.NET Core با ۸۷۶ فصل از Microsoft Learn (با نمونه‌کدهای واقعی داخل متن)، Vue با ۱۰۵ فصل، Bootstrap با ۱۰۶ فصل، Go با ۹۱ فصل (از جمله Effective Go) و Node.js با ۷۰ فصل مرجع API', 'در مجموع ۳۰ دوره و ۹٬۴۵۰ فصل'], en: ['Six new courses from official docs: C# (1,000 chapters) and ASP.NET Core (876) from Microsoft Learn with real code samples inlined, Vue (105), Bootstrap (106), Go (91, including Effective Go) and the Node.js API reference (70)', '30 courses and 9,450 chapters in total'] },
   { v: '2.8.0', fa: ['شش دوره جدید از مستندات رسمی MDN اضافه شد: HTML با ۲۵۸ فصل، CSS با ۱٬۲۸۸ فصل، JavaScript با ۱٬۳۴۶ فصل، SVG با ۳۰۷ فصل، XML با ۱۱۷ فصل و Canvas API با ۱۵ فصل — هرکدام با بخش‌های راهنما (Guide) و مرجع (Reference) و به ترتیب خود MDN', 'لینک‌های داخلی MDN بین فصل‌ها و دوره‌ها داخل اپ باز می‌شوند و عکس‌های فصل‌ها هم داخل پکیج آفلاین هر دوره قرار می‌گیرند', 'در مجموع ۲۴ دوره و ۷٬۲۰۲ فصل'], en: ['Six new courses from the official MDN docs: HTML (258 chapters), CSS (1,288), JavaScript (1,346), SVG (307), XML (117) and Canvas API (15) — each with Guide and Reference sections in MDN\u2019s own order', 'MDN internal links between chapters and courses open in-app, and chapter images are included in each course\u2019s offline download', '24 courses and 7,202 chapters in total'] },
   { v: '2.7.0', fa: ['دوره جدید Next.js اضافه شد: ۴۷۹ فصل کامل از مستندات رسمی nextjs.org، با بخش‌های جدا برای App Router و Pages Router و دقیقاً به ترتیب سایت', 'بخش‌های مخصوص هر روتر (AppOnly/PagesOnly) در هر فصل فقط نسخه مربوط به همان روتر را نشان می‌دهند', 'نام فایل کدها حالا روی کارت کد نمایش داده می‌شود'], en: ['New course: Next.js — all 479 chapters from the official nextjs.org docs, with separate App Router and Pages Router sections in the site\u2019s own order', 'Router-specific blocks (AppOnly/PagesOnly) show only the relevant router\u2019s content in each chapter', 'Code cards now show the code file name'] },
@@ -1325,6 +1326,133 @@ function setDone(key, on) {
   if (on && entry && before < 100 && courseStats(entry.course).pct >= 100) {
     setTimeout(() => { confetti(); toast('🎉 ' + T('courseComplete') + ' — ' + entry.course.title); }, 300);
   }
+}
+
+/* ---------------- live code runner (JS / HTML / SVG in a sandboxed iframe, Python via Pyodide) ---------------- */
+const PLAY_SVG = '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5.5v13a1 1 0 0 0 1.53.85l10.2-6.5a1 1 0 0 0 0-1.7L9.53 4.65A1 1 0 0 0 8 5.5Z"/></svg>';
+const X_SVG = '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>';
+function runKindOf(codeEl) {
+  if (!codeEl) return null;
+  const m = (codeEl.className || '').match(/language-([\w-]+)/);
+  const lang = m ? m[1] : '';
+  const text = codeEl.textContent || '';
+  if (lang === 'javascript') return 'js';
+  if (lang === 'python') return 'py';
+  if (lang === 'xml') {
+    if (/<!DOCTYPE\s+html|<html[\s>]/i.test(text)) return 'html';
+    if (/<svg[\s>]/i.test(text)) return 'svg';
+  }
+  return null;
+}
+function enhanceRuns(article) {
+  $$('.code-card', article).forEach((card) => {
+    if ($('[data-run]', card)) return;
+    const runnable = $$('.code-pane code', card).some((c) => runKindOf(c));
+    if (!runnable) return;
+    const head = $('.code-head-r', card);
+    if (!head) return;
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'run-btn';
+    btn.setAttribute('data-run', '');
+    btn.innerHTML = PLAY_SVG + '<span>' + esc(T('run')) + '</span>';
+    const copy = $('[data-copy]', head);
+    head.insertBefore(btn, copy || null);
+  });
+}
+const SC = '<' + '/script>';
+const JS_SCAFFOLD_A = '<!DOCTYPE html><html><head><meta charset="utf-8"><style>'
+  + 'html,body{margin:0;padding:0;background:#0d1117;color:#e6edf3;font:12px/1.55 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}'
+  + '#__out{padding:10px 12px;white-space:pre-wrap;word-break:break-word}'
+  + '#__out .err{color:#ff7b72}#__out .warn{color:#d29922}#__out .ph{color:#8b949e}'
+  + '</style></head><body><div id="__out"><div class="ph">…</div></div><script>'
+  + 'var out=document.getElementById("__out"),first=true;'
+  + 'function line(txt,cls){if(first){out.innerHTML="";first=false}var d=document.createElement("div");if(cls)d.className=cls;d.textContent=txt;out.appendChild(d)}'
+  + 'function fmt(a){if(typeof a==="string")return a;if(a instanceof Error)return a.stack||String(a);try{var s=JSON.stringify(a,null,2);return s===undefined?String(a):s}catch(e){return String(a)}}'
+  + '["log","info","warn","error","debug"].forEach(function(k){var o=(console[k]||console.log).bind(console);console[k]=function(){line(Array.prototype.map.call(arguments,fmt).join(" "),k==="error"?"err":k==="warn"?"warn":"");o.apply(null,arguments)}});'
+  + 'window.addEventListener("error",function(e){line("Error: "+(e.message||"unknown"),"err")});'
+  + 'window.addEventListener("unhandledrejection",function(e){line("Unhandled rejection: "+fmt(e.reason),"err")});'
+  + SC + '<script>';
+const JS_SCAFFOLD_B = SC + '</body></html>';
+const PY_SCAFFOLD = '<!DOCTYPE html><html><head><meta charset="utf-8">'
+  + '<script src="https://cdn.jsdelivr.net/pyodide/v0.27.7/full/pyodide.js">' + SC
+  + '</head><body><script>'
+  + 'var ready=null;'
+  + 'window.addEventListener("message",async function(e){'
+  + 'if(!e.data||e.data.type!=="runpy")return;'
+  + 'var send=function(t,err){parent.postMessage({type:"pyout",line:t,err:!!err},"*")};'
+  + 'try{'
+  + 'if(!ready)ready=loadPyodide({indexURL:"https://cdn.jsdelivr.net/pyodide/v0.27.7/full/"});'
+  + 'var py=await ready;'
+  + 'py.setStdout({batched:function(s){send(s,false)}});'
+  + 'py.setStderr({batched:function(s){send(s,true)}});'
+  + 'await py.runPythonAsync(e.data.code);'
+  + '}catch(err){send(String(err&&err.message||err),true)}'
+  + 'parent.postMessage({type:"pydone"},"*");'
+  + '});'
+  + 'parent.postMessage({type:"pyready"},"*");'
+  + SC + '</body></html>';
+function runOutBox(card) {
+  let box = $('.run-out', card);
+  if (box) return box;
+  box = document.createElement('div');
+  box.className = 'run-out';
+  box.innerHTML = '<div class="run-out-head"><span>' + esc(T('runOut')) + '</span>'
+    + '<button type="button" class="run-close" data-run-close aria-label="Close">' + X_SVG + '</button></div>'
+    + '<iframe class="run-frame" sandbox="allow-scripts" title="code output"></iframe>'
+    + '<div class="run-log" dir="ltr" hidden></div>';
+  card.appendChild(box);
+  return box;
+}
+function runCode(btn) {
+  const card = btn.closest('.code-card');
+  const pane = $('.code-pane:not([hidden]) code', card);
+  const kind = runKindOf(pane);
+  if (!kind) { toast(T('runNA')); return; }
+  const code = pane.textContent || '';
+  const box = runOutBox(card);
+  box.hidden = false;
+  const frame = $('.run-frame', box);
+  const log = $('.run-log', box);
+  if (kind === 'py') { runPython(frame, log, code, btn); return; }
+  log.hidden = true;
+  frame.hidden = false;
+  frame.classList.remove('mini');
+  if (kind === 'js') {
+    frame.srcdoc = JS_SCAFFOLD_A + code.replace(/<\/script/gi, '<\\/script') + JS_SCAFFOLD_B;
+  } else if (kind === 'html') {
+    frame.srcdoc = /<html[\s>]/i.test(code) ? code : '<!DOCTYPE html><html><head><meta charset="utf-8"></head><body>' + code + '</body></html>';
+  } else if (kind === 'svg') {
+    frame.srcdoc = '<!DOCTYPE html><html><head><meta charset="utf-8"></head><body style="margin:0;display:grid;place-items:center;min-height:100vh;background:#fff">' + code + '</body></html>';
+  }
+}
+function runPython(frame, log, code, btn) {
+  frame.hidden = false;
+  frame.classList.add('mini');
+  log.hidden = false;
+  log.innerHTML = '';
+  const addLine = (txt, err) => {
+    const d = document.createElement('div');
+    if (err) d.className = 'err';
+    d.textContent = txt;
+    log.appendChild(d);
+    log.scrollTop = log.scrollHeight;
+  };
+  addLine(T('runPyWait'), false);
+  const old = btn.innerHTML;
+  btn.disabled = true;
+  let settled = false;
+  const finish = () => { btn.disabled = false; btn.innerHTML = old; window.removeEventListener('message', onMsg); };
+  const timer = setTimeout(() => { if (!settled) { settled = true; log.innerHTML = ''; addLine(T('runPyErr'), true); finish(); } }, 45000);
+  function onMsg(e) {
+    if (e.source !== frame.contentWindow) return;
+    const d = e.data || {};
+    if (d.type === 'pyready') { frame.contentWindow.postMessage({ type: 'runpy', code }, '*'); }
+    else if (d.type === 'pyout') { if (!settled) { settled = true; log.innerHTML = ''; } clearTimeout(timer); addLine(d.line, d.err); }
+    else if (d.type === 'pydone') { clearTimeout(timer); if (!settled) { settled = true; log.innerHTML = ''; addLine('—', false); } finish(); }
+  }
+  window.addEventListener('message', onMsg);
+  frame.srcdoc = PY_SCAFFOLD;
 }
 
 function vDoc(courseId, slugFrag) {
@@ -1520,6 +1648,7 @@ function vDoc(courseId, slugFrag) {
   docCleanup = () => { docScrollFn = null; rp.style.opacity = '0'; if (focusIO) { focusIO.disconnect(); focusIO = null; } clearInterval(readTimer); flushReadlog(); document.removeEventListener('click', onDocClick); };
   fetch(ch.file).then((r) => { if (!r.ok) throw new Error('load'); return r.text(); }).then((html) => {
     article.innerHTML = html;
+    enhanceRuns(article);
     if (settings.autoCache && !isDownloaded(key)) {
       downloadChapter(key).then((size) => { downloads.keys[key] = { at: Date.now(), size }; saveDownloads(); syncDl(); updateDlChrome(); ensureSearchIndexCached(courseId); }).catch(() => {});
     }
@@ -1538,6 +1667,10 @@ function vDoc(courseId, slugFrag) {
   article.addEventListener('click', (e) => {
     const img = e.target.closest('img');
     if (img) { openLightbox(img.currentSrc || img.src); return; }
+    const runClose = e.target.closest('[data-run-close]');
+    if (runClose) { const o = runClose.closest('.run-out'); if (o) o.hidden = true; return; }
+    const runBtn = e.target.closest('[data-run]');
+    if (runBtn) { runCode(runBtn); return; }
     const copy = e.target.closest('[data-copy]');
     if (copy) {
       const card = copy.closest('.code-card');
