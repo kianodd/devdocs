@@ -1,0 +1,184 @@
+<p>In earlier tutorials, you learned how to update data. This tutorial shows how to handle conflicts when multiple users update the same entity at the same time.</p>
+<p>You&#39;ll create web pages that work with the <code>Department</code> entity and handle concurrency errors. The following illustrations show the Edit and Delete pages, including some messages that are displayed if a concurrency conflict occurs.</p>
+<p><img src="concurrency/_static/edit-error.png" alt="Department Edit page"></p>
+<p><img src="concurrency/_static/delete-error.png" alt="Department Delete page"></p>
+<p>In this tutorial, you:</p>
+<blockquote>
+<p>[!div class=&quot;checklist&quot;]</p>
+<ul>
+<li>Learn about concurrency conflicts</li>
+<li>Add a tracking property</li>
+<li>Create Departments controller and views</li>
+<li>Update Index view</li>
+<li>Update Edit methods</li>
+<li>Update Edit view</li>
+<li>Test concurrency conflicts</li>
+<li>Update the Delete page</li>
+<li>Update Details and Create views</li>
+</ul>
+</blockquote>
+<h2 id="prerequisites">Prerequisites</h2>
+<ul>
+<li><a href="#/doc/aspnet/data/ef-mvc/update-related-data">Update related data</a></li>
+</ul>
+<h2 id="concurrency-conflicts">Concurrency conflicts</h2>
+<p>A concurrency conflict occurs when one user displays an entity&#39;s data in order to edit it, and then another user updates the same entity&#39;s data before the first user&#39;s change is written to the database. If you don&#39;t enable the detection of such conflicts, whoever updates the database last overwrites the other user&#39;s changes. In many applications, this risk is acceptable: if there are few users, or few updates, or if isn&#39;t really critical if some changes are overwritten, the cost of programming for concurrency might outweigh the benefit. In that case, you don&#39;t have to configure the application to handle concurrency conflicts.</p>
+<h3 id="pessimistic-concurrency-locking">Pessimistic concurrency (locking)</h3>
+<p>If your application does need to prevent accidental data loss in concurrency scenarios, one way to do that is to use database locks. This is called pessimistic concurrency. For example, before you read a row from a database, you request a lock for read-only or for update access. If you lock a row for update access, no other users are allowed to lock the row either for read-only or update access, because they would get a copy of data that&#39;s in the process of being changed. If you lock a row for read-only access, others can also lock it for read-only access but not for update.</p>
+<p>Managing locks has disadvantages. It can be complex to program. It requires significant database management resources, and it can cause performance problems as the number of users of an application increases. For these reasons, not all database management systems support pessimistic concurrency. Entity Framework Core provides no built-in support for it, and this tutorial doesn&#39;t show you how to implement it.</p>
+<h3 id="optimistic-concurrency">Optimistic Concurrency</h3>
+<p>The alternative to pessimistic concurrency is optimistic concurrency. Optimistic concurrency means allowing concurrency conflicts to happen, and then reacting appropriately if they do. For example, Jane visits the Department Edit page and changes the Budget amount for the English department from $350,000.00 to $0.00.</p>
+<p><img src="concurrency/_static/change-budget.png" alt="Changing budget to 0"></p>
+<p>Before Jane clicks <strong>Save</strong>, John visits the same page and changes the Start Date field from 9/1/2007 to 9/1/2013.</p>
+<p><img src="concurrency/_static/change-date.png" alt="Changing start date to 2013"></p>
+<p>Jane clicks <strong>Save</strong> first and sees her change when the browser returns to the Index page.</p>
+<p><img src="concurrency/_static/budget-zero.png" alt="Budget changed to zero"></p>
+<p>Then John clicks <strong>Save</strong> on an Edit page that still shows a budget of $350,000.00. What happens next is determined by how you handle concurrency conflicts.</p>
+<p>Some of the options include the following:</p>
+<ul>
+<li><p>You can keep track of which property a user has modified and update only the corresponding columns in the database.</p>
+<p>   In the example scenario, no data would be lost, because different properties were updated by the two users. The next time someone browses the English department, they will see both Jane&#39;s and John&#39;s changes -- a start date of 9/1/2013 and a budget of zero dollars. This method of updating can reduce the number of conflicts that could result in data loss, but it can&#39;t avoid data loss if competing changes are made to the same property of an entity. Whether the Entity Framework works this way depends on how you implement your update code. It&#39;s often not practical in a web application, because it can require that you maintain large amounts of state in order to keep track of all original property values for an entity as well as new values. Maintaining large amounts of state can affect application performance because it either requires server resources or must be included in the web page itself (for example, in hidden fields) or in a cookie.</p>
+</li>
+<li><p>You can let John&#39;s change overwrite Jane&#39;s change.</p>
+<p>   The next time someone browses the English department, they will see 9/1/2013 and the restored $350,000.00 value. This is called a <em>Client Wins</em> or <em>Last in Wins</em> scenario. (All values from the client take precedence over what&#39;s in the data store.) As noted in the introduction to this section, if you don&#39;t do any coding for concurrency handling, this will happen automatically.</p>
+</li>
+<li><p>You can prevent John&#39;s change from being updated in the database.</p>
+<p>   Typically, you would display an error message, show him the current state of the data, and allow him to reapply his changes if he still wants to make them. This is called a <em>Store Wins</em> scenario. (The data-store values take precedence over the values submitted by the client.) You&#39;ll implement the Store Wins scenario in this tutorial. This method ensures that no changes are overwritten without a user being alerted to what&#39;s happening.</p>
+</li>
+</ul>
+<h3 id="detecting-concurrency-conflicts">Detecting concurrency conflicts</h3>
+<p>You can resolve conflicts by handling <code>DbConcurrencyException</code> exceptions that the Entity Framework throws. In order to know when to throw these exceptions, the Entity Framework must be able to detect conflicts. Therefore, you must configure the database and the data model appropriately. Some options for enabling conflict detection include the following:</p>
+<ul>
+<li><p>In the database table, include a tracking column that can be used to determine when a row has been changed. You can then configure the Entity Framework to include that column in the Where clause of SQL Update or Delete commands.</p>
+<p>   The data type of the tracking column is typically <code>rowversion</code>. The <code>rowversion</code> value is a sequential number that&#39;s incremented each time the row is updated. In an Update or Delete command, the Where clause includes the original value of the tracking column (the original row version) . If the row being updated has been changed by another user, the value in the <code>rowversion</code> column is different than the original value, so the Update or Delete statement can&#39;t find the row to update because of the Where clause. When the Entity Framework finds that no rows have been updated by the Update or Delete command (that is, when the number of affected rows is zero), it interprets that as a concurrency conflict.</p>
+</li>
+<li><p>Configure the Entity Framework to include the original values of every column in the table in the Where clause of Update and Delete commands.</p>
+<p>   As in the first option, if anything in the row has changed since the row was first read, the Where clause won&#39;t return a row to update, which the Entity Framework interprets as a concurrency conflict. For database tables that have many columns, this approach can result in very large Where clauses, and can require that you maintain large amounts of state. As noted earlier, maintaining large amounts of state can affect application performance. Therefore this approach is generally not recommended, and it isn&#39;t the method used in this tutorial.</p>
+<p>   If you do want to implement this approach to concurrency, you have to mark all non-primary-key properties in the entity you want to track concurrency for by adding the <code>ConcurrencyCheck</code> attribute to them. That change enables the Entity Framework to include all columns in the SQL Where clause of Update and Delete statements.</p>
+</li>
+</ul>
+<p>In the remainder of this tutorial you&#39;ll add a <code>rowversion</code> tracking property to the Department entity, create a controller and views, and test to verify that everything works correctly.</p>
+<h2 id="add-a-tracking-property">Add a tracking property</h2>
+<p>In <code>Models/Department.cs</code>, add a tracking property named RowVersion:</p>
+<p>[!code-csharp<a href="intro/samples/cu/Models/Department.cs?name=snippet_Final&amp;highlight=26,27"></a>]</p>
+<p>The <code>Timestamp</code> attribute specifies that this column will be included in the Where clause of Update and Delete commands sent to the database. The attribute is called <code>Timestamp</code> because previous versions of SQL Server used a SQL <code>timestamp</code> data type before the SQL <code>rowversion</code> replaced it. The .NET type for <code>rowversion</code> is a byte array.</p>
+<p>If you prefer to use the fluent API, you can use the <code>IsRowVersion()</code> method (in <code>Data/SchoolContext.cs</code>) to specify the tracking property, as shown in the following example:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">modelBuilder.Entity()
+    .Property(p =&gt; p.RowVersion).IsRowVersion();</code></pre></div></figure>
+<p>By adding a property you changed the database model, so you need to do another migration.</p>
+<p>Save your changes and build the project, and then enter the following commands in the command window:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">dotnet ef migrations add RowVersion</code></pre></div></figure>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">dotnet ef database update</code></pre></div></figure>
+<h2 id="create-departments-controller-and-views">Create Departments controller and views</h2>
+<p>Scaffold a Departments controller and views as you did earlier for Students, Courses, and Instructors.</p>
+<p><img src="concurrency/_static/add-departments-controller.png" alt="Scaffold Department"></p>
+<p>In the <code>DepartmentsController.cs</code> file, change all four occurrences of &quot;FirstMidName&quot; to &quot;FullName&quot; so that the department administrator drop-down lists will contain the full name of the instructor rather than just the last name.</p>
+<p>[!code-csharp<a href="intro/samples/cu/Controllers/DepartmentsController.cs?name=snippet_Dropdown"></a>]</p>
+<h2 id="update-index-view">Update Index view</h2>
+<p>The scaffolding engine created a <code>RowVersion</code> column in the Index view, but that field shouldn&#39;t be displayed.</p>
+<p>Replace the code in <code>Views/Departments/Index.cshtml</code> with the following code.</p>
+<p>[!code-cshtml<a href="intro/samples/cu/Views/Departments/Index.cshtml?highlight=4,7,44"></a>]</p>
+<p>This changes the heading to &quot;Departments&quot;, deletes the <code>RowVersion</code> column, and shows full name instead of first name for the administrator.</p>
+<h2 id="update-edit-methods">Update Edit methods</h2>
+<p>In both the HttpGet <code>Edit</code> method and the <code>Details</code> method, add <code>AsNoTracking</code>. In the HttpGet <code>Edit</code> method, add eager loading for the Administrator.</p>
+<p>[!code-csharp<a href="intro/samples/cu/Controllers/DepartmentsController.cs?name=snippet_EagerLoading"></a>]</p>
+<p>Replace the existing code for the HttpPost <code>Edit</code> method with the following code:</p>
+<p>[!code-csharp<a href="intro/samples/cu/Controllers/DepartmentsController.cs?name=snippet_EditPost"></a>]</p>
+<p>The code begins by trying to read the department to be updated. If the <code>FirstOrDefaultAsync</code> method returns null, the department was deleted by another user. In that case the code uses the posted form values to create a <code>Department</code> entity so that the Edit page can be redisplayed with an error message. As an alternative, you wouldn&#39;t have to re-create the <code>Department</code> entity if you display only an error message without redisplaying the department fields.</p>
+<p>The view stores the original <code>RowVersion</code> value in a hidden field, and this method receives that value in the <code>rowVersion</code> parameter. Before you call <code>SaveChanges</code>, you have to put that original <code>RowVersion</code> property value in the <code>OriginalValues</code> collection for the entity.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">_context.Entry(departmentToUpdate).Property(&quot;RowVersion&quot;).OriginalValue = rowVersion;</code></pre></div></figure>
+<p>Then when the Entity Framework creates a SQL UPDATE command, that command will include a WHERE clause that looks for a row that has the original <code>RowVersion</code> value. If no rows are affected by the UPDATE command (no rows have the original <code>RowVersion</code> value),  the Entity Framework throws a <code>DbUpdateConcurrencyException</code> exception.</p>
+<p>The code in the catch block for that exception gets the affected Department entity that has the updated values from the <code>Entries</code> property on the exception object.</p>
+<p>[!code-csharp<a href="intro/samples/cu/Controllers/DepartmentsController.cs?range=164"></a>]</p>
+<p>The <code>Entries</code> collection will have just one <code>EntityEntry</code> object.  You can use that object to get the new values entered by the user and the current database values.</p>
+<p>[!code-csharp<a href="intro/samples/cu/Controllers/DepartmentsController.cs?range=165-166"></a>]</p>
+<p>The code adds a custom error message for each column that has database values different from what the user entered on the Edit page (only one field is shown here for brevity).</p>
+<p>[!code-csharp<a href="intro/samples/cu/Controllers/DepartmentsController.cs?range=174-178"></a>]</p>
+<p>Finally, the code sets the <code>RowVersion</code> value of the <code>departmentToUpdate</code> to the new value retrieved from the database. This new <code>RowVersion</code> value will be stored in the hidden field when the Edit page is redisplayed, and the next time the user clicks <strong>Save</strong>, only concurrency errors that happen since the redisplay of the Edit page will be caught.</p>
+<p>[!code-csharp<a href="intro/samples/cu/Controllers/DepartmentsController.cs?range=199-200"></a>]</p>
+<p>The <code>ModelState.Remove</code> statement is required because <code>ModelState</code> has the old <code>RowVersion</code> value. In the view, the <code>ModelState</code> value for a field takes precedence over the model property values when both are present.</p>
+<h2 id="update-edit-view">Update Edit view</h2>
+<p>In <code>Views/Departments/Edit.cshtml</code>, make the following changes:</p>
+<ul>
+<li><p>Add a hidden field to save the <code>RowVersion</code> property value, immediately following the hidden field for the <code>DepartmentID</code> property.</p>
+</li>
+<li><p>Add a &quot;Select Administrator&quot; option to the drop-down list.</p>
+</li>
+</ul>
+<p>[!code-cshtml<a href="intro/samples/cu/Views/Departments/Edit.cshtml?highlight=16,34-36"></a>]</p>
+<h2 id="test-concurrency-conflicts">Test concurrency conflicts</h2>
+<p>Run the app and go to the Departments Index page. Right-click the <strong>Edit</strong> hyperlink for the English department and select <strong>Open in new tab</strong>, then click the <strong>Edit</strong> hyperlink for the English department. The two browser tabs now display the same information.</p>
+<p>Change a field in the first browser tab and click <strong>Save</strong>.</p>
+<p><img src="concurrency/_static/edit-after-change-1.png" alt="Department Edit page 1 after change"></p>
+<p>The browser shows the Index page with the changed value.</p>
+<p>Change a field in the second browser tab.</p>
+<p><img src="concurrency/_static/edit-after-change-2.png" alt="Department Edit page 2 after change"></p>
+<p>Click <strong>Save</strong>. You see an error message:</p>
+<p><img src="concurrency/_static/edit-error.png" alt="Department Edit page error message"></p>
+<p>Click <strong>Save</strong> again. The value you entered in the second browser tab is saved. You see the saved values when the Index page appears.</p>
+<h2 id="update-the-delete-page">Update the Delete page</h2>
+<p>For the Delete page, the Entity Framework detects concurrency conflicts caused by someone else editing the department in a similar manner. When the HttpGet <code>Delete</code> method displays the confirmation view, the view includes the original <code>RowVersion</code> value in a hidden field. That value is then available to the HttpPost <code>Delete</code> method that&#39;s called when the user confirms the deletion. When the Entity Framework creates the SQL DELETE command, it includes a WHERE clause with the original <code>RowVersion</code> value. If the command results in zero rows affected (meaning the row was changed after the Delete confirmation page was displayed), a concurrency exception is thrown, and the HttpGet <code>Delete</code> method is called with an error flag set to true in order to redisplay the confirmation page with an error message. It&#39;s also possible that zero rows were affected because the row was deleted by another user, so in that case no error message is displayed.</p>
+<h3 id="update-the-delete-methods-in-the-departments-controller">Update the Delete methods in the Departments controller</h3>
+<p>In <code>DepartmentsController.cs</code>, replace the HttpGet <code>Delete</code> method with the following code:</p>
+<p>[!code-csharp<a href="intro/samples/cu/Controllers/DepartmentsController.cs?name=snippet_DeleteGet&amp;highlight=1,10,14-17,21-29"></a>]</p>
+<p>The method accepts an optional parameter that indicates whether the page is being redisplayed after a concurrency error. If this flag is true and the department specified no longer exists, it was deleted by another user. In that case, the code redirects to the Index page.  If this flag is true and the department does exist, it was changed by another user. In that case, the code sends an error message to the view using <code>ViewData</code>.</p>
+<p>Replace the code in the HttpPost <code>Delete</code> method (named <code>DeleteConfirmed</code>) with the following code:</p>
+<p>[!code-csharp<a href="intro/samples/cu/Controllers/DepartmentsController.cs?name=snippet_DeletePost&amp;highlight=1,3,5-8,11-18"></a>]</p>
+<p>In the scaffolded code that you just replaced, this method accepted only a record ID:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">public async Task DeleteConfirmed(int id)</code></pre></div></figure>
+<p>You&#39;ve changed this parameter to a <code>Department</code> entity instance created by the model binder. This gives EF access to the RowVers`ion property value in addition to the record key.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">public async Task Delete(Department department)</code></pre></div></figure>
+<p>You have also changed the action method name from <code>DeleteConfirmed</code> to <code>Delete</code>. The scaffolded code used the name <code>DeleteConfirmed</code> to give the HttpPost method a unique signature. (The CLR requires overloaded methods to have different method parameters.) Now that the signatures are unique, you can stick with the MVC convention and use the same name for the HttpPost and HttpGet delete methods.</p>
+<p>If the department is already deleted, the <code>AnyAsync</code> method returns false and the application just goes back to the Index method.</p>
+<p>If a concurrency error is caught, the code redisplays the Delete confirmation page and provides a flag that indicates it should display a concurrency error message.</p>
+<h3 id="update-the-delete-view">Update the Delete view</h3>
+<p>In <code>Views/Departments/Delete.cshtml</code>, replace the scaffolded code with the following code that adds an error message field and hidden fields for the DepartmentID and RowVersion properties. The changes are highlighted.</p>
+<p>[!code-cshtml<a href="intro/samples/cu/Views/Departments/Delete.cshtml?highlight=9,38,44,45,48"></a>]</p>
+<p>This makes the following changes:</p>
+<ul>
+<li><p>Adds an error message between the <code>h2</code> and <code>h3</code> headings.</p>
+</li>
+<li><p>Replaces FirstMidName with FullName in the <strong>Administrator</strong> field.</p>
+</li>
+<li><p>Removes the RowVersion field.</p>
+</li>
+<li><p>Adds a hidden field for the <code>RowVersion</code> property.</p>
+</li>
+</ul>
+<p>Run the app and go to the Departments Index page. Right-click the <strong>Delete</strong> hyperlink for the English department and select <strong>Open in new tab</strong>, then in the first tab click the <strong>Edit</strong> hyperlink for the English department.</p>
+<p>In the first window, change one of the values, and click <strong>Save</strong>:</p>
+<p><img src="concurrency/_static/edit-after-change-for-delete.png" alt="Department Edit page after change before delete"></p>
+<p>In the second tab, click <strong>Delete</strong>. You see the concurrency error message, and the Department values are refreshed with what&#39;s currently in the database.</p>
+<p><img src="concurrency/_static/delete-error.png" alt="Department Delete confirmation page with concurrency error"></p>
+<p>If you click <strong>Delete</strong> again, you&#39;re redirected to the Index page, which shows that the department has been deleted.</p>
+<h2 id="update-details-and-create-views">Update Details and Create views</h2>
+<p>You can optionally clean up scaffolded code in the Details and Create views.</p>
+<p>Replace the code in <code>Views/Departments/Details.cshtml</code> to delete the RowVersion column and show the full name of the Administrator.</p>
+<p>[!code-cshtml<a href="intro/samples/cu/Views/Departments/Details.cshtml?highlight=35"></a>]</p>
+<p>Replace the code in <code>Views/Departments/Create.cshtml</code> to add a Select option to the drop-down list.</p>
+<p>[!code-cshtml<a href="intro/samples/cu/Views/Departments/Create.cshtml?highlight=32-34"></a>]</p>
+<h2 id="get-the-code">Get the code</h2>
+<p><a target="_blank" rel="noopener" href="https://github.com/dotnet/AspNetCore.Docs/tree/main/aspnetcore/data/ef-mvc/intro/samples/cu-final">Download or view the completed application.</a></p>
+<h2 id="related-content">Related content</h2>
+<p> For more information about how to handle concurrency in EF Core, see <a href="/ef/core/saving/concurrency">Concurrency conflicts</a>.</p>
+<h2 id="next-steps">Next steps</h2>
+<p>In this tutorial, you:</p>
+<blockquote>
+<p>[!div class=&quot;checklist&quot;]</p>
+<ul>
+<li>Learned about concurrency conflicts</li>
+<li>Added a tracking property</li>
+<li>Created Departments controller and views</li>
+<li>Updated Index view</li>
+<li>Updated Edit methods</li>
+<li>Updated Edit view</li>
+<li>Tested concurrency conflicts</li>
+<li>Updated the Delete page</li>
+<li>Updated Details and Create views</li>
+</ul>
+</blockquote>
+<p>Advance to the next tutorial to learn how to implement table-per-hierarchy inheritance for the Instructor and Student entities.</p>
+<blockquote>
+<p>[!div class=&quot;nextstepaction&quot;]
+<a href="#/doc/aspnet/data/ef-mvc/inheritance">Next: Implement table-per-hierarchy inheritance</a></p>
+</blockquote>

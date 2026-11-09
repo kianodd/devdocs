@@ -1,0 +1,761 @@
+<p><a target="_blank" rel="noopener" href="https://github.com/tdykstra">Tom Dykstra</a>, and <a target="_blank" rel="noopener" href="https://twitter.com/thereformedprog">Jon P Smith</a></p>
+<p>The Contoso University web app demonstrates how to create Razor Pages web apps using EF Core and Visual Studio. For information about the tutorial series, see <a href="#/doc/aspnet/data/ef-rp/intro">the first tutorial</a>.</p>
+<p>If you run into problems you can&#39;t solve, download the <a target="_blank" rel="noopener" href="https://github.com/dotnet/AspNetCore.Docs/tree/main/aspnetcore/data/ef-rp/intro/samples">completed app</a> and compare that code to what you created by following the tutorial.</p>
+<p>:::moniker range=&quot;&gt;= aspnetcore-5.0&quot;</p>
+<p>This tutorial shows how to handle conflicts when multiple users update an entity concurrently.</p>
+<h2 id="concurrency-conflicts">Concurrency conflicts</h2>
+<p>A concurrency conflict occurs when:</p>
+<ul>
+<li>A user navigates to the edit page for an entity.</li>
+<li>Another user updates the same entity before the first user&#39;s change is written to the database.</li>
+</ul>
+<p>If concurrency detection isn&#39;t enabled, whoever updates the database last overwrites the other user&#39;s changes. If this risk is acceptable, the cost of programming for concurrency might outweigh the benefit.</p>
+<h3 id="pessimistic-concurrency">Pessimistic concurrency</h3>
+<p>One way to prevent concurrency conflicts is to use database locks. This is called pessimistic concurrency. Before the app reads a database row that it intends to update, it requests a lock. Once a row is locked for update access, no other users are allowed to lock the row until the first lock is released.</p>
+<p>Managing locks has disadvantages. It can be complex to program and can cause performance problems as the number of users increases. Entity Framework Core provides no built-in support for pessimistic concurrency.</p>
+<h3 id="optimistic-concurrency">Optimistic concurrency</h3>
+<p>Optimistic concurrency allows concurrency conflicts to happen, and then reacts appropriately when they do. For example, Jane visits the Department edit page and changes the budget for the English department from $350,000.00 to $0.00.</p>
+<p><img src="concurrency/_static/change-budget30.png" alt="Changing budget to 0"></p>
+<p>Before Jane clicks <strong>Save</strong>, John visits the same page and changes the Start Date field from 9/1/2007 to 9/1/2013.</p>
+<p><img src="concurrency/_static/change-date30.png" alt="Changing start date to 2013"></p>
+<p>Jane clicks <strong>Save</strong> first and sees her change take effect, since the browser displays the Index page with zero as the Budget amount.</p>
+<p>John clicks <strong>Save</strong> on an Edit page that still shows a budget of $350,000.00. What happens next is determined by how you handle concurrency conflicts:</p>
+<ul>
+<li><p>Keep track of which property a user has modified and update only the corresponding columns in the database.</p>
+<p>In the scenario, no data would be lost. Different properties were updated by the two users. The next time someone browses the English department, they will see both Jane&#39;s and John&#39;s changes. This method of updating can reduce the number of conflicts that could result in data loss. This approach has some disadvantages:</p>
+<ul>
+<li>Can&#39;t avoid data loss if competing changes are made to the same property.</li>
+<li>Is generally not practical in a web app. It requires maintaining significant state in order to keep track of all fetched values and new values. Maintaining large amounts of state can affect app performance.</li>
+<li>Can increase app complexity compared to concurrency detection on an entity.</li>
+</ul>
+</li>
+<li><p>Let John&#39;s change overwrite Jane&#39;s change.</p>
+<p>The next time someone browses the English department, they will see 9/1/2013 and the fetched $350,000.00 value. This approach is called a <em>Client Wins</em> or <em>Last in Wins</em> scenario. All values from the client take precedence over what&#39;s in the data store. The scaffolded code does no concurrency handling, Client Wins happens automatically.</p>
+</li>
+<li><p>Prevent John&#39;s change from being updated in the database. Typically, the app would:</p>
+<ul>
+<li>Display an error message.</li>
+<li>Show the current state of the data.</li>
+<li>Allow the user to reapply the changes.</li>
+</ul>
+<p>This is called a <em>Store Wins</em> scenario. The data-store values take precedence over the values submitted by the client. The Store Wins scenario is used in this tutorial. This method ensures that no changes are overwritten without a user being alerted.</p>
+</li>
+</ul>
+<p><a name="concurrency"></a></p>
+<h2 id="conflict-detection-in-ef-core">Conflict detection in EF Core</h2>
+<p>Properties configured as <a href="/ef/core/modeling/concurrency">concurrency tokens</a> are used to implement optimistic concurrency control. When an update or delete operation is triggered by  <code>SaveChanges</code> or <code>SaveChangesAsync</code>, the value of the concurrency token in the database is compared against the original value read by EF Core:</p>
+<ul>
+<li>If the values match, the operation can complete.</li>
+<li>If the values do not match, EF Core assumes that another user has performed a conflicting operation, aborts the current transaction, and throws a  <code>DbUpdateConcurrencyException</code>.</li>
+</ul>
+<p>Another user or process performing an operation that conflicts with the current operation is known as <em>concurrency conflict</em>.</p>
+<p>On relational databases EF Core checks for the value of the concurrency token in the <code>WHERE</code> clause of <code>UPDATE</code> and <code>DELETE</code> statements to detect a concurrency conflict.</p>
+<p>The data model must be configured to enable conflict detection by including a tracking column that can be used to determine when a row has been changed. EF provides two approaches for <a href="/ef/core/modeling/concurrency">concurrency tokens</a>:</p>
+<ul>
+<li><p>Applying <a href="xref:System.ComponentModel.DataAnnotations.ConcurrencyCheckAttribute"><code>[ConcurrencyCheck]</code></a> or <code>IsConcurrencyToken</code> to a property on the model. This approach is not recommended. For more information, see <a href="/ef/core/modeling/concurrency">Concurrency Tokens in EF Core</a>.</p>
+</li>
+<li><p>Applying <code>TimestampAttribute</code> or <code>IsRowVersion</code> to a concurrency token in the model. This is the approach used in this tutorial.</p>
+</li>
+</ul>
+<p>The  SQL Server approach and SQLite implementation details are slightly different. A difference file is shown later in the tutorial listing the differences. The Visual Studio tab shows the SQL Server approach. The Visual Studio Code tab shows the approach for non-SQL Server databases, such as SQLite.</p>
+<h1><a href="#tab/visual-studio">Visual Studio</a></h1>
+<ul>
+<li>In the model, include a tracking column that is used to determine when a row has been changed.</li>
+<li>Apply the <code>TimestampAttribute</code> to the concurrency property.</li>
+</ul>
+<p>  Update the <code>Models/Department.cs</code> file with the following highlighted code:</p>
+<p>  [!code-csharp<a href="intro/samples/cu50/Models/Department.cs?name=snippet3&amp;highlight=27,28"></a>]</p>
+<p>The <code>TimestampAttribute</code> is what identifies the column as a concurrency tracking column. The fluent API is an alternative way to specify the tracking property:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">modelBuilder.Entity()
+  .Property&lt;byte[]&gt;(&quot;ConcurrencyToken&quot;)
+  .IsRowVersion();</code></pre></div></figure>
+<p>The <a href="xref:System.ComponentModel.DataAnnotations.TimestampAttribute"><code>[Timestamp]</code></a> attribute on an entity property generates the following code in the <code>ModelBuilder</code> method:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext"> b.Property&lt;byte[]&gt;(&quot;ConcurrencyToken&quot;)
+     .IsConcurrencyToken()
+     .ValueGeneratedOnAddOrUpdate()
+     .HasColumnType(&quot;rowversion&quot;);</code></pre></div></figure>
+<p>The preceding code:</p>
+<ul>
+<li>Sets the property type <code>ConcurrencyToken</code> to byte array. <code>byte[]</code> is the required type for SQL Server.</li>
+<li>Calls <code>IsConcurrencyToken</code>.  <code>IsConcurrencyToken</code> configures the property as a concurrency token. On updates, the concurrency token value in the database is compared to the original value to ensure it has not changed since the instance was retrieved from the database. If it has changed, a <code>DbUpdateConcurrencyException</code> is thrown and changes are not applied.</li>
+<li>Calls <code>ValueGeneratedOnAddOrUpdate</code>, which configures the <code>ConcurrencyToken</code> property to have a value automatically generated when adding or updating an entity.</li>
+<li><code>HasColumnType(&quot;rowversion&quot;)</code> sets the column type in the SQL Server database to <a href="/sql/t-sql/data-types/rowversion-transact-sql">rowversion</a>.</li>
+</ul>
+<p>The following code shows a portion of the T-SQL generated by EF Core when the <code>Department</code> name is updated:</p>
+<p>[!code-sql<a href="intro/samples/cu50snapshots/sql.txt?highlight=2-3"></a>]</p>
+<p>The preceding highlighted code shows the <code>WHERE</code> clause containing <code>ConcurrencyToken</code>. If the database <code>ConcurrencyToken</code> doesn&#39;t equal the <code>ConcurrencyToken</code> parameter <code>@p2</code>, no rows are updated.</p>
+<p>The following highlighted code shows the T-SQL that verifies exactly one row was updated:</p>
+<p>[!code-sql<a href="intro/samples/cu50snapshots/sql.txt?highlight=4-6"></a>]</p>
+<p><a href="/sql/t-sql/functions/rowcount-transact-sql">@@ROWCOUNT</a> returns the number of rows affected by the last statement. If no rows are updated, EF Core throws a <code>DbUpdateConcurrencyException</code>.</p>
+<h1><a href="#tab/visual-studio-code">Visual Studio Code</a></h1>
+<ul>
+<li><p>In the model, include a tracking column that can be used to determine when a row has been changed. In this sample, a <code>GUID</code> is used. Update the <code>Models/Department.cs</code> file with the following highlighted code:</p>
+<p>[!code-csharp<a href="intro/samples/cu50/Models/Department.cs?name=snippetSL&amp;highlight=27"></a>]</p>
+</li>
+<li><p>Update the <code>Data/SchoolContext.cs</code> file by calling <code>IsConcurrencyToken</code> on the <code>Department.ConcurrencyToken</code> property:</p>
+<p>[!code-csharp<a href="intro/samples/cu50/Data/SchoolContext.cs?name=snippet_SQLite&amp;highlight=21-23"></a>]</p>
+<p><code>IsConcurrencyToken</code> configures the property as a concurrency token. On updates, the concurrency token value in the database is compared to the original value to ensure it has not changed since the instance was retrieved from the database. If it has changed, a <code>DbUpdateConcurrencyException</code> is thrown and changes are not applied.</p>
+</li>
+<li><p>In the code that updates the entity, update the value of the concurrency token. In this sample, the method that updates the entity uses the following code. This step will be done later in the tutorial.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">departmentToUpdate.ConcurrencyToken = Guid.NewGuid();</code></pre></div></figure>
+</li>
+</ul>
+<p>  An alternative to updating the concurrency token in the update method is to set up a trigger so it&#39;s automatically updated by the database. For more information, see <a target="_blank" rel="noopener" href="https://www.bricelam.net/2020/08/07/sqlite-and-efcore-concurrency-tokens.html">SQLite and EF Core Concurrency Tokens</a>.</p>
+  <!--* Call `OriginalValue` to set the `rowVersion` value to the value from the entity when it was read. The `OriginalValue` update  code is shown in [the concurrency updates](#c-up) section of this document. This step will be done later in the tutorial. --><hr>
+<h2 id="add-a-migration">Add a migration</h2>
+<p>Adding the <code>ConcurrencyToken</code> property changes the data model, which requires a migration.</p>
+<p>Build the project.</p>
+<h1><a href="#tab/visual-studio">Visual Studio</a></h1>
+<p>Run the following commands in the PMC:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">Add-Migration RowVersion
+Update-Database
+  </code></pre></div></figure>
+<p>The preceding commands:</p>
+<ul>
+<li>Creates the <code>Migrations/{time stamp}_RowVersion.cs</code> migration file.</li>
+<li>Updates the <code>Migrations/SchoolContextModelSnapshot.cs</code> file. The update adds the following code to the <code>BuildModel</code> method:</li>
+</ul>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext"> b.Property&lt;byte[]&gt;(&quot;ConcurrencyToken&quot;)
+     .IsConcurrencyToken()
+     .ValueGeneratedOnAddOrUpdate()
+     .HasColumnType(&quot;rowversion&quot;);</code></pre></div></figure>
+<h1><a href="#tab/visual-studio-code">Visual Studio Code</a></h1>
+<p>Run the following commands in a terminal:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">dotnet ef migrations add RowVersion
+dotnet ef database update</code></pre></div></figure>
+<p>The preceding commands:</p>
+<ul>
+<li>Creates the <code>Migrations/{time stamp}_RowVersion.cs</code> migration file.</li>
+<li>Updates the <code>Migrations/SchoolContextModelSnapshot.cs</code> file. The update adds the following highlighted code to the <code>BuildModel</code> method:</li>
+</ul>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">b.Property(&quot;ConcurrencyToken&quot;)
+    .IsConcurrencyToken()
+    .HasColumnType(&quot;TEXT&quot;);</code></pre></div></figure>
+<hr>
+<p><a name="scaffold"></a></p>
+<h2 id="scaffold-department-pages">Scaffold Department pages</h2>
+<h1><a href="#tab/visual-studio">Visual Studio</a></h1>
+<p>Follow the instructions in <a href="#/doc/aspnet/data/ef-rp/intro@scaffold-student-pages">Scaffold Student pages</a> with the following exceptions:</p>
+<ul>
+<li>Create a <em>Pages/Departments</em> folder.  </li>
+<li>Use <code>Department</code> for the model class.</li>
+<li>Use the existing context class instead of creating a new one.</li>
+</ul>
+<h1><a href="#tab/visual-studio-code">Visual Studio Code</a></h1>
+<ul>
+<li><p>Create a <em>Pages/Departments</em> folder.</p>
+</li>
+<li><p>Run the following command to scaffold the Department pages.</p>
+<p><strong>On Windows:</strong></p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">dotnet aspnet-codegenerator razorpage -m Department -dc SchoolContext -udl -outDir Pages\Departments --referenceScriptLibraries</code></pre></div></figure>
+<p><strong>On Linux or macOS:</strong></p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">dotnet aspnet-codegenerator razorpage -m Department -dc SchoolContext -udl -outDir Pages/Departments --referenceScriptLibraries</code></pre></div></figure>
+</li>
+</ul>
+<hr>
+<h3 id="add-a-utility-class">Add a utility class</h3>
+<p>In the project folder, create the <code>Utility</code>  class with the following code:</p>
+<h1><a href="#tab/visual-studio">Visual Studio</a></h1>
+<p>[!code-csharp<a href="intro/samples/cu50/Utility.cs?name=snippet"></a>]</p>
+<h1><a href="#tab/visual-studio-code">Visual Studio Code</a></h1>
+<p>[!code-csharp<a href="intro/samples/cu50/Utility.cs?name=snippet_sl"></a>]</p>
+<hr>
+<p>The <code>Utility</code> class provides the <code>GetLastChars</code> method used to display the last few characters of the concurrency token. The following code shows the code that works with both SQLite ad SQL Server:</p>
+<p>[!code-csharp<a href="intro/samples/cu50/Utility.cs?name=snippet_full"></a>]</p>
+<p>The <code>#if SQLiteVersion</code> <a href="/dotnet/csharp/language-reference/preprocessor-directives/">preprocessor directive</a> isolates the differences in the SQLite and SQL Server versions and helps:</p>
+<ul>
+<li>The author maintain one code base for both versions.</li>
+<li>SQLite developers deploy the app to Azure and use SQL Azure.</li>
+</ul>
+<p>Build the project.</p>
+<h2 id="update-the-index-page">Update the Index page</h2>
+<p>The scaffolding tool created a <code>ConcurrencyToken</code> column for the Index page, but that field wouldn&#39;t be displayed in a production app. In this tutorial, the last portion of the <code>ConcurrencyToken</code> is displayed to help show how concurrency handling works. The last portion isn&#39;t guaranteed to be unique by itself.</p>
+<p>Update <em>Pages\Departments\Index.cshtml</em> page:</p>
+<ul>
+<li>Replace Index with Departments.</li>
+<li>Change the code containing <code>ConcurrencyToken</code> to show just the last few characters.</li>
+<li>Replace <code>FirstMidName</code> with <code>FullName</code>.</li>
+</ul>
+<p>The following code shows the updated page:</p>
+<p>[!code-cshtml<a href="intro/samples/cu50/Pages/Departments/Index.cshtml?highlight=5,8,29,48,51"></a>]</p>
+<h2 id="update-the-edit-page-model">Update the Edit page model</h2>
+<p>Update <code>Pages/Departments/Edit.cshtml.cs</code> with the following code:</p>
+<h1><a href="#tab/visual-studio">Visual Studio</a></h1>
+<p>[!code-csharp<a href="intro/samples/cu50/Pages/Departments/Edit.cshtml.cs?name=snippet_All_ss"></a>]</p>
+<h1><a href="#tab/visual-studio-code">Visual Studio Code</a></h1>
+<p>[!code-csharp<a href="intro/samples/cu50/Pages/Departments/Edit.cshtml.cs?name=snippet_All"></a>]</p>
+<hr>
+<p><a name="c-up"></a></p>
+<h3 id="the-concurrency-updates">The concurrency updates</h3>
+<p><code>OriginalValue</code> is updated with the <code>ConcurrencyToken</code> value from the entity when it was fetched in the <code>OnGetAsync</code> method. EF Core generates a <code>SQL UPDATE</code> command with a <code>WHERE</code> clause containing the original <code>ConcurrencyToken</code> value. If no rows are affected by the <code>UPDATE</code> command, a <code>DbUpdateConcurrencyException</code> exception is thrown. No rows are affected by the <code>UPDATE</code> command when no rows have the original <code>ConcurrencyToken</code> value.</p>
+<h1><a href="#tab/visual-studio">Visual Studio</a></h1>
+<p>[!code-csharp<a href="intro/samples/cu50/Pages/Departments/Edit.cshtml.cs?name=snippet_RowVersion&amp;highlight=19-99"></a>]</p>
+<h1><a href="#tab/visual-studio-code">Visual Studio Code</a></h1>
+<p>[!code-csharp<a href="intro/samples/cu50/Pages/Departments/Edit.cshtml.cs?name=snippet_RowVersion_sl&amp;highlight=21-99"></a>]</p>
+<hr>
+<p>In the preceding highlighted code:</p>
+<ul>
+<li>The value in <code>Department.ConcurrencyToken</code> is the value when the entity was fetched in the <code>Get</code> request for the <code>Edit</code> page. The value is provided to the <code>OnPost</code> method by a hidden field in the Razor page that displays the entity to be edited. The hidden field value is copied to <code>Department.ConcurrencyToken</code> by the model binder.</li>
+<li><code>OriginalValue</code> is what EF Core uses in the <code>WHERE</code> clause. Before the highlighted line of code executes:<ul>
+<li><code>OriginalValue</code> has the value that was in the database when <code>FirstOrDefaultAsync</code> was called in this method.</li>
+<li>This value  might be different from what was displayed on the Edit page.</li>
+</ul>
+</li>
+<li>The highlighted code makes sure that EF Core uses the original <code>ConcurrencyToken</code>  value from the displayed <code>Department</code> entity in the SQL <code>UPDATE</code> statement&#39;s <code>WHERE</code> clause.</li>
+</ul>
+<p>The following code shows the <code>Department</code> model. <code>Department</code> is initialized in the:</p>
+<ul>
+<li><code>OnGetAsync</code> method by the EF query.</li>
+<li><code>OnPostAsync</code> method by the hidden field in the Razor page using <a href="#/doc/aspnet/mvc/models/model-binding">model binding</a>:</li>
+</ul>
+<h1><a href="#tab/visual-studio">Visual Studio</a></h1>
+<p>[!code-csharp<a href="intro/samples/cu50/Pages/Departments/Edit.cshtml.cs?name=snippet_mb&amp;highlight=10-11,17-20,50-99"></a>]</p>
+<h1><a href="#tab/visual-studio-code">Visual Studio Code</a></h1>
+<p>[!code-csharp<a href="intro/samples/cu50/Pages/Departments/Edit.cshtml.cs?name=snippet_mb_ss&amp;highlight=10-11,17-20,55-99"></a>]</p>
+<hr>
+<p>The preceding code shows the <code>ConcurrencyToken</code> value  of the <code>Department</code> entity from the <code>HTTP POST</code> request is set to the <code>ConcurrencyToken</code> value from the <code>HTTP GET</code> request.</p>
+<p>When a concurrency error happens, the following highlighted code gets the client values (the values posted to this method) and the database values.</p>
+<p>[!code-csharp<a href="intro/samples/cu50/Pages/Departments/Edit.cshtml.cs?name=snippet_TryUpdateModel&amp;highlight=14,23"></a>]</p>
+<p>The following code adds a custom error message for each column that has database values different from what was posted to <code>OnPostAsync</code>:</p>
+<p>[!code-csharp<a href="intro/samples/cu50/Pages/Departments/Edit.cshtml.cs?name=snippet_Error"></a>]</p>
+<p>The following highlighted code sets the <code>ConcurrencyToken</code> value to the new value retrieved from the database. The next time the user clicks <strong>Save</strong>, only concurrency errors that happen since the last display of the Edit page will be caught.</p>
+<p>[!code-csharp<a href="intro/samples/cu50/Pages/Departments/Edit.cshtml.cs?name=snippet_TryUpdateModel&amp;highlight=28"></a>]</p>
+<p>The <code>ModelState.Remove</code> statement is required because <code>ModelState</code> has the previous <code>ConcurrencyToken</code> value. In the Razor Page, the <code>ModelState</code> value for a field takes precedence over the model property values when both are present.</p>
+<h3 id="sql-server-vs-sqlite-code-differences">SQL Server vs SQLite code differences</h3>
+<p>The following shows the differences between the SQL Server and SQLite versions:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Diff</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-diff"><span class="hljs-addition">+ using System;    // For GUID on SQLite</span>
+
+<span class="hljs-addition">+ departmentToUpdate.ConcurrencyToken = Guid.NewGuid();</span>
+
+ _context.Entry(departmentToUpdate)
+    .Property(d =&gt; d.ConcurrencyToken).OriginalValue = Department.ConcurrencyToken;
+
+<span class="hljs-deletion">- Department.ConcurrencyToken = (byte[])dbValues.ConcurrencyToken;</span>
+<span class="hljs-addition">+ Department.ConcurrencyToken = dbValues.ConcurrencyToken;</span></code></pre></div></figure>
+<h3 id="update-the-edit-razor-page">Update the Edit Razor page</h3>
+<p>Update <code>Pages/Departments/Edit.cshtml</code> with the following code:</p>
+<p>[!code-cshtml<a href="intro/samples/cu50/Pages/Departments/Edit.cshtml?highlight=1,14,16-17,37-39"></a>]</p>
+<p>The preceding code:</p>
+<ul>
+<li>Updates the <code>page</code> directive from <code>@page</code> to <code>@page &quot;{id:int}&quot;</code>.</li>
+<li>Adds a hidden row version. <code>ConcurrencyToken</code> must be added so postback binds the value.</li>
+<li>Displays the last byte of <code>ConcurrencyToken</code> for debugging purposes.</li>
+<li>Replaces <code>ViewData</code> with the strongly-typed <code>InstructorNameSL</code>.</li>
+</ul>
+<h3 id="test-concurrency-conflicts-with-the-edit-page">Test concurrency conflicts with the Edit page</h3>
+<p>Open two browsers instances of Edit on the English department:</p>
+<ul>
+<li>Run the app and select Departments.</li>
+<li>Right-click the <strong>Edit</strong> hyperlink for the English department and select <strong>Open in new tab</strong>.</li>
+<li>In the first tab, click the <strong>Edit</strong> hyperlink for the English department.</li>
+</ul>
+<p>The two browser tabs display the same information.</p>
+<p>Change the name in the first browser tab and click <strong>Save</strong>.</p>
+<p><img src="concurrency/_static/edit-after-change-130.png" alt="Department Edit page 1 after change"></p>
+<p>The browser shows the Index page with the changed value and updated <code>ConcurrencyToken</code>indicator. Note the updated <code>ConcurrencyToken</code>indicator, it&#39;s displayed on the second postback in the other tab.</p>
+<p>Change a different field in the second browser tab.</p>
+<p><img src="concurrency/_static/edit-after-change-230.png" alt="Department Edit page 2 after change"></p>
+<p>Click <strong>Save</strong>. You see error messages for all fields that don&#39;t match the database values:</p>
+<p><img src="concurrency/_static/edit-error30.png" alt="Department Edit page error message"></p>
+<p>This browser window didn&#39;t intend to change the Name field. Copy and paste the current value (Languages) into the Name field. Tab out. Client-side validation removes the error message.</p>
+<p>Click <strong>Save</strong> again. The value you entered in the second browser tab is saved. You see the saved values in the Index page.</p>
+<h2 id="update-the-delete-page-model">Update the Delete page model</h2>
+<p>Update <code>Pages/Departments/Delete.cshtml.cs</code> with the following code:</p>
+<p>[!code-csharp<a href="intro/samples/cu50/Pages/Departments/Delete.cshtml.cs"></a>]</p>
+<p>The Delete page detects concurrency conflicts when the entity has changed after it was fetched. <code>Department.ConcurrencyToken</code> is the row version when the entity was fetched. When EF Core creates the <code>SQL DELETE</code> command, it includes a WHERE clause with <code>ConcurrencyToken</code>. If the <code>SQL DELETE</code> command results in zero rows affected:</p>
+<ul>
+<li>The <code>ConcurrencyToken</code> in the <code>SQL DELETE</code> command doesn&#39;t match <code>ConcurrencyToken</code> in the database.</li>
+<li>A <code>DbUpdateConcurrencyException</code> exception is thrown.</li>
+<li><code>OnGetAsync</code> is called with the <code>concurrencyError</code>.</li>
+</ul>
+<h3 id="update-the-delete-razor-page">Update the Delete Razor page</h3>
+<p>Update <code>Pages/Departments/Delete.cshtml</code> with the following code:</p>
+<p>[!code-cshtml<a href="intro/samples/cu50/Pages/Departments/Delete.cshtml?highlight=1,10,39,45,51"></a>]</p>
+<p>The preceding code makes the following changes:</p>
+<ul>
+<li>Updates the <code>page</code> directive from <code>@page</code> to <code>@page &quot;{id:int}&quot;</code>.</li>
+<li>Adds an error message.</li>
+<li>Replaces FirstMidName with FullName in the <strong>Administrator</strong> field.</li>
+<li>Changes <code>ConcurrencyToken</code> to display the last byte.</li>
+<li>Adds a hidden row version. <code>ConcurrencyToken</code> must be added so postback binds the value.</li>
+</ul>
+<h3 id="test-concurrency-conflicts">Test concurrency conflicts</h3>
+<p>Create a test department.</p>
+<p>Open two browsers instances of Delete on the test department:</p>
+<ul>
+<li>Run the app and select Departments.</li>
+<li>Right-click the <strong>Delete</strong> hyperlink for the test department and select <strong>Open in new tab</strong>.</li>
+<li>Click the <strong>Edit</strong> hyperlink for the test department.</li>
+</ul>
+<p>The two browser tabs display the same information.</p>
+<p>Change the budget in the first browser tab and click <strong>Save</strong>.</p>
+<p>The browser shows the Index page with the changed value and updated <code>ConcurrencyToken</code>indicator. Note the updated <code>ConcurrencyToken</code>indicator, it&#39;s displayed on the second postback in the other tab.</p>
+<p>Delete the test department from the second tab. A concurrency error is display with the current values from the database. Clicking <strong>Delete</strong> deletes the entity, unless <code>ConcurrencyToken</code> has been updated.</p>
+<h2 id="enterprise-web-app-patterns">Enterprise web app patterns</h2>
+<p>For guidance on creating a reliable, secure, performant, testable, and scalable ASP.NET Core app, see <a href="/azure/architecture/web-apps/guides/enterprise-app-patterns/overview">Enterprise web app patterns</a>. A complete production-quality sample web app that implements the patterns is available.</p>
+<p>:::moniker-end</p>
+<p>:::moniker range=&quot;&gt;= aspnetcore-3.0 &lt; aspnetcore-5.0&quot;</p>
+<p>This tutorial shows how to handle conflicts when multiple users update an entity concurrently (at the same time).</p>
+<h2 id="concurrency-conflicts">Concurrency conflicts</h2>
+<p>A concurrency conflict occurs when:</p>
+<ul>
+<li>A user navigates to the edit page for an entity.</li>
+<li>Another user updates the same entity before the first user&#39;s change is written to the database.</li>
+</ul>
+<p>If concurrency detection isn&#39;t enabled, whoever updates the database last overwrites the other user&#39;s changes. If this risk is acceptable, the cost of programming for concurrency might outweigh the benefit.</p>
+<h3 id="pessimistic-concurrency-locking">Pessimistic concurrency (locking)</h3>
+<p>One way to prevent concurrency conflicts is to use database locks. This is called pessimistic concurrency. Before the app reads a database row that it intends to update, it requests a lock. Once a row is locked for update access, no other users are allowed to lock the row until the first lock is released.</p>
+<p>Managing locks has disadvantages. It can be complex to program and can cause performance problems as the number of users increases. Entity Framework Core provides no built-in support for it, and this tutorial doesn&#39;t show how to implement it.</p>
+<h3 id="optimistic-concurrency">Optimistic concurrency</h3>
+<p>Optimistic concurrency allows concurrency conflicts to happen, and then reacts appropriately when they do. For example, Jane visits the Department edit page and changes the budget for the English department from $350,000.00 to $0.00.</p>
+<p><img src="concurrency/_static/change-budget30.png" alt="Changing budget to 0"></p>
+<p>Before Jane clicks <strong>Save</strong>, John visits the same page and changes the Start Date field from 9/1/2007 to 9/1/2013.</p>
+<p><img src="concurrency/_static/change-date30.png" alt="Changing start date to 2013"></p>
+<p>Jane clicks <strong>Save</strong> first and sees her change take effect, since the browser displays the Index page with zero as the Budget amount.</p>
+<p>John clicks <strong>Save</strong> on an Edit page that still shows a budget of $350,000.00. What happens next is determined by how you handle concurrency conflicts:</p>
+<ul>
+<li><p>You can keep track of which property a user has modified and update only the corresponding columns in the database.</p>
+<p>In the scenario, no data would be lost. Different properties were updated by the two users. The next time someone browses the English department, they will see both Jane&#39;s and John&#39;s changes. This method of updating can reduce the number of conflicts that could result in data loss. This approach has some disadvantages:</p>
+<ul>
+<li>Can&#39;t avoid data loss if competing changes are made to the same property.</li>
+<li>Is generally not practical in a web app. It requires maintaining significant state in order to keep track of all fetched values and new values. Maintaining large amounts of state can affect app performance.</li>
+<li>Can increase app complexity compared to concurrency detection on an entity.</li>
+</ul>
+</li>
+<li><p>You can let John&#39;s change overwrite Jane&#39;s change.</p>
+<p>The next time someone browses the English department, they will see 9/1/2013 and the fetched $350,000.00 value. This approach is called a <em>Client Wins</em> or <em>Last in Wins</em> scenario. (All values from the client take precedence over what&#39;s in the data store.) If you don&#39;t do any coding for concurrency handling, Client Wins happens automatically.</p>
+</li>
+<li><p>You can prevent John&#39;s change from being updated in the database. Typically, the app would:</p>
+<ul>
+<li>Display an error message.</li>
+<li>Show the current state of the data.</li>
+<li>Allow the user to reapply the changes.</li>
+</ul>
+<p>This is called a <em>Store Wins</em> scenario. (The data-store values take precedence over the values submitted by the client.) You implement the Store Wins scenario in this tutorial. This method ensures that no changes are overwritten without a user being alerted.</p>
+</li>
+</ul>
+<h2 id="conflict-detection-in-ef-core">Conflict detection in EF Core</h2>
+<p>EF Core throws <code>DbConcurrencyException</code> exceptions when it detects conflicts. The data model has to be configured to enable conflict detection. Options for enabling conflict detection include the following:</p>
+<ul>
+<li><p>Configure EF Core to include the original values of columns configured as <a href="/ef/core/modeling/concurrency">concurrency tokens</a> in the Where clause of Update and Delete commands.</p>
+<p>When <code>SaveChanges</code> is called, the Where clause looks for the original values of any properties annotated with the <code>ConcurrencyCheckAttribute</code> attribute. The update statement won&#39;t find a row to update if any of the concurrency token properties changed since the row was first read. EF Core interprets that as a concurrency conflict. For database tables that have many columns, this approach can result in very large Where clauses, and can require large amounts of state. Therefore this approach is generally not recommended, and it isn&#39;t the method used in this tutorial.</p>
+</li>
+<li><p>In the database table, include a tracking column that can be used to determine when a row has been changed.</p>
+<p>In a SQL Server database, the data type of the tracking column is <code>rowversion</code>. The <code>rowversion</code> value is a sequential number that&#39;s incremented each time the row is updated. In an Update or Delete command, the Where clause includes the original value of the tracking column (the original row version number). If the row being updated has been changed by another user, the value in the <code>rowversion</code> column is different than the original value. In that case, the Update or Delete statement can&#39;t find the row to update because of the Where clause. EF Core throws a concurrency exception when no rows are affected by an Update or Delete command.</p>
+</li>
+</ul>
+<h2 id="add-a-tracking-property">Add a tracking property</h2>
+<p>In <code>Models/Department.cs</code>, add a tracking property named RowVersion:</p>
+<p>[!code-csharp<a href="intro/samples/cu30/Models/Department.cs?highlight=26,27"></a>]</p>
+<p>The <code>TimestampAttribute</code> attribute is what identifies the column as a concurrency tracking column. The fluent API is an alternative way to specify the tracking property:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">modelBuilder.Entity()
+  .Property&lt;byte[]&gt;(&quot;RowVersion&quot;)
+  .IsRowVersion();</code></pre></div></figure>
+<h1><a href="#tab/visual-studio">Visual Studio</a></h1>
+<p>For a SQL Server database, the <code>[Timestamp]</code> attribute on an entity property defined as byte array:</p>
+<ul>
+<li>Causes the column to be included in DELETE and UPDATE WHERE clauses.</li>
+<li>Sets the column type in the database to <a href="/sql/t-sql/data-types/rowversion-transact-sql">rowversion</a>.</li>
+</ul>
+<p>The database generates a sequential row version number that&#39;s incremented each time the row is updated. In an <code>Update</code> or <code>Delete</code> command, the <code>Where</code> clause includes the fetched row version value. If the row being updated has changed since it was fetched:</p>
+<ul>
+<li>The current row version value doesn&#39;t match the fetched value.</li>
+<li>The <code>Update</code> or <code>Delete</code> commands don&#39;t find a row because the <code>Where</code> clause looks for the fetched row version value.</li>
+<li>A <code>DbUpdateConcurrencyException</code> is thrown.</li>
+</ul>
+<p>The following code shows a portion of the T-SQL generated by EF Core when the Department name is updated:</p>
+<p>[!code-sql<a href="intro/samples/cu30snapshots/8-concurrency/sql.txt?highlight=2-3"></a>]</p>
+<p>The preceding highlighted code shows the <code>WHERE</code> clause containing <code>RowVersion</code>. If the database <code>RowVersion</code> doesn&#39;t equal the <code>RowVersion</code> parameter (<code>@p2</code>), no rows are updated.</p>
+<p>The following highlighted code shows the T-SQL that verifies exactly one row was updated:</p>
+<p>[!code-sql<a href="intro/samples/cu30snapshots/8-concurrency/sql.txt?highlight=4-6"></a>]</p>
+<p><a href="/sql/t-sql/functions/rowcount-transact-sql">@@ROWCOUNT</a> returns the number of rows affected by the last statement. If no rows are updated, EF Core throws a <code>DbUpdateConcurrencyException</code>.</p>
+<h1><a href="#tab/visual-studio-code">Visual Studio Code</a></h1>
+<p>For a SQLite database, the <code>[Timestamp]</code> attribute on an entity property defined as byte array:</p>
+<ul>
+<li>Causes the column to be included in DELETE and UPDATE WHERE clauses.</li>
+<li>Maps to a BLOB column type.</li>
+</ul>
+<p>Database triggers update the RowVersion column with a new random byte array whenever a row is updated. In an <code>Update</code> or <code>Delete</code> command, the <code>Where</code> clause includes the fetched value of the RowVersion column. If the row being updated has changed since it was fetched:</p>
+<ul>
+<li>The current row version value doesn&#39;t match the fetched value.</li>
+<li>The <code>Update</code> or <code>Delete</code> command doesn&#39;t find a row because the <code>Where</code> clause looks for the original row version value.</li>
+<li>A <code>DbUpdateConcurrencyException</code> is thrown.</li>
+</ul>
+<hr>
+<h3 id="update-the-database">Update the database</h3>
+<p>Adding the <code>RowVersion</code> property changes the data model, which requires a migration.</p>
+<p>Build the project. </p>
+<h1><a href="#tab/visual-studio">Visual Studio</a></h1>
+<ul>
+<li><p>Run the following command in the PMC:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">Add-Migration RowVersion</code></pre></div></figure>
+</li>
+</ul>
+<h1><a href="#tab/visual-studio-code">Visual Studio Code</a></h1>
+<ul>
+<li><p>Run the following command in a terminal:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">dotnet ef migrations add RowVersion</code></pre></div></figure>
+</li>
+</ul>
+<hr>
+<p>This command:</p>
+<ul>
+<li><p>Creates the <code>Migrations/{time stamp}_RowVersion.cs</code> migration file.</p>
+</li>
+<li><p>Updates the <code>Migrations/SchoolContextModelSnapshot.cs</code> file. The update adds the following highlighted code to the <code>BuildModel</code> method:</p>
+<p>[!code-csharp<a href="intro/samples/cu30/Migrations/SchoolContextModelSnapshot.cs?name=snippet_Department&amp;highlight=15-17"></a>]</p>
+</li>
+</ul>
+<h1><a href="#tab/visual-studio">Visual Studio</a></h1>
+<ul>
+<li><p>Run the following command in the PMC:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">Update-Database</code></pre></div></figure>
+</li>
+</ul>
+<h1><a href="#tab/visual-studio-code">Visual Studio Code</a></h1>
+<ul>
+<li><p>Open the <code>Migrations/&lt;timestamp&gt;_RowVersion.cs</code> file and add the highlighted code:</p>
+<p>[!code-csharp<a href="intro/samples/cu30/MigrationsSQLite/20190722151951_RowVersion.cs?highlight=16-42"></a>]</p>
+<p>The preceding code:</p>
+<ul>
+<li>Updates existing rows with random blob values.</li>
+<li>Adds database triggers that set the RowVersion column to a random blob value whenever a row is updated.</li>
+</ul>
+</li>
+<li><p>Run the following command in a terminal:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">dotnet ef database update</code></pre></div></figure>
+</li>
+</ul>
+<hr>
+<p><a name="scaffold"></a></p>
+<h2 id="scaffold-department-pages">Scaffold Department pages</h2>
+<h1><a href="#tab/visual-studio">Visual Studio</a></h1>
+<ul>
+<li><p>Follow the instructions in <a href="#/doc/aspnet/data/ef-rp/intro@scaffold-student-pages">Scaffold Student pages</a> with the following exceptions:</p>
+</li>
+<li><p>Create a <em>Pages/Departments</em> folder.  </p>
+</li>
+<li><p>Use <code>Department</code> for the model class.</p>
+<ul>
+<li>Use the existing context class instead of creating a new one.</li>
+</ul>
+</li>
+</ul>
+<h1><a href="#tab/visual-studio-code">Visual Studio Code</a></h1>
+<ul>
+<li><p>Create a <em>Pages/Departments</em> folder.</p>
+</li>
+<li><p>Run the following command to scaffold the Department pages.</p>
+<p><strong>On Windows:</strong></p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">dotnet aspnet-codegenerator razorpage -m Department -dc SchoolContext -udl -outDir Pages\Departments --referenceScriptLibraries</code></pre></div></figure>
+<p><strong>On Linux or macOS:</strong></p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">dotnet aspnet-codegenerator razorpage -m Department -dc SchoolContext -udl -outDir Pages/Departments --referenceScriptLibraries</code></pre></div></figure>
+</li>
+</ul>
+<hr>
+<p>Build the project.</p>
+<h2 id="update-the-index-page">Update the Index page</h2>
+<p>The scaffolding tool created a <code>RowVersion</code> column for the Index page, but that field wouldn&#39;t be displayed in a production app. In this tutorial, the last byte of the <code>RowVersion</code> is displayed to help show how concurrency handling works. The last byte isn&#39;t guaranteed to be unique by itself.</p>
+<p>Update <em>Pages\Departments\Index.cshtml</em> page:</p>
+<ul>
+<li>Replace Index with Departments.</li>
+<li>Change the code containing <code>RowVersion</code> to show just the last byte of the byte array.</li>
+<li>Replace FirstMidName with FullName.</li>
+</ul>
+<p>The following code shows the updated page:</p>
+<p>[!code-cshtml<a href="intro/samples/cu30/Pages/Departments/Index.cshtml?highlight=5,8,29,48,51"></a>]</p>
+<h2 id="update-the-edit-page-model">Update the Edit page model</h2>
+<p>Update <code>Pages/Departments/Edit.cshtml.cs</code> with the following code:</p>
+<p>[!code-csharp<a href="intro/samples/cu30/Pages/Departments/Edit.cshtml.cs?name=snippet_All"></a>]</p>
+<p>The <code>OriginalValue</code> is updated with the <code>rowVersion</code> value from the entity when it was fetched in the <code>OnGetAsync</code> method. EF Core generates a SQL UPDATE command with a WHERE clause containing the original <code>RowVersion</code> value. If no rows are affected by the UPDATE command (no rows have the original <code>RowVersion</code> value), a <code>DbUpdateConcurrencyException</code> exception is thrown.</p>
+<p>[!code-csharp<a href="intro/samples/cu30/Pages/Departments/Edit.cshtml.cs?name=snippet_RowVersion&amp;highlight=17-18"></a>]</p>
+<p>In the preceding highlighted code:</p>
+<ul>
+<li>The value in <code>Department.RowVersion</code> is what was in the entity when it was originally fetched in the Get request for the Edit page. The value is provided to the <code>OnPost</code> method by a hidden field in the Razor page that displays the entity to be edited. The hidden field value is copied to <code>Department.RowVersion</code> by the model binder.</li>
+<li><code>OriginalValue</code> is what EF Core will use in the Where clause. Before the highlighted line of code executes, <code>OriginalValue</code> has the value that was in the database when <code>FirstOrDefaultAsync</code> was called in this method, which might be different from what was displayed on the Edit page.</li>
+<li>The highlighted code makes sure that EF Core uses the original <code>RowVersion</code> value from the displayed <code>Department</code> entity in the SQL UPDATE statement&#39;s Where clause.</li>
+</ul>
+<p>When a concurrency error happens, the following highlighted code gets the client values (the values posted to this method) and the database values.</p>
+<p>[!code-csharp<a href="intro/samples/cu30/Pages/Departments/Edit.cshtml.cs?name=snippet_TryUpdateModel&amp;highlight=14,23"></a>]</p>
+<p>The following code adds a custom error message for each column that has database values different from what was posted to <code>OnPostAsync</code>:</p>
+<p>[!code-csharp<a href="intro/samples/cu30/Pages/Departments/Edit.cshtml.cs?name=snippet_Error"></a>]</p>
+<p>The following highlighted code sets the <code>RowVersion</code> value to the new value retrieved from the database. The next time the user clicks <strong>Save</strong>, only concurrency errors that happen since the last display of the Edit page will be caught.</p>
+<p>[!code-csharp<a href="intro/samples/cu30/Pages/Departments/Edit.cshtml.cs?name=snippet_TryUpdateModel&amp;highlight=28"></a>]</p>
+<p>The <code>ModelState.Remove</code> statement is required because <code>ModelState</code> has the old <code>RowVersion</code> value. In the Razor Page, the <code>ModelState</code> value for a field takes precedence over the model property values when both are present.</p>
+<h3 id="update-the-edit-page">Update the Edit page</h3>
+<p>Update <code>Pages/Departments/Edit.cshtml</code> with the following code:</p>
+<p>[!code-cshtml<a href="intro/samples/cu30/Pages/Departments/Edit.cshtml?highlight=1,14,16-17,37-39"></a>]</p>
+<p>The preceding code:</p>
+<ul>
+<li>Updates the <code>page</code> directive from <code>@page</code> to <code>@page &quot;{id:int}&quot;</code>.</li>
+<li>Adds a hidden row version. <code>RowVersion</code> must be added so postback binds the value.</li>
+<li>Displays the last byte of <code>RowVersion</code> for debugging purposes.</li>
+<li>Replaces <code>ViewData</code> with the strongly-typed <code>InstructorNameSL</code>.</li>
+</ul>
+<h3 id="test-concurrency-conflicts-with-the-edit-page">Test concurrency conflicts with the Edit page</h3>
+<p>Open two browsers instances of Edit on the English department:</p>
+<ul>
+<li>Run the app and select Departments.</li>
+<li>Right-click the <strong>Edit</strong> hyperlink for the English department and select <strong>Open in new tab</strong>.</li>
+<li>In the first tab, click the <strong>Edit</strong> hyperlink for the English department.</li>
+</ul>
+<p>The two browser tabs display the same information.</p>
+<p>Change the name in the first browser tab and click <strong>Save</strong>.</p>
+<p><img src="concurrency/_static/edit-after-change-130.png" alt="Department Edit page 1 after change"></p>
+<p>The browser shows the Index page with the changed value and updated rowVersion indicator. Note the updated rowVersion indicator, it&#39;s displayed on the second postback in the other tab.</p>
+<p>Change a different field in the second browser tab.</p>
+<p><img src="concurrency/_static/edit-after-change-230.png" alt="Department Edit page 2 after change"></p>
+<p>Click <strong>Save</strong>. You see error messages for all fields that don&#39;t match the database values:</p>
+<p><img src="concurrency/_static/edit-error30.png" alt="Department Edit page error message"></p>
+<p>This browser window didn&#39;t intend to change the Name field. Copy and paste the current value (Languages) into the Name field. Tab out. Client-side validation removes the error message.</p>
+<p>Click <strong>Save</strong> again. The value you entered in the second browser tab is saved. You see the saved values in the Index page.</p>
+<h2 id="update-the-delete-page-model">Update the Delete page model</h2>
+<p>Update <code>Pages/Departments/Delete.cshtml.cs</code> with the following code:</p>
+<p>[!code-csharp<a href="intro/samples/cu30/Pages/Departments/Delete.cshtml.cs"></a>]</p>
+<p>The Delete page detects concurrency conflicts when the entity has changed after it was fetched. <code>Department.RowVersion</code> is the row version when the entity was fetched. When EF Core creates the SQL DELETE command, it includes a WHERE clause with <code>RowVersion</code>. If the SQL DELETE command results in zero rows affected:</p>
+<ul>
+<li>The <code>RowVersion</code> in the SQL DELETE command doesn&#39;t match <code>RowVersion</code> in the database.</li>
+<li>A DbUpdateConcurrencyException exception is thrown.</li>
+<li><code>OnGetAsync</code> is called with the <code>concurrencyError</code>.</li>
+</ul>
+<h3 id="update-the-delete-page">Update the Delete page</h3>
+<p>Update <code>Pages/Departments/Delete.cshtml</code> with the following code:</p>
+<p>[!code-cshtml<a href="intro/samples/cu30/Pages/Departments/Delete.cshtml?highlight=1,10,39,42,51"></a>]</p>
+<p>The preceding code makes the following changes:</p>
+<ul>
+<li>Updates the <code>page</code> directive from <code>@page</code> to <code>@page &quot;{id:int}&quot;</code>.</li>
+<li>Adds an error message.</li>
+<li>Replaces FirstMidName with FullName in the <strong>Administrator</strong> field.</li>
+<li>Changes <code>RowVersion</code> to display the last byte.</li>
+<li>Adds a hidden row version. <code>RowVersion</code> must be added so postback binds the value.</li>
+</ul>
+<h3 id="test-concurrency-conflicts">Test concurrency conflicts</h3>
+<p>Create a test department.</p>
+<p>Open two browsers instances of Delete on the test department:</p>
+<ul>
+<li>Run the app and select Departments.</li>
+<li>Right-click the <strong>Delete</strong> hyperlink for the test department and select <strong>Open in new tab</strong>.</li>
+<li>Click the <strong>Edit</strong> hyperlink for the test department.</li>
+</ul>
+<p>The two browser tabs display the same information.</p>
+<p>Change the budget in the first browser tab and click <strong>Save</strong>.</p>
+<p>The browser shows the Index page with the changed value and updated rowVersion indicator. Note the updated rowVersion indicator, it&#39;s displayed on the second postback in the other tab.</p>
+<p>Delete the test department from the second tab. A concurrency error is display with the current values from the database. Clicking <strong>Delete</strong> deletes the entity, unless <code>RowVersion</code> has been updated.</p>
+<p>For guidance on creating a reliable, secure, performant, testable, and scalable ASP.NET Core app, see <a href="/azure/architecture/web-apps/guides/enterprise-app-patterns/overview">Enterprise web app patterns</a>. A complete production-quality sample web app that implements the patterns is available.</p>
+<p>:::moniker-end</p>
+<p>:::moniker range=&quot;&lt; aspnetcore-3.0&quot;</p>
+<p>This tutorial shows how to handle conflicts when multiple users update an entity concurrently (at the same time). If you run into problems you can&#39;t solve, <a target="_blank" rel="noopener" href="https://github.com/dotnet/AspNetCore.Docs/tree/main/aspnetcore/data/ef-rp/intro/samples">download or view the completed app.</a> <a href="#/doc/aspnet/fundamentals/index@how-to-download-a-sample">Download instructions</a>.</p>
+<h2 id="concurrency-conflicts">Concurrency conflicts</h2>
+<p>A concurrency conflict occurs when:</p>
+<ul>
+<li>A user navigates to the edit page for an entity.</li>
+<li>Another user updates the same entity before the first user&#39;s change is written to the DB.</li>
+</ul>
+<p>If concurrency detection isn&#39;t enabled, when concurrent updates occur:</p>
+<ul>
+<li>The last update wins. That is, the last update values are saved to the DB.</li>
+<li>The first of the current updates are lost.</li>
+</ul>
+<h3 id="optimistic-concurrency">Optimistic concurrency</h3>
+<p>Optimistic concurrency allows concurrency conflicts to happen, and then reacts appropriately when they do. For example, Jane visits the Department edit page and changes the budget for the English department from $350,000.00 to $0.00.</p>
+<p><img src="concurrency/_static/change-budget.png" alt="Changing budget to 0"></p>
+<p>Before Jane clicks <strong>Save</strong>, John visits the same page and changes the Start Date field from 9/1/2007 to 9/1/2013.</p>
+<p><img src="concurrency/_static/change-date.png" alt="Changing start date to 2013"></p>
+<p>Jane clicks <strong>Save</strong> first and sees her change when the browser displays the Index page.</p>
+<p><img src="concurrency/_static/budget-zero.png" alt="Budget changed to zero"></p>
+<p>John clicks <strong>Save</strong> on an Edit page that still shows a budget of $350,000.00. What happens next is determined by how you handle concurrency conflicts.</p>
+<p>Optimistic concurrency includes the following options:</p>
+<ul>
+<li><p>You can keep track of which property a user has modified and update only the corresponding columns in the DB.</p>
+<p>In the scenario, no data would be lost. Different properties were updated by the two users. The next time someone browses the English department, they will see both Jane&#39;s and John&#39;s changes. This method of updating can reduce the number of conflicts that could result in data loss. This approach:</p>
+<ul>
+<li>Can&#39;t avoid data loss if competing changes are made to the same property.</li>
+<li>Is generally not practical in a web app. It requires maintaining significant state in order to keep track of all fetched values and new values. Maintaining large amounts of state can affect app performance.</li>
+<li>Can increase app complexity compared to concurrency detection on an entity.</li>
+</ul>
+</li>
+<li><p>You can let John&#39;s change overwrite Jane&#39;s change.</p>
+<p>The next time someone browses the English department, they will see 9/1/2013 and the fetched $350,000.00 value. This approach is called a <em>Client Wins</em> or <em>Last in Wins</em> scenario. (All values from the client take precedence over what&#39;s in the data store.) If you don&#39;t do any coding for concurrency handling, Client Wins happens automatically.</p>
+</li>
+<li><p>You can prevent John&#39;s change from being updated in the DB. Typically, the app would:</p>
+<ul>
+<li>Display an error message.</li>
+<li>Show the current state of the data.</li>
+<li>Allow the user to reapply the changes.</li>
+</ul>
+<p>This is called a <em>Store Wins</em> scenario. (The data-store values take precedence over the values submitted by the client.) You implement the Store Wins scenario in this tutorial. This method ensures that no changes are overwritten without a user being alerted.</p>
+</li>
+</ul>
+<h2 id="handling-concurrency">Handling concurrency</h2>
+<p>When a property is configured as a <a href="/ef/core/modeling/concurrency">concurrency token</a>:</p>
+<ul>
+<li>EF Core verifies that property has not been modified after it was fetched. The check occurs when <code>SaveChanges</code> or <code>SaveChangesAsync</code> is called.</li>
+<li>If the property has been changed after it was fetched, a <code>DbUpdateConcurrencyException</code> is thrown.</li>
+</ul>
+<p>The DB and data model must be configured to support throwing <code>DbUpdateConcurrencyException</code>.</p>
+<h3 id="detecting-concurrency-conflicts-on-a-property">Detecting concurrency conflicts on a property</h3>
+<p>Concurrency conflicts can be detected at the property level with the ConcurrencyCheck attribute. The attribute can be applied to multiple properties on the model. For more information, see <a href="/ef/core/modeling/concurrency#data-annotations">Data Annotations-ConcurrencyCheck</a>.</p>
+<p>The <code>[ConcurrencyCheck]</code> attribute isn&#39;t used in this tutorial.</p>
+<h3 id="detecting-concurrency-conflicts-on-a-row">Detecting concurrency conflicts on a row</h3>
+<p>To detect concurrency conflicts, a <a href="/sql/t-sql/data-types/rowversion-transact-sql">rowversion</a> tracking column is added to the model.  <code>rowversion</code> :</p>
+<ul>
+<li>Is SQL Server specific. Other databases may not provide a similar feature.</li>
+<li>Is used to determine that an entity has not been changed since it was fetched from the DB.</li>
+</ul>
+<p>The DB generates a sequential <code>rowversion</code> number that&#39;s incremented each time the row is updated. In an <code>Update</code> or <code>Delete</code> command, the <code>Where</code> clause includes the fetched value of <code>rowversion</code>. If the row being updated has changed:</p>
+<ul>
+<li><code>rowversion</code> doesn&#39;t match the fetched value.</li>
+<li>The <code>Update</code> or <code>Delete</code> commands don&#39;t find a row because the <code>Where</code> clause includes the fetched <code>rowversion</code>.</li>
+<li>A <code>DbUpdateConcurrencyException</code> is thrown.</li>
+</ul>
+<p>In EF Core, when no rows have been updated by an <code>Update</code> or <code>Delete</code> command, a concurrency exception is thrown.</p>
+<h3 id="add-a-tracking-property-to-the-department-entity">Add a tracking property to the Department entity</h3>
+<p>In <code>Models/Department.cs</code>, add a tracking property named RowVersion:</p>
+<p>[!code-csharp<a href="intro/samples/cu/Models/Department.cs?name=snippet_Final&amp;highlight=26,27"></a>]</p>
+<p>The Timestamp attribute specifies that this column is included in the <code>Where</code> clause of <code>Update</code> and <code>Delete</code> commands. The attribute is called <code>Timestamp</code> because previous versions of SQL Server used a SQL <code>timestamp</code> data type before the SQL <code>rowversion</code> type replaced it.</p>
+<p>The fluent API can also specify the tracking property:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">modelBuilder.Entity()
+  .Property&lt;byte[]&gt;(&quot;RowVersion&quot;)
+  .IsRowVersion();</code></pre></div></figure>
+<p>The following code shows a portion of the T-SQL generated by EF Core when the Department name is updated:</p>
+<p>[!code-sql<a href="intro/samples/cu21snapshots/sql.txt?highlight=2-3"></a>]</p>
+<p>The preceding highlighted code shows the <code>WHERE</code> clause containing <code>RowVersion</code>. If the DB <code>RowVersion</code> doesn&#39;t equal the <code>RowVersion</code> parameter (<code>@p2</code>), no rows are updated.</p>
+<p>The following highlighted code shows the T-SQL that verifies exactly one row was updated:</p>
+<p>[!code-sql<a href="intro/samples/cu21snapshots/sql.txt?highlight=4-6"></a>]</p>
+<p><a href="/sql/t-sql/functions/rowcount-transact-sql">@@ROWCOUNT</a> returns the number of rows affected by the last statement. In no rows are updated, EF Core throws a <code>DbUpdateConcurrencyException</code>.</p>
+<p>You can see the T-SQL EF Core generates in the output window of Visual Studio.</p>
+<h3 id="update-the-db">Update the DB</h3>
+<p>Adding the <code>RowVersion</code> property changes the DB model, which requires a migration.</p>
+<p>Build the project. Enter the following in a command window:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">dotnet ef migrations add RowVersion
+dotnet ef database update</code></pre></div></figure>
+<p>The preceding commands:</p>
+<ul>
+<li><p>Adds the <code>Migrations/{time stamp}_RowVersion.cs</code> migration file.</p>
+</li>
+<li><p>Updates the <code>Migrations/SchoolContextModelSnapshot.cs</code> file. The update adds the following highlighted code to the <code>BuildModel</code> method:</p>
+<p>[!code-csharp<a href="intro/samples/cu/Migrations/SchoolContextModelSnapshot.cs?name=snippet_Department&amp;highlight=14-16"></a>]</p>
+</li>
+<li><p>Runs migrations to update the DB.</p>
+</li>
+</ul>
+<p><a name="scaffold"></a></p>
+<h2 id="scaffold-the-departments-model">Scaffold the Departments model</h2>
+<h1><a href="#tab/visual-studio">Visual Studio</a></h1>
+<p>Follow the instructions in <a href="#/doc/aspnet/data/ef-rp/intro@scaffold-student-pages">Scaffold the student model</a> and use <code>Department</code> for the model class.</p>
+<h1><a href="#tab/visual-studio-code">Visual Studio Code</a></h1>
+<p> Run the following command:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">dotnet aspnet-codegenerator razorpage -m Department -dc SchoolContext -udl -outDir Pages\Departments --referenceScriptLibraries</code></pre></div></figure>
+<hr>
+<p>The preceding command scaffolds the <code>Department</code> model. Open the project in Visual Studio.</p>
+<p>Build the project.</p>
+<h3 id="update-the-departments-index-page">Update the Departments Index page</h3>
+<p>The scaffolding engine created a <code>RowVersion</code> column for the Index page, but that field shouldn&#39;t be displayed. In this tutorial, the last byte of the <code>RowVersion</code> is displayed to help understand concurrency. The last byte isn&#39;t guaranteed to be unique. A real app wouldn&#39;t display <code>RowVersion</code> or the last byte of <code>RowVersion</code>.</p>
+<p>Update the Index page:</p>
+<ul>
+<li>Replace Index with Departments.</li>
+<li>Replace the markup containing <code>RowVersion</code> with the last byte of <code>RowVersion</code>.</li>
+<li>Replace FirstMidName with FullName.</li>
+</ul>
+<p>The following markup shows the updated page:</p>
+<p>[!code-cshtml<a href="intro/samples/cu/Pages/Departments/Index.cshtml?highlight=5,8,29,47,50"></a>]</p>
+<h3 id="update-the-edit-page-model">Update the Edit page model</h3>
+<p>Update <code>Pages/Departments/Edit.cshtml.cs</code> with the following code:</p>
+<p>[!code-csharp<a href="intro/samples/cu/Pages/Departments/Edit.cshtml.cs?name=snippet"></a>]</p>
+<p>To detect a concurrency issue, the <code>OriginalValue</code> is updated with the <code>rowVersion</code> value from the entity it was fetched. EF Core generates a SQL UPDATE command with a WHERE clause containing the original <code>RowVersion</code> value. If no rows are affected by the UPDATE command (no rows have the original <code>RowVersion</code> value), a <code>DbUpdateConcurrencyException</code> exception is thrown.</p>
+<p>[!code-csharp<a href="intro/samples/cu/Pages/Departments/Edit.cshtml.cs?name=snippet_rv&amp;highlight=24-999"></a>]</p>
+<p>In the preceding code, <code>Department.RowVersion</code> is the value when the entity was fetched. <code>OriginalValue</code> is the value in the DB when <code>FirstOrDefaultAsync</code> was called in this method.</p>
+<p>The following code gets the client values (the values posted to this method) and the DB values:</p>
+<p>[!code-csharp<a href="intro/samples/cu/Pages/Departments/Edit.cshtml.cs?name=snippet_try&amp;highlight=9,18"></a>]</p>
+<p>The following code adds a custom error message for each column that has DB values different from what was posted to <code>OnPostAsync</code>:</p>
+<p>[!code-csharp<a href="intro/samples/cu/Pages/Departments/Edit.cshtml.cs?name=snippet_err"></a>]</p>
+<p>The following highlighted code sets the <code>RowVersion</code> value to the new value retrieved from the DB. The next time the user clicks <strong>Save</strong>, only concurrency errors that happen since the last display of the Edit page will be caught.</p>
+<p>[!code-csharp<a href="intro/samples/cu/Pages/Departments/Edit.cshtml.cs?name=snippet_try&amp;highlight=23"></a>]</p>
+<p>The <code>ModelState.Remove</code> statement is required because <code>ModelState</code> has the old <code>RowVersion</code> value. In the Razor Page, the <code>ModelState</code> value for a field takes precedence over the model property values when both are present.</p>
+<h2 id="update-the-edit-page">Update the Edit page</h2>
+<p>Update <code>Pages/Departments/Edit.cshtml</code> with the following markup:</p>
+<p>[!code-cshtml<a href="intro/samples/cu/Pages/Departments/Edit.cshtml?highlight=1,14,16-17,37-39"></a>]</p>
+<p>The preceding markup:</p>
+<ul>
+<li>Updates the <code>page</code> directive from <code>@page</code> to <code>@page &quot;{id:int}&quot;</code>.</li>
+<li>Adds a hidden row version. <code>RowVersion</code> must be added so post back binds the value.</li>
+<li>Displays the last byte of <code>RowVersion</code> for debugging purposes.</li>
+<li>Replaces <code>ViewData</code> with the strongly-typed <code>InstructorNameSL</code>.</li>
+</ul>
+<h2 id="test-concurrency-conflicts-with-the-edit-page">Test concurrency conflicts with the Edit page</h2>
+<p>Open two browsers instances of Edit on the English department:</p>
+<ul>
+<li>Run the app and select Departments.</li>
+<li>Right-click the <strong>Edit</strong> hyperlink for the English department and select <strong>Open in new tab</strong>.</li>
+<li>In the first tab, click the <strong>Edit</strong> hyperlink for the English department.</li>
+</ul>
+<p>The two browser tabs display the same information.</p>
+<p>Change the name in the first browser tab and click <strong>Save</strong>.</p>
+<p><img src="concurrency/_static/edit-after-change-1.png" alt="Department Edit page 1 after change"></p>
+<p>The browser shows the Index page with the changed value and updated rowVersion indicator. Note the updated rowVersion indicator, it&#39;s displayed on the second postback in the other tab.</p>
+<p>Change a different field in the second browser tab.</p>
+<p><img src="concurrency/_static/edit-after-change-2.png" alt="Department Edit page 2 after change"></p>
+<p>Click <strong>Save</strong>. You see error messages for all fields that don&#39;t match the DB values:</p>
+<p><img src="concurrency/_static/edit-error.png" alt="Department Edit page error message 1"></p>
+<p>This browser window didn&#39;t intend to change the Name field. Copy and paste the current value (Languages) into the Name field. Tab out. Client-side validation removes the error message.</p>
+<p><img src="concurrency/_static/cv.png" alt="Department Edit page error message 2"></p>
+<p>Click <strong>Save</strong> again. The value you entered in the second browser tab is saved. You see the saved values in the Index page.</p>
+<h2 id="update-the-delete-page">Update the Delete page</h2>
+<p>Update the Delete page model with the following code:</p>
+<p>[!code-csharp<a href="intro/samples/cu/Pages/Departments/Delete.cshtml.cs"></a>]</p>
+<p>The Delete page detects concurrency conflicts when the entity has changed after it was fetched. <code>Department.RowVersion</code> is the row version when the entity was fetched. When EF Core creates the SQL DELETE command, it includes a WHERE clause with <code>RowVersion</code>. If the SQL DELETE command results in zero rows affected:</p>
+<ul>
+<li>The <code>RowVersion</code> in the SQL DELETE command doesn&#39;t match <code>RowVersion</code> in the DB.</li>
+<li>A DbUpdateConcurrencyException exception is thrown.</li>
+<li><code>OnGetAsync</code> is called with the <code>concurrencyError</code>.</li>
+</ul>
+<h3 id="update-the-delete-page">Update the Delete page</h3>
+<p>Update <code>Pages/Departments/Delete.cshtml</code> with the following code:</p>
+<p>[!code-cshtml<a href="intro/samples/cu/Pages/Departments/Delete.cshtml?highlight=1,10,39,51"></a>]</p>
+<p>The preceding code makes the following changes:</p>
+<ul>
+<li>Updates the <code>page</code> directive from <code>@page</code> to <code>@page &quot;{id:int}&quot;</code>.</li>
+<li>Adds an error message.</li>
+<li>Replaces FirstMidName with FullName in the <strong>Administrator</strong> field.</li>
+<li>Changes <code>RowVersion</code> to display the last byte.</li>
+<li>Adds a hidden row version. <code>RowVersion</code> must be added so post back binds the value.</li>
+</ul>
+<h3 id="test-concurrency-conflicts-with-the-delete-page">Test concurrency conflicts with the Delete page</h3>
+<p>Create a test department.</p>
+<p>Open two browsers instances of Delete on the test department:</p>
+<ul>
+<li>Run the app and select Departments.</li>
+<li>Right-click the <strong>Delete</strong> hyperlink for the test department and select <strong>Open in new tab</strong>.</li>
+<li>Click the <strong>Edit</strong> hyperlink for the test department.</li>
+</ul>
+<p>The two browser tabs display the same information.</p>
+<p>Change the budget in the first browser tab and click <strong>Save</strong>.</p>
+<p>The browser shows the Index page with the changed value and updated rowVersion indicator. Note the updated rowVersion indicator, it&#39;s displayed on the second postback in the other tab.</p>
+<p>Delete the test department from the second tab. A concurrency error is display with the current values from the DB. Clicking <strong>Delete</strong> deletes the entity, unless <code>RowVersion</code> has been updated.</p>
+<p>See <a href="#/doc/aspnet/data/ef-mvc/inheritance">Inheritance</a> on how to inherit a data model.</p>
+<h2 id="enterprise-web-app-patterns">Enterprise web app patterns</h2>
+<p>For guidance on creating a reliable, secure, performant, testable, and scalable ASP.NET Core app, see <a href="/azure/architecture/web-apps/guides/enterprise-app-patterns/overview">Enterprise web app patterns</a>. A complete production-quality sample web app that implements the patterns is available.</p>
+<p>:::moniker-end</p>
+<h2 id="related-content">Related content</h2>
+<p>:::moniker range=&quot;&gt;= aspnetcore-3.0&quot;</p>
+<ul>
+<li><a href="/ef/core/modeling/concurrency">Concurrency Tokens in EF Core</a></li>
+<li><a href="/ef/core/saving/concurrency">Handle concurrency in EF Core</a></li>
+<li><a target="_blank" rel="noopener" href="https://github.com/dotnet/AspNetCore.Docs/issues/4155">Debugging ASP.NET Core 2.x source</a></li>
+</ul>
+<p>:::moniker-end</p>
+<p>:::moniker range=&quot;&lt; aspnetcore-3.0&quot;</p>
+<ul>
+<li><a href="/ef/core/modeling/concurrency">Concurrency Tokens in EF Core</a></li>
+<li><a href="/ef/core/saving/concurrency">Handle concurrency in EF Core</a></li>
+<li><a target="_blank" rel="noopener" href="https://youtu.be/EosxHTFgYps">YouTube version of this tutorial(Handling Concurrency Conflicts)</a></li>
+<li><a target="_blank" rel="noopener" href="https://www.youtube.com/watch?v=kcxERLnaGO0">YouTube version of this tutorial(Part 2)</a></li>
+<li><a target="_blank" rel="noopener" href="https://www.youtube.com/watch?v=d4RbpfvELRs">YouTube version of this tutorial(Part 3)</a></li>
+</ul>
+<p>:::moniker-end</p>
+<h2 id="next-steps">Next steps</h2>
+<p>This is the last tutorial in the series. Additional topics are covered in the <a href="#/doc/aspnet/data/ef-mvc/index">MVC version of this tutorial series</a>.</p>
+<blockquote>
+<p>[!div class=&quot;step-by-step&quot;]
+<a href="#/doc/aspnet/data/ef-rp/update-related-data">Previous tutorial</a></p>
+</blockquote>
