@@ -1,0 +1,32 @@
+<p>In ASP.NET Core 11, <code>Microsoft.AspNetCore.Server.HttpSys</code> unconditionally configures the URL group with <code>HttpServerChannelBindProperty</code> at startup. This exposes the RFC 5929 endpoint TLS channel binding token (CBT) to the app through the new <code>ITlsConnectionFeature.TryGetChannelBindingBytes</code> API, enabling Extended Protection for Authentication (EPA) scenarios.</p>
+<h2 id="version-introduced">Version introduced</h2>
+<p>.NET 11</p>
+<h2 id="previous-behavior">Previous behavior</h2>
+<p>HttpSys-backed servers didn&#39;t configure <code>HttpServerChannelBindProperty</code> on the URL group at startup, and the RFC 5929 TLS channel binding token wasn&#39;t exposed to the app.</p>
+<p>Applications could opt in by enabling the <code>Microsoft.AspNetCore.Server.HttpSys.EnableCBTHardening</code> <code>AppContext</code> switch. That switch set the hardening level to <code>Medium</code>, but it didn&#39;t set the <code>HTTP_CHANNEL_BIND_SECURE_CHANNEL_TOKEN</code> flag, so http.sys didn&#39;t deliver a per-request CBT.</p>
+<p><code>ITlsConnectionFeature</code> had no way to retrieve the token. The only related API was the now-obsolete <code>ITlsTokenBindingFeature</code>, which is a different, unrelated feature.</p>
+<h2 id="new-behavior">New behavior</h2>
+<p><code>HttpSysOptions</code> has a new property <code>HttpAuthenticationHardeningLevel</code> of type <code>HttpAuthenticationHardeningLevel</code> (<code>Legacy</code>, <code>Medium</code>, <code>Strict</code>) that defaults to <code>Medium</code>.</p>
+<p>At startup, HttpSys unconditionally calls <code>HttpSetUrlGroupProperty</code> with <code>HttpServerChannelBindProperty</code>, applying the configured hardening level. For <code>Medium</code> and <code>Strict</code>, it also sets the <code>HTTP_CHANNEL_BIND_SECURE_CHANNEL_TOKEN</code> flag so that http.sys delivers a per-request <code>HTTP_REQUEST_CHANNEL_BIND_STATUS</code>.</p>
+<p>The new <code>ITlsConnectionFeature.TryGetChannelBindingBytes(ChannelBindingKind kind, out ReadOnlyMemory&lt;byte&gt; channelBindingToken)</code> returns the endpoint CBT (RFC 5929 <code>tls-server-end-point</code>) on authenticated HTTPS requests.</p>
+<p>If the <code>HttpSetUrlGroupProperty</code> call fails (for example, on an old or blocked kernel), the failure is logged and startup continues. The app runs as if <code>Legacy</code> was configured.</p>
+<h2 id="type-of-breaking-change">Type of breaking change</h2>
+<p>This change is a <a href="/dotnet/core/compatibility/categories#behavioral-change">behavioral change</a>.</p>
+<h2 id="reason-for-change">Reason for change</h2>
+<p>This change exposes the RFC 5929 endpoint channel binding to authentication middleware so it can implement Extended Protection for Authentication (EPA). EPA cryptographically binds Kerberos, NTLM, or Negotiate authentication to the underlying TLS channel, mitigating authentication-relay attacks. Previously, no ASP.NET Core server exposed the CBT to managed code.</p>
+<p>For more information, see <a target="_blank" rel="noopener" href="https://github.com/dotnet/aspnetcore/pull/67436">dotnet/aspnetcore#67436</a>.</p>
+<h2 id="recommended-action">Recommended action</h2>
+<p>No action is required for most users. The new API is opt-in. Apps that don&#39;t call <code>TryGetChannelBindingBytes</code> still incur a small per-request cost: with <code>Medium</code> hardening (the default), http.sys captures the channel binding token for every HTTPS request and includes it in the request info handed to user mode, which adds a small amount of kernel work and roughly 40 extra bytes per request. The overhead is negligible for typical workloads but not zero. Apps that need to eliminate it entirely can opt out by setting <code>HttpAuthenticationHardeningLevel.Legacy</code> (see the code snippet below).</p>
+<p>To restore the pre-.NET 11 behavior, set the hardening level to <code>Legacy</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">builder.WebHost.UseHttpSys(options =&gt;
+{
+    options.HttpAuthenticationHardeningLevel = HttpAuthenticationHardeningLevel.Legacy;
+});</code></pre></div></figure>
+<p>When <code>Legacy</code> is configured, HttpSys doesn&#39;t set the CBT flag, http.sys doesn&#39;t populate <code>HTTP_REQUEST_CHANNEL_BIND_STATUS</code>, and <code>TryGetChannelBindingBytes</code> returns <code>false</code>.</p>
+<p><code>HttpServerChannelBindProperty</code> has been supported in http.sys since Windows 7 and Windows Server 2008 R2 (released October 22, 2009), which is below the OS floor for any supported ASP.NET Core version. No ASP.NET Core-supported OS is affected.</p>
+<h2 id="affected-apis">Affected APIs</h2>
+<ul>
+<li><code>Microsoft.AspNetCore.Server.HttpSys.HttpSysOptions.HttpAuthenticationHardeningLevel</code> (new)</li>
+<li><code>Microsoft.AspNetCore.Server.HttpSys.HttpAuthenticationHardeningLevel</code> (new enum)</li>
+<li><code>Microsoft.AspNetCore.Http.Features.ITlsConnectionFeature.TryGetChannelBindingBytes</code> (new default interface method)</li>
+</ul>

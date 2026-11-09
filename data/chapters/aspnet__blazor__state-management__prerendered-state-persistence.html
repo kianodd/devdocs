@@ -1,0 +1,439 @@
+<p>This article explains how to persist component state across prerendering in Blazor apps using the Persistent Component State service. You&#39;ll learn how to use the <code>[PersistentState]</code> attribute, the <code>PersistentComponentState</code> service directly, and how to create custom serializers for persistent state.</p>
+<p>Without persisting component state, state used during prerendering is lost and must be recreated when the app is fully loaded. If any state is created asynchronously, the UI may flicker as the prerendered UI is replaced with temporary loading content and then fully rendered again.</p>
+<p>Consider the following <code>PrerenderedCounter1</code> counter component. The component sets an initial random counter value during prerendering in <a href="#/doc/aspnet/blazor/components/lifecycle@component-initialization-oninitializedasync"><code>OnInitialized</code> lifecycle method</a>. When the component then renders interactively, the initial count value is replaced when <code>OnInitialized</code> executes a second time.</p>
+<p><code>PrerenderedCounter1.razor</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">@page &quot;/prerendered-counter-1&quot;
+@inject ILogger Logger
+
+Prerendered Counter 1
+
+&lt;h1&gt;Prerendered Counter 1&lt;/h1&gt;
+
+&lt;p role=&quot;status&quot;&gt;Current count: @currentCount&lt;/p&gt;
+
+&lt;button class=&quot;btn btn-primary&quot; @onclick=&quot;IncrementCount&quot;&gt;Click me&lt;/button&gt;
+
+@code {
+    private int currentCount;
+
+    protected override void OnInitialized()
+    {
+        currentCount = Random.Shared.Next(100);
+        Logger.LogInformation(&quot;currentCount set to {Count}&quot;, currentCount);
+    }
+
+    private void IncrementCount() =&gt; currentCount++;
+}</code></pre></div></figure>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>If the app adopts <a href="#/doc/aspnet/blazor/fundamentals/routing@static-versus-interactive-routing">interactive routing</a> and the page is reached via an internal <a href="#/doc/aspnet/blazor/fundamentals/navigation@enhanced-navigation-and-form-handling">enhanced navigation</a>, prerendering doesn&#39;t occur. Therefore, you must perform a full page reload for the <code>PrerenderedCounter1</code> component to see the following output. For more information, see the <a href="#interactive-routing-and-prerendering">Interactive routing and prerendering</a> section.</p>
+</div></aside>
+<p>Run the app and inspect logging from the component. The following is example output.</p>
+<blockquote>
+<p>:::no-loc text=&quot;info: BlazorSample.Components.Pages.PrerenderedCounter1[0]&quot;:::  </p>
+<p>:::no-loc text=&quot;info: BlazorSample.Components.Pages.PrerenderedCounter1[0]&quot;:::  </p>
+</blockquote>
+<p>The first logged count occurs during prerendering. The count is set again after prerendering when the component is rerendered. There&#39;s also a flicker in the UI when the count updates from 41 to 92.</p>
+<p>To retain the initial value of the counter during prerendering, Blazor supports persisting state in a prerendered page using the <code>PersistentComponentState</code> service (and for components embedded into pages or views of Razor Pages or MVC apps, the <a href="#/doc/aspnet/mvc/views/tag-helpers/built-in/persist-component-state">Persist Component State Tag Helper</a>).</p>
+<p>By initializing components with the same state used during prerendering, any expensive initialization steps are only executed once. The rendered UI also matches the prerendered UI, so no flicker occurs in the browser.</p>
+<p>The persisted prerendered state is transferred to the client, where it&#39;s used to restore the component state. During client-side rendering (CSR, <code>InteractiveWebAssembly</code>), the data is exposed to the browser and must not contain sensitive, private information. During interactive server-side rendering (interactive SSR, <code>InteractiveServer</code>), <a href="#/doc/aspnet/security/data-protection/introduction">ASP.NET Core Data Protection</a> ensures that the data is transferred securely. The <code>InteractiveAuto</code> render mode combines WebAssembly and Server interactivity, so it&#39;s necessary to consider data exposure to the browser, as in the CSR case.</p>
+<p>:::moniker range=&quot;&gt;= aspnetcore-10.0&quot;</p>
+<p>To persist prerendered state using the <code>PersistentComponentState</code> service, apply the <a href="xref:Microsoft.AspNetCore.Components.PersistentStateAttribute"><code>[PersistentState]</code> attribute</a> to <code>public</code> properties. The state is retrieved when the component renders interactively or the <code>PersistentComponentState</code> service is instantiated.</p>
+<p>Use <code>public</code> properties because reflection is used by the framework for tasks such as <a href="#/doc/aspnet/blazor/performance/app-download-size@intermediate-language-il-trimming">trimming unused code</a> and <a href="/dotnet/csharp/roslyn-sdk/source-generators-overview">source generation</a>.</p>
+<p>By default, properties are serialized using the <code>Json?displayProperty=fullName</code> serializer with default settings and persisted in the prerendered HTML. Serialization isn&#39;t trimmer safe and requires preservation of the types used. For more information, see <a href="#/doc/aspnet/blazor/host-and-deploy/configure-trimmer">Configure the Trimmer for ASP.NET Core Blazor</a>.</p>
+<p>The following counter component persists counter state during prerendering and retrieves the state to initialize the component:</p>
+<ul>
+<li>The <a href="xref:Microsoft.AspNetCore.Components.PersistentStateAttribute"><code>[PersistentState]</code> attribute</a> is applied to the public nullable <code>CurrentCount</code> property of type <code>int?</code>.</li>
+<li>The counter&#39;s state is assigned when <code>null</code> in <code>OnInitialized</code> and restored automatically when the component renders interactively.</li>
+</ul>
+<p><code>PrerenderedCounter2.razor</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">@page &quot;/prerendered-counter-2&quot;
+@inject ILogger Logger
+
+Prerendered Counter 2
+
+&lt;h1&gt;Prerendered Counter 2&lt;/h1&gt;
+
+&lt;p role=&quot;status&quot;&gt;Current count: @CurrentCount&lt;/p&gt;
+
+&lt;button class=&quot;btn btn-primary&quot; @onclick=&quot;IncrementCount&quot;&gt;Click me&lt;/button&gt;
+
+@code {
+    [PersistentState]
+    public int? CurrentCount { get; set; }
+
+    protected override void OnInitialized()
+    {
+        if (CurrentCount is null)
+        {
+            CurrentCount = Random.Shared.Next(100);
+            Logger.LogInformation(&quot;CurrentCount set to {Count}&quot;, CurrentCount);
+        }
+        else
+        {
+            Logger.LogInformation(&quot;CurrentCount restored to {Count}&quot;, CurrentCount);
+        }
+    }
+
+    private void IncrementCount() =&gt; CurrentCount++;
+}</code></pre></div></figure>
+<p>When the component executes, <code>CurrentCount</code> is only set once during prerendering. The value is restored when the component is rerendered. The following is example output.</p>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>If the app adopts <a href="#/doc/aspnet/blazor/fundamentals/routing@static-versus-interactive-routing">interactive routing</a> and the page is reached via an internal <a href="#/doc/aspnet/blazor/fundamentals/navigation@enhanced-navigation-and-form-handling">enhanced navigation</a>, prerendering doesn&#39;t occur. Therefore, you must perform a full page reload for the component to see the following output. For more information, see the <a href="#interactive-routing-and-prerendering">Interactive routing and prerendering</a> section.</p>
+</div></aside>
+<blockquote>
+<p>:::no-loc text=&quot;info: BlazorSample.Components.Pages.PrerenderedCounter2[0]&quot;:::  </p>
+<p>:::no-loc text=&quot;info: BlazorSample.Components.Pages.PrerenderedCounter2[0]&quot;:::  </p>
+</blockquote>
+<p>In the following example that serializes state for multiple components of the same type:</p>
+<ul>
+<li>Public properties annotated with the <a href="xref:Microsoft.AspNetCore.Components.PersistentStateAttribute"><code>[PersistentState]</code> attribute</a> are serialized during prerendering.</li>
+<li>The <a href="#/doc/aspnet/blazor/components/element-component-model-relationships@use-of-the-key-directive-attribute"><code>@key</code> directive attribute</a> is used to ensure that the state is correctly associated with the component instance.</li>
+<li>The <code>Element</code> property is initialized in the <a href="#/doc/aspnet/blazor/components/lifecycle@component-initialization-oninitializedasync"><code>OnInitialized</code> lifecycle method</a> to avoid null reference exceptions, similarly to how null references are avoided for query parameters and form data.</li>
+</ul>
+<p><code>PersistentChild.razor</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">&lt;div&gt;
+    &lt;p&gt;Current count: @Element.CurrentCount&lt;/p&gt;
+    &lt;button class=&quot;btn btn-primary&quot; @onclick=&quot;IncrementCount&quot;&gt;Click me&lt;/button&gt;
+&lt;/div&gt;
+
+@code {
+    [PersistentState]
+    public State Element { get; set; }
+
+    protected override void OnInitialized()
+    {
+        Element ??= new State();
+    }
+
+    private void IncrementCount()
+    {
+        Element.CurrentCount++;
+    }
+
+    private class State
+    {
+        public int CurrentCount { get; set; }
+    }
+}</code></pre></div></figure>
+<p><code>Parent.razor</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">@page &quot;/parent&quot;
+
+@foreach (var element in elements)
+{
+    
+}</code></pre></div></figure>
+<p>:::moniker-end</p>
+<p>:::moniker range=&quot;&gt;= aspnetcore-11.0&quot;</p>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>A user-configured <code>JsonSerializerContext</code> doesn&#39;t flow into <a href="/dotnet/csharp/language-reference/builtin-types/union">C# union</a> deserialization. Instead, use <code>[JsonUnion(TypeClassifier = typeof({TYPE CLASSIFIER}))]</code>, where the <code>{TYPE CLASSIFIER}</code> placeholder is the type classifier.</p>
+</div></aside>
+<p>:::moniker-end</p>
+<p>:::moniker range=&quot;&gt;= aspnetcore-10.0&quot;</p>
+<h2 id="serialize-state-for-services">Serialize state for services</h2>
+<p>In the following example that serializes state for a dependency injection service:</p>
+<ul>
+<li>Properties annotated with the <a href="xref:Microsoft.AspNetCore.Components.PersistentStateAttribute"><code>[PersistentState]</code> attribute</a> are serialized during prerendering and deserialized when the app becomes interactive.</li>
+<li>The <code>RegisterPersistentService</code> extension method is used to register the service for persistence. The render mode is required because the render mode can&#39;t be inferred from the service type. Use any of the following values:<ul>
+<li><code>RenderMode.Server</code>: The service is available for the Interactive Server render mode.</li>
+<li><code>RenderMode.Webassembly</code>: The service is available for the Interactive Webassembly render mode.</li>
+<li><code>RenderMode.InteractiveAuto</code>: The service is available for both the Interactive Server and Interactive Webassembly render modes if a component renders in either of those modes.</li>
+</ul>
+</li>
+<li>The service is resolved during the initialization of an interactive render mode, and the properties annotated with the <a href="xref:Microsoft.AspNetCore.Components.PersistentStateAttribute"><code>[PersistentState]</code> attribute</a> are deserialized.</li>
+</ul>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>Only persisting scoped services is supported on the <strong>server</strong>. On the WebAssembly client (<code>InteractiveAuto</code> or <code>InteractiveWebAssembly</code> render modes), the service must be registered as a <strong>singleton</strong>. See <a href="#client-project-service-registration">Client project service registration</a> for details.</p>
+</div></aside>
+<p>Serialized properties are identified from the actual service instance:</p>
+<ul>
+<li>This approach allows marking an abstraction as a persistent service.</li>
+<li>Enables actual implementations to be internal or different types.</li>
+<li>Supports shared code in different assemblies.</li>
+<li>Results in each instance exposing the same properties.</li>
+</ul>
+<p>The following counter service, <code>CounterTracker</code>, marks its current count property, <code>CurrentCount</code> with the <a href="xref:Microsoft.AspNetCore.Components.PersistentStateAttribute"><code>[PersistentState]</code> attribute</a>. The public property is serialized during prerendering and deserialized when the app becomes interactive wherever the service is injected.</p>
+<p><code>CounterTracker.cs</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">public class CounterTracker
+{
+    [PersistentState]
+    public int CurrentCount { get; set; }
+
+    public void IncrementCount()
+    {
+        CurrentCount++;
+    }
+}</code></pre></div></figure>
+<h3 id="server-project-service-registration">Server project service registration</h3>
+<p>In the server project&#39;s <code>Program</code> file, register the scoped service and register the service for persistence with <code>RegisterPersistentService</code>. In the following example, the <code>CounterTracker</code> service is available for both the Interactive Server and Interactive WebAssembly render modes if a component renders in either of those modes because it&#39;s registered with <code>RenderMode.InteractiveAuto</code>.</p>
+<p>If the <code>Program</code> file doesn&#39;t already use the <code>Web?displayProperty=fullName</code> namespace, add the following <code>using</code> statement to the top of the file:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">using Microsoft.AspNetCore.Components.Web;</code></pre></div></figure>
+<p>Where services are registered in the server project&#39;s <code>Program</code> file:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">builder.Services.AddScoped();
+
+builder.Services.AddRazorComponents()
+    .RegisterPersistentService(RenderMode.InteractiveAuto);</code></pre></div></figure>
+<h3 id="client-project-service-registration">Client project service registration</h3>
+<p>For <code>RenderMode.InteractiveAuto</code> or <code>RenderMode.InteractiveWebAssembly</code>, the service must also be registered in the <code>.Client</code> project&#39;s <code>Program</code> file. Register it as a <strong>singleton</strong>, not scoped:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">builder.Services.AddSingleton();</code></pre></div></figure>
+<p>The client-side <code>ComponentStatePersistenceManager</code> is registered as a singleton, so it resolves its dependencies from the root service provider. <em>Avoid a scoped service registration.</em> If the service is incorrectly registered as scoped on the client, resolving it from the root provider throws a <code>DirectScopedResolvedFromRootException</code> in Development environments. Beyond the exception, a scoped registration produces two separate instances on the client: one resolved from the root during state restoration and another from the app scope for injected components. This means the restored state doesn&#39;t reach the instance the components use. Registering the service as a singleton on the client ensures that the same instance is used for both state restoration and component injection.</p>
+<p>Inject the <code>CounterTracker</code> service into a component and use it to increment a counter. For demonstration purposes in the following example, the value of the service&#39;s <code>CurrentCount</code> property is set to 10 only during prerendering.</p>
+<p><code>Pages/Counter.razor</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">@page &quot;/counter&quot;
+@inject CounterTracker CounterTracker
+
+Counter
+
+&lt;h1&gt;Counter&lt;/h1&gt;
+
+&lt;p&gt;Rendering: @RendererInfo.Name&lt;/p&gt;
+
+&lt;p role=&quot;status&quot;&gt;Current count: @CounterTracker.CurrentCount&lt;/p&gt;
+
+&lt;button class=&quot;btn btn-primary&quot; @onclick=&quot;IncrementCount&quot;&gt;Click me&lt;/button&gt;
+
+@code {
+    protected override void OnInitialized()
+    {
+        if (!RendererInfo.IsInteractive)
+        {
+            CounterTracker.CurrentCount = 10;
+        }
+    }
+
+    private void IncrementCount()
+    {
+        CounterTracker.IncrementCount();
+    }
+}</code></pre></div></figure>
+<p>To use preceding component to demonstrate persisting the count of 10 in <code>CounterTracker.CurrentCount</code>, navigate to the component and refresh the browser, which triggers prerendering. When prerendering occurs, you briefly see <code>Name?displayProperty=nameWithType</code> indicate &quot;<code>Static</code>&quot; before displaying &quot;<code>Server</code>&quot; after final rendering. The counter starts at 10.</p>
+<h2 id="use-the-persistentcomponentstate-service-directly-instead-of-the-declarative-model">Use the <code>PersistentComponentState</code> service directly instead of the declarative model</h2>
+<p>As an alternative to using the declarative model for persisting state with the <a href="xref:Microsoft.AspNetCore.Components.PersistentStateAttribute"><code>[PersistentState]</code> attribute</a>, you can use the <code>PersistentComponentState</code> service directly, which offers greater flexibility for complex state persistence scenarios. Call <code>RegisterOnPersisting?displayProperty=nameWithType</code> to register a callback to persist the component state during prerendering. The state is retrieved when the component renders interactively. Make the call at the end of initialization code in order to avoid a potential race condition during app shutdown.</p>
+<p>The following counter component example persists counter state during prerendering and retrieves the state to initialize the component.</p>
+<p><code>PrerenderedCounter3.razor</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">@page &quot;/prerendered-counter-3&quot;
+@implements IDisposable
+@inject ILogger Logger
+@inject PersistentComponentState ApplicationState
+
+Prerendered Counter 3
+
+&lt;h1&gt;Prerendered Counter 3&lt;/h1&gt;
+
+&lt;p role=&quot;status&quot;&gt;Current count: @currentCount&lt;/p&gt;
+
+&lt;button class=&quot;btn btn-primary&quot; @onclick=&quot;IncrementCount&quot;&gt;Click me&lt;/button&gt;
+
+@code {
+    private int currentCount;
+    private PersistingComponentStateSubscription persistingSubscription;
+
+    protected override void OnInitialized()
+    {
+        if (!ApplicationState.TryTakeFromJson&lt;int&gt;(
+            nameof(currentCount), out var restoredCount))
+        {
+            currentCount = Random.Shared.Next(100);
+            Logger.LogInformation(&quot;currentCount set to {Count}&quot;, currentCount);
+        }
+        else
+        {
+            currentCount = restoredCount!;
+            Logger.LogInformation(&quot;currentCount restored to {Count}&quot;, currentCount);
+        }
+
+        // Call at the end to avoid a potential race condition at app shutdown
+        persistingSubscription = ApplicationState.RegisterOnPersisting(PersistCount);
+    }
+
+    private Task PersistCount()
+    {
+        ApplicationState.PersistAsJson(nameof(currentCount), currentCount);
+
+        return Task.CompletedTask;
+    }
+
+    private void IncrementCount() =&gt; currentCount++;
+
+    void IDisposable.Dispose() =&gt; persistingSubscription.Dispose();
+}</code></pre></div></figure>
+<p>When the component executes, <code>currentCount</code> is only set once during prerendering. The value is restored when the component is rerendered. The following is example output.</p>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>If the app adopts <a href="#/doc/aspnet/blazor/fundamentals/routing@static-versus-interactive-routing">interactive routing</a> and the page is reached via an internal <a href="#/doc/aspnet/blazor/fundamentals/navigation@enhanced-navigation-and-form-handling">enhanced navigation</a>, prerendering doesn&#39;t occur. Therefore, you must perform a full page reload for the component to see the following output. For more information, see the <a href="#interactive-routing-and-prerendering">Interactive routing and prerendering</a> section.</p>
+</div></aside>
+<blockquote>
+<p>:::no-loc text=&quot;info: BlazorSample.Components.Pages.PrerenderedCounter3[0]&quot;:::  </p>
+<p>:::no-loc text=&quot;info: BlazorSample.Components.Pages.PrerenderedCounter3[0]&quot;:::  </p>
+</blockquote>
+<p>:::moniker-end</p>
+<p>:::moniker range=&quot;&lt; aspnetcore-10.0&quot;</p>
+<p>To preserve prerendered state, decide what state to persist using the <code>PersistentComponentState</code> service. <code>RegisterOnPersisting?displayProperty=nameWithType</code> registers a callback to persist the component state during prerendering. The state is retrieved when the component renders interactively. Make the call at the end of initialization code in order to avoid a potential race condition during app shutdown.</p>
+<p>The following counter component example persists counter state during prerendering and retrieves the state to initialize the component.</p>
+<p><code>PrerenderedCounter2.razor</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">@page &quot;/prerendered-counter-2&quot;
+@implements IDisposable
+@inject ILogger Logger
+@inject PersistentComponentState ApplicationState
+
+Prerendered Counter 2
+
+&lt;h1&gt;Prerendered Counter 2&lt;/h1&gt;
+
+&lt;p role=&quot;status&quot;&gt;Current count: @currentCount&lt;/p&gt;
+
+&lt;button class=&quot;btn btn-primary&quot; @onclick=&quot;IncrementCount&quot;&gt;Click me&lt;/button&gt;
+
+@code {
+    private int currentCount;
+    private PersistingComponentStateSubscription persistingSubscription;
+
+    protected override void OnInitialized()
+    {
+        if (!ApplicationState.TryTakeFromJson&lt;int&gt;(
+            nameof(currentCount), out var restoredCount))
+        {
+            currentCount = Random.Shared.Next(100);
+            Logger.LogInformation(&quot;currentCount set to {Count}&quot;, currentCount);
+        }
+        else
+        {
+            currentCount = restoredCount!;
+            Logger.LogInformation(&quot;currentCount restored to {Count}&quot;, currentCount);
+        }
+
+        // Call at the end to avoid a potential race condition at app shutdown
+        persistingSubscription = ApplicationState.RegisterOnPersisting(PersistCount);
+    }
+
+    private Task PersistCount()
+    {
+        ApplicationState.PersistAsJson(nameof(currentCount), currentCount);
+
+        return Task.CompletedTask;
+    }
+
+    void IDisposable.Dispose() =&gt; persistingSubscription.Dispose();
+
+    private void IncrementCount() =&gt; currentCount++;
+}</code></pre></div></figure>
+<p>When the component executes, <code>currentCount</code> is only set once during prerendering. The value is restored when the component is rerendered. The following is example output.</p>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>If the app adopts <a href="#/doc/aspnet/blazor/fundamentals/routing@static-versus-interactive-routing">interactive routing</a> and the page is reached via an internal <a href="#/doc/aspnet/blazor/fundamentals/navigation@enhanced-navigation-and-form-handling">enhanced navigation</a>, prerendering doesn&#39;t occur. Therefore, you must perform a full page reload for the component to see the following output. For more information, see the <a href="#interactive-routing-and-prerendering">Interactive routing and prerendering</a> section.</p>
+</div></aside>
+<blockquote>
+<p>:::no-loc text=&quot;info: BlazorSample.Components.Pages.PrerenderedCounter2[0]&quot;:::  </p>
+<p>:::no-loc text=&quot;info: BlazorSample.Components.Pages.PrerenderedCounter2[0]&quot;:::  </p>
+</blockquote>
+<p>:::moniker-end</p>
+<p>:::moniker range=&quot;&gt;= aspnetcore-10.0&quot;</p>
+<h2 id="serialization-extensibility-for-persistent-component-state">Serialization extensibility for persistent component state</h2>
+<p>Implement a custom serializer with <code>PersistentComponentStateSerializer1</code>. Without a registered custom serializer, serialization falls back to the existing JSON serialization.</p>
+<p>The following example creates a custom serializer for <code>int?</code> types that uses a custom format to demonstrate serialization extensibility. The serializer prefixes integer values with &quot;<code>CUSTOM:</code>&quot; to clearly distinguish them from JSON serialization.</p>
+<p>The serializer executes on nullable and non-nullable types <em>independently</em>, so the following serializer doesn&#39;t execute on <code>int</code> types, only nullable integer types (<code>int?</code>) are processed.</p>
+<p>Logging in the following example is for demonstration purposes and isn&#39;t normally implemented in a production app.</p>
+<p><code>CustomIntSerializer.cs</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">using System;
+using System.Buffers;
+using System.Text;
+using Microsoft.AspNetCore.Components;
+using Microsoft.Extensions.Logging;
+
+namespace BlazorSample;
+
+public class CustomIntSerializer(ILogger logger) 
+    : PersistentComponentStateSerializer&lt;int?&gt;
+{
+    public override void Persist(int? value, IBufferWriter&lt;byte&gt; writer)
+    {
+        string customFormat = 
+            value is not null ? $&quot;CUSTOM:{value}&quot; : $&quot;CUSTOM:null&quot;;
+
+        logger.LogInformation(
+            &quot;Persisting value {Value} with custom format: {CustomFormat}&quot;, value, 
+            customFormat);
+
+        byte[] bytes = Encoding.UTF8.GetBytes(customFormat);
+        writer.Write(bytes);
+    }
+
+    public override int? Restore(ReadOnlySequence&lt;byte&gt; data)
+    {
+        byte[] bytes = data.ToArray();
+        string text = Encoding.UTF8.GetString(bytes);
+
+        logger.LogInformation(&quot;Restoring value from custom format: {CustomFormat}&quot;, 
+            text);
+
+        if (text.StartsWith(&quot;CUSTOM:&quot;, StringComparison.Ordinal))
+        {
+            var remainingText = text.AsSpan(7);
+
+            if (!remainingText.SequenceEqual(&quot;null&quot;))
+            {
+                if (int.TryParse(remainingText, out int value))
+                {
+                    return value;
+                }
+            }
+            else
+            {
+                return null;
+            }
+        }
+
+        // Fallback to direct parsing if format is unexpected
+        return int.TryParse(text, out int fallbackValue) ? fallbackValue : null;
+    }
+}</code></pre></div></figure>
+<p>The custom serializer is registered in the app&#39;s <code>Program</code> file:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">builder.Services.AddSingleton&lt;PersistentComponentStateSerializer&lt;int?&gt;, 
+    CustomIntSerializer&gt;();</code></pre></div></figure>
+<p>The <code>int?</code> type is automatically persisted and restored with the custom serializer:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">[PersistentState]
+public int? CurrentCount { get; set; }</code></pre></div></figure>
+<p>Using the preceding serializer with the <code>PrerenderedCounter2</code> component (<code>PrerenderedCounter2.razor</code>) shown in the <a href="#aspnet-core-blazor-prerendered-state-persistence">introduction</a> of this article, output similar to the following is logged.</p>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>If the app adopts <a href="#/doc/aspnet/blazor/fundamentals/routing@static-versus-interactive-routing">interactive routing</a> and the page is reached via an internal <a href="#/doc/aspnet/blazor/fundamentals/navigation@enhanced-navigation-and-form-handling">enhanced navigation</a>, prerendering doesn&#39;t occur. Therefore, you must perform a full page reload for the component to see the following output. For more information, see the <a href="#interactive-routing-and-prerendering">Interactive routing and prerendering</a> section.</p>
+</div></aside>
+<blockquote>
+<p>:::no-loc text=&quot;info: BlazorSample.Components.Pages.PrerenderedCounter2[0]&quot;:::  </p>
+<p>:::no-loc text=&quot;info: BlazorSample.CustomIntSerializer[0]&quot;:::<br>:::no-loc text=&quot;      Persisting value 49 with custom format: CUSTOM:49&quot;:::<br>:::no-loc text=&quot;info: BlazorSample.CustomIntSerializer[0]&quot;:::<br>:::no-loc text=&quot;      Restoring value from custom format: CUSTOM:49&quot;:::<br>:::no-loc text=&quot;info: BlazorSample.Components.Pages.PrerenderedCounter2[0]&quot;:::  </p>
+</blockquote>
+<p>:::moniker-end</p>
+<h2 id="components-embedded-into-pages-and-views-razor-pagesmvc">Components embedded into pages and views (Razor Pages/MVC)</h2>
+<p>For components embedded into a page or view of a Razor Pages or MVC app, you must add the <a href="#/doc/aspnet/mvc/views/tag-helpers/built-in/persist-component-state">Persist Component State Tag Helper</a> with the <code>&lt;persist-component-state /&gt;</code> HTML tag inside the closing <code>&lt;/body&gt;</code> tag of the app&#39;s layout. <strong>This is only required for Razor Pages and MVC apps.</strong> For more information, see <a href="#/doc/aspnet/mvc/views/tag-helpers/built-in/persist-component-state">Persist Component State Tag Helper in ASP.NET Core</a>.</p>
+<p><code>Pages/Shared/_Layout.cshtml</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">&lt;body&gt;
+    ...
+
+    &lt;persist-component-state /&gt;
+&lt;/body&gt;</code></pre></div></figure>
+<h2 id="interactive-routing-and-prerendering">Interactive routing and prerendering</h2>
+<p>When the <code>Routes</code> component doesn&#39;t define a render mode, the app is using per-page/component interactivity and navigation. Using per-page/component navigation, internal navigation is handled by <a href="#/doc/aspnet/blazor/fundamentals/navigation@enhanced-navigation-and-form-handling">enhanced routing</a> after the app becomes interactive. &quot;Internal navigation&quot; in this context means that the URL destination of the navigation event is a Blazor endpoint inside the app.</p>
+<p>:::moniker range=&quot;&gt;= aspnetcore-10.0&quot;</p>
+<p>Blazor supports handling persistent component state during <a href="#/doc/aspnet/blazor/fundamentals/navigation@enhanced-navigation-and-form-handling">enhanced navigation</a>. State persisted during enhanced navigation can be read by interactive components on the page.</p>
+<p>By default, persistent component state is only loaded by interactive components when they&#39;re initially loaded on the page. This prevents important state, such as data in an edited webform, from being overwritten if additional enhanced navigation events to the same page occur after the component is loaded.</p>
+<p>If the data is read-only and doesn&#39;t change frequently, opt-in to allow updates during enhanced navigation by setting <code>AllowUpdates</code> to <code>true</code> on the <a href="xref:Microsoft.AspNetCore.Components.PersistentStateAttribute"><code>[PersistentState]</code> attribute</a>. This is useful for scenarios such as displaying cached data that&#39;s expensive to fetch but doesn&#39;t change often, such as weather forecast data in the following example:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">[PersistentState(AllowUpdates = true)]
+public WeatherForecast[]? Forecasts { get; set; }
+
+protected override async Task OnInitializedAsync()
+{
+    Forecasts ??= await ForecastService.GetForecastAsync();
+}</code></pre></div></figure>
+<p>:::moniker-end</p>
+<p>:::moniker range=&quot;&gt;= aspnetcore-11.0&quot;</p>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p><code>AllowUpdates?displayProperty=nameWithType</code> doesn&#39;t control whether the current property value is captured by <a href="#/doc/aspnet/blazor/state-management/server@circuit-state-persistence">circuit state persistence</a> when the circuit pauses, including an automatic pause caused by <a href="#/doc/aspnet/blazor/state-management/server@automatic-circuit-pause-on-tab-inactivity">tab inactivity</a>.</p>
+</div></aside>
+<p>:::moniker-end</p>
+<p>:::moniker range=&quot;&gt;= aspnetcore-10.0 &lt; aspnetcore-11.0&quot;</p>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p><code>AllowUpdates?displayProperty=nameWithType</code> doesn&#39;t control whether the current property value is captured by <a href="#/doc/aspnet/blazor/state-management/server@circuit-state-persistence">circuit state persistence</a> when the circuit pauses.</p>
+</div></aside>
+<p>:::moniker-end</p>
+<p>:::moniker range=&quot;&gt;= aspnetcore-10.0&quot;</p>
+<p>To skip restoring state during prerendering, set <code>RestoreBehavior</code> to <code>SkipInitialValue</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">[PersistentState(RestoreBehavior = RestoreBehavior.SkipInitialValue)]
+public string NoPrerenderedData { get; set; }</code></pre></div></figure>
+<p>To skip restoring state during reconnection, set <code>RestoreBehavior</code> to <code>SkipLastSnapshot</code>. This can be useful to ensure fresh data after reconnection:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">[PersistentState(RestoreBehavior = RestoreBehavior.SkipLastSnapshot)]
+public int CounterNotRestoredOnReconnect { get; set; }</code></pre></div></figure>
+<p>Call <code>RegisterOnRestoring?displayProperty=nameWithType</code> to register a callback for imperatively controlling how state is restored, similar to how <code>RegisterOnPersisting?displayProperty=nameWithType</code> provides full control of how state is persisted.</p>
+<p>:::moniker-end</p>
+<p>:::moniker range=&quot;&lt; aspnetcore-10.0&quot;</p>
+<p>The <code>PersistentComponentState</code> service only works on the initial page load and not across internal enhanced page navigation events.</p>
+<p>If the app performs a full (non-enhanced) navigation to a page utilizing persistent component state, the persisted state is made available for the app to use when it becomes interactive.</p>
+<p>If an interactive circuit has already been established and an enhanced navigation is performed to a page utilizing persistent component state, the state <em>isn&#39;t made available in the existing circuit for the component to use</em>. There&#39;s no prerendering for the internal page request, and the <code>PersistentComponentState</code> service isn&#39;t aware that an enhanced navigation has occurred. There&#39;s no mechanism to deliver state updates to components that are already running on an existing circuit. The reason for this is that Blazor only supports passing state from the server to the client at the time the runtime initializes, not after the runtime has started.</p>
+<p>Disabling enhanced navigation, which reduces performance but also avoids the problem of loading state with <code>PersistentComponentState</code> for internal page requests, is covered in <a href="#/doc/aspnet/blazor/fundamentals/navigation@enhanced-navigation-and-form-handling">ASP.NET Core Blazor navigation</a>. Alternatively, update the app to .NET 10 or later, where Blazor supports handling persistent component state when during enhanced navigation.</p>
+<p>:::moniker-end</p>
