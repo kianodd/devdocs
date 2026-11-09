@@ -1,0 +1,841 @@
+<h2 id="introduction">Introduction</h2>
+<p>A package is a folder tree described by a <code>package.json</code> file. The package
+consists of the folder containing the <code>package.json</code> file and all subfolders
+until the next folder containing another <code>package.json</code> file, or a folder
+named <code>node_modules</code>.</p>
+<p>This page provides guidance for package authors writing <code>package.json</code> files
+along with a reference for the [<code>package.json</code>][] fields defined by Node.js.</p>
+<h2 id="determining-module-system">Determining module system</h2>
+<h3 id="introduction">Introduction</h3>
+<p>Node.js will treat the following as [ES modules][] when passed to <code>node</code> as the
+initial input, or when referenced by <code>import</code> statements or <code>import()</code>
+expressions:</p>
+<ul>
+<li><p>Files with an <code>.mjs</code> extension.</p>
+</li>
+<li><p>Files with a <code>.js</code> extension when the nearest parent <code>package.json</code> file
+contains a top-level [<code>&quot;type&quot;</code>][] field with a value of <code>&quot;module&quot;</code>.</p>
+</li>
+<li><p>Strings passed in as an argument to <code>--eval</code>, or piped to <code>node</code> via <code>STDIN</code>,
+with the flag <code>--input-type=module</code>.</p>
+</li>
+<li><p>Code containing syntax only successfully parsed as [ES modules][], such as
+<code>import</code> or <code>export</code> statements or <code>import.meta</code>, with no explicit marker of
+how it should be interpreted. Explicit markers are <code>.mjs</code> or <code>.cjs</code>
+extensions, <code>package.json</code> <code>&quot;type&quot;</code> fields with either <code>&quot;module&quot;</code> or
+<code>&quot;commonjs&quot;</code> values, or the <code>--input-type</code> flag. Dynamic <code>import()</code>
+expressions are supported in either CommonJS or ES modules and would not force
+a file to be treated as an ES module. See [Syntax detection][].</p>
+</li>
+</ul>
+<p>Node.js will treat the following as [CommonJS][] when passed to <code>node</code> as the
+initial input, or when referenced by <code>import</code> statements or <code>import()</code>
+expressions:</p>
+<ul>
+<li><p>Files with a <code>.cjs</code> extension.</p>
+</li>
+<li><p>Files with a <code>.js</code> extension when the nearest parent <code>package.json</code> file
+contains a top-level field [<code>&quot;type&quot;</code>][] with a value of <code>&quot;commonjs&quot;</code>.</p>
+</li>
+<li><p>Strings passed in as an argument to <code>--eval</code> or <code>--print</code>, or piped to <code>node</code>
+via <code>STDIN</code>, with the flag <code>--input-type=commonjs</code>.</p>
+</li>
+<li><p>Files with a <code>.js</code> extension with no parent <code>package.json</code> file or where the
+nearest parent <code>package.json</code> file lacks a <code>type</code> field, and where the code
+can evaluate successfully as CommonJS. In other words, Node.js tries to run
+such &quot;ambiguous&quot; files as CommonJS first, and will retry evaluating them as ES
+modules if the evaluation as CommonJS fails because the parser found ES module
+syntax.</p>
+</li>
+</ul>
+<p>Writing ES module syntax in &quot;ambiguous&quot; files incurs a performance cost, and
+therefore it is encouraged that authors be explicit wherever possible. In
+particular, package authors should always include the [<code>&quot;type&quot;</code>][] field in
+their <code>package.json</code> files, even in packages where all sources are CommonJS.
+Being explicit about the <code>type</code> of the package will future-proof the package in
+case the default type of Node.js ever changes, and it will also make things
+easier for build tools and loaders to determine how the files in the package
+should be interpreted.</p>
+<h3 id="syntax-detection">Syntax detection</h3>
+<blockquote>
+<p>Stability: 1.2 - Release candidate</p>
+</blockquote>
+<p>Node.js will inspect the source code of ambiguous input to determine whether it
+contains ES module syntax; if such syntax is detected, the input will be treated
+as an ES module.</p>
+<p>Ambiguous input is defined as:</p>
+<ul>
+<li>Files with a <code>.js</code> extension or no extension; and either no controlling
+<code>package.json</code> file or one that lacks a <code>type</code> field.</li>
+<li>String input (<code>--eval</code> or <code>STDIN</code>) when <code>--input-type</code>is not specified.</li>
+</ul>
+<p>ES module syntax is defined as syntax that would throw when evaluated as
+CommonJS. This includes the following:</p>
+<ul>
+<li><code>import</code> statements (but <em>not</em> <code>import()</code> expressions, which are valid in
+CommonJS).</li>
+<li><code>export</code> statements.</li>
+<li><code>import.meta</code> references.</li>
+<li><code>await</code> at the top level of a module.</li>
+<li>Lexical redeclarations of the CommonJS wrapper variables (<code>require</code>, <code>module</code>,
+<code>exports</code>, <code>__dirname</code>, <code>__filename</code>).</li>
+</ul>
+<h3 id="module-resolution-and-loading">Module resolution and loading</h3>
+<p>Node.js has two types of module resolution and loading, chosen based on how the module is requested.</p>
+<p>When a module is requested via <code>require()</code> (available by default in CommonJS modules,
+and can be dynamically generated using <code>createRequire()</code> in both CommonJS and ES Modules):</p>
+<ul>
+<li>Resolution:<ul>
+<li>The resolution initiated by <code>require()</code> supports [folders as modules][].</li>
+<li>When resolving a specifier, if no exact match is found, <code>require()</code> will try to add
+extensions (<code>.js</code>, <code>.json</code>, and finally <code>.node</code>) and then attempt to resolve
+[folders as modules][].</li>
+<li>It does not support URLs as specifiers by default.</li>
+</ul>
+</li>
+<li>Loading:<ul>
+<li><code>.json</code> files are treated as JSON text files.</li>
+<li><code>.node</code> files are interpreted as compiled addon modules loaded with <code>process.dlopen()</code>.</li>
+<li><code>.ts</code>, <code>.mts</code> and <code>.cts</code> files are treated as [TypeScript][] text files.</li>
+<li>Files with any other extension, or without extensions, are treated as JavaScript
+text files.</li>
+<li><code>require()</code> can only be used to [load ECMAScript modules from CommonJS modules][] if
+the [ECMAScript module][ES Module] <em>and its dependencies</em> are synchronous
+(i.e. they do not contain top-level <code>await</code>).</li>
+</ul>
+</li>
+</ul>
+<p>When a module is requested via static <code>import</code> statements (only available in ES Modules)
+or <code>import()</code> expressions (available in both CommonJS and ES Modules):</p>
+<ul>
+<li>Resolution:<ul>
+<li>The resolution of <code>import</code>/<code>import()</code> does not support folders as modules,
+directory indexes (e.g. <code>&#39;./startup/index.js&#39;</code>) must be fully specified.</li>
+<li>It does not perform extension searching. A file extension must be provided
+when the specifier is a relative or absolute file URL.</li>
+<li>It supports <code>file://</code> and <code>data:</code> URLs as specifiers by default.</li>
+</ul>
+</li>
+<li>Loading:<ul>
+<li><code>.json</code> files are treated as JSON text files. When importing JSON modules,
+an import type attribute is required (e.g.
+<code>import json from &#39;./data.json&#39; with { type: &#39;json&#39; }</code>).</li>
+<li><code>.node</code> files are interpreted as compiled addon modules loaded with
+<code>process.dlopen()</code>, if [<code>--experimental-addon-modules</code>][] is enabled.</li>
+<li><code>.ts</code>, <code>.mts</code> and <code>.cts</code> files are treated as [TypeScript][] text files.</li>
+<li>It accepts only <code>.js</code>, <code>.mjs</code>, and <code>.cjs</code> extensions for JavaScript text
+files.</li>
+<li><code>.wasm</code> files are treated as [WebAssembly modules][].</li>
+<li>Any other file extensions will result in a  [<code>ERR_UNKNOWN_FILE_EXTENSION</code>][] error.
+Additional file extensions can be facilitated via [customization hooks][].</li>
+<li><code>import</code>/<code>import()</code> can be used to load JavaScript [CommonJS modules][commonjs].
+Such modules are passed through [merve][] to try to identify named
+exports, which are available if they can be determined through static analysis.</li>
+</ul>
+</li>
+</ul>
+<p>Regardless of how a module is requested, the resolution and loading process can be customized
+using [customization hooks][].</p>
+<h3 id="packagejson-and-file-extensions"><code>package.json</code> and file extensions</h3>
+<p>Within a package, the [<code>package.json</code>][] [<code>&quot;type&quot;</code>][] field defines how
+Node.js should interpret <code>.js</code> files. If a <code>package.json</code> file does not have a
+<code>&quot;type&quot;</code> field, <code>.js</code> files are treated as [CommonJS][].</p>
+<p>A <code>package.json</code> <code>&quot;type&quot;</code> value of <code>&quot;module&quot;</code> tells Node.js to interpret <code>.js</code>
+files within that package as using [ES module][] syntax.</p>
+<p>The <code>&quot;type&quot;</code> field applies not only to initial entry points (<code>node my-app.js</code>)
+but also to files referenced by <code>import</code> statements and <code>import()</code> expressions.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JavaScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript"><span class="hljs-comment">// my-app.js, treated as an ES module because there is a package.json</span>
+<span class="hljs-comment">// file in the same folder with &quot;type&quot;: &quot;module&quot;.</span>
+
+<span class="hljs-comment">// Loaded as ES module since ./startup contains no package.json file,</span>
+<span class="hljs-comment">// and therefore inherits the &quot;type&quot; value from one level up.</span>
+
+<span class="hljs-comment">// Loaded as CommonJS since ./node_modules/commonjs-package/package.json</span>
+<span class="hljs-comment">// lacks a &quot;type&quot; field or contains &quot;type&quot;: &quot;commonjs&quot;.</span>
+
+<span class="hljs-comment">// Loaded as CommonJS since ./node_modules/commonjs-package/package.json</span>
+<span class="hljs-comment">// lacks a &quot;type&quot; field or contains &quot;type&quot;: &quot;commonjs&quot;.</span></code></pre></div></figure>
+<p>Files ending with <code>.mjs</code> are always loaded as [ES modules][] regardless of
+the nearest parent <code>package.json</code>.</p>
+<p>Files ending with <code>.cjs</code> are always loaded as [CommonJS][] regardless of the
+nearest parent <code>package.json</code>.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JavaScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript">
+<span class="hljs-comment">// Loaded as CommonJS since .cjs is always loaded as CommonJS.</span>
+
+<span class="hljs-comment">// Loaded as ES module since .mjs is always loaded as ES module.</span></code></pre></div></figure>
+<p>The <code>.mjs</code> and <code>.cjs</code> extensions can be used to mix types within the same
+package:</p>
+<ul>
+<li><p>Within a <code>&quot;type&quot;: &quot;module&quot;</code> package, Node.js can be instructed to
+interpret a particular file as [CommonJS][] by naming it with a <code>.cjs</code>
+extension (since both <code>.js</code> and <code>.mjs</code> files are treated as ES modules within
+a <code>&quot;module&quot;</code> package).</p>
+</li>
+<li><p>Within a <code>&quot;type&quot;: &quot;commonjs&quot;</code> package, Node.js can be instructed to
+interpret a particular file as an [ES module][] by naming it with an <code>.mjs</code>
+extension (since both <code>.js</code> and <code>.cjs</code> files are treated as CommonJS within a
+<code>&quot;commonjs&quot;</code> package).</p>
+</li>
+</ul>
+<h3 id="--input-type-flag"><code>--input-type</code> flag</h3>
+<p>Strings passed in as an argument to <code>--eval</code> (or <code>-e</code>), or piped to <code>node</code> via
+<code>STDIN</code>, are treated as [ES modules][] when the <code>--input-type=module</code> flag
+is set.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Terminal</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-bash"><span class="tk-cmd">node</span> <span class="tk-flag">--input-type</span>=module <span class="tk-flag">--eval</span> <span class="tk-str">"import { sep } from 'node:path'; console.log(sep);"</span>
+
+<span class="tk-cmd">echo</span> <span class="tk-str">"import { sep } from 'node:path'; console.log(sep);"</span> | node <span class="tk-flag">--input-type</span>=module</code></pre></div></figure>
+<p>For completeness there is also <code>--input-type=commonjs</code>, for explicitly running
+string input as CommonJS. This is the default behavior if <code>--input-type</code> is
+unspecified.</p>
+<h2 id="package-entry-points">Package entry points</h2>
+<p>In a package&#39;s <code>package.json</code> file, two fields can define entry points for a
+package: [<code>&quot;main&quot;</code>][] and [<code>&quot;exports&quot;</code>][]. Both fields apply to both ES module
+and CommonJS module entry points.</p>
+<p>The [<code>&quot;main&quot;</code>][] field is supported in all versions of Node.js, but its
+capabilities are limited: it only defines the main entry point of the package.</p>
+<p>The [<code>&quot;exports&quot;</code>][] provides a modern alternative to [<code>&quot;main&quot;</code>][] allowing
+multiple entry points to be defined, conditional entry resolution support
+between environments, and <strong>preventing any other entry points besides those
+defined in [<code>&quot;exports&quot;</code>][]</strong>. This encapsulation allows module authors to
+clearly define the public interface for their package.</p>
+<p>For new packages targeting the currently supported versions of Node.js, the
+[<code>&quot;exports&quot;</code>][] field is recommended. For packages supporting Node.js 10 and
+below, the [<code>&quot;main&quot;</code>][] field is required. If both [<code>&quot;exports&quot;</code>][] and
+[<code>&quot;main&quot;</code>][] are defined, the [<code>&quot;exports&quot;</code>][] field takes precedence over
+[<code>&quot;main&quot;</code>][] in supported versions of Node.js.</p>
+<p>[Conditional exports][] can be used within [<code>&quot;exports&quot;</code>][] to define different
+package entry points per environment, including whether the package is
+referenced via <code>require</code> or via <code>import</code>. For more information about supporting
+both CommonJS and ES modules in a single package please consult
+[the dual CommonJS/ES module packages section][].</p>
+<p>Existing packages introducing the [<code>&quot;exports&quot;</code>][] field will prevent consumers
+of the package from using any entry points that are not defined, including the
+[<code>package.json</code>][] (e.g. <code>require(&#39;your-package/package.json&#39;)</code>). <strong>This will
+likely be a breaking change.</strong></p>
+<p>To make the introduction of [<code>&quot;exports&quot;</code>][] non-breaking, ensure that every
+previously supported entry point is exported. It is best to explicitly specify
+entry points so that the package&#39;s public API is well-defined. For example,
+a project that previously exported <code>main</code>, <code>lib</code>,
+<code>feature</code>, and the <code>package.json</code> could use the following <code>package.exports</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JSON</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-json"><span class="hljs-punctuation">{</span>
+  <span class="hljs-attr">&quot;name&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;my-package&quot;</span><span class="hljs-punctuation">,</span>
+  <span class="hljs-attr">&quot;exports&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-punctuation">{</span>
+    <span class="hljs-attr">&quot;.&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;./lib/index.js&quot;</span><span class="hljs-punctuation">,</span>
+    <span class="hljs-attr">&quot;./lib&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;./lib/index.js&quot;</span><span class="hljs-punctuation">,</span>
+    <span class="hljs-attr">&quot;./lib/index&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;./lib/index.js&quot;</span><span class="hljs-punctuation">,</span>
+    <span class="hljs-attr">&quot;./lib/index.js&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;./lib/index.js&quot;</span><span class="hljs-punctuation">,</span>
+    <span class="hljs-attr">&quot;./feature&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;./feature/index.js&quot;</span><span class="hljs-punctuation">,</span>
+    <span class="hljs-attr">&quot;./feature/index&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;./feature/index.js&quot;</span><span class="hljs-punctuation">,</span>
+    <span class="hljs-attr">&quot;./feature/index.js&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;./feature/index.js&quot;</span><span class="hljs-punctuation">,</span>
+    <span class="hljs-attr">&quot;./package.json&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;./package.json&quot;</span>
+  <span class="hljs-punctuation">}</span>
+<span class="hljs-punctuation">}</span></code></pre></div></figure>
+<p>Alternatively a project could choose to export entire folders both with and
+without extensioned subpaths using export patterns:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JSON</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-json"><span class="hljs-punctuation">{</span>
+  <span class="hljs-attr">&quot;name&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;my-package&quot;</span><span class="hljs-punctuation">,</span>
+  <span class="hljs-attr">&quot;exports&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-punctuation">{</span>
+    <span class="hljs-attr">&quot;.&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;./lib/index.js&quot;</span><span class="hljs-punctuation">,</span>
+    <span class="hljs-attr">&quot;./lib&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;./lib/index.js&quot;</span><span class="hljs-punctuation">,</span>
+    <span class="hljs-attr">&quot;./lib/*&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;./lib/*.js&quot;</span><span class="hljs-punctuation">,</span>
+    <span class="hljs-attr">&quot;./lib/*.js&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;./lib/*.js&quot;</span><span class="hljs-punctuation">,</span>
+    <span class="hljs-attr">&quot;./feature&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;./feature/index.js&quot;</span><span class="hljs-punctuation">,</span>
+    <span class="hljs-attr">&quot;./feature/*&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;./feature/*.js&quot;</span><span class="hljs-punctuation">,</span>
+    <span class="hljs-attr">&quot;./feature/*.js&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;./feature/*.js&quot;</span><span class="hljs-punctuation">,</span>
+    <span class="hljs-attr">&quot;./package.json&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;./package.json&quot;</span>
+  <span class="hljs-punctuation">}</span>
+<span class="hljs-punctuation">}</span></code></pre></div></figure>
+<p>With the above providing backwards-compatibility for any minor package versions,
+a future major change for the package can then properly restrict the exports
+to only the specific feature exports exposed:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JSON</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-json"><span class="hljs-punctuation">{</span>
+  <span class="hljs-attr">&quot;name&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;my-package&quot;</span><span class="hljs-punctuation">,</span>
+  <span class="hljs-attr">&quot;exports&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-punctuation">{</span>
+    <span class="hljs-attr">&quot;.&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;./lib/index.js&quot;</span><span class="hljs-punctuation">,</span>
+    <span class="hljs-attr">&quot;./feature/*.js&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;./feature/*.js&quot;</span><span class="hljs-punctuation">,</span>
+    <span class="hljs-attr">&quot;./feature/internal/*&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-literal"><span class="hljs-keyword">null</span></span>
+  <span class="hljs-punctuation">}</span>
+<span class="hljs-punctuation">}</span></code></pre></div></figure>
+<h3 id="main-entry-point-export">Main entry point export</h3>
+<p>When writing a new package, it is recommended to use the [<code>&quot;exports&quot;</code>][] field:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JSON</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-json"><span class="hljs-punctuation">{</span>
+  <span class="hljs-attr">&quot;exports&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;./index.js&quot;</span>
+<span class="hljs-punctuation">}</span></code></pre></div></figure>
+<p>When the [<code>&quot;exports&quot;</code>][] field is defined, all subpaths of the package are
+encapsulated and no longer available to importers. For example,
+<code>require(&#39;pkg/subpath.js&#39;)</code> throws an [<code>ERR_PACKAGE_PATH_NOT_EXPORTED</code>][]
+error.</p>
+<p>This encapsulation of exports provides more reliable guarantees
+about package interfaces for tools and when handling semver upgrades for a
+package. It is not a strong encapsulation since a direct require of any
+absolute subpath of the package such as
+<code>require(&#39;/path/to/node_modules/pkg/subpath.js&#39;)</code> will still load <code>subpath.js</code>.</p>
+<p>All currently supported versions of Node.js and modern build tools support the
+<code>&quot;exports&quot;</code> field. For projects using an older version of Node.js or a related
+build tool, compatibility can be achieved by including the <code>&quot;main&quot;</code> field
+alongside <code>&quot;exports&quot;</code> pointing to the same module:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JSON</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-json"><span class="hljs-punctuation">{</span>
+  <span class="hljs-attr">&quot;main&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;./index.js&quot;</span><span class="hljs-punctuation">,</span>
+  <span class="hljs-attr">&quot;exports&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;./index.js&quot;</span>
+<span class="hljs-punctuation">}</span></code></pre></div></figure>
+<h3 id="subpath-exports">Subpath exports</h3>
+<p>When using the [<code>&quot;exports&quot;</code>][] field, custom subpaths can be defined along
+with the main entry point by treating the main entry point as the
+<code>&quot;.&quot;</code> subpath:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JSON</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-json"><span class="hljs-punctuation">{</span>
+  <span class="hljs-attr">&quot;exports&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-punctuation">{</span>
+    <span class="hljs-attr">&quot;.&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;./index.js&quot;</span><span class="hljs-punctuation">,</span>
+    <span class="hljs-attr">&quot;./submodule.js&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;./src/submodule.js&quot;</span>
+  <span class="hljs-punctuation">}</span>
+<span class="hljs-punctuation">}</span></code></pre></div></figure>
+<p>Now only the defined subpath in [<code>&quot;exports&quot;</code>][] can be imported by a consumer:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JavaScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript">
+<span class="hljs-comment">// Loads ./node_modules/es-module-package/src/submodule.js</span></code></pre></div></figure>
+<p>While other subpaths will error:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JavaScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript">
+<span class="hljs-comment">// Throws ERR_PACKAGE_PATH_NOT_EXPORTED</span></code></pre></div></figure>
+<h4 id="extensions-in-subpaths">Extensions in subpaths</h4>
+<p>Package authors should provide either extensioned (<code>import &#39;pkg/subpath.js&#39;</code>) or
+extensionless (<code>import &#39;pkg/subpath&#39;</code>) subpaths in their exports. This ensures
+that there is only one subpath for each exported module so that all dependents
+// Loads ./node_modules/es-module-package/src/features/x.js</p>
+<p>// Loads ./node_modules/es-module-package/src/features/y/y.js</p>
+<p>// Loads ./src/internal/z.js</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">
+This is a direct static matching and replacement without any special handling
+for file extensions. Including the `&quot;*.js&quot;` on both sides of the mapping
+restricts the exposed package exports to only JS files.
+
+The property of exports being statically enumerable is maintained with exports
+patterns since the individual exports for a package can be determined by
+treating the right hand side target pattern as a `**` glob against the list of
+files within the package. Because `node_modules` paths are forbidden in exports
+targets, this expansion is dependent on only the files of the package itself.
+
+To exclude private subfolders from patterns, `null` targets can be used:</code></pre></div></figure>
+<p>json
+// ./node_modules/es-module-package/package.json
+{
+  &quot;exports&quot;: {
+    &quot;./features/<em>.js&quot;: &quot;./src/features/</em>.js&quot;,
+    &quot;./features/private-internal/*&quot;: null
+  }
+}</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext"></code></pre></div></figure>
+<p>js</p>
+<p>// Throws: ERR_PACKAGE_PATH_NOT_EXPORTED</p>
+<p>// Loads ./node_modules/es-module-package/src/features/x.js</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">
+### Conditional exports
+
+
+
+Conditional exports provide a way to map to different paths depending on
+certain conditions. They are supported for both CommonJS and ES module imports.
+
+For example, a package that wants to provide different ES module exports for
+`require()` and `import` can be written:</code></pre></div></figure>
+<p>json
+// package.json
+{
+  &quot;exports&quot;: {
+    &quot;import&quot;: &quot;./index-module.js&quot;,
+    &quot;require&quot;: &quot;./index-require.cjs&quot;
+  },
+  &quot;type&quot;: &quot;module&quot;
+}</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">
+Node.js implements the following conditions, listed in order from most
+specific to least specific as conditions should be defined:
+
+* `&quot;node-addons&quot;` - similar to `&quot;node&quot;` and matches for any Node.js environment.
+  This condition can be used to provide an entry point which uses native C++
+  addons as opposed to an entry point which is more universal and doesn&#x27;t rely
+  on native addons. This condition can be disabled via the
+  [`--no-addons` flag][].
+* `&quot;node&quot;` - matches for any Node.js environment. Can be a CommonJS or ES
+  module file. _In most cases explicitly calling out the Node.js platform is
+  not necessary._
+* `&quot;import&quot;` - matches when the package is loaded via `import` or
+  `import()`, or via any top-level import or resolve operation by the
+  ECMAScript module loader. Applies regardless of the module format of the
+  target file. _Always mutually exclusive with `&quot;require&quot;`._
+* `&quot;require&quot;` - matches when the package is loaded via `require()`. The
+  referenced file should be loadable with `require()` although the condition
+  matches regardless of the module format of the target file. Expected
+  formats include CommonJS, JSON, native addons, and ES modules. _Always mutually
+  exclusive with `&quot;import&quot;`._
+* `&quot;module-sync&quot;` - matches no matter the package is loaded via `import`,
+  `import()` or `require()`. The format is expected to be ES modules that does
+  not contain top-level await in its module graph - if it does,
+  `ERR_REQUIRE_ASYNC_MODULE` will be thrown when the module is `require()`-ed.
+* `&quot;worker&quot;` - matches when the package is loaded within a [Web Worker][]
+  thread, including the worker entry point and all of its dependencies,
+  `import()`, `require()`, and `import.meta.resolve()`. Does not apply to
+  threads created with [`node:worker_threads`][], including those created
+  from within a Web Worker.
+* `&quot;default&quot;` - the generic fallback that always matches. Can be a CommonJS
+  or ES module file. _This condition should always come last._
+
+Within the [`&quot;exports&quot;`][] object, key order is significant. During condition
+matching, earlier entries have higher priority and take precedence over later
+entries. _The general rule is that conditions should be from most specific to
+least specific in object order_.
+
+Using the `&quot;import&quot;` and `&quot;require&quot;` conditions can lead to some hazards,
+which are further explained in [the dual CommonJS/ES module packages section][].
+
+The `&quot;node-addons&quot;` condition can be used to provide an entry point which
+uses native C++ addons. However, this condition can be disabled via the
+[`--no-addons` flag][]. When using `&quot;node-addons&quot;`, it&#x27;s recommended to treat
+`&quot;default&quot;` as an enhancement that provides a more universal entry point, e.g.
+using WebAssembly instead of a native addon.
+
+Conditional exports can also be extended to exports subpaths, for example:</code></pre></div></figure>
+<p>json
+{
+  &quot;exports&quot;: {
+    &quot;.&quot;: &quot;./index.js&quot;,
+    &quot;./feature.js&quot;: {
+      &quot;node&quot;: &quot;./feature-node.js&quot;,
+      &quot;default&quot;: &quot;./feature.js&quot;
+    }
+  }
+}</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">
+Defines a package where `require(&#x27;pkg/feature.js&#x27;)` and
+`import &#x27;pkg/feature.js&#x27;` could provide different implementations between
+Node.js and other JS environments.
+
+When using environment branches, always include a `&quot;default&quot;` condition where
+possible. Providing a `&quot;default&quot;` condition ensures that any unknown JS
+environments are able to use this universal implementation, which helps avoid
+these JS environments from having to pretend to be existing environments in
+order to support packages with conditional exports. For this reason, using
+`&quot;node&quot;` and `&quot;default&quot;` condition branches is usually preferable to using
+`&quot;node&quot;` and `&quot;browser&quot;` condition branches.
+
+### Nested conditions
+
+In addition to direct mappings, Node.js also supports nested condition objects.
+
+For example, to define a package that only has dual mode entry points for
+use in Node.js but not the browser:</code></pre></div></figure>
+<p>json
+{
+  &quot;exports&quot;: {
+    &quot;node&quot;: {
+      &quot;import&quot;: &quot;./feature-node.mjs&quot;,
+      &quot;require&quot;: &quot;./feature-node.cjs&quot;
+    },
+    &quot;default&quot;: &quot;./feature.mjs&quot;
+  }
+}</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">
+Conditions continue to be matched in order as with flat conditions. If
+a nested condition does not have any mapping it will continue checking
+the remaining conditions of the parent condition. In this way nested
+conditions behave analogously to nested JavaScript `if` statements.
+
+### Resolving user conditions
+
+
+
+When running Node.js, custom user conditions can be added with the
+`--conditions` flag:</code></pre></div></figure>
+<p>bash
+node --conditions=development index.js</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">
+which would then resolve the `&quot;development&quot;` condition in package imports and
+exports, while resolving the existing `&quot;node&quot;`, `&quot;node-addons&quot;`, `&quot;default&quot;`,
+`&quot;import&quot;`, and `&quot;require&quot;` conditions as appropriate.
+
+Any number of custom conditions can be set with repeat flags.
+
+Typical conditions should only contain alphanumerical characters,
+using &quot;:&quot;, &quot;-&quot;, or &quot;=&quot; as separators if necessary. Anything else may run
+into compatibility issues outside of node.
+
+In node, conditions have very few restrictions, but specifically these include:
+
+1. They must contain at least one character.
+2. They cannot start with &quot;.&quot; since they may appear in places that also
+   allow relative paths.
+3. They cannot contain &quot;,&quot; since they may be parsed as a comma-separated
+   list by some CLI tools.
+4. They cannot be integer property keys like &quot;10&quot; since that can have
+   unexpected effects on property key ordering for JS objects.
+
+### Community Conditions Definitions
+
+Condition strings other than the `&quot;import&quot;`, `&quot;require&quot;`, `&quot;node&quot;`, `&quot;module-sync&quot;`,
+`&quot;node-addons&quot;` and `&quot;default&quot;` conditions
+[implemented in Node.js core](#conditional-exports) are ignored by default.
+
+Other platforms may implement other conditions and user conditions can be
+enabled in Node.js via the [`--conditions` / `-C` flag][].
+
+Since custom package conditions require clear definitions to ensure correct
+usage, a list of common known package conditions and their strict definitions
+is provided below to assist with ecosystem coordination.
+
+* `&quot;types&quot;` - can be used by typing systems to resolve the typing file for
+  the given export. _This condition should always be included first._
+* `&quot;browser&quot;` - any web browser environment.
+* `&quot;development&quot;` - can be used to define a development-only environment
+  entry point, for example to provide additional debugging context such as
+  better error messages when running in a development mode. _Must always be
+  mutually exclusive with `&quot;production&quot;`._
+* `&quot;production&quot;` - can be used to define a production environment entry
+  point. _Must always be mutually exclusive with `&quot;development&quot;`._
+
+For other runtimes, platform-specific condition key definitions are maintained
+by the [WinterCG][] in the [Runtime Keys][] proposal specification.
+
+New conditions definitions may be added to this list by creating a pull request
+to the [Node.js documentation for this section][]. The requirements for listing
+a new condition definition here are that:
+
+* The definition should be clear and unambiguous for all implementers.
+* The use case for why the condition is needed should be clearly justified.
+* There should exist sufficient existing implementation usage.
+* The condition name should not conflict with another condition definition or
+  condition in wide usage.
+* The listing of the condition definition should provide a coordination
+  benefit to the ecosystem that wouldn&#x27;t otherwise be possible. For example,
+  this would not necessarily be the case for company-specific or
+  application-specific conditions.
+* The condition should be such that a Node.js user would expect it to be in
+  Node.js core documentation. The `&quot;types&quot;` condition is a good example: It
+  doesn&#x27;t really belong in the [Runtime Keys][] proposal but is a good fit
+  here in the Node.js docs.
+
+The above definitions may be moved to a dedicated conditions registry in due
+course.
+
+### Self-referencing a package using its name
+
+
+
+Within a package, the values defined in the package&#x27;s
+`package.json` [`&quot;exports&quot;`][] field can be referenced via the package&#x27;s name.
+For example, assuming the `package.json` is:</code></pre></div></figure>
+<p>json
+// package.json
+{
+  &quot;name&quot;: &quot;a-package&quot;,
+  &quot;exports&quot;: {
+    &quot;.&quot;: &quot;./index.mjs&quot;,
+    &quot;./foo.js&quot;: &quot;./foo.js&quot;
+  }
+}</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">
+Then any module _in that package_ can reference an export in the package itself:</code></pre></div></figure>
+<p>js
+// ./a-module.mjs</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">
+Self-referencing is also available when using `require`, both in an ES module,
+and in a CommonJS one. For example, this code will also work:</code></pre></div></figure>
+<p>cjs
+// ./a-module.js
+const { something } = require(&#39;a-package/foo.js&#39;); // Loads from ./foo.js.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">
+Finally, self-referencing also works with scoped packages. For example, this
+code will also work:</code></pre></div></figure>
+<p>json
+// package.json
+{
+  &quot;name&quot;: &quot;@my/package&quot;,
+  &quot;exports&quot;: &quot;./index.js&quot;
+}</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext"></code></pre></div></figure>
+<p>cjs
+// ./index.js
+module.exports = 42;</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext"></code></pre></div></figure>
+<p>cjs
+// ./other.js
+console.log(require(&#39;@my/package&#39;));</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext"></code></pre></div></figure>
+<p>console
+$ node other.js
+42</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">
+## Dual CommonJS/ES module packages
+
+See [the package examples repository][] for details.
+
+## Package maps
+
+
+
+&gt; Stability: 1 - Experimental. Enable this API with [`--experimental-package-map`][].
+
+Package maps provide a mechanism to control package resolution without relying
+on the `node_modules` folder structure. When enabled via the
+[`--experimental-package-map`][] flag, Node.js uses a JSON configuration file
+to determine how bare specifiers are resolved.
+
+This feature is useful for:
+
+* **Monorepos**: Define explicit dependency relationships between workspace
+  packages without symlinks or hoisting complexities.
+* **Dependency isolation**: Prevent packages from accessing undeclared
+  dependencies (phantom dependencies).
+* **Low file system coupling**: The package resolution algorithm runs without
+  inspecting the file system, relying instead on static data tables.
+
+### Configuration file format
+
+The package map configuration file is a JSON file with a `packages` object.
+Each key in `packages` is called a package ID and is a unique identifier for a package entry:</code></pre></div></figure>
+<p>json
+{
+  &quot;packages&quot;: {
+    &quot;app&quot;: {
+      &quot;url&quot;: &quot;./packages/app&quot;,
+      &quot;dependencies&quot;: {
+        &quot;@myorg/utils&quot;: &quot;utils&quot;,
+        &quot;@myorg/ui-lib&quot;: &quot;ui-lib&quot;
+      }
+    },
+    &quot;utils&quot;: {
+      &quot;url&quot;: &quot;./packages/utils&quot;
+    },
+    &quot;ui-lib&quot;: {
+      &quot;url&quot;: &quot;./packages/ui-lib&quot;,
+      &quot;dependencies&quot;: {
+        &quot;@myorg/utils&quot;: &quot;utils&quot;
+      }
+    }
+  }
+}</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">
+Each package entry has the following fields:
+
+* `url` {string} **Required.** An absolute or relative URL. This is parsed using
+  the WHATWG [`URL`][] API, using the configuration file URL as base. Only
+  `file:` protocol is supported. Multiple packages are allowed to share the
+  same URL; consumers must key module instances by both module url **and package IDs**
+  to differentiate them.
+* `dependencies` {Object} An object mapping bare specifiers to package keys.
+  Each key is the import name used in source code, and each value is the
+  corresponding package key in the `packages` object. Defaults to an empty
+  object.
+
+### Resolution algorithm
+
+When a bare specifier is encountered:
+
+1. Node.js determines which package performs the resolution request.
+   * If possible the package ID for the importer file should be provided to the resolution algorithm.
+   * Failing that, the resolution will check if the file path is within any
+     package location decoded from its `url`.
+2. If no package ID is provided and the importing file is not within any mapped package, an
+   [`ERR_PACKAGE_MAP_EXTERNAL_FILE`][] error is thrown.
+3. Node.js looks up the specifier&#x27;s package name in the importing package&#x27;s
+   `dependencies` object to find the corresponding package key.
+4. If found, the resolution algorithm locates the target package location from the
+   package&#x27;s `url` field in the package map.
+5. If the specifier is not in `dependencies`, a
+   `MODULE_NOT_FOUND` error is thrown.
+6. The package location is forwarded to the regular Node.js resolution algorithm to
+   finish the resolution (`index.js`, exports field, etc).
+
+More details can be found in the [resolution algorithm pseudo-code][].
+
+### Multiple package versions
+
+Different packages can depend on different versions of the same package.
+Because `dependencies` maps bare specifiers to package keys, two packages
+can map the same specifier to different targets:</code></pre></div></figure>
+<p>json
+{
+  &quot;packages&quot;: {
+    &quot;app&quot;: {
+      &quot;url&quot;: &quot;./app&quot;,
+      &quot;dependencies&quot;: {
+        &quot;component&quot;: &quot;component-v2&quot;
+      }
+    },
+    &quot;legacy&quot;: {
+      &quot;url&quot;: &quot;./legacy&quot;,
+      &quot;dependencies&quot;: {
+        &quot;component&quot;: &quot;component-v1&quot;
+      }
+    },
+    &quot;component-v1&quot;: {
+      &quot;url&quot;: &quot;./vendor/component-1.0.0&quot;
+    },
+    &quot;component-v2&quot;: {
+      &quot;url&quot;: &quot;./vendor/component-2.0.0&quot;
+    }
+  }
+}</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">
+Both `app` and `legacy` can `import &#x27;component&#x27;`, but they resolve to
+different paths based on their declared dependencies.
+
+### Multiple packages for the same URL
+
+To address complex hoisting situations, multiple packages may share the same
+URL, which introduces ambiguity when determining which package an import
+originates from:</code></pre></div></figure>
+<p>json
+{
+  &quot;packages&quot;: {
+    &quot;app-old&quot;: {
+      &quot;url&quot;: &quot;./app-old&quot;,
+      &quot;dependencies&quot;: {
+        &quot;lib&quot;: &quot;lib-old&quot;
+      }
+    },
+    &quot;app-new&quot;: {
+      &quot;url&quot;: &quot;./app-new&quot;,
+      &quot;dependencies&quot;: {
+        &quot;lib&quot;: &quot;lib-new&quot;
+      }
+    },
+    &quot;lib-old&quot;: {
+      &quot;url&quot;: &quot;./lib&quot;,
+      &quot;dependencies&quot;: {
+        &quot;react&quot;: &quot;react-15&quot;
+      }
+    },
+    &quot;lib-new&quot;: {
+      &quot;url&quot;: &quot;./lib&quot;,
+      &quot;dependencies&quot;: {
+        &quot;react&quot;: &quot;react-18&quot;
+      }
+    }
+  }
+}</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">
+In the example above both `lib-old` and `lib-new` use the same `./lib` folder to
+store their sources, the only difference being in which version of `react` they&#x27;ll
+access when performing `require` calls or using `import`.
+
+Because multiple package entries share the same URL, resolving a bare specifier
+from a file within that URL is ambiguous unless the originating package ID is
+known. If the package ID cannot be determined (for example, because the caller
+did not propagate it from a previous resolution), Node.js will throw an error
+rather than guess.
+
+To support this pattern, implementers must key module instances by package ID
+and propagate it from each resolution result to subsequent resolution requests.
+This ensures that when `lib` requires `react`, the runtime knows whether the
+request comes from `lib-old` or `lib-new` and can select the correct dependency.
+
+### Interaction with other resolution
+
+Package maps only apply to bare specifiers that are not Node.js builtin
+modules. The following cases are not affected by package maps and continue
+to use standard resolution:
+
+* Relative paths or URLs (`./` or `../`).
+* Absolute paths or URLs.
+* Node.js builtin modules (`node:fs`, etc.).
+
+### Limitations
+
+* Package maps must be a single static file; dynamic configuration is not
+  supported.
+* Circular dependency detection is not performed by the package map resolver.
+* The package map file is loaded synchronously at startup.
+
+## Node.js `package.json` field definitions
+
+This section describes the fields used by the Node.js runtime. Other tools (such
+as [npm](https://docs.npmjs.com/cli/v8/configuring-npm/package-json)) use
+additional fields which are ignored by Node.js and not documented here.
+
+The following fields in `package.json` files are used in Node.js:
+
+* [`&quot;name&quot;`][] - Relevant when using named imports within a package. Also used
+  by package managers as the name of the package.
+* [`&quot;main&quot;`][] - The default module when loading the package, if exports is not
+  specified, and in versions of Node.js prior to the introduction of exports.
+* [`&quot;type&quot;`][] - The package type determining whether to load `.js` files as
+  CommonJS or ES modules.
+* [`&quot;exports&quot;`][] - Package exports and conditional exports. When present,
+  limits which submodules can be loaded from within the package.
+* [`&quot;imports&quot;`][] - Package imports, for use by modules within the package
+  itself.
+* [`&quot;private&quot;`][] - When `true`, marks the package as not for publication. Used
+  by [`--experimental-strip-private-modules`][] to allow type stripping for the
+  package&#x27;s TypeScript files under `node_modules`.
+
+### `&quot;name&quot;`
+
+
+
+* Type: {string}</code></pre></div></figure>
+<p>json
+{
+  &quot;name&quot;: &quot;package-name&quot;
+}</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">
+The `&quot;name&quot;` field defines your package&#x27;s name. Publishing to the
+_npm_ registry requires a name that satisfies
+[certain requirements](https://docs.npmjs.com/files/package.json#name).
+
+The `&quot;name&quot;` field can be used in addition to the [`&quot;exports&quot;`][] field to
+[self-reference][] a package using its name.
+
+### `&quot;main&quot;`
+
+
+
+* Type: {string}</code></pre></div></figure>
+<p>json
+{
+  &quot;main&quot;: &quot;./index.js&quot;
+}</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">
+The `&quot;main&quot;` field defines the entry point of a package when imported by name
+via a `node_modules` lookup.  Its value is a path.
+
+The [`&quot;exports&quot;`][] field, if it exists, takes precedence over the
+`&quot;main&quot;` field when importing the package by name.
+
+It also defines the script that is used when the [package directory is loaded
+via `require()`](modules.md#folders-as-modules).</code></pre></div></figure>
+<p>cjs
+// This resolves to ./path/to/directory/index.js.
+require(&#39;./path/to/directory&#39;);</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">
+### `&quot;type&quot;`
+
+
+
+* Type: {string}
+
+The `&quot;type&quot;` field defines the module format that Node.js uses for all
+`.js` files that have that `package.json` file as their nearest parent.
+
+Files ending with `.js` are loaded as ES modules when the nearest parent
+`package.json` file contains a top-level field `&quot;type&quot;` with a value of
+`&quot;module&quot;`.
+
+The nearest parent `package.json` is defined as the first `package.json` found
+when searching in the current folder, that folder&#x27;s parent, and so on up
+until a node\_modules folder or the volume root is reached.</code></pre></div></figure>
+<p>json
+// package.json
+{
+  &quot;type&quot;: &quot;module&quot;
+}</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext"></code></pre></div></figure>
+<p>bash</p>
+<h1>In same folder as preceding package.json</h1>
+<p>node my-app.js # Runs as ES module</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">
+If the nearest parent `package.json` lacks a `&quot;type&quot;` field, or contains
+`&quot;type&quot;: &quot;commonjs&quot;`, `.js` files are treated as [CommonJS][]. If the volume
+root is reached and no `package.json` is found, `.js` files are treated as
+[CommonJS][].
+
+`import` statements of `.js` files are treated as ES modules if the nearest
+parent `package.json` contains `&quot;type&quot;: &quot;module&quot;`.</code></pre></div></figure>
+<p>js
+// my-app.js, part of the same example as above</p>

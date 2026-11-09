@@ -1,0 +1,115 @@
+<p>How does Vue take a template and turn it into actual DOM nodes? How does Vue update those DOM nodes efficiently? We will attempt to shed some light on these questions here by diving into Vue&#39;s internal rendering mechanism.</p>
+<h2 id="virtual-dom">Virtual DOM</h2>
+<p>You have probably heard about the term &quot;virtual DOM&quot;, which Vue&#39;s rendering system is based upon.</p>
+<p>The virtual DOM (VDOM) is a programming concept where an ideal, or “virtual”, representation of a UI is kept in memory and synced with the “real” DOM. The concept was pioneered by <a target="_blank" rel="noopener" href="https://react.dev/">React</a>, and has been adopted in many other frameworks with different implementations, including Vue.</p>
+<p>Virtual DOM is more of a pattern than a specific technology, so there is no one canonical implementation. We can illustrate the idea using a simple example:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JavaScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript"><span class="hljs-keyword">const</span> vnode = {
+  <span class="hljs-attr">type</span>: <span class="hljs-string">&#x27;div&#x27;</span>,
+  <span class="hljs-attr">props</span>: {
+    <span class="hljs-attr">id</span>: <span class="hljs-string">&#x27;hello&#x27;</span>
+  },
+  <span class="hljs-attr">children</span>: [
+    <span class="hljs-comment">/* more vnodes */</span>
+  ]
+}</code></pre></div></figure>
+<p>Here, <code>vnode</code> is a plain JavaScript object (a &quot;virtual node&quot;) representing a <code>&lt;div&gt;</code> element. It contains all the information that we need to create the actual element. It also contains more children vnodes, which makes it the root of a virtual DOM tree.</p>
+<p>A runtime renderer can walk a virtual DOM tree and construct a real DOM tree from it. This process is called <strong>mount</strong>.</p>
+<p>If we have two copies of virtual DOM trees, the renderer can also walk and compare the two trees, figuring out the differences, and apply those changes to the actual DOM. This process is called <strong>patch</strong>, also known as &quot;diffing&quot; or &quot;reconciliation&quot;.</p>
+<p>The main benefit of virtual DOM is that it gives the developer the ability to programmatically create, inspect and compose desired UI structures in a declarative way, while leaving the direct DOM manipulation to the renderer.</p>
+<h2 id="render-pipeline">Render Pipeline</h2>
+<p>At the high level, this is what happens when a Vue component is mounted:</p>
+<ol>
+<li><p><strong>Compile</strong>: Vue templates are compiled into <strong>render functions</strong>: functions that return virtual DOM trees. This step can be done either ahead-of-time via a build step, or on-the-fly by using the runtime compiler.</p>
+</li>
+<li><p><strong>Mount</strong>: The runtime renderer invokes the render functions, walks the returned virtual DOM tree, and creates actual DOM nodes based on it. This step is performed as a <a href="./reactivity-in-depth">reactive effect</a>, so it keeps track of all reactive dependencies that were used.</p>
+</li>
+<li><p><strong>Patch</strong>: When a dependency used during mount changes, the effect re-runs. This time, a new, updated Virtual DOM tree is created. The runtime renderer walks the new tree, compares it with the old one, and applies necessary updates to the actual DOM.</p>
+</li>
+</ol>
+<p><img src="./images/render-pipeline.png" alt="render pipeline"></p>
+<!-- https://www.figma.com/file/elViLsnxGJ9lsQVsuhwqxM/Rendering-Mechanism --><h2 id="templates-vs-render-functions">Templates vs. Render Functions</h2>
+<p>Vue templates are compiled into virtual DOM render functions. Vue also provides APIs that allow us to skip the template compilation step and directly author render functions. Render functions are more flexible than templates when dealing with highly dynamic logic, because you can work with vnodes using the full power of JavaScript.</p>
+<p>So why does Vue recommend templates by default? There are a number of reasons:</p>
+<ol>
+<li><p>Templates are closer to actual HTML. This makes it easier to reuse existing HTML snippets, apply accessibility best practices, style with CSS, and for designers to understand and modify.</p>
+</li>
+<li><p>Templates are easier to statically analyze due to their more deterministic syntax. This allows Vue&#39;s template compiler to apply many compile-time optimizations to improve the performance of the virtual DOM (which we will discuss below).</p>
+</li>
+</ol>
+<p>In practice, templates are sufficient for most use cases in applications. Render functions are typically only used in reusable components that need to deal with highly dynamic rendering logic. Render function usage is discussed in more detail in <a href="./render-function">Render Functions &amp; JSX</a>.</p>
+<h2 id="compiler-informed-virtual-dom">Compiler-Informed Virtual DOM</h2>
+<p>The virtual DOM implementation in React and most other virtual-DOM implementations are purely runtime: the reconciliation algorithm cannot make any assumptions about the incoming virtual DOM tree, so it has to fully traverse the tree and diff the props of every vnode in order to ensure correctness. In addition, even if a part of the tree never changes, new vnodes are always created for them on each re-render, resulting in unnecessary memory pressure. This is one of the most criticized aspect of virtual DOM: the somewhat brute-force reconciliation process sacrifices efficiency in return for declarativeness and correctness.</p>
+<p>But it doesn&#39;t have to be that way. In Vue, the framework controls both the compiler and the runtime. This allows us to implement many compile-time optimizations that only a tightly-coupled renderer can take advantage of. The compiler can statically analyze the template and leave hints in the generated code so that the runtime can take shortcuts whenever possible. At the same time, we still preserve the capability for the user to drop down to the render function layer for more direct control in edge cases. We call this hybrid approach <strong>Compiler-Informed Virtual DOM</strong>.</p>
+<p>Below, we will discuss a few major optimizations done by the Vue template compiler to improve the virtual DOM&#39;s runtime performance.</p>
+<h3 id="cache-static">Cache Static</h3>
+<p>Quite often there will be parts in a template that do not contain any dynamic bindings:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">&lt;div&gt;
+  &lt;div&gt;foo&lt;/div&gt; &lt;!-- cached --&gt;
+  &lt;div&gt;bar&lt;/div&gt; &lt;!-- cached --&gt;
+  &lt;div&gt;{{ dynamic }}&lt;/div&gt;</code></pre></div></figure>
+<p><a target="_blank" rel="noopener" href="https://template-explorer.vuejs.org/#eyJzcmMiOiI8ZGl2PlxuICA8ZGl2PmZvbzwvZGl2PiA8IS0tIGNhY2hlZCAtLT5cbiAgPGRpdj5iYXI8L2Rpdj4gPCEtLSBjYWNoZWQgLS0+XG4gIDxkaXY+e3sgZHluYW1pYyB9fTwvZGl2PlxuPC9kaXY+XG4iLCJvcHRpb25zIjp7ImhvaXN0U3RhdGljIjp0cnVlfX0=">Inspect in Template Explorer</a></p>
+<p>The <code>foo</code> and <code>bar</code> divs are static - re-creating vnodes and diffing them on each re-render is unnecessary. The renderer creates these vnodes during the initial render, caches them, and reuses the same vnodes for every subsequent re-render. The renderer is also able to completely skip diffing them when it notices the old vnode and the new vnode are the same one.</p>
+<p>In addition, when there are enough consecutive static elements, they will be condensed into a single &quot;static vnode&quot; that contains the plain HTML string for all these nodes (<a target="_blank" rel="noopener" href="https://template-explorer.vuejs.org/#eyJzcmMiOiI8ZGl2PlxuICA8ZGl2IGNsYXNzPVwiZm9vXCI+Zm9vPC9kaXY+XG4gIDxkaXYgY2xhc3M9XCJmb29cIj5mb288L2Rpdj5cbiAgPGRpdiBjbGFzcz1cImZvb1wiPmZvbzwvZGl2PlxuICA8ZGl2IGNsYXNzPVwiZm9vXCI+Zm9vPC9kaXY+XG4gIDxkaXYgY2xhc3M9XCJmb29cIj5mb288L2Rpdj5cbiAgPGRpdj57eyBkeW5hbWljIH19PC9kaXY+XG48L2Rpdj4iLCJzc3IiOmZhbHNlLCJvcHRpb25zIjp7ImhvaXN0U3RhdGljIjp0cnVlfX0=">Example</a>). These static vnodes are mounted by directly setting <code>innerHTML</code>.</p>
+<h3 id="patch-flags">Patch Flags</h3>
+<p>For a single element with dynamic bindings, we can also infer a lot of information from it at compile time:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">&lt;!-- class binding only --&gt;
+&lt;div :class=&quot;{ active }&quot;&gt;&lt;/div&gt;
+
+&lt;!-- id and value bindings only --&gt;
+&lt;input :id=&quot;id&quot; :value=&quot;value&quot;&gt;
+
+&lt;!-- text children only --&gt;
+&lt;div&gt;{{ dynamic }}&lt;/div&gt;</code></pre></div></figure>
+<p><a target="_blank" rel="noopener" href="https://template-explorer.vuejs.org/#eyJzcmMiOiI8ZGl2IDpjbGFzcz1cInsgYWN0aXZlIH1cIj48L2Rpdj5cblxuPGlucHV0IDppZD1cImlkXCIgOnZhbHVlPVwidmFsdWVcIj5cblxuPGRpdj57eyBkeW5hbWljIH19PC9kaXY+Iiwib3B0aW9ucyI6e319">Inspect in Template Explorer</a></p>
+<p>When generating the render function code for these elements, Vue encodes the type of update each of them needs directly in the vnode creation call:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JavaScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript"><span class="hljs-title function_">createElementVNode</span>(<span class="hljs-string">&quot;div&quot;</span>, {
+  <span class="hljs-attr">class</span>: <span class="hljs-title function_">_normalizeClass</span>({ <span class="hljs-attr">active</span>: _ctx.<span class="hljs-property">active</span> })
+}, <span class="hljs-literal">null</span>, <span class="hljs-number">2</span> <span class="hljs-comment">/* CLASS */</span>)</code></pre></div></figure>
+<p>The last argument, <code>2</code>, is a <a target="_blank" rel="noopener" href="https://github.com/vuejs/core/blob/main/packages/shared/src/patchFlags.ts">patch flag</a>. An element can have multiple patch flags, which will be merged into a single number. The runtime renderer can then check against the flags using <a target="_blank" rel="noopener" href="https://en.wikipedia.org/wiki/Bitwise_operation">bitwise operations</a> to determine whether it needs to do certain work:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JavaScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript"><span class="hljs-keyword">if</span> (vnode.<span class="hljs-property">patchFlag</span> &amp; <span class="hljs-title class_">PatchFlags</span>.<span class="hljs-property">CLASS</span> <span class="hljs-comment">/* 2 */</span>) {
+  <span class="hljs-comment">// update the element&#x27;s class</span>
+}</code></pre></div></figure>
+<p>Bitwise checks are extremely fast. With the patch flags, Vue is able to do the least amount of work necessary when updating elements with dynamic bindings.</p>
+<p>Vue also encodes the type of children a vnode has. For example, a template that has multiple root nodes is represented as a fragment. In most cases, we know for sure that the order of these root nodes will never change, so this information can also be provided to the runtime as a patch flag:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JavaScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript">
+  <span class="hljs-keyword">return</span> (<span class="hljs-title function_">_openBlock</span>(), <span class="hljs-title function_">_createElementBlock</span>(_Fragment, <span class="hljs-literal">null</span>, [
+    <span class="hljs-comment">/* children */</span>
+  ], <span class="hljs-number">64</span> <span class="hljs-comment">/* STABLE_FRAGMENT */</span>))
+}</code></pre></div></figure>
+<p>The runtime can thus completely skip child-order reconciliation for the root fragment.</p>
+<h3 id="tree-flattening">Tree Flattening</h3>
+<p>Taking another look at the generated code from the previous example, you&#39;ll notice the root of the returned virtual DOM tree is created using a special <code>createElementBlock()</code> call:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JavaScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript">
+  <span class="hljs-keyword">return</span> (<span class="hljs-title function_">_openBlock</span>(), <span class="hljs-title function_">_createElementBlock</span>(_Fragment, <span class="hljs-literal">null</span>, [
+    <span class="hljs-comment">/* children */</span>
+  ], <span class="hljs-number">64</span> <span class="hljs-comment">/* STABLE_FRAGMENT */</span>))
+}</code></pre></div></figure>
+<p>Conceptually, a &quot;block&quot; is a part of the template that has stable inner structure. In this case, the entire template has a single block because it does not contain any structural directives like <code>v-if</code> and <code>v-for</code>.</p>
+<p>Each block tracks any descendant nodes (not just direct children) that have patch flags. For example:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">&lt;div&gt; &lt;!-- root block --&gt;
+  &lt;div&gt;...&lt;/div&gt;         &lt;!-- not tracked --&gt;
+  &lt;div :id=&quot;id&quot;&gt;&lt;/div&gt;   &lt;!-- tracked --&gt;
+  &lt;div&gt;                  &lt;!-- not tracked --&gt;
+    &lt;div&gt;{{ bar }}&lt;/div&gt; &lt;!-- tracked --&gt;
+  &lt;/div&gt;</code></pre></div></figure>
+<p>The result is a flattened array that contains only the dynamic descendant nodes:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">div (block root)
+- div with :id binding
+- div with {{ bar }} binding</code></pre></div></figure>
+<p>When this component needs to re-render, it only needs to traverse the flattened tree instead of the full tree. This is called <strong>Tree Flattening</strong>, and it greatly reduces the number of nodes that need to be traversed during virtual DOM reconciliation. Any static parts of the template are effectively skipped.</p>
+<p><code>v-if</code> and <code>v-for</code> directives will create new block nodes:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">&lt;div&gt; &lt;!-- root block --&gt;
+  &lt;div&gt;
+    &lt;div v-if&gt; &lt;!-- if block --&gt;
+      ...
+    &lt;/div&gt;
+  &lt;/div&gt;</code></pre></div></figure>
+<p>A child block is tracked inside the parent block&#39;s array of dynamic descendants. This retains a stable structure for the parent block.</p>
+<h3 id="impact-on-ssr-hydration">Impact on SSR Hydration</h3>
+<p>Both patch flags and tree flattening also greatly improve Vue&#39;s <a href="#/doc/vue/guide/scaling-up/ssr@client-hydration">SSR Hydration</a> performance:</p>
+<ul>
+<li><p>Single element hydration can take fast paths based on the corresponding vnode&#39;s patch flag.</p>
+</li>
+<li><p>Only block nodes and their dynamic descendants need to be traversed during hydration, effectively achieving partial hydration at the template level.</p>
+</li>
+</ul>
