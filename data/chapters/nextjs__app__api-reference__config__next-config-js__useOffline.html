@@ -1,0 +1,90 @@
+<p>The <code>useOffline</code> configuration option enables offline connectivity detection and automatic retry of failed navigation, prefetch, and Server Action requests. When enabled, it also exposes the <a href="#/doc/nextjs/app/api-reference/functions/use-offline"><code>useOffline</code></a> hook for reading the current offline state from Client Components.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>next.config.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">
+
+<span class="hljs-keyword">const</span> <span class="hljs-attr">nextConfig</span>: <span class="hljs-title class_">NextConfig</span> = {
+  <span class="hljs-attr">experimental</span>: {
+    <span class="hljs-attr">useOffline</span>: <span class="hljs-literal">true</span>,
+  },
+}</code></pre></div></figure>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>next.config.js</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript"><span class="hljs-variable language_">module</span>.<span class="hljs-property">exports</span> = {
+  <span class="hljs-attr">experimental</span>: {
+    <span class="hljs-attr">useOffline</span>: <span class="hljs-literal">true</span>,
+  },
+}</code></pre></div></figure>
+<p>When enabled, Next.js will:</p>
+<ul>
+<li>Listen for the browser&#39;s <a target="_blank" rel="noopener" href="https://developer.mozilla.org/en-US/docs/Web/API/Window/offline_event"><code>offline</code></a> and <a target="_blank" rel="noopener" href="https://developer.mozilla.org/en-US/docs/Web/API/Window/online_event"><code>online</code></a> events to track connectivity.</li>
+<li>Detect network failures on navigation, prefetch, and Server Action requests.</li>
+<li>Poll for connectivity using <a target="_blank" rel="noopener" href="https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Methods/HEAD"><code>HEAD</code></a> requests with backoff while offline.</li>
+<li>Automatically retry blocked requests once connectivity is restored.</li>
+<li>Make the <a href="#/doc/nextjs/app/api-reference/functions/use-offline"><code>useOffline</code></a> hook available from <code>next/offline</code>.</li>
+</ul>
+<h2 id="how-retry-works">How retry works</h2>
+<p>The offline state is entered through one of two paths:</p>
+<ul>
+<li><strong>Browser event.</strong> Next.js registers a <code>window.addEventListener(&#39;offline&#39;, ...)</code> listener. When the OS reports the network interface as down, the offline state flips on immediately.</li>
+<li><strong>Failed fetch.</strong> Any navigation, prefetch, or Server Action request whose <code>fetch()</code> rejects with a non-abort, non-timeout error calls into the offline module. This catches the case where the browser still reports <code>navigator.onLine === true</code> but the actual request cannot reach the origin (captive portal, broken DNS, dead upstream).</li>
+</ul>
+<p>Once in the offline state, a polling loop tries to confirm that connectivity has returned.</p>
+<h3 id="the-connectivity-check">The connectivity check</h3>
+<p>Each check issues a single <code>HEAD</code> request to the current page&#39;s URL with the RSC header set, the same endpoint navigations use. The request is aborted after 200 ms.</p>
+<p>Two outcomes count as &quot;online&quot;:</p>
+<ol>
+<li>The fetch resolves normally.</li>
+<li>The 200 ms timeout aborts the request. A truly offline request fails almost instantly (DNS or TCP error), so if it&#39;s still pending at 200 ms the TCP handshake succeeded and the server is reachable.</li>
+</ol>
+<p>Any other rejection schedules the next check. A successful framework fetch (navigation, prefetch, Server Action) during the offline period also flips the state back to online.</p>
+<h3 id="backoff">Backoff</h3>
+<p>Delays between checks are stepped, not exponential, and capped at 3 seconds:</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Attempt</th>
+<th>Delay before next check</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>1</td>
+<td>500 ms</td>
+</tr>
+<tr>
+<td>2</td>
+<td>1 s</td>
+</tr>
+<tr>
+<td>3</td>
+<td>2 s</td>
+</tr>
+<tr>
+<td>4 and after</td>
+<td>3 s</td>
+</tr>
+</tbody></table></div>
+<p>The browser&#39;s <code>online</code> event short-circuits the current wait and runs a connectivity check immediately. Reconnection is detected without waiting for the next scheduled tick.</p>
+<h3 id="giving-up">Giving up</h3>
+<p>The polling loop never gives up on its own. It continues at the 3-second cap until a check succeeds or the page unloads. A device that goes offline for hours and then regains connectivity will have its polling loop resume and resolve normally.</p>
+<h3 id="retry-of-framework-requests">Retry of framework requests</h3>
+<p>While the offline state is active, any navigation, prefetch, or Server Action waits for the next connectivity check to succeed, whether it was newly issued or already in flight when the connection dropped. When the check succeeds, the request runs once; no extra backoff applies.</p>
+<p>If it fails with a network error, the app re-enters the offline state and the polling loop starts again.</p>
+<h3 id="traffic-at-reconnection">Traffic at reconnection</h3>
+<p>A single client does not produce a runaway burst of traffic against its origin:</p>
+<ul>
+<li>While the client is offline, a failed <code>fetch()</code> rejects locally at the browser&#39;s network layer. The request never reaches the origin.</li>
+<li>The polling loop issues one <code>HEAD</code> request at a time, with delays capped at 3 seconds. No other framework requests are sent to the origin during the offline period.</li>
+<li>When connectivity returns, each pending navigation and Server Action fires once. Only the last navigation attempt is kept pending, and a typical form button is disabled while its action is pending.</li>
+<li>Prefetches run through the <a href="#/doc/nextjs/app/guides/prefetching@prefetch-scheduling">existing prefetch queue</a>, not all at once.</li>
+</ul>
+<p>In practice, this feature is unlikely to flood your server. The only extra traffic it generates per offline user is the HEAD polling, which stops as soon as connectivity returns. Prefetches, Server Actions, and navigations fire the same number of times they would have without an outage, just delayed.</p>
+<h2 id="version-history">Version History</h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Version</th>
+<th>Changes</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>v16.x.0</code></td>
+<td><code>experimental.useOffline</code> configuration option introduced.</td>
+</tr>
+</tbody></table></div>

@@ -1,0 +1,95 @@
+<p>For partially prerendered app routes, <code>onBuildComplete</code> gives you the data needed to seed and resume PPR:</p>
+<ul>
+<li><code>outputs.prerenders[].fallback.filePath</code>: path to the generated fallback shell (for example HTML)</li>
+<li><code>outputs.prerenders[].fallback.postponedState</code>: serialized postponed state used to resume rendering</li>
+</ul>
+<h2 id="1-seed-shell-postponed-state-at-build-time">1. Seed shell + postponed state at build time</h2>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>my-adapter.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">
+
+<span class="hljs-keyword">async</span> <span class="hljs-keyword">function</span> <span class="hljs-title function_">seedPprEntries</span>(<span class="hljs-params"><span class="hljs-attr">outputs</span>: <span class="hljs-title class_">AdapterOutputs</span></span>) {
+  <span class="hljs-keyword">for</span> (<span class="hljs-keyword">const</span> prerender <span class="hljs-keyword">of</span> outputs.<span class="hljs-property">prerenders</span>) {
+    <span class="hljs-keyword">const</span> fallback = prerender.<span class="hljs-property">fallback</span>
+    <span class="hljs-keyword">if</span> (!fallback?.<span class="hljs-property">filePath</span> || !fallback.<span class="hljs-property">postponedState</span>) <span class="hljs-keyword">continue</span>
+
+    <span class="hljs-keyword">const</span> shell = <span class="hljs-keyword">await</span> <span class="hljs-title function_">readFile</span>(fallback.<span class="hljs-property">filePath</span>, <span class="hljs-string">&#x27;utf8&#x27;</span>)
+    <span class="hljs-keyword">await</span> platformCache.<span class="hljs-title function_">set</span>(prerender.<span class="hljs-property">pathname</span>, {
+      shell,
+      <span class="hljs-attr">postponedState</span>: fallback.<span class="hljs-property">postponedState</span>,
+      <span class="hljs-attr">initialHeaders</span>: fallback.<span class="hljs-property">initialHeaders</span>,
+      <span class="hljs-attr">initialStatus</span>: fallback.<span class="hljs-property">initialStatus</span>,
+      <span class="hljs-attr">initialRevalidate</span>: fallback.<span class="hljs-property">initialRevalidate</span>,
+      <span class="hljs-attr">initialExpiration</span>: fallback.<span class="hljs-property">initialExpiration</span>,
+    })
+  }
+}</code></pre></div></figure>
+<h2 id="2-runtime-flow-serve-cached-shell-and-resume-in-background">2. Runtime flow: serve cached shell and resume in background</h2>
+<p>At request time, you can stream a single response that is the concatenation of:</p>
+<ol>
+<li>cached HTML shell stream</li>
+<li>resumed render stream (generated after invoking <code>handler</code> with postponed state)</li>
+</ol>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">Client
+  | GET /ppr-route
+  v
+Adapter Router
+  |
+  |-- read cached shell + postponedState ---&gt; Platform Cache
+  |&lt;------------- cache hit -----------------|
+  |
+  |-- create responseStream = concat(shellStream, resumedStream)
+  |
+  |-- start piping shellStream ------------&gt; Client (first bytes)
+  |
+  |-- invoke handler(req, res, { requestMeta: { postponed } })
+  |   -------------------------------------&gt; Entrypoint (handler)
+  |   &lt;------------------------------------- resumed chunks/cache entry
+  |
+  |-- append resumed chunks to resumedStream
+  |
+  &#x27;-- client receives one HTTP response:
+      [shell bytes........][resumed bytes........]</code></pre></div></figure>
+<h2 id="3-update-cache-with-requestmetaoncacheentryv2">3. Update cache with <code>requestMeta.onCacheEntryV2</code></h2>
+<p><code>requestMeta.onCacheEntryV2</code> is called when a response cache entry is looked up or generated. Use it to persist updated shell/postponed data.</p>
+<blockquote>
+<p>[!NOTE]</p>
+<ul>
+<li><code>requestMeta.onCacheEntry</code> still works, but is deprecated.</li>
+<li>Prefer <code>requestMeta.onCacheEntryV2</code>.</li>
+<li>If your adapter uses an internal <code>onCacheCallback</code> abstraction, wire it to <code>requestMeta.onCacheEntryV2</code>.</li>
+</ul>
+</blockquote>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>my-adapter.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">await</span> <span class="hljs-title function_">handler</span>(req, res, {
+  waitUntil,
+  <span class="hljs-attr">requestMeta</span>: {
+    <span class="hljs-attr">postponed</span>: cachedPprEntry?.<span class="hljs-property">postponedState</span>,
+    <span class="hljs-attr">onCacheEntryV2</span>: <span class="hljs-title function_">async</span> (cacheEntry, meta) =&gt; {
+      <span class="hljs-keyword">if</span> (cacheEntry.<span class="hljs-property">value</span>?.<span class="hljs-property">kind</span> === <span class="hljs-string">&#x27;APP_PAGE&#x27;</span>) {
+        <span class="hljs-keyword">const</span> html =
+          cacheEntry.<span class="hljs-property">value</span>.<span class="hljs-property">html</span> &amp;&amp;
+          <span class="hljs-keyword">typeof</span> cacheEntry.<span class="hljs-property">value</span>.<span class="hljs-property">html</span>.<span class="hljs-property">toUnchunkedString</span> === <span class="hljs-string">&#x27;function&#x27;</span>
+            ? cacheEntry.<span class="hljs-property">value</span>.<span class="hljs-property">html</span>.<span class="hljs-title function_">toUnchunkedString</span>()
+            : <span class="hljs-literal">null</span>
+
+        <span class="hljs-keyword">await</span> platformCache.<span class="hljs-title function_">set</span>(meta.<span class="hljs-property">url</span> || req.<span class="hljs-property">url</span> || <span class="hljs-string">&#x27;/&#x27;</span>, {
+          <span class="hljs-attr">shell</span>: html,
+          <span class="hljs-attr">postponedState</span>: cacheEntry.<span class="hljs-property">value</span>.<span class="hljs-property">postponed</span>,
+          <span class="hljs-attr">headers</span>: cacheEntry.<span class="hljs-property">value</span>.<span class="hljs-property">headers</span>,
+          <span class="hljs-attr">status</span>: cacheEntry.<span class="hljs-property">value</span>.<span class="hljs-property">status</span>,
+          <span class="hljs-attr">cacheControl</span>: cacheEntry.<span class="hljs-property">cacheControl</span>,
+        })
+      }
+
+      <span class="hljs-comment">// Return true only if your adapter already wrote the response itself.</span>
+      <span class="hljs-keyword">return</span> <span class="hljs-literal">false</span>
+    },
+  },
+})</code></pre></div></figure>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">Entrypoint (handler)
+  | onCacheEntryV2(cacheEntry, { url })
+  v
+requestMeta.onCacheEntryV2 callback
+  |
+  |-- if APP_PAGE ---&gt; persist html + postponedState + headers ---&gt; Platform Cache
+  |
+  &#x27;-- return false: continue normal Next.js response flow
+      return true:  adapter already handled response (short-circuit)</code></pre></div></figure>
