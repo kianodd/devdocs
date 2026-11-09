@@ -1,0 +1,478 @@
+<p><a href="#/doc/nextjs/app/getting-started/caching">Cache Components</a> can prerender a static shell while request-time content streams in. The shell can keep the route&#39;s layout, navigation, headings, and focused loading states visible instead of replacing the page with one broad fallback.</p>
+<p>Apps written before Cache Components often await request data near the top of a layout or page. With Cache Components enabled, those routes may already have a small static shell, sometimes made up of one broad loading state.</p>
+<p>In this guide, you&#39;ll learn how to expand the shell by tracing each data read to the UI that needs it, caching reusable work, and moving request-time work behind focused `` boundaries. These patterns keep important content available early and reserve space as the rest of the page streams in.</p>
+<blockquote>
+<p><strong>Good to know:</strong> This guide focuses on Cache Components, which enable the static shell and instant navigation validation described below. Many of the underlying patterns, such as moving data access closer to the UI that needs it, streaming with focused `` boundaries, avoiding waterfalls, and designing stable loading states, are also useful in other App Router applications. The cache directives and validation workflow require Cache Components.</p>
+</blockquote>
+<h2 id="use-the-optimizer-skill-recommended">Use the optimizer skill (recommended)</h2>
+<p>The <a href="#/doc/nextjs/app/guides/ai-agents@next-cache-components-optimizer"><code>next-cache-components-optimizer</code></a> skill applies this guide with a coding agent. It uses the <a href="#step-4-verify-the-instant-ui"><code>instant()</code> verification loop</a> below to capture the intended static shell, prove the current behavior, and keep the passing test as regression coverage.</p>
+<p>The skill can also target a client navigation whose destination UI does not commit immediately. It applies the same patterns to the destination segments that change, then verifies the named navigation through its real link. If the destination already has instant UI and you want to include additional URL-specific content before the click, use <a href="#/doc/nextjs/app/guides/optimizing-prefetching">Optimizing prefetching</a> instead.</p>
+<p>Install the skill:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Terminal.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-bash"><span class="tk-cmd">npx</span> skills add vercel/next.js <span class="tk-flag">--skill</span> next-cache-components-optimizer</code></pre></div></figure>
+<p>Then give the agent the route and the UI that should be in its static shell:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">Optimize the static shell for /[team]/settings using the next-cache-components-optimizer Skill. On an initial load, the settings frame and heading should be available immediately.</code></pre></div></figure>
+<h2 id="prerequisites">Prerequisites</h2>
+<p>Enable <a href="#/doc/nextjs/app/api-reference/config/next-config-js/cacheComponents"><code>cacheComponents</code></a> and resolve the route&#39;s blocking validation errors first. For the migration workflow, see <a href="#/doc/nextjs/app/guides/migrating-to-cache-components">Migrating to Cache Components</a>.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>next.config.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">
+
+<span class="hljs-keyword">const</span> <span class="hljs-attr">nextConfig</span>: <span class="hljs-title class_">NextConfig</span> = {
+  <span class="hljs-attr">cacheComponents</span>: <span class="hljs-literal">true</span>,
+}</code></pre></div></figure>
+<p>For client navigations, consider enabling <a href="#/doc/nextjs/app/guides/adopting-partial-prefetching">Partial Prefetching</a> as well. With Partial Prefetching enabled, `` can include cached URL-specific content before the click, making more UI available immediately on navigation. See <a href="#/doc/nextjs/app/guides/optimizing-prefetching">Optimizing prefetching</a> to choose which content to prefetch.</p>
+<h2 id="patterns">Patterns</h2>
+<p>The following patterns can make more useful UI available in the static shell:</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Pattern</th>
+<th>Use it when</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><a href="#keep-static-ui-in-the-shell">Keep static UI in the shell</a></td>
+<td>UI does not need data</td>
+<td>The UI can render in the static shell</td>
+</tr>
+<tr>
+<td><a href="#stream-request-time-work">Stream request-time work</a></td>
+<td>A region needs data that is only known at request time</td>
+<td>Its nearest `` fallback can render first</td>
+</tr>
+<tr>
+<td><a href="#cache-reusable-work">Cache reusable work</a></td>
+<td>A result can be reused across requests</td>
+<td>The completed result can render in the static shell</td>
+</tr>
+</tbody></table></div>
+<h3 id="keep-static-ui-in-the-shell">Keep static UI in the shell</h3>
+<p>A `` boundary controls which part of the UI its fallback replaces when a child suspends. Static UI can sit inside a boundary without a problem. However, if the same boundary also contains slow or request-time work, that fallback temporarily replaces the static UI too.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app/products/page.tsx</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-comment">// Before: one loading state replaces the whole page</span>
+}&gt;
+  <span class="language-xml"><span class="hljs-tag">&lt;<span class="hljs-name">h1</span>&gt;</span>Products<span class="hljs-tag">&lt;/<span class="hljs-name">h1</span>&gt;</span></span>
+  <span class="language-xml"><span class="hljs-tag">&lt;<span class="hljs-name">p</span>&gt;</span>Browse the latest products.<span class="hljs-tag">&lt;/<span class="hljs-name">p</span>&gt;</span></span>
+  </code></pre></div></figure>
+<p>To keep headings, navigation, cached content, and other stable UI visible, take them out of any loading state they do not need to be part of. Then move the boundary down to the smaller region that can suspend:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app/products/page.tsx</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-comment">// After: only inventory uses the loading state</span>
+&lt;main&gt;
+  <span class="language-xml"><span class="hljs-tag">&lt;<span class="hljs-name">h1</span>&gt;</span>Products<span class="hljs-tag">&lt;/<span class="hljs-name">h1</span>&gt;</span></span>
+  <span class="language-xml"><span class="hljs-tag">&lt;<span class="hljs-name">p</span>&gt;</span>Browse the latest products.<span class="hljs-tag">&lt;/<span class="hljs-name">p</span>&gt;</span></span>
+  }&gt;
+    
+  
+&lt;/main&gt;</code></pre></div></figure>
+<p>When the primary heading or other <a href="#/doc/nextjs/app/guides/streaming@lcp-largest-contentful-paint">Largest Contentful Paint candidate</a> depends on reusable data, <a href="#cache-reusable-work">cache that data</a> so the completed content can render in the shell. If the data must wait for the request, keep its loading state focused so it does not hold back the rest of the page.</p>
+<h3 id="stream-request-time-work">Stream request-time work</h3>
+<p>Some data cannot be known until a request arrives, must be recomputed for every request, or has a cache lifetime too short for prerendering. If a layout or page awaits that work near the top, it can block the whole page from rendering. Split out the region that needs the result and let only that region suspend so the rest of the page can render first.</p>
+<h4 id="push-data-access-down">Push data access down</h4>
+<p>Resolve request-time data in the logical UI region that uses it. This can be a Server Component that awaits the data or a Client Component that unwraps a promise passed from the server.</p>
+<p><strong>Move data access into a Server Component.</strong> When the page resolves request-time data itself, its heading and other independent UI cannot render until that work finishes:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app/products/[slug]/page.tsx</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-comment">// Before: request-time work blocks the page</span>
+
+  params,
+}: <span class="hljs-title class_">PageProps</span>&lt;<span class="hljs-string">&#x27;/products/[slug]&#x27;</span>&gt;) {
+  <span class="hljs-keyword">const</span> { slug } = <span class="hljs-keyword">await</span> params
+  <span class="hljs-keyword">const</span> product = <span class="hljs-keyword">await</span> db.<span class="hljs-property">products</span>.<span class="hljs-title function_">findBySlug</span>(slug)
+
+  <span class="hljs-keyword">return</span> (
+    <span class="language-xml"><span class="hljs-tag">&lt;<span class="hljs-name">main</span>&gt;</span>
+      <span class="hljs-tag">&lt;<span class="hljs-name">h1</span>&gt;</span>Product<span class="hljs-tag">&lt;/<span class="hljs-name">h1</span>&gt;</span>
+      
+    <span class="hljs-tag">&lt;/<span class="hljs-name">main</span>&gt;</span></span>
+  )
+}</code></pre></div></figure>
+<p>Move <code>params</code>, <code>searchParams</code>, or another request-time data read into the Server Component that represents the relevant UI region. Place that component behind `` so its siblings can render while the work resolves:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app/products/[slug]/page.tsx</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-comment">// After: only the product region waits</span>
+
+  <span class="hljs-keyword">return</span> (
+    <span class="language-xml"><span class="hljs-tag">&lt;<span class="hljs-name">main</span>&gt;</span>
+      <span class="hljs-tag">&lt;<span class="hljs-name">h1</span>&gt;</span>Product<span class="hljs-tag">&lt;/<span class="hljs-name">h1</span>&gt;</span>
+      }&gt;
+        
+      
+    <span class="hljs-tag">&lt;/<span class="hljs-name">main</span>&gt;</span></span>
+  )
+}
+
+<span class="hljs-keyword">async</span> <span class="hljs-keyword">function</span> <span class="hljs-title function_">Product</span>(<span class="hljs-params">{
+  params,
+}: <span class="hljs-title class_">Pick</span>&lt;<span class="hljs-title class_">PageProps</span>&lt;<span class="hljs-string">&#x27;/products/[slug]&#x27;</span>&gt;, <span class="hljs-string">&#x27;params&#x27;</span>&gt;</span>) {
+  <span class="hljs-keyword">const</span> { slug } = <span class="hljs-keyword">await</span> params
+  <span class="hljs-keyword">const</span> product = <span class="hljs-keyword">await</span> db.<span class="hljs-property">products</span>.<span class="hljs-title function_">findBySlug</span>(slug)
+  <span class="hljs-keyword">return</span> 
+}</code></pre></div></figure>
+<p>The heading and product fallback can render before the request-time product query finishes. Request APIs such as <code>cookies()</code> and <code>headers()</code> can also be moved into a focused component:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app/dashboard/layout.tsx</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">
+  <span class="hljs-keyword">return</span> (
+    
+      }&gt;
+        
+      
+      {children}
+    
+  )
+}
+
+<span class="hljs-keyword">async</span> <span class="hljs-keyword">function</span> <span class="hljs-title function_">UserMenu</span>(<span class="hljs-params"></span>) {
+  <span class="hljs-keyword">const</span> cookieStore = <span class="hljs-keyword">await</span> <span class="hljs-title function_">cookies</span>()
+  <span class="hljs-keyword">const</span> menuStyle = cookieStore.<span class="hljs-title function_">get</span>(<span class="hljs-string">&#x27;menu-style&#x27;</span>)?.<span class="hljs-property">value</span> ?? <span class="hljs-string">&#x27;compact&#x27;</span>
+
+  <span class="hljs-keyword">return</span> 
+}</code></pre></div></figure>
+<p>The layout can return <code>DashboardShell</code> before <code>UserMenu</code> reads the incoming request.</p>
+<p><strong>Resolve a promise inline.</strong> For a small region, you do not need to create another component only to await a promise. Resolve <code>params</code>, <code>searchParams</code>, or another promise inline with <code>.then()</code> inside the boundary:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app/products/page.tsx</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">}&gt;
+  {searchParams.<span class="hljs-title function_">then</span>(<span class="hljs-function">(<span class="hljs-params">{ tab = <span class="hljs-string">&#x27;details&#x27;</span> }</span>) =&gt;</span> (
+    
+  ))}</code></pre></div></figure>
+<p><strong>Pass a promise to a Client Component.</strong> An interactive Client Component may need data fetched on the server. Awaiting that data in its parent would also hold back the parent&#39;s stable UI:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app/dashboard/page.tsx</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-comment">// Before: the page waits for the chart data</span>
+
+  <span class="hljs-keyword">const</span> activity = <span class="hljs-keyword">await</span> <span class="hljs-title function_">getActivity</span>()
+
+  <span class="hljs-keyword">return</span> (
+    <span class="language-xml"><span class="hljs-tag">&lt;<span class="hljs-name">main</span>&gt;</span>
+      <span class="hljs-tag">&lt;<span class="hljs-name">h1</span>&gt;</span>Dashboard<span class="hljs-tag">&lt;/<span class="hljs-name">h1</span>&gt;</span>
+      
+    <span class="hljs-tag">&lt;/<span class="hljs-name">main</span>&gt;</span></span>
+  )
+}</code></pre></div></figure>
+<p>Start the request without awaiting it, then pass the promise to the Client Component behind ``:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app/dashboard/page.tsx</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-comment">// After: the heading can render while the chart waits</span>
+
+  <span class="hljs-keyword">const</span> activityPromise = <span class="hljs-title function_">getActivity</span>()
+
+  <span class="hljs-keyword">return</span> (
+    }&gt;
+      
+    
+  )
+}</code></pre></div></figure>
+<p>The Client Component unwraps the promise with React&#39;s <a target="_blank" rel="noopener" href="https://react.dev/reference/react/use"><code>use()</code></a>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app/dashboard/activity-chart.tsx</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-string">&#x27;use client&#x27;</span>
+
+
+<span class="hljs-keyword">type</span> <span class="hljs-title class_">Activity</span> = { <span class="hljs-attr">date</span>: <span class="hljs-built_in">string</span>; <span class="hljs-attr">value</span>: <span class="hljs-built_in">number</span> }
+
+  dataPromise,
+}: {
+  <span class="hljs-attr">dataPromise</span>: <span class="hljs-title class_">Promise</span>&lt;<span class="hljs-title class_">Activity</span>[]&gt;
+}) {
+  <span class="hljs-keyword">const</span> activity = <span class="hljs-title function_">use</span>(dataPromise)
+
+  <span class="hljs-keyword">return</span> 
+}</code></pre></div></figure>
+<p>For URL data, a Client Component can often call <a href="#/doc/nextjs/app/api-reference/functions/use-params"><code>useParams()</code></a> or <a href="#/doc/nextjs/app/api-reference/functions/use-search-params"><code>useSearchParams()</code></a> instead of receiving a promise. Both hooks resolve synchronously during a client navigation because the router already has the URL.</p>
+<p>See <a href="#/doc/nextjs/app/guides/streaming@push-dynamic-access-down">Push dynamic access down</a> for more examples of resolving request-time work closer to the UI that uses it.</p>
+<h4 id="design-loading-states">Design loading states</h4>
+<p>Before this refactor, a route might rely on one <a href="#/doc/nextjs/app/api-reference/file-conventions/loading"><code>loading.tsx</code> file</a> for the whole segment. That is often enough while the page loads as one unit. As you push data access down to reveal more completed UI, use focused [`` boundaries](/docs/app/guides/streaming#granular-streaming-with-suspense) and choose their loading states more deliberately. The <code>loading.tsx</code> file can remain as an outer fallback, or be removed when the route no longer needs it.</p>
+<p><strong>Reveal independent regions separately.</strong> Use sibling boundaries when each completed region has predictable dimensions and can appear on its own. Each fallback should reserve the space its completed region needs:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app/account/page.tsx</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">}&gt;
+  
+
+}&gt;
+  </code></pre></div></figure>
+<p><strong>Reveal related regions in stages.</strong> Nest boundaries when the group should first appear together and then reveal more detail, or when revealing a variable-height region by itself could shift the content below it:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app/account/page.tsx</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">}&gt;
+  
+  }&gt;
+    
+  </code></pre></div></figure>
+<p>React can still start independently reachable work during the same render. Nesting changes the reveal order. It does not make independent requests sequential.</p>
+<p>For variable-length content, another option is to render a predictable collapsed state with a Show more or Load more control so content below can appear without shifting later.</p>
+<p>When a route uses parallel slots, each slot can stream with its own loading state. See <a href="#/doc/nextjs/app/api-reference/file-conventions/parallel-routes@loading-and-error-ui">Loading and Error UI with Parallel Routes</a>.</p>
+<p><strong>Use the same layout for loading and completed UI.</strong> Fallbacks can drift away from the completed UI as components and responsive layouts change. Keep the container that owns the layout outside the boundary. In this example, the skeleton cards and completed product cards both use the same responsive grid:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app/products/page.tsx</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">
+  }&gt;
+    
+  </code></pre></div></figure>
+<blockquote>
+<p><strong>Good to know:</strong> As you refactor or update the UI, a skeleton might no longer match the completed component&#39;s size or responsive layout. Keeping the skeleton next to the component, or exporting it from the same file, makes it easier to update and reuse whenever that component needs to be wrapped in ``.</p>
+</blockquote>
+<p>Use an empty fallback only when the resolved component also has no visual footprint, such as an authorization gate that returns <code>null</code>. Otherwise, provide a fallback that reserves space for the completed UI.</p>
+<p><strong>Related data-fetching patterns.</strong> After splitting work into streamed regions, these patterns can prevent the requests themselves from starting later than necessary:</p>
+<ul>
+<li>When multiple independent requests must stay in one region, use <a href="#/doc/nextjs/app/getting-started/fetching-data@parallel-data-fetching">parallel data fetching</a> to start them together.</li>
+<li>When React reaches a data dependency later in the render, use <a href="#/doc/nextjs/app/getting-started/fetching-data@preloading-data">preloading</a> to start it sooner.</li>
+</ul>
+<h3 id="cache-reusable-work">Cache reusable work</h3>
+<p>After isolating work that would block the page, consider whether each async subtree actually needs to be recomputed for every request. Caching a function or component does not cache its parents or siblings. When a result can be reused, cache the function or component so its completed UI can render in the static shell. Give the result a lifetime based on how fresh the data needs to be:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app/products/product-list.tsx</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-comment">// Before: the query runs for every request</span>
+
+  <span class="hljs-keyword">const</span> products = <span class="hljs-keyword">await</span> db.<span class="hljs-property">products</span>.<span class="hljs-title function_">findMany</span>()
+  <span class="hljs-keyword">return</span> 
+}</code></pre></div></figure>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app/products/product-list.tsx</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-comment">// After: the reusable result can render in the shell</span>
+
+  <span class="hljs-string">&#x27;use cache&#x27;</span>
+  <span class="hljs-title function_">cacheLife</span>(<span class="hljs-string">&#x27;hours&#x27;</span>)
+
+  <span class="hljs-keyword">const</span> products = <span class="hljs-keyword">await</span> db.<span class="hljs-property">products</span>.<span class="hljs-title function_">findMany</span>()
+  <span class="hljs-keyword">return</span> 
+}</code></pre></div></figure>
+<p>If the application can change a cached result, connect the cached read to its writes with <a href="#/doc/nextjs/app/getting-started/revalidating">on-demand revalidation</a>.</p>
+<p><strong>Related caching patterns.</strong> These patterns cover values derived from a request, reuse within one request, and dynamic routes:</p>
+<ul>
+<li>To cache a result using a value from <code>cookies()</code>, <code>headers()</code>, or another runtime API, <a href="#/doc/nextjs/app/getting-started/caching@passing-runtime-values-to-cached-functions">read the value outside the cached scope and pass it as an argument</a>.</li>
+<li>To deduplicate matching calls during one server request without persisting the result across requests, use <a href="#/doc/nextjs/app/getting-started/fetching-data@reusing-data-with-reactcache">React <code>cache()</code></a>.</li>
+<li>To prerender known dynamic routes and generate others on demand, see <a href="#/doc/nextjs/app/guides/incremental-static-regeneration-cache-components">ISR with Cache Components</a>.</li>
+</ul>
+<p>Learn more about cache scopes and lifetimes in <a href="#/doc/nextjs/app/getting-started/caching@usage">Caching</a>.</p>
+<h2 id="follow-validation-as-you-refactor">Follow validation as you refactor</h2>
+<p>With Cache Components enabled, <a href="#/doc/nextjs/app/guides/instant-navigation@validate-instant-navigation"><code>next dev</code> validates whether each page load or client navigation has instant UI</a>. A route may already have instant UI for one entry point but show an insight for another. For example, a fallback in a shared layout may cover a page load without covering a client navigation within that layout.</p>
+<p>If an insight appears while you refactor, that specific page load or client navigation needs an immediate result or fallback. It is a useful target for the patterns above or the optimizer skill, even when another entry point to the same route is already instant. The suggested fixes map to the patterns above:</p>
+<p>  &#39; },
+    ]}
+  /&gt;
+  &#39;, highlight: true },
+      { text: &#39;  &#39; },
+      { text: &#39;&#39;, highlight: true },
+    ]}
+  /&gt;</p>
+<p>Resolving the insight makes that entry point instant. It does not decide which UI should be available immediately. Use the <a href="#/doc/nextjs/app/guides/instant-navigation@visualize-loading-states-with-the-nextjs-devtools">Navigation Inspector</a> to inspect what appears and apply the patterns above to include more useful UI, or give the route and the intended instant UI to the <a href="#use-the-optimizer-skill-recommended">optimizer skill</a>.</p>
+<h2 id="example">Example</h2>
+<p>Consider a team settings route that awaits request data near the top of both its layout and page. This structure may feel natural in an App Router application written before Cache Components. It can also carry over from the <a href="#/doc/nextjs/app/guides/migrating/app-router-migration@step-6-migrating-data-fetching-methods">Pages Router</a>, where a route-level function such as <code>getServerSideProps</code> loads data before rendering the page. In the App Router, the same structure leaves none of the settings UI in the static shell.</p>
+<p>The example starts with one layout and one page:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Folder structure.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">app/[team]/settings/
+├── layout.tsx
+└── page.tsx</code></pre></div></figure>
+<p>The layout resolves authentication before rendering the settings frame:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app/[team]/settings/layout.tsx</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">
+  <span class="hljs-keyword">const</span> cookieStore = <span class="hljs-keyword">await</span> <span class="hljs-title function_">cookies</span>()
+  <span class="hljs-keyword">const</span> requestHeaders = <span class="hljs-keyword">await</span> <span class="hljs-title function_">headers</span>()
+  <span class="hljs-keyword">const</span> user = <span class="hljs-keyword">await</span> <span class="hljs-title function_">getCurrentUser</span>({ cookieStore, requestHeaders })
+
+  <span class="hljs-keyword">if</span> (!user) <span class="hljs-title function_">redirect</span>(<span class="hljs-string">&#x27;/login&#x27;</span>)
+
+  <span class="hljs-keyword">return</span> {children}
+}</code></pre></div></figure>
+<p>The page then waits for its URL data, team settings, and reusable plan descriptions before rendering the heading:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app/[team]/settings/page.tsx</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">
+  params,
+  searchParams,
+}: <span class="hljs-title class_">PageProps</span>&lt;<span class="hljs-string">&#x27;/[team]/settings&#x27;</span>&gt;) {
+  <span class="hljs-keyword">const</span> { team } = <span class="hljs-keyword">await</span> params
+  <span class="hljs-keyword">const</span> { section = <span class="hljs-string">&#x27;profile&#x27;</span> } = <span class="hljs-keyword">await</span> searchParams
+  <span class="hljs-keyword">const</span> [settings, plans] = <span class="hljs-keyword">await</span> <span class="hljs-title class_">Promise</span>.<span class="hljs-title function_">all</span>([
+    <span class="hljs-title function_">getTeamSettings</span>(team, section),
+    db.<span class="hljs-property">plan</span>.<span class="hljs-title function_">findMany</span>(),
+  ])
+
+  <span class="hljs-keyword">return</span> (
+    <span class="language-xml"><span class="hljs-tag">&lt;<span class="hljs-name">main</span>&gt;</span>
+      <span class="hljs-tag">&lt;<span class="hljs-name">h1</span>&gt;</span>Settings<span class="hljs-tag">&lt;/<span class="hljs-name">h1</span>&gt;</span>
+      
+      
+      
+    <span class="hljs-tag">&lt;/<span class="hljs-name">main</span>&gt;</span></span>
+  )
+}</code></pre></div></figure>
+<p>The following steps keep the completed page and its authorization behavior while making more of it available in the static shell.</p>
+<h3 id="step-1-move-url-dependent-work-behind-suspense">Step 1: Move URL-dependent work behind Suspense</h3>
+<p>The current page resolves both URL promises before rendering any UI:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app/[team]/settings/page.tsx</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-comment">// Before: URL data blocks the page</span>
+
+  params,
+  searchParams,
+}: <span class="hljs-title class_">PageProps</span>&lt;<span class="hljs-string">&#x27;/[team]/settings&#x27;</span>&gt;) {
+  <span class="hljs-keyword">const</span> { team } = <span class="hljs-keyword">await</span> params
+  <span class="hljs-keyword">const</span> { section = <span class="hljs-string">&#x27;profile&#x27;</span> } = <span class="hljs-keyword">await</span> searchParams
+  <span class="hljs-keyword">const</span> settings = <span class="hljs-keyword">await</span> <span class="hljs-title function_">getTeamSettings</span>(team, section)
+
+  <span class="hljs-keyword">return</span> (
+    <span class="language-xml"><span class="hljs-tag">&lt;<span class="hljs-name">main</span>&gt;</span>
+      <span class="hljs-tag">&lt;<span class="hljs-name">h1</span>&gt;</span>Settings<span class="hljs-tag">&lt;/<span class="hljs-name">h1</span>&gt;</span>
+      
+      
+    <span class="hljs-tag">&lt;/<span class="hljs-name">main</span>&gt;</span></span>
+  )
+}</code></pre></div></figure>
+<p>The settings tabs are interactive, so they can read the URL directly with <code>useSearchParams()</code>. The server-rendered form receives the <code>params</code> and <code>searchParams</code> promises and resolves them where their values are needed.</p>
+<p>During prerendering, both regions depend on the URL, so an outer boundary provides one fallback for the group. Once the URL is available, the tabs can render. The form also waits for the settings query, so a nested boundary keeps its own loading state visible until the server work finishes:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app/[team]/settings/page.tsx</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-comment">// After: the heading renders before URL-dependent content</span>
+
+  params,
+  searchParams,
+}: <span class="hljs-title class_">PageProps</span>&lt;<span class="hljs-string">&#x27;/[team]/settings&#x27;</span>&gt;) {
+  <span class="hljs-keyword">return</span> (
+    <span class="language-xml"><span class="hljs-tag">&lt;<span class="hljs-name">main</span>&gt;</span>
+      <span class="hljs-tag">&lt;<span class="hljs-name">h1</span>&gt;</span>Settings<span class="hljs-tag">&lt;/<span class="hljs-name">h1</span>&gt;</span>
+      }&gt;
+        
+        }&gt;
+          
+        
+      
+    <span class="hljs-tag">&lt;/<span class="hljs-name">main</span>&gt;</span></span>
+  )
+}</code></pre></div></figure>
+<p>The tabs read the active section from the URL:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app/[team]/settings/settings-tabs.tsx</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-string">&#x27;use client&#x27;</span>
+
+  <span class="hljs-keyword">const</span> section = <span class="hljs-title function_">useSearchParams</span>().<span class="hljs-title function_">get</span>(<span class="hljs-string">&#x27;section&#x27;</span>) ?? <span class="hljs-string">&#x27;profile&#x27;</span>
+
+  <span class="hljs-keyword">return</span> 
+}</code></pre></div></figure>
+<p>The form awaits both URL promises before starting the query that depends on their values:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app/[team]/settings/team-settings.tsx</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">
+  params,
+  searchParams,
+}: <span class="hljs-title class_">PageProps</span>&lt;<span class="hljs-string">&#x27;/[team]/settings&#x27;</span>&gt;) {
+  <span class="hljs-keyword">const</span> [{ team }, { section = <span class="hljs-string">&#x27;profile&#x27;</span> }] = <span class="hljs-keyword">await</span> <span class="hljs-title class_">Promise</span>.<span class="hljs-title function_">all</span>([
+    params,
+    searchParams,
+  ])
+  <span class="hljs-keyword">const</span> settings = <span class="hljs-keyword">await</span> <span class="hljs-title function_">getTeamSettings</span>(team, section)
+
+  <span class="hljs-keyword">return</span> 
+}</code></pre></div></figure>
+<p>The prerendered shell shows <code>SettingsContentSkeleton</code>. Once the URL is available, the tabs replace that fallback while the nested form boundary stays in its loading state until the settings query finishes.</p>
+<p>The plan query does not depend on either URL value. Move it into a sibling component so React can start it while the URL-dependent branch is pending. It still runs for each request at this point, so keep a temporary boundary:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app/[team]/settings/page.tsx</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-comment">// After: the independent plan query starts with the page</span>
+
+  params,
+  searchParams,
+}: <span class="hljs-title class_">PageProps</span>&lt;<span class="hljs-string">&#x27;/[team]/settings&#x27;</span>&gt;) {
+  <span class="hljs-keyword">return</span> (
+    <span class="language-xml"><span class="hljs-tag">&lt;<span class="hljs-name">main</span>&gt;</span>
+      <span class="hljs-tag">&lt;<span class="hljs-name">h1</span>&gt;</span>Settings<span class="hljs-tag">&lt;/<span class="hljs-name">h1</span>&gt;</span>
+      }&gt;
+        
+      
+      }&gt;
+        
+        }&gt;
+          
+        
+      
+    <span class="hljs-tag">&lt;/<span class="hljs-name">main</span>&gt;</span></span>
+  )
+}</code></pre></div></figure>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app/[team]/settings/plan-options.tsx</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">
+  <span class="hljs-keyword">const</span> plans = <span class="hljs-keyword">await</span> db.<span class="hljs-property">plan</span>.<span class="hljs-title function_">findMany</span>()
+  <span class="hljs-keyword">return</span> 
+}</code></pre></div></figure>
+<p>The heading renders directly. <code>PlanOptions</code> and the URL-dependent settings branch can begin independently.</p>
+<h3 id="step-2-move-authentication-behind-suspense">Step 2: Move authentication behind Suspense</h3>
+<p>The current layout resolves the request APIs before rendering the settings frame:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app/[team]/settings/layout.tsx</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-comment">// Before: authentication blocks the layout</span>
+
+  <span class="hljs-keyword">const</span> cookieStore = <span class="hljs-keyword">await</span> <span class="hljs-title function_">cookies</span>()
+  <span class="hljs-keyword">const</span> requestHeaders = <span class="hljs-keyword">await</span> <span class="hljs-title function_">headers</span>()
+  <span class="hljs-keyword">const</span> user = <span class="hljs-keyword">await</span> <span class="hljs-title function_">getCurrentUser</span>({ cookieStore, requestHeaders })
+
+  <span class="hljs-keyword">if</span> (!user) <span class="hljs-title function_">redirect</span>(<span class="hljs-string">&#x27;/login&#x27;</span>)
+
+  <span class="hljs-keyword">return</span> {children}
+}</code></pre></div></figure>
+<p>Instead, move the <code>cookies()</code> and <code>headers()</code> reads into an authentication gate behind ``. The layout can then render the settings frame without waiting for authentication:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app/[team]/settings/layout.tsx</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-comment">// After: only the authorization gate waits for the request</span>
+
+  <span class="hljs-keyword">return</span> (
+    
+      
+        
+      
+      {children}
+    
+  )
+}
+
+<span class="hljs-keyword">async</span> <span class="hljs-keyword">function</span> <span class="hljs-title function_">AuthGate</span>(<span class="hljs-params"></span>) {
+  <span class="hljs-keyword">const</span> [cookieStore, requestHeaders] = <span class="hljs-keyword">await</span> <span class="hljs-title class_">Promise</span>.<span class="hljs-title function_">all</span>([
+    <span class="hljs-title function_">cookies</span>(),
+    <span class="hljs-title function_">headers</span>(),
+  ])
+  <span class="hljs-keyword">const</span> user = <span class="hljs-keyword">await</span> <span class="hljs-title function_">getCurrentUser</span>({ cookieStore, requestHeaders })
+
+  <span class="hljs-keyword">if</span> (!user) <span class="hljs-title function_">redirect</span>(<span class="hljs-string">&#x27;/login&#x27;</span>)
+
+  <span class="hljs-keyword">return</span> <span class="hljs-literal">null</span>
+}</code></pre></div></figure>
+<p><code>AuthGate</code> is the only component that needs the request values, so it owns those reads. Its boundary lets the settings frame and page stay in the shell. An empty fallback fits this boundary because an authorized gate also returns <code>null</code>.</p>
+<blockquote>
+<p><strong>Good to know:</strong> If an authorization interrupt such as <a href="#/doc/nextjs/app/api-reference/functions/unauthorized"><code>unauthorized()</code></a> or <a href="#/doc/nextjs/app/api-reference/functions/forbidden"><code>forbidden()</code></a> runs after streaming starts, it can render its UI, but the response status remains <code>200</code>. If the HTTP <code>401</code> or <code>403</code> status matters, check access before streaming begins. See <a href="#/doc/nextjs/app/api-reference/file-conventions/loading@status-codes">Status codes</a>.</p>
+</blockquote>
+<p>A layout redirect does not protect a database query or Server Action by itself. Keep authorization checks in the data access functions used by the page, and include only safe UI in the shell before authentication completes. See <a href="#/doc/nextjs/app/guides/authentication-with-cache-components">Authentication with Cache Components</a> for the complete pattern.</p>
+<h3 id="step-3-cache-the-reusable-plan-data">Step 3: Cache the reusable plan data</h3>
+<p>The team settings must stay current and authorized for each request, so they continue as request-time work behind ``. Plan descriptions are shared across teams and change on a known schedule, so <code>PlanOptions</code> can cache them:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app/[team]/settings/plan-options.tsx</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-comment">// Before: the query runs for every request</span>
+
+  <span class="hljs-keyword">const</span> plans = <span class="hljs-keyword">await</span> db.<span class="hljs-property">plan</span>.<span class="hljs-title function_">findMany</span>()
+  <span class="hljs-keyword">return</span> 
+}</code></pre></div></figure>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app/[team]/settings/plan-options.tsx</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-comment">// After: the reusable plans can render in the shell</span>
+
+  <span class="hljs-string">&#x27;use cache&#x27;</span>
+  <span class="hljs-title function_">cacheLife</span>(<span class="hljs-string">&#x27;hours&#x27;</span>)
+
+  <span class="hljs-keyword">const</span> plans = <span class="hljs-keyword">await</span> db.<span class="hljs-property">plan</span>.<span class="hljs-title function_">findMany</span>()
+  <span class="hljs-keyword">return</span> 
+}</code></pre></div></figure>
+<p><code>PlanOptions</code> has no request-time dependency, so Next.js can resolve it while generating the static shell. Its existing `` boundary does not prevent that. The fallback is not needed for this route, so the boundary may be removed. Keep a boundary when a cached component is first reached after request-time data so it can cover a cold cache.</p>
+<p>If a write changes the plan descriptions, use <a href="#/doc/nextjs/app/getting-started/revalidating">on-demand revalidation</a> from the corresponding mutation.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app/[team]/settings/page.tsx</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">&lt;main&gt;
+  <span class="language-xml"><span class="hljs-tag">&lt;<span class="hljs-name">h1</span>&gt;</span>Settings<span class="hljs-tag">&lt;/<span class="hljs-name">h1</span>&gt;</span></span>
+  
+  }&gt;
+    
+    }&gt;
+      
+    
+  
+&lt;/main&gt;</code></pre></div></figure>
+<p>With the refactor complete, the route reveals in three stages:</p>
+<ol>
+<li><p><strong>In the static shell.</strong> The heading and cached plan options render while the URL-dependent region shows its fallback.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">&lt;h1&gt;<span class="hljs-title class_">Settings</span>&lt;/h1&gt;
+</code></pre></div></figure>
+</li>
+<li><p><strong>Once the URL is available.</strong> The tabs replace the content skeleton while the settings query continues behind its nested fallback.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">&lt;h1&gt;<span class="hljs-title class_">Settings</span>&lt;/h1&gt;
+
+</code></pre></div></figure>
+</li>
+<li><p><strong>After the settings load.</strong> The completed form replaces its skeleton.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">&lt;h1&gt;<span class="hljs-title class_">Settings</span>&lt;/h1&gt;
+
+</code></pre></div></figure>
+</li>
+</ol>
+<p>The page now renders useful UI immediately while request-specific content streams into focused fallbacks. The next step is to lock this contract in.</p>
+<h3 id="step-4-verify-the-instant-ui">Step 4: Verify the instant UI</h3>
+<p>Use <a href="#/doc/nextjs/app/guides/instant-navigation@prevent-regressions-with-e2e-tests"><code>instant()</code></a> to hold back request-time server content and assert which parts of the page are available immediately. Playwright makes these assertions after hydration, so Client Components that can resolve without server content may already be visible inside the callback.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>e2e/settings-navigation.test.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">
+
+
+<span class="hljs-keyword">async</span> <span class="hljs-keyword">function</span> <span class="hljs-title function_">expectInstantSettingsUI</span>(<span class="hljs-params"><span class="hljs-attr">page</span>: <span class="hljs-title class_">Page</span></span>) {
+  <span class="hljs-keyword">await</span> <span class="hljs-title function_">expect</span>(page.<span class="hljs-title function_">getByRole</span>(<span class="hljs-string">&#x27;heading&#x27;</span>, { <span class="hljs-attr">name</span>: <span class="hljs-string">&#x27;Settings&#x27;</span> })).<span class="hljs-title function_">toBeVisible</span>()
+  <span class="hljs-keyword">await</span> <span class="hljs-title function_">expect</span>(page.<span class="hljs-title function_">getByTestId</span>(<span class="hljs-string">&#x27;plan-options&#x27;</span>)).<span class="hljs-title function_">toBeVisible</span>()
+  <span class="hljs-keyword">await</span> <span class="hljs-title function_">expect</span>(page.<span class="hljs-title function_">getByTestId</span>(<span class="hljs-string">&#x27;settings-tabs&#x27;</span>)).<span class="hljs-title function_">toBeVisible</span>()
+  <span class="hljs-keyword">await</span> <span class="hljs-title function_">expect</span>(page.<span class="hljs-title function_">getByTestId</span>(<span class="hljs-string">&#x27;settings-form-skeleton&#x27;</span>)).<span class="hljs-title function_">toBeVisible</span>()
+  <span class="hljs-keyword">await</span> <span class="hljs-title function_">expect</span>(page.<span class="hljs-title function_">getByTestId</span>(<span class="hljs-string">&#x27;settings-content-skeleton&#x27;</span>)).<span class="hljs-title function_">toHaveCount</span>(<span class="hljs-number">0</span>)
+  <span class="hljs-keyword">await</span> <span class="hljs-title function_">expect</span>(page.<span class="hljs-title function_">getByTestId</span>(<span class="hljs-string">&#x27;team-settings-form&#x27;</span>)).<span class="hljs-title function_">toHaveCount</span>(<span class="hljs-number">0</span>)
+}
+
+<span class="hljs-title function_">test</span>(<span class="hljs-string">&#x27;shows settings UI before request-time work completes&#x27;</span>, <span class="hljs-title function_">async</span> ({
+  page,
+  baseURL,
+}) =&gt; {
+  <span class="hljs-keyword">await</span> <span class="hljs-title function_">instant</span>(
+    page,
+    <span class="hljs-title function_">async</span> () =&gt; {
+      <span class="hljs-keyword">await</span> page.<span class="hljs-title function_">goto</span>(<span class="hljs-string">&#x27;/acme/settings&#x27;</span>)
+      <span class="hljs-keyword">await</span> <span class="hljs-title function_">expectInstantSettingsUI</span>(page)
+    },
+    { baseURL }
+  )
+
+  <span class="hljs-keyword">await</span> <span class="hljs-title function_">expect</span>(page.<span class="hljs-title function_">getByTestId</span>(<span class="hljs-string">&#x27;team-settings-form&#x27;</span>)).<span class="hljs-title function_">toBeVisible</span>()
+  <span class="hljs-keyword">await</span> <span class="hljs-title function_">expect</span>(page.<span class="hljs-title function_">getByTestId</span>(<span class="hljs-string">&#x27;settings-form-skeleton&#x27;</span>)).<span class="hljs-title function_">toHaveCount</span>(<span class="hljs-number">0</span>)
+})</code></pre></div></figure>
+<p>Inside the callback, the heading and cached plan options stay visible. Hydration has already rendered the tabs from the browser URL, while <code>instant()</code> keeps the request-time form behind <code>SettingsFormSkeleton</code>. The final assertions confirm that the completed form replaces its loading state after the pause is released.</p>
+<p>The testing API is available automatically in <code>next dev</code>. When running the test against a production build with <code>next start</code>, enable <a href="#/doc/nextjs/app/api-reference/config/next-config-js/exposeTestingApiInProductionBuild"><code>experimental.exposeTestingApiInProductionBuild</code></a> for the test build.</p>
+<p>The completed route should have the same settings data, redirects, error states, and interactions as the original route.</p>
+<h3 id="step-5-include-url-specific-content-in-the-instant-ui">Step 5: Include URL-specific content in the instant UI</h3>
+<p>The direct visit starts with the shared static shell and <code>SettingsContentSkeleton</code> because the route does not know <code>searchParams</code> during prerendering. Once the URL is available, the tabs replace that fallback.</p>
+<p>During a client navigation, <code>SettingsTabs</code> can read the URL synchronously. Other server content that depends on the destination&#39;s <code>params</code> or <code>searchParams</code> is not part of the shared shell. If that work is cacheable, a per-link prefetch can resolve it before the click instead of streaming it afterward.</p>
+<p>Use <a href="#/doc/nextjs/app/guides/optimizing-prefetching">Optimizing prefetching</a> when URL-specific content should be ready before a selected link is clicked. The guide also covers how to choose a prefetch policy based on the cost of the work.</p>

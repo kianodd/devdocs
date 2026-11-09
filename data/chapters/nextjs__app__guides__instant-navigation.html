@@ -1,0 +1,380 @@
+<p>This guide walks through understanding instant navigations, writing a route that navigates instantly, visualizing what&#39;s in the initial UI, and locking the behavior in with end-to-end tests.</p>
+<h2 id="what-instant-means">What &quot;instant&quot; means</h2>
+<p>A navigation is <strong>instant</strong> when the browser can start rendering the new page the moment the user clicks, with static, cached, and fallback content showing up right away, while the server streams the remaining content into its fallbacks.</p>
+<blockquote>
+<p><strong>Good to know:</strong> This definition assumes caches are warm. Cold caches still require the server to compute the cached result once, so the first navigation to a route may still wait.</p>
+</blockquote>
+<p>A direct visit and a client navigation to the same route can produce different initial UI. <strong>Direct visits</strong> get the <a href="#/doc/nextjs/app/glossary@static-shell"><strong>static shell</strong></a> as HTML, typically from a CDN. <strong>Client navigations</strong> only re-render below the layout the current and destination routes share, so the fallback UI defined by a `` boundary above that point can&#39;t be used during the transition.</p>
+<p>Whether the new page appears instantly depends on the `` boundaries and caching present below the shared layout.</p>
+<details>
+<summary>Why page loads and client navigations produce different initial UI</summary><p>On a page load, the entire page renders from the document root. Every component runs on the server, and anything that suspends is caught by the nearest `` boundary in the full tree.</p>
+<p>On a client navigation between <code>/store/shoes</code> and <code>/store/hats</code>, only the components below the <code>/store</code> layout re-render. A `` boundary in the root layout covers everything on a page load, but on this navigation, it sits above the re-render scope and does not trigger.</p>
+<p>This is also why client-side hooks behave differently. <code>useSearchParams()</code> suspends during prerendering because search params are not available at build time. But on a client navigation, the router already has the params from the URL and the hook resolves synchronously. The same component can render immediately on a client navigation but sit behind a fallback on a page load.</p>
+</details><p>With <code>prefetch={true}</code>, per-link prefetching resolves a link&#39;s URL data (<code>searchParams</code> and <code>params</code>) before navigation. First make the route instant with its App Shell. Per-link prefetching cannot fix a route that blocks without it. See <a href="#/doc/nextjs/app/guides/optimizing-prefetching">Optimizing prefetching</a> for the patterns.</p>
+<h2 id="quick-start">Quick start</h2>
+<p>Getting the most out of Instant Navigation requires enabling <a href="#/doc/nextjs/app/guides/migrating-to-cache-components">Cache Components</a> and <a href="#/doc/nextjs/app/guides/adopting-partial-prefetching">Partial Prefetching</a>, then following the <a href="#validate-instant-navigation">validation errors</a> that appear:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>next.config.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">
+
+<span class="hljs-keyword">const</span> <span class="hljs-attr">nextConfig</span>: <span class="hljs-title class_">NextConfig</span> = {
+  <span class="hljs-attr">cacheComponents</span>: <span class="hljs-literal">true</span>,
+  <span class="hljs-attr">partialPrefetching</span>: <span class="hljs-literal">true</span>,
+}</code></pre></div></figure>
+<p>To help you automate this process with an agent, there&#39;s a Skill for each part, <a target="_blank" rel="noopener" href="https://www.skills.sh/vercel/next.js/next-cache-components-adoption">next-cache-components-adoption</a> and <a target="_blank" rel="noopener" href="https://www.skills.sh/vercel/next.js/next-partial-prefetching-adoption">next-partial-prefetching-adoption</a>. If you&#39;d like to enable everything, give your agent this prompt:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">Adopt Cache Components and Partial Prefetching in this app so its navigations become instant. There is a Skill for each migration.
+
+1. Before you change anything, explain to me in plain terms what Instant Navigation is and what adopting it will change.
+
+2. Install the Skills you need, then verify your changes against a running dev server with next-dev-loop and agent-browser as you go:
+   - next-cache-components-adoption: https://www.skills.sh/vercel/next.js/next-cache-components-adoption
+   - next-partial-prefetching-adoption: https://www.skills.sh/vercel/next.js/next-partial-prefetching-adoption
+   - next-dev-loop: https://www.skills.sh/vercel/next.js/next-dev-loop
+
+3. Each Skill leaves decisions to me, like how much of the work lands in each pull request. Put those questions to me and wait for my answers instead of deciding on my behalf. Adopt Cache Components first, then Partial Prefetching, following the workflow each Skill lays out. Don&#x27;t rush to a passing build.
+
+4. When you finish a step, show me a table of the routes you touched and what changed on each, and talk me through what it means for the app. Keep it to the outcome, not the implementation details.</code></pre></div></figure>
+<p>The rest of this guide covers the tools these migrations use, walks a navigation that blocks to instant, inspects what lands in the initial UI, and locks the result in with end-to-end tests.</p>
+<h2 id="the-tools">The tools</h2>
+<h3 id="build-the-static-shell">Build the static shell</h3>
+<p>With Cache Components, <strong>caching directives</strong> (<code>&quot;use cache&quot;</code> and its variants) assign a lifetime to an async function&#39;s result, which is what lets Next.js include it in the static shell.</p>
+<blockquote>
+<p><strong>Good to know:</strong> <a href="#/doc/nextjs/app/api-reference/directives/use-cache-private"><code>&quot;use cache: private&quot;</code></a> is a variant for caching functions that read runtime APIs like <code>cookies()</code> and <code>headers()</code>. The result is cached in the browser only, not on the server. <strong>It can&#39;t be part of the static shell.</strong> See <a href="#/doc/nextjs/app/guides/optimizing-prefetching@use-cache-private"><code>&quot;use cache: private&quot;</code></a> in the Optimizing prefetching guide for how it pairs with prefetching.</p>
+</blockquote>
+<p><strong>``</strong> declares fallback UI for parts of the tree that read uncached data or runtime APIs like <code>cookies()</code> and <code>headers()</code>; the content streams into the fallback when it resolves.</p>
+<blockquote>
+<p><strong>Good to know:</strong> A fallback may access <code>cookies()</code>, <code>headers()</code>, or the full URL. At build time, the fallback itself suspends, and a `` boundary further up the tree is needed. For a link with <code>prefetch={true}</code>, <a href="#/doc/nextjs/app/guides/optimizing-prefetching">per-link prefetching</a> makes URL data available before navigation, so the fallback can become part of the prefetched UI. Cached values like timestamps or data fetches can sit directly inside the fallback.</p>
+</blockquote>
+<p>Next.js can also generate an <a href="#/doc/nextjs/app/glossary@app-shell"><strong>App Shell</strong></a> per route, which renders during client navigations while remaining content streams. Partial Prefetching uses the App Shell as the default `` prefetch. A link with <code>prefetch={true}</code> can also resolve cached content that depends on that link&#39;s URL data.</p>
+<h3 id="prefetch-url-data-for-a-link">Prefetch URL data for a link</h3>
+<p>Under <a href="#/doc/nextjs/app/guides/adopting-partial-prefetching">Partial Prefetching</a>, each visible `` prefetches the destination&#39;s App Shell by default. Links to the same route share one App Shell instead of triggering a separate App Shell request for each link.</p>
+<p>To prefetch the page content alongside the shell for a specific link, set <a href="#/doc/nextjs/app/api-reference/components/link@prefetch"><code>prefetch={true}</code></a>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">
+  <span class="hljs-title class_">Checkout</span></code></pre></div></figure>
+<p>With Partial Prefetching enabled, <code>prefetch={true}</code> also opts the link into <a href="#/doc/nextjs/app/guides/optimizing-prefetching">per-link prefetching</a>, which resolves the per-link URL data (<code>params</code>, <code>searchParams</code>, the full URL) ahead of the click.</p>
+<h3 id="validate-instant-navigation">Validate instant navigation</h3>
+<p>By <strong>default</strong> (<code>validationLevel: &#39;warning&#39;</code>), Cache Components apps validate every Page and Default segment in development. Validation surfaces what would keep navigations into a segment from being instant — which navigations would block, where a `` boundary is missing, and which data is reaching the user uncached.</p>
+<p>To opt out of automatic validation and only validate segments that explicitly export <code>instant</code>, set <a href="#/doc/nextjs/app/api-reference/file-conventions/route-segment-config/instant@configuring-validation-defaults"><code>validationLevel</code></a> to <code>&#39;manual-warning&#39;</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>next.config.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">
+
+<span class="hljs-keyword">const</span> <span class="hljs-attr">nextConfig</span>: <span class="hljs-title class_">NextConfig</span> = {
+  <span class="hljs-attr">cacheComponents</span>: <span class="hljs-literal">true</span>,
+  <span class="hljs-attr">experimental</span>: {
+    <span class="hljs-attr">instantInsights</span>: {
+      <span class="hljs-attr">validationLevel</span>: <span class="hljs-string">&#x27;manual-warning&#x27;</span>,
+    },
+  },
+}</code></pre></div></figure>
+<details>
+<summary>How validation simulates different navigations</summary><p>For each validated route, Next.js checks both the initial page load and client navigations at different points in the route hierarchy.</p>
+<p>For a route like <code>/shop/[slug]</code>, validation checks:</p>
+<ul>
+<li><strong>Page load</strong>: the full tree renders from the root. The root layout `` catches everything.</li>
+<li><strong>Client navigation</strong> (e.g. from <code>/shop/shoes</code> to <code>/shop/hats</code>): the <code>/shop</code> layout is already mounted and only the page below it re-renders. A `` boundary in the root layout does not cover this navigation.</li>
+</ul>
+<p>Each case is validated independently. A `` boundary that covers one navigation path might not cover another. This is why a page can pass the page load check but fail for client navigations, and why catching these issues by hand is difficult as the number of routes grows.</p>
+</details><h3 id="test-it-in-ci">Test it in CI</h3>
+<p>The <code>@next/playwright</code> package provides an <a href="#/doc/nextjs/app/api-reference/file-conventions/route-segment-config/instant@testing-instant-navigation"><code>instant()</code></a> helper that scopes your assertions to the UI that&#39;s immediately available on navigation, so regressions surface in CI. See <a href="#prevent-regressions-with-e2e-tests">Prevent regressions with e2e tests</a> for the pattern.</p>
+<h3 id="inspect-loading-states">Inspect loading states</h3>
+<p>The <strong>Navigation Inspector</strong> in the Next.js DevTools freezes the page at its initial loading state, showing the static shell on direct visits and the prefetched destination on client navigations. Use the inspector to see how much meaningful content lands in the shell.</p>
+<p>Pair it with the React DevTools Suspense panel to see exactly which boundary covers which part of the page. See <a href="#visualize-loading-states-with-the-nextjs-devtools">Visualize loading states with the Next.js DevTools</a> for the workflow.</p>
+<p>See <a href="#/doc/nextjs/app/guides/optimizing-the-static-shell">Optimizing the static shell</a> for patterns to reduce fallback coverage and make more completed UI available immediately.</p>
+<h2 id="a-page-that-navigates-instantly">A page that navigates instantly</h2>
+<p>To see the primitives in action, consider a small store app. Each product has its own page at <code>/store/[slug]</code>, reachable from the homepage and from other product pages. The goal is that navigating to and between products is instant.</p>
+<p>The product page fetches two pieces of data: product details (name, price) and live inventory.</p>
+<ul>
+<li>There is no <code>generateStaticParams</code>, meaning <code>slug</code> is only known at request time</li>
+<li>Both components await <code>params</code> to get the <code>slug</code>, which suspends. Each has its own `` boundary</li>
+<li><strong>Product info</strong> rarely changes and is queried from the db using a cached function</li>
+<li><strong>Inventory</strong> must be fresh on each request. The db query is inside a `` boundary</li>
+</ul>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app/store/[slug]/page.tsx</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">
+  <span class="hljs-keyword">return</span> (
+    <span class="language-xml"><span class="hljs-tag">&lt;<span class="hljs-name">div</span>&gt;</span>
+      Loading product...<span class="hljs-tag">&lt;/<span class="hljs-name">p</span>&gt;</span></span>}&gt;
+        
+      
+      <span class="hljs-title class_">Checking</span> availability...&lt;/p&gt;}&gt;
+        
+      
+    &lt;/div&gt;
+  )
+}
+
+<span class="hljs-keyword">type</span> <span class="hljs-title class_">Params</span> = <span class="hljs-title class_">PageProps</span>&lt;<span class="hljs-string">&#x27;/store/[slug]&#x27;</span>&gt;[<span class="hljs-string">&#x27;params&#x27;</span>]
+
+<span class="hljs-keyword">async</span> <span class="hljs-keyword">function</span> <span class="hljs-title function_">ProductInfo</span>(<span class="hljs-params">{ params }: { params: Params }</span>) {
+  <span class="hljs-keyword">const</span> { slug } = <span class="hljs-keyword">await</span> params
+  <span class="hljs-keyword">const</span> product = <span class="hljs-keyword">await</span> <span class="hljs-title function_">getProduct</span>(slug)
+  <span class="hljs-keyword">return</span> (
+    <span class="language-xml"><span class="hljs-tag">&lt;&gt;</span>
+      <span class="hljs-tag">&lt;<span class="hljs-name">h1</span>&gt;</span>{product.name}<span class="hljs-tag">&lt;/<span class="hljs-name">h1</span>&gt;</span>
+      <span class="hljs-tag">&lt;<span class="hljs-name">p</span>&gt;</span>${product.price}<span class="hljs-tag">&lt;/<span class="hljs-name">p</span>&gt;</span>
+    <span class="hljs-tag">&lt;/&gt;</span></span>
+  )
+}
+
+<span class="hljs-keyword">async</span> <span class="hljs-keyword">function</span> <span class="hljs-title function_">getProduct</span>(<span class="hljs-params"><span class="hljs-attr">slug</span>: <span class="hljs-built_in">string</span></span>) {
+  <span class="hljs-string">&#x27;use cache&#x27;</span>
+  <span class="hljs-keyword">return</span> db.<span class="hljs-property">products</span>.<span class="hljs-title function_">findBySlug</span>(slug)
+}
+
+<span class="hljs-keyword">async</span> <span class="hljs-keyword">function</span> <span class="hljs-title function_">Inventory</span>(<span class="hljs-params">{ params }: { params: Params }</span>) {
+  <span class="hljs-keyword">const</span> { slug } = <span class="hljs-keyword">await</span> params
+  <span class="hljs-keyword">const</span> item = <span class="hljs-keyword">await</span> db.<span class="hljs-property">inventory</span>.<span class="hljs-title function_">findBySlug</span>(slug)
+  <span class="hljs-keyword">return</span> <span class="language-xml"><span class="hljs-tag">&lt;<span class="hljs-name">p</span>&gt;</span>{item.count} in stock<span class="hljs-tag">&lt;/<span class="hljs-name">p</span>&gt;</span></span>
+}</code></pre></div></figure>
+<p>Cache Components validates this route automatically in development. If something would block a navigation, the dev overlay surfaces a <strong>blocking-route</strong> insight that names the offending component and points at these fixes:</p>
+<p>  &#39; },
+    ]}
+  /&gt;
+  &#39;, highlight: true },
+      { text: &#39;  &#39; },
+      { text: &#39;&#39;, highlight: true },
+    ]}
+  /&gt;</p>
+<blockquote>
+<p><strong>Good to know:</strong> Each fix card links to a detailed walkthrough with patterns, code samples, and trade-offs. Click a card to dive in, or use <strong>Copy prompt</strong> to hand the fix to your agent. See <a href="#ai-workflow">AI workflow</a> for the loop.</p>
+</blockquote>
+<p>Validation runs on every page load using the real request from your browser, so dynamic params like <code>[slug]</code> are checked against actual values as you navigate.</p>
+<h3 id="client-component-pages">Client Component Pages</h3>
+<p>A soft navigation into a page with <code>&quot;use client&quot;</code> at the top behaves like a single-page app transition, with no server render at navigation time, which makes it instant. The dev overlay doesn&#39;t include this in its fix cards because it has bigger implications than the recommended approaches, which keep the page in the server-component model. Reach for <code>&quot;use client&quot;</code> when the page is fully interactive and must be a client component.</p>
+<blockquote>
+<p><strong>Good to know</strong>: <code>&quot;use client&quot;</code> doesn&#39;t skip validation for the static shell. Hooks like <code>useSearchParams()</code> still need a `` boundary.</p>
+</blockquote>
+<h2 id="visualize-loading-states-with-the-nextjs-devtools">Visualize loading states with the Next.js DevTools</h2>
+<p>As you develop a route, the Next.js DevTools let you see what your users see on page loads and client navigations before dynamic data streams in. Use it to verify that your loading states look right, confirm the content you expect appears immediately, and iterate on where to place `` boundaries.</p>
+<p>The <a target="_blank" rel="noopener" href="https://react.dev/learn/react-developer-tools">React DevTools Suspense panel</a> complements this: it lists the `` boundaries in the tree and lets you toggle each one between its fallback and resolved state, so you can see exactly which boundary covers which part of the page.</p>
+<p>The Navigation Inspector is available when Cache Components is enabled:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>next.config.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">
+
+<span class="hljs-keyword">const</span> <span class="hljs-attr">nextConfig</span>: <span class="hljs-title class_">NextConfig</span> = {
+  <span class="hljs-attr">cacheComponents</span>: <span class="hljs-literal">true</span>,
+}</code></pre></div></figure>
+<p>Open the Next.js DevTools and select <strong>Navigation Inspector</strong>, then toggle <strong>Pause on navigations</strong>. The panel shows <strong>Awaiting navigation...</strong> With the toggle on, the next refresh or link click freezes the page so you can inspect the shell.</p>
+<p>Refresh the product page. The Inspector freezes and shows <strong>Loading shell</strong> labeled <strong>Page load</strong> with the target URL. In the app, two fallbacks appear: &quot;Loading product...&quot; and &quot;Checking availability...&quot;. On the first visit the cache is cold and both are visible.</p>
+<div
+  style={{
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'center',
+    gap: '0.5rem',
+  }}
+><p>  &lt;span style={{ fontSize: &#39;0.875rem&#39;, opacity: 0.7 }}&gt;
+    After a page refresh.
+  </span></p>
+</div><p>Click <strong>Resume</strong> to complete the navigation. Refresh again, and the product name appears immediately from cache.</p>
+<p>Now click a link from <code>/store/shoes</code> to <code>/store/hats</code>. The Inspector shows <strong>Loading shell</strong> labeled <strong>Client nav</strong> with both source and target URLs. In the app, the product name and price appear immediately (cached). &quot;Checking availability...&quot; shows where inventory will stream in.</p>
+<div
+  style={{
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'center',
+    gap: '0.5rem',
+  }}
+><p>  &lt;span style={{ fontSize: &#39;0.875rem&#39;, opacity: 0.7 }}&gt;
+    After a client navigation.
+  </span></p>
+</div><p>Toggle <strong>Pause on navigations</strong> off when you&#39;re done inspecting loading states. Each navigation pauses as long as the toggle is on.</p>
+<blockquote>
+<p><strong>Good to know:</strong> Page loads and client navigations can produce different shells. Client-side hooks like <code>useSearchParams</code> suspend on page loads (search params are not known at build time) but resolve synchronously on client navigations (the router already has the params).</p>
+</blockquote>
+<h2 id="prevent-regressions-with-e2e-tests">Prevent regressions with e2e tests</h2>
+<p>Validation catches structural problems during development, but as the codebase grows, the structural checks can only tell you that a shell exists. They can&#39;t tell you whether the right content is in it. E2E tests close that gap: they assert on what the user actually sees when the navigation completes, catching regressions before they ship.</p>
+<p>The <a target="_blank" rel="noopener" href="https://www.npmjs.com/package/@next/playwright"><code>@next/playwright</code></a> package includes an <code>instant()</code> helper for this. Install it alongside <code>@playwright/test</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Terminal</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-bash"><span class="tk-cmd">pnpm</span> add <span class="tk-flag">-D</span> @next/playwright @playwright/test</code></pre></div></figure>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Terminal</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-bash"><span class="tk-cmd">npm</span> install <span class="tk-flag">-D</span> @next/playwright @playwright/test</code></pre></div></figure>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Terminal</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-bash"><span class="tk-cmd">yarn</span> add <span class="tk-flag">-D</span> @next/playwright @playwright/test</code></pre></div></figure>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Terminal</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-bash"><span class="tk-cmd">bun</span> add <span class="tk-flag">-D</span> @next/playwright @playwright/test</code></pre></div></figure>
+<p>A route can be reached two ways, and a `` boundary can cover one without covering the other:</p>
+<ul>
+<li><strong>Initial page load</strong>: Use <code>page.goto()</code> to test the static UI from the document response.</li>
+<li><strong>Client navigation</strong>: Click a `` to test the destination&#39;s prefetched UI. <a href="#/doc/nextjs/app/guides/optimizing-prefetching">Per-link prefetching</a> can add request-specific content to this UI.</li>
+</ul>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>e2e/navigation.test.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">
+
+
+test.<span class="hljs-title function_">describe</span>(<span class="hljs-string">&#x27;Product page (/store/[slug])&#x27;</span>, <span class="hljs-function">() =&gt;</span> {
+  <span class="hljs-title function_">test</span>(<span class="hljs-string">&#x27;is instant on an initial page load&#x27;</span>, <span class="hljs-title function_">async</span> ({ page, baseURL }) =&gt; {
+    <span class="hljs-keyword">await</span> <span class="hljs-title function_">instant</span>(
+      page,
+      <span class="hljs-title function_">async</span> () =&gt; {
+        <span class="hljs-keyword">await</span> page.<span class="hljs-title function_">goto</span>(<span class="hljs-string">&#x27;/store/hats&#x27;</span>)
+        <span class="hljs-keyword">await</span> <span class="hljs-title function_">expect</span>(
+          page.<span class="hljs-title function_">getByText</span>(<span class="hljs-string">&#x27;Loading product...&#x27;</span>).<span class="hljs-title function_">filter</span>({ <span class="hljs-attr">visible</span>: <span class="hljs-literal">true</span> })
+        ).<span class="hljs-title function_">toBeVisible</span>()
+        <span class="hljs-keyword">await</span> <span class="hljs-title function_">expect</span>(
+          page.<span class="hljs-title function_">getByText</span>(<span class="hljs-string">&#x27;In stock&#x27;</span>).<span class="hljs-title function_">filter</span>({ <span class="hljs-attr">visible</span>: <span class="hljs-literal">true</span> })
+        ).<span class="hljs-title function_">toHaveCount</span>(<span class="hljs-number">0</span>)
+      },
+      { baseURL }
+    )
+    <span class="hljs-keyword">await</span> <span class="hljs-title function_">expect</span>(page.<span class="hljs-title function_">getByRole</span>(<span class="hljs-string">&#x27;heading&#x27;</span>, { <span class="hljs-attr">level</span>: <span class="hljs-number">1</span> })).<span class="hljs-title function_">toContainText</span>(
+      <span class="hljs-string">&#x27;Baseball Cap&#x27;</span>
+    )
+    <span class="hljs-keyword">await</span> <span class="hljs-title function_">expect</span>(
+      page.<span class="hljs-title function_">getByText</span>(<span class="hljs-string">&#x27;In stock&#x27;</span>).<span class="hljs-title function_">filter</span>({ <span class="hljs-attr">visible</span>: <span class="hljs-literal">true</span> })
+    ).<span class="hljs-title function_">toBeVisible</span>()
+  })
+
+  <span class="hljs-title function_">test</span>(<span class="hljs-string">&#x27;is instant on a client navigation&#x27;</span>, <span class="hljs-title function_">async</span> ({ page }) =&gt; {
+    <span class="hljs-keyword">await</span> page.<span class="hljs-title function_">goto</span>(<span class="hljs-string">&#x27;/store/shoes&#x27;</span>)
+    <span class="hljs-keyword">await</span> <span class="hljs-title function_">instant</span>(page, <span class="hljs-title function_">async</span> () =&gt; {
+      <span class="hljs-keyword">await</span> page
+        .<span class="hljs-title function_">locator</span>(<span class="hljs-string">&#x27;a[href=&quot;/store/hats&quot;]&#x27;</span>)
+        .<span class="hljs-title function_">filter</span>({ <span class="hljs-attr">visible</span>: <span class="hljs-literal">true</span> })
+        .<span class="hljs-title function_">click</span>()
+      <span class="hljs-keyword">await</span> page.<span class="hljs-title function_">waitForURL</span>(<span class="hljs-function">(<span class="hljs-params">url</span>) =&gt;</span> url.<span class="hljs-property">pathname</span> === <span class="hljs-string">&#x27;/store/hats&#x27;</span>)
+      <span class="hljs-keyword">await</span> <span class="hljs-title function_">expect</span>(page.<span class="hljs-title function_">getByRole</span>(<span class="hljs-string">&#x27;heading&#x27;</span>, { <span class="hljs-attr">level</span>: <span class="hljs-number">1</span> })).<span class="hljs-title function_">toContainText</span>(
+        <span class="hljs-string">&#x27;Baseball Cap&#x27;</span>
+      )
+      <span class="hljs-keyword">await</span> <span class="hljs-title function_">expect</span>(
+        page.<span class="hljs-title function_">getByText</span>(<span class="hljs-string">&#x27;In stock&#x27;</span>).<span class="hljs-title function_">filter</span>({ <span class="hljs-attr">visible</span>: <span class="hljs-literal">true</span> })
+      ).<span class="hljs-title function_">toHaveCount</span>(<span class="hljs-number">0</span>)
+    })
+    <span class="hljs-keyword">await</span> <span class="hljs-title function_">expect</span>(
+      page.<span class="hljs-title function_">getByText</span>(<span class="hljs-string">&#x27;In stock&#x27;</span>).<span class="hljs-title function_">filter</span>({ <span class="hljs-attr">visible</span>: <span class="hljs-literal">true</span> })
+    ).<span class="hljs-title function_">toBeVisible</span>()
+  })
+})</code></pre></div></figure>
+<p>The example route has no <code>generateStaticParams</code>, so its product heading is outside the initial static shell. Check the product fallback inside the initial-load scope and the heading after it finishes. On a client navigation, per-link prefetching makes the product heading available inside the scope.</p>
+<p>Pass Playwright&#39;s <code>baseURL</code> to <code>instant()</code> when <code>page.goto()</code> is the first navigation. The helper needs the origin before requesting the document.</p>
+<p>Inside the callback, an initial page load shows the static UI and a client navigation shows the destination&#39;s prefetched UI. Other dynamic content remains blocked until the callback finishes.</p>
+<blockquote>
+<p><strong>Good to know:</strong> The start of the <code>instant()</code> scope is the same as turning on <strong>Pause on navigations</strong> in the Navigation Inspector, and the end of the scope releases the pause the way <strong>Resume</strong> does.</p>
+</blockquote>
+<p>For client navigations, wait for the destination URL before asserting on its UI. Otherwise, a shared selector can match the source page before the destination commits. If the prefetched destination cannot commit, the URL wait times out and the test fails.</p>
+<p>Cache Components keeps previous pages hidden in the DOM after navigation. Use <code>getByRole</code>, which excludes hidden elements by default, or filter other locators with <code>.filter({ visible: true })</code> so assertions target the visible page. See <a href="#/doc/nextjs/app/guides/preserving-ui-state@testing">Testing preserved UI</a>.</p>
+<p>Run these against <code>next dev</code>, where the testing API is enabled automatically. For CI with a production build, enable <a href="#/doc/nextjs/app/api-reference/config/next-config-js/exposeTestingApiInProductionBuild"><code>exposeTestingApiInProductionBuild</code></a> only for the test build:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>next.config.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">
+
+<span class="hljs-keyword">const</span> exposeTestingApi = process.<span class="hljs-property">env</span>.<span class="hljs-property">EXPOSE_TESTING_API</span> === <span class="hljs-string">&#x27;1&#x27;</span>
+
+<span class="hljs-keyword">const</span> <span class="hljs-attr">nextConfig</span>: <span class="hljs-title class_">NextConfig</span> = {
+  <span class="hljs-attr">cacheComponents</span>: <span class="hljs-literal">true</span>,
+  <span class="hljs-attr">partialPrefetching</span>: <span class="hljs-literal">true</span>,
+  <span class="hljs-attr">experimental</span>: {
+    <span class="hljs-attr">exposeTestingApiInProductionBuild</span>: exposeTestingApi,
+  },
+}</code></pre></div></figure>
+<p>Set <code>EXPOSE_TESTING_API=1</code> when running <code>next build</code>. Setting it only for <code>next start</code> does not add the testing API to an existing build.</p>
+<p>Focus these tests on the user flows that matter most.</p>
+<h2 id="fixing-a-navigation-that-blocks">Fixing a navigation that blocks</h2>
+<p>Consider a different route, <code>/products/[slug]</code>, that fetches product data from a public API and shows a featured list alongside:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app/products/[slug]/page.tsx</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">
+  <span class="hljs-attr">props</span>: <span class="hljs-title class_">PageProps</span>&lt;<span class="hljs-string">&#x27;/products/[slug]&#x27;</span>&gt;
+) {
+  <span class="hljs-keyword">const</span> featured = <span class="hljs-keyword">await</span> <span class="hljs-title function_">getFeatured</span>()
+  <span class="hljs-keyword">const</span> { slug } = <span class="hljs-keyword">await</span> props.<span class="hljs-property">params</span>
+  <span class="hljs-keyword">const</span> res = <span class="hljs-keyword">await</span> <span class="hljs-title function_">fetch</span>(<span class="hljs-string">`https://next-recipe-api.vercel.dev/products/<span class="hljs-subst">${slug}</span>`</span>)
+  <span class="hljs-keyword">const</span> product = <span class="hljs-keyword">await</span> res.<span class="hljs-title function_">json</span>()
+
+  <span class="hljs-keyword">return</span> (
+    <span class="language-xml"><span class="hljs-tag">&lt;<span class="hljs-name">div</span>&gt;</span>
+      
+      <span class="hljs-tag">&lt;<span class="hljs-name">h1</span>&gt;</span>{product.name}<span class="hljs-tag">&lt;/<span class="hljs-name">h1</span>&gt;</span>
+      <span class="hljs-tag">&lt;<span class="hljs-name">p</span>&gt;</span>${product.price}<span class="hljs-tag">&lt;/<span class="hljs-name">p</span>&gt;</span>
+      <span class="hljs-tag">&lt;<span class="hljs-name">p</span>&gt;</span>{product.description}<span class="hljs-tag">&lt;/<span class="hljs-name">p</span>&gt;</span>
+    <span class="hljs-tag">&lt;/<span class="hljs-name">div</span>&gt;</span></span>
+  )
+}
+
+<span class="hljs-keyword">async</span> <span class="hljs-keyword">function</span> <span class="hljs-title function_">getFeatured</span>(<span class="hljs-params"></span>) {
+  <span class="hljs-keyword">const</span> res = <span class="hljs-keyword">await</span> <span class="hljs-title function_">fetch</span>(<span class="hljs-string">&#x27;https://next-recipe-api.vercel.dev/products?limit=3&#x27;</span>)
+  <span class="hljs-keyword">return</span> res.<span class="hljs-title function_">json</span>()
+}</code></pre></div></figure>
+<p>Two <code>fetch()</code> calls block at the top level: an uncached featured-list fetch and a per-slug product fetch (which also awaits <code>params</code>). Both will surface as Instant validation errors, one at a time.</p>
+<h3 id="step-1-move-the-slug-dependent-work-into-suspense">Step 1: Move the slug-dependent work into Suspense</h3>
+<p>Validation surfaces the per-slug product fetch first.</p>
+<div
+  style={{
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'center',
+    gap: '0.5rem',
+  }}
+></div><p>Extract the slug-dependent work into a sub-component and wrap it with ``:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app/products/[slug]/page.tsx</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">
+
+<span class="hljs-keyword">async</span> <span class="hljs-keyword">function</span> <span class="hljs-title function_">ProductInfo</span>(<span class="hljs-params">{ params }: { params: <span class="hljs-built_in">Promise</span>&lt;{ slug: <span class="hljs-built_in">string</span> }&gt; }</span>) {
+  <span class="hljs-keyword">const</span> { slug } = <span class="hljs-keyword">await</span> params
+  <span class="hljs-keyword">const</span> res = <span class="hljs-keyword">await</span> <span class="hljs-title function_">fetch</span>(<span class="hljs-string">`https://next-recipe-api.vercel.dev/products/<span class="hljs-subst">${slug}</span>`</span>)
+  <span class="hljs-keyword">const</span> product = <span class="hljs-keyword">await</span> res.<span class="hljs-title function_">json</span>()
+  <span class="hljs-keyword">return</span> (
+    <span class="language-xml"><span class="hljs-tag">&lt;&gt;</span>
+      <span class="hljs-tag">&lt;<span class="hljs-name">h1</span>&gt;</span>{product.name}<span class="hljs-tag">&lt;/<span class="hljs-name">h1</span>&gt;</span>
+      <span class="hljs-tag">&lt;<span class="hljs-name">p</span>&gt;</span>${product.price}<span class="hljs-tag">&lt;/<span class="hljs-name">p</span>&gt;</span>
+      <span class="hljs-tag">&lt;<span class="hljs-name">p</span>&gt;</span>{product.description}<span class="hljs-tag">&lt;/<span class="hljs-name">p</span>&gt;</span>
+    <span class="hljs-tag">&lt;/&gt;</span></span>
+  )
+}
+
+  <span class="hljs-attr">props</span>: <span class="hljs-title class_">PageProps</span>&lt;<span class="hljs-string">&#x27;/products/[slug]&#x27;</span>&gt;
+) {
+  <span class="hljs-keyword">const</span> featured = <span class="hljs-keyword">await</span> <span class="hljs-title function_">getFeatured</span>()
+  <span class="hljs-keyword">return</span> (
+    <span class="language-xml"><span class="hljs-tag">&lt;<span class="hljs-name">div</span>&gt;</span>
+      
+      Loading product...<span class="hljs-tag">&lt;/<span class="hljs-name">p</span>&gt;</span></span>}&gt;
+        
+      
+    &lt;/div&gt;
+  )
+}</code></pre></div></figure>
+<p>Now <code>await props.params</code> and the product fetch suspend together. The product-fetch error clears, and validation moves on to the next blocker.</p>
+<h3 id="step-2-cache-the-featured-fetch">Step 2: Cache the featured fetch</h3>
+<p>Validation now fires on <code>getFeatured()</code>.</p>
+<div
+  style={{
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'center',
+    gap: '0.5rem',
+  }}
+></div><p>Add a <code>&quot;use cache&quot;</code> directive to the fetching function:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app/products/[slug]/page.tsx</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">async</span> <span class="hljs-keyword">function</span> <span class="hljs-title function_">getFeatured</span>(<span class="hljs-params"></span>) {
+  <span class="hljs-string">&#x27;use cache&#x27;</span>
+  <span class="hljs-keyword">const</span> res = <span class="hljs-keyword">await</span> <span class="hljs-title function_">fetch</span>(<span class="hljs-string">&#x27;https://next-recipe-api.vercel.dev/products?limit=3&#x27;</span>)
+  <span class="hljs-keyword">return</span> res.<span class="hljs-title function_">json</span>()
+}</code></pre></div></figure>
+<p>The result is cached at the fetch level. The featured list ships with the App Shell.</p>
+<blockquote>
+<p><strong>Good to know:</strong> In serverless deployments, in-memory caching with <code>&quot;use cache&quot;</code> will not persist across instances. Consider using <a href="#/doc/nextjs/app/api-reference/directives/use-cache-remote"><code>&quot;use cache: remote&quot;</code></a> for persistent caching.</p>
+</blockquote>
+<p>Validation passes. Open the DevTools and try a client navigation. The featured section appears immediately, and <strong>&quot;Loading product...&quot;</strong> shows where the product details will stream in.</p>
+<h3 id="iterate-on-loading-states">Iterate on loading states</h3>
+<p>Validation passing means the navigation is instant. It does not mean the loading states are good. A `` boundary placed high in the tree (say, wrapping the whole page) might satisfy validation, but it replaces most of the page with a single fallback on every navigation.</p>
+<p>The best loading states keep as much real, cached content visible as possible and only show fallbacks where data is actually in flight. A product page that keeps the header, image, and description visible with only the price and availability behind a fallback feels faster than a full-page skeleton, even at the same total load time.</p>
+<p>Use the <a href="#visualize-loading-states-with-the-nextjs-devtools">DevTools</a> to see what your users see, or see the <a href="#ai-workflow">AI workflow</a> for automating the loop with an agent.</p>
+<h2 id="ai-workflow">AI workflow</h2>
+<p>At a high level, an agent optimizes a single navigation like this:</p>
+<ul>
+<li><strong>Observe</strong>: read validation insights and choose the exact navigation and UI that should appear immediately.</li>
+<li><strong>Test</strong>: confirm the target UI renders normally, then write an <code>instant()</code> test and verify that it fails before changing the route.</li>
+<li><strong>Fix</strong>: validation errors name a specific component and suggest a fix (<code>use cache</code> or ``). The agent applies the fix and re-runs validation.</li>
+<li><strong>Verify</strong>: run the test against a production-like build and keep the passing test as a regression guard.</li>
+</ul>
+<p>The agent doesn&#39;t need to understand the full caching model, only to follow the insights and errors until they&#39;re gone. It does need your app-specific intent, though. Tell it what should appear immediately, what can stream in, and what must stay fresh. When a caching decision is unclear, keep the data fresh behind `` rather than guessing a cache lifetime.</p>
+<p>For <a href="#iterate-on-loading-states">iterating on loading states</a>, a prompt like &quot;maximize my content, and reduce the amount that needs to be behind a spinner&quot; works well for pushing boundaries down.</p>
+<p>Agents working on a Cache Components route typically reach for three levers:</p>
+<ul>
+<li><strong>Push down</strong>: extract I/O into a Suspense-wrapped child so the parent stays static and static siblings lift into the shell.</li>
+<li><strong>Cache</strong>: pair <code>&#39;use cache&#39;</code> with <a href="#/doc/nextjs/app/api-reference/functions/cacheLife"><code>cacheLife</code></a> to assign a freshness profile.</li>
+<li><strong>Per-link prefetching</strong> (nav-only): when a route reads URL data (<code>searchParams</code> or <code>params</code>), opt it into <a href="#/doc/nextjs/app/guides/optimizing-prefetching">per-link prefetching</a> so the framework resolves that data at link-prefetch time. Session data from <code>cookies()</code> or <code>headers()</code> already lands in the App Shell without it.</li>
+</ul>
+<p>Each refactor should pair with a before/after capture to verify the change actually landed. Identical-looking captures mean the refactor didn&#39;t take effect.</p>
+<p>For agents to see what their changes actually render, pair this with <a target="_blank" rel="noopener" href="https://github.com/vercel-labs/agent-browser">agent-browser</a>. With React DevTools enabled it reports the component tree and which `` boundaries are still pending, so an agent can make a change, snapshot the shell, check what landed, and adjust. See <a href="#/doc/nextjs/app/guides/ai-agents@runtime-visibility">Runtime visibility</a> in the AI agents guide for the setup.</p>
+<p>The <a href="#/doc/nextjs/app/guides/ai-agents@next-cache-components-optimizer"><code>next-cache-components-optimizer</code></a> Skill packages this loop. It confirms the target UI renders normally, writes an <code>instant()</code> test that fails before the fix, then works it to green against a production-like build and ships it as a regression guard. Use it for the initial load (hard navigation), client-side navigation (soft navigation), or both.</p>
+<h2 id="opting-out">Opting out</h2>
+<p>Not every layout or page can or should be instant. When the structural fix isn&#39;t worth the work, or when a route isn&#39;t a priority for instant navigation, refine validation at one of two scopes.</p>
+<p>The dev overlay surfaces this as the <strong>Block</strong> fix alongside every insight:</p>
+<p>Set <code>instant = false</code> on the page or layout file. This opts the segment out of validation feedback. The segment may still navigate instantly if its structure supports it; the framework just won&#39;t surface insights for it. Navigations between sibling segments below are still validated.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app/dashboard/layout.tsx</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"></code></pre></div></figure>
+<p>With <code>false</code> on <code>/dashboard/layout.tsx</code>, validation no longer flags navigations into <code>/dashboard</code> from outside; navigations between <code>/dashboard/a</code> and <code>/dashboard/b</code> are still checked.</p>
+<p>For opted-out segments, the navigation blocks on the server. If the content depends on cookies or headers but has a known cache lifetime, caching it with <a href="#/doc/nextjs/app/api-reference/directives/use-cache-private"><code>use cache: private</code></a> lets the App Shell carry it ahead of the click instead of opting out, as long as its <a href="#/doc/nextjs/app/api-reference/functions/cacheLife@stale"><code>stale</code></a> time is at least 5 minutes.</p>
+<h2 id="next-steps">Next steps</h2>
+<ul>
+<li><a href="#/doc/nextjs/app/guides/adopting-partial-prefetching">Adopting Partial Prefetching</a> for the recommended `` defaults and a step-by-step adoption path</li>
+<li><a href="#/doc/nextjs/app/api-reference/file-conventions/route-segment-config/instant"><code>instant</code> API reference</a> for the full configuration</li>
+<li><a href="#/doc/nextjs/app/guides/optimizing-prefetching">Optimizing prefetching</a> when parts of your route depend on URL data (<code>searchParams</code> or <code>params</code>) and should resolve before navigation</li>
+<li><a href="#/doc/nextjs/app/getting-started/caching">Caching</a> for background on <code>use cache</code>, Suspense, and Partial Prerendering</li>
+<li><a href="#/doc/nextjs/app/getting-started/revalidating">Revalidating</a> for how to expire cached data with <code>cacheLife</code> and <code>updateTag</code></li>
+</ul>

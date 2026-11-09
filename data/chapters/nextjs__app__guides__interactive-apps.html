@@ -1,0 +1,544 @@
+<p>When a user interaction requires server-side work, the result is not available immediately. Network requests take an unknown amount of time to complete and may succeed or fail. While waiting, the client should provide feedback and respond to those states. Otherwise, users are left looking at stale data and may wonder whether anything is happening.</p>
+<p>This guide adds responsive feedback to a task management app called <em>Taskboard</em>. Each step handles a different kind of pending work, from streaming slow reads to confirming mutations before the server responds.</p>
+<blockquote>
+<p><strong>Good to know:</strong> The patterns in this guide also improve <a target="_blank" rel="noopener" href="https://web.dev/articles/vitals">Core Web Vitals</a>. Streaming with <a target="_blank" rel="noopener" href="https://react.dev/reference/react/Suspense">``</a> lowers <a target="_blank" rel="noopener" href="https://web.dev/articles/fcp">FCP</a> and <a target="_blank" rel="noopener" href="https://web.dev/articles/lcp">LCP</a> by letting the shell paint while slow reads finish. Optimistic UI and transitions lower <a target="_blank" rel="noopener" href="https://web.dev/articles/inp">INP</a> by keeping the click frame fast. Prefetching the next route makes FCP, LCP, and INP on the destination page near-instant. These patterns help, but they don&#39;t replace the usual INP work: shipping less client JavaScript and avoiding blocking roundtrips during interactions.</p>
+</blockquote>
+<h2 id="example">Example</h2>
+<p>The patterns build in order: stream slow data behind loading boundaries, add an instant priority toggle, build a reusable filter with a callback prop, show comments before they&#39;re confirmed, move cards between columns on drop, manage form lifecycle in a create dialog, and signal pending deletion to a parent. The final step caches the reusable reads so navigations stay instant.</p>
+<p>The companion <a target="_blank" rel="noopener" href="https://async-react-demo.labs.vercel.dev">Taskboard demo</a> (<a target="_blank" rel="noopener" href="https://github.com/nextjs/async-react-demo">source</a>) lets you see each pattern from this guide in action.</p>
+<p>The app is organized by feature. Everything for the task domain (queries, Server Functions, and components) lives under <code>features/task/</code>. Shared UI primitives live in <code>components/ui/</code>, and pages in <code>app/</code> compose feature components. The file paths throughout this guide follow that structure.</p>
+<p>The starting point is a Server Component app that reads tasks and comments from a database, with no <a href="#/doc/nextjs/app/guides/streaming">``</a> boundaries and no caching. Client Components call <a href="#/doc/nextjs/app/getting-started/mutating-data">Server Functions</a> to mutate that data. After each mutation, the Server Function calls <a href="#/doc/nextjs/app/api-reference/functions/refresh"><code>refresh()</code></a> so the server re-renders with fresh data:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>features/task/task-actions.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-string">&#x27;use server&#x27;</span>
+
+  <span class="hljs-keyword">const</span> task = <span class="hljs-keyword">await</span> <span class="hljs-title function_">getTaskById</span>(taskId)
+  <span class="hljs-keyword">if</span> (!task) <span class="hljs-keyword">return</span> <span class="hljs-literal">null</span>
+  <span class="hljs-keyword">const</span> newPriority = <span class="hljs-variable constant_">PRIORITY_CYCLE</span>[task.<span class="hljs-property">priority</span>]
+  <span class="hljs-keyword">await</span> <span class="hljs-title function_">updateTaskPriority</span>(taskId, newPriority)
+  <span class="hljs-title function_">refresh</span>()
+  <span class="hljs-keyword">return</span> newPriority
+}</code></pre></div></figure>
+<h3 id="step-1-stream-slow-data-with-suspense">Step 1: Stream slow data with Suspense</h3>
+<p>The task detail page reads the task and its comments. When both are awaited at the top of the page component, the whole page blocks until the slowest read resolves.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app/task/[id]/page.tsx</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">
+  <span class="hljs-keyword">const</span> { id } = <span class="hljs-keyword">await</span> params
+  <span class="hljs-keyword">const</span> task = <span class="hljs-keyword">await</span> <span class="hljs-title function_">getTask</span>(id)
+
+  <span class="hljs-keyword">return</span> (
+    <span class="language-xml"><span class="hljs-tag">&lt;<span class="hljs-name">div</span>&gt;</span>
+      
+      
+    <span class="hljs-tag">&lt;/<span class="hljs-name">div</span>&gt;</span></span>
+  )
+}</code></pre></div></figure>
+<p>With this version, nothing renders until <code>getTask</code> resolves, and the comments read starts only after that.</p>
+<p>Split the reads into separate components, pass each one a promise, and wrap them in <a target="_blank" rel="noopener" href="https://react.dev/reference/react/Suspense">``</a>. The page becomes synchronous, returns the shell immediately, and the server streams each section in as its data resolves:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app/task/[id]/page.tsx</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">
+  <span class="hljs-keyword">return</span> (
+    <span class="language-xml"><span class="hljs-tag">&lt;<span class="hljs-name">div</span>&gt;</span>
+      }&gt;
+        {params.then(({ id }) =&gt; (
+          <span class="hljs-tag">&lt;&gt;</span>
+            
+            }&gt;
+              
+            
+          <span class="hljs-tag">&lt;/&gt;</span></span>
+        ))}
+      
+    &lt;/div&gt;
+  )
+}</code></pre></div></figure>
+<p>Each section component awaits its own data:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>features/task/components/task-detail.tsx</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">
+  <span class="hljs-keyword">const</span> task = <span class="hljs-keyword">await</span> <span class="hljs-title function_">getTask</span>(id)
+  <span class="hljs-keyword">return</span> 
+}</code></pre></div></figure>
+<p>Calling <code>params.then()</code> inline in JSX keeps the page synchronous. The outer <code>covers the params resolution and the task detail read. Once `TaskDetail` resolves, React reveals the task header and the nested</code> boundary, which shows <code>CommentSectionSkeleton</code> while comments load.</p>
+<p>The page shell now paints immediately, the task header streams in when <code>getTask</code> resolves, and the comments section follows when <code>getComments</code> resolves.</p>
+<p>For more on streaming patterns, see the <a href="#/doc/nextjs/app/guides/streaming">Streaming</a> guide.</p>
+<h3 id="step-2-respond-instantly-to-a-toggle">Step 2: Respond instantly to a toggle</h3>
+<p>Each task card has a priority indicator that cycles through low, medium, and high on click.</p>
+<p>The button renders the <code>priority</code> prop from the server. Calling a Server Function starts the mutation, but it doesn&#39;t change that prop in the current render.</p>
+<p>Here the Server Function is called directly:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>features/task/components/task-card.tsx</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-string">&#x27;use client&#x27;</span>
+
+  <span class="hljs-keyword">return</span> (
+    <span class="language-xml"><span class="hljs-tag">&lt;<span class="hljs-name">button</span> <span class="hljs-attr">onClick</span>=<span class="hljs-string">{()</span> =&gt;</span> cyclePriority(id)} className={priorityDot[priority]}&gt;
+      {priority}
+    <span class="hljs-tag">&lt;/<span class="hljs-name">button</span>&gt;</span></span>
+  )
+}</code></pre></div></figure>
+<p>If you click the dot, the Server Function runs, but the button keeps rendering the old <code>priority</code> prop until the next server render arrives.</p>
+<p>Replace the direct call with <a target="_blank" rel="noopener" href="https://react.dev/reference/react/useOptimistic"><code>useOptimistic</code></a> and <a target="_blank" rel="noopener" href="https://react.dev/reference/react/useTransition"><code>useTransition</code></a>. <code>useOptimistic</code> provides a value to render in place of the stale prop, and <code>useTransition</code> runs the Server Function as part of a transition. The optimistic value applies for as long as that transition is pending:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>features/task/components/task-card.tsx</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-string">&#x27;use client&#x27;</span>
+
+  <span class="hljs-keyword">const</span> [optimisticPriority, setOptimisticPriority] = <span class="hljs-title function_">useOptimistic</span>(priority)
+  <span class="hljs-keyword">const</span> [, startTransition] = <span class="hljs-title function_">useTransition</span>()
+
+  <span class="hljs-keyword">function</span> <span class="hljs-title function_">handlePriority</span>(<span class="hljs-params"></span>) {
+    <span class="hljs-title function_">startTransition</span>(<span class="hljs-title function_">async</span> () =&gt; {
+      <span class="hljs-title function_">setOptimisticPriority</span>(<span class="hljs-variable constant_">PRIORITY_CYCLE</span>[optimisticPriority])
+      <span class="hljs-keyword">await</span> <span class="hljs-title function_">cyclePriority</span>(id)
+    })
+  }
+
+  <span class="hljs-keyword">return</span> (
+    <span class="language-xml"><span class="hljs-tag">&lt;<span class="hljs-name">button</span>
+      <span class="hljs-attr">onClick</span>=<span class="hljs-string">{handlePriority}</span>
+      <span class="hljs-attr">className</span>=<span class="hljs-string">{priorityDot[optimisticPriority]}</span>
+    &gt;</span>
+      {optimisticPriority}
+    <span class="hljs-tag">&lt;/<span class="hljs-name">button</span>&gt;</span></span>
+  )
+}</code></pre></div></figure>
+<p>The <code>setOptimisticPriority</code> call updates the UI on the current frame with the next value in the cycle. Reading from <code>optimisticPriority</code> instead of the prop means rapid double-clicks cycle correctly rather than reading a stale closure value.</p>
+<p>When the transition ends and fresh data arrives, the optimistic value reverts to the new server-rendered prop. If the Server Function inside <code>useTransition</code> throws, the error is forwarded to the nearest <a href="#/doc/nextjs/app/api-reference/file-conventions/error">error boundary</a> without a manual <code>try</code>/<code>catch</code>.</p>
+<p>The color now changes the moment the mouse lifts. Clicking again cycles to the next value without waiting for the first mutation to finish.</p>
+<h3 id="step-3-filter-with-pending-feedback">Step 3: Filter with pending feedback</h3>
+<p>The board has label filter chips (Design, Frontend, Backend). Clicking a chip updates a query param to filter the task list.</p>
+<p>The selected filter comes from the URL. Calling <code>router.push()</code> starts a client navigation, and the server re-renders the board with the new search params. Until that navigation completes, the page keeps rendering the old URL state.</p>
+<p>Here <code>router.push()</code> is called directly:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>features/task/components/label-filter.tsx</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-string">&#x27;use client&#x27;</span>
+
+  <span class="hljs-keyword">const</span> router = <span class="hljs-title function_">useRouter</span>()
+  <span class="hljs-keyword">const</span> searchParams = <span class="hljs-title function_">useSearchParams</span>()
+
+  <span class="hljs-keyword">function</span> <span class="hljs-title function_">handleFilter</span>(<span class="hljs-params"><span class="hljs-attr">value</span>: <span class="hljs-built_in">string</span> | <span class="hljs-literal">null</span></span>) {
+    <span class="hljs-keyword">const</span> params = <span class="hljs-keyword">new</span> <span class="hljs-title class_">URLSearchParams</span>(searchParams.<span class="hljs-title function_">toString</span>())
+    <span class="hljs-keyword">if</span> (value) params.<span class="hljs-title function_">set</span>(<span class="hljs-string">&#x27;label&#x27;</span>, value)
+    <span class="hljs-keyword">else</span> params.<span class="hljs-title function_">delete</span>(<span class="hljs-string">&#x27;label&#x27;</span>)
+    router.<span class="hljs-title function_">push</span>(<span class="hljs-string">`/?<span class="hljs-subst">${params.toString()}</span>`</span>)
+  }
+
+  <span class="hljs-comment">// ...render chips with onClick={handleFilter}</span>
+}</code></pre></div></figure>
+<p>With this version, <code>router.push()</code> starts the navigation, but there&#39;s no local pending state. The chip keeps rendering the old URL value, and the board gives no sign that a new server render is loading.</p>
+<p>Separate the filter into two components. <code>LabelFilter</code> owns the query string update and passes the navigation callback to a reusable <code>ChipGroup</code>, which handles all the pending feedback:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>features/task/components/label-filter.tsx</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-string">&#x27;use client&#x27;</span>
+
+
+
+<span class="hljs-keyword">const</span> labels = [
+  { <span class="hljs-attr">label</span>: <span class="hljs-string">&#x27;Design&#x27;</span>, <span class="hljs-attr">value</span>: <span class="hljs-string">&#x27;design&#x27;</span> },
+  { <span class="hljs-attr">label</span>: <span class="hljs-string">&#x27;Frontend&#x27;</span>, <span class="hljs-attr">value</span>: <span class="hljs-string">&#x27;frontend&#x27;</span> },
+  { <span class="hljs-attr">label</span>: <span class="hljs-string">&#x27;Backend&#x27;</span>, <span class="hljs-attr">value</span>: <span class="hljs-string">&#x27;backend&#x27;</span> },
+]
+
+  <span class="hljs-keyword">const</span> router = <span class="hljs-title function_">useRouter</span>()
+  <span class="hljs-keyword">const</span> searchParams = <span class="hljs-title function_">useSearchParams</span>()
+  <span class="hljs-keyword">const</span> current = searchParams.<span class="hljs-title function_">get</span>(<span class="hljs-string">&#x27;label&#x27;</span>) ?? <span class="hljs-literal">null</span>
+
+  <span class="hljs-keyword">function</span> <span class="hljs-title function_">filterAction</span>(<span class="hljs-params"><span class="hljs-attr">value</span>: <span class="hljs-built_in">string</span> | <span class="hljs-literal">null</span></span>) {
+    <span class="hljs-keyword">const</span> params = <span class="hljs-keyword">new</span> <span class="hljs-title class_">URLSearchParams</span>(searchParams.<span class="hljs-title function_">toString</span>())
+    <span class="hljs-keyword">if</span> (value) {
+      params.<span class="hljs-title function_">set</span>(<span class="hljs-string">&#x27;label&#x27;</span>, value)
+    } <span class="hljs-keyword">else</span> {
+      params.<span class="hljs-title function_">delete</span>(<span class="hljs-string">&#x27;label&#x27;</span>)
+    }
+    router.<span class="hljs-title function_">push</span>(<span class="hljs-string">`/?<span class="hljs-subst">${params.toString()}</span>`</span>)
+  }
+
+  <span class="hljs-keyword">return</span> (
+    
+  )
+}</code></pre></div></figure>
+<p><code>LabelFilter</code> decides where the app navigates and holds no pending state of its own.</p>
+<h4 id="handle-pending-feedback-internally">Handle pending feedback internally</h4>
+<p><code>ChipGroup</code> accepts a <code>changeAction</code> prop and calls it inside its own <code>startTransition</code>. It uses two <code>useOptimistic</code> hooks: one for the selected chip, and one for the <code>data-pending</code> attribute that ancestor components can style against:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>components/ui/chip-group.tsx</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-string">&#x27;use client&#x27;</span>
+
+  <span class="hljs-keyword">const</span> [optimisticValue, setOptimisticValue] = <span class="hljs-title function_">useOptimistic</span>(value)
+  <span class="hljs-keyword">const</span> [isPending, setIsPending] = <span class="hljs-title function_">useOptimistic</span>(<span class="hljs-literal">false</span>)
+
+  <span class="hljs-keyword">function</span> <span class="hljs-title function_">handleClick</span>(<span class="hljs-params">newValue</span>) {
+    <span class="hljs-title function_">startTransition</span>(<span class="hljs-title function_">async</span> () =&gt; {
+      <span class="hljs-title function_">setOptimisticValue</span>(newValue)
+      <span class="hljs-title function_">setIsPending</span>(<span class="hljs-literal">true</span>)
+      <span class="hljs-keyword">await</span> <span class="hljs-title function_">changeAction</span>(newValue)
+    })
+  }
+
+  <span class="hljs-keyword">return</span> (
+    <span class="language-xml"><span class="hljs-tag">&lt;<span class="hljs-name">div</span> <span class="hljs-attr">className</span>=<span class="hljs-string">&quot;flex gap-1.5&quot;</span> <span class="hljs-attr">data-pending</span>=<span class="hljs-string">{isPending</span> ? &#x27;&#x27; <span class="hljs-attr">:</span> <span class="hljs-attr">undefined</span>}&gt;</span>
+      {items.map((item) =&gt; (
+        <span class="hljs-tag">&lt;<span class="hljs-name">button</span>
+          <span class="hljs-attr">key</span>=<span class="hljs-string">{item.value}</span>
+          <span class="hljs-attr">onClick</span>=<span class="hljs-string">{()</span> =&gt;</span>
+            handleClick(item.value === optimisticValue ? null : item.value)
+          }
+          className={item.value === optimisticValue ? &#x27;active&#x27; : &#x27;&#x27;}
+        &gt;
+          {item.label}
+        <span class="hljs-tag">&lt;/<span class="hljs-name">button</span>&gt;</span>
+      ))}
+    <span class="hljs-tag">&lt;/<span class="hljs-name">div</span>&gt;</span></span>
+  )
+}</code></pre></div></figure>
+<p>The consumer passes a callback (<code>changeAction</code>), and the design component runs it inside a transition. By convention, props named <code>action</code> or suffixed with <code>Action</code> signal this behavior. See <a target="_blank" rel="noopener" href="https://react.dev/reference/react/useTransition#exposing-action-props-from-components">Exposing <code>action</code> props from components</a> in the React docs for this pattern.</p>
+<p>The <code>data-pending</code> attribute on the <code>ChipGroup</code> root element lets ancestor components react through CSS without any coordination. The board on the home page uses <code>group-has-data-pending:opacity-50</code> to dim while the transition runs, without replacing the board with a skeleton. Because <code>ChipGroup</code> renders inside the <code>group</code> element, the attribute is available to any ancestor for styling.</p>
+<blockquote>
+<p><strong>Good to know:</strong> <code>group-has-data-pending:</code> and <code>has-data-pending:</code> compile to the CSS <a target="_blank" rel="noopener" href="https://developer.mozilla.org/en-US/docs/Web/CSS/:has"><code>:has()</code></a> selector, which the browser re-evaluates over the anchored subtree whenever <code>data-pending</code> toggles. That stays cheap here because the board toggles it only twice per filter, and dragging (Step 5) deliberately skips it. Reach for client state instead when a broad <code>:has()</code> anchor toggles on a high-frequency interaction like dragging or scrolling, where repeated recalculation over a large subtree adds up.</p>
+</blockquote>
+<p>The &quot;Frontend&quot; chip now highlights on the current frame. The board dims while the filtered data loads, then updates with the filtered tasks.</p>
+<h3 id="step-4-add-comments-with-instant-feedback">Step 4: Add comments with instant feedback</h3>
+<p>The task detail page has a comment section. Submitting a comment writes new data on the server, but a server component renders the persisted list, so it can&#39;t include the new comment until the next server render arrives.</p>
+<p>Here a comment form uses controlled state for the input and calls the Server Function directly:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>features/task/components/comment-form.tsx</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-string">&#x27;use client&#x27;</span>
+
+  <span class="hljs-keyword">const</span> [content, setContent] = <span class="hljs-title function_">useState</span>(<span class="hljs-string">&#x27;&#x27;</span>)
+
+  <span class="hljs-keyword">async</span> <span class="hljs-keyword">function</span> <span class="hljs-title function_">handleSubmit</span>(<span class="hljs-params"></span>) {
+    <span class="hljs-keyword">if</span> (!content.<span class="hljs-title function_">trim</span>()) <span class="hljs-keyword">return</span>
+    <span class="hljs-keyword">await</span> <span class="hljs-title function_">addComment</span>(taskId, content)
+    <span class="hljs-title function_">setContent</span>(<span class="hljs-string">&#x27;&#x27;</span>)
+  }
+
+  <span class="hljs-keyword">return</span> (
+    <span class="language-xml"><span class="hljs-tag">&lt;<span class="hljs-name">div</span>&gt;</span>
+      <span class="hljs-tag">&lt;<span class="hljs-name">input</span>
+        <span class="hljs-attr">value</span>=<span class="hljs-string">{content}</span>
+        <span class="hljs-attr">onChange</span>=<span class="hljs-string">{(e)</span> =&gt;</span> setContent(e.target.value)}
+        placeholder=&quot;Write a comment...&quot;
+      /&gt;
+      <span class="hljs-tag">&lt;<span class="hljs-name">button</span> <span class="hljs-attr">onClick</span>=<span class="hljs-string">{handleSubmit}</span>&gt;</span>Send<span class="hljs-tag">&lt;/<span class="hljs-name">button</span>&gt;</span>
+    <span class="hljs-tag">&lt;/<span class="hljs-name">div</span>&gt;</span></span>
+  )
+}</code></pre></div></figure>
+<p>With this version, the Server Function runs on submit, but the input stays filled and the list doesn&#39;t change until the server responds.</p>
+<p>Split the comment list into two parts. A server component renders the persisted comments, and a client component tracks only the <strong>pending</strong> comments using <code>useOptimistic([])</code> with an empty initial array. When the transition completes and a new render arrives with fresh data, the pending list resets to empty and the real comment appears in the server-rendered list:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>features/task/components/optimistic-comments.tsx</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-string">&#x27;use client&#x27;</span>
+
+  <span class="hljs-keyword">const</span> [pendingComments, setPendingComments] = <span class="hljs-title function_">useOptimistic</span>([])
+  <span class="hljs-keyword">const</span> formRef = <span class="hljs-title function_">useRef</span>(<span class="hljs-literal">null</span>)
+
+  <span class="hljs-keyword">return</span> (
+    <span class="language-xml"><span class="hljs-tag">&lt;&gt;</span>
+      <span class="hljs-tag">&lt;<span class="hljs-name">form</span>
+        <span class="hljs-attr">ref</span>=<span class="hljs-string">{formRef}</span>
+        <span class="hljs-attr">action</span>=<span class="hljs-string">{async</span> (<span class="hljs-attr">formData</span>) =&gt;</span> {
+          const content = formData.get(&#x27;content&#x27;)?.trim()
+          if (!content) return
+          formRef.current?.reset()
+
+          const id = crypto.randomUUID()
+          setPendingComments((current) =&gt; [
+            {
+              id,
+              content,
+              userName: &#x27;You&#x27;,
+              createdAt: new Date().toISOString(),
+            },
+            ...current,
+          ])
+
+          await addComment(taskId, content)
+        }}
+      &gt;
+        <span class="hljs-tag">&lt;<span class="hljs-name">input</span> <span class="hljs-attr">name</span>=<span class="hljs-string">&quot;content&quot;</span> <span class="hljs-attr">placeholder</span>=<span class="hljs-string">&quot;Write a comment...&quot;</span> <span class="hljs-attr">required</span> /&gt;</span>
+        <span class="hljs-tag">&lt;<span class="hljs-name">button</span> <span class="hljs-attr">type</span>=<span class="hljs-string">&quot;submit&quot;</span>&gt;</span>Send<span class="hljs-tag">&lt;/<span class="hljs-name">button</span>&gt;</span>
+      <span class="hljs-tag">&lt;/<span class="hljs-name">form</span>&gt;</span>
+      {pendingComments.map((comment) =&gt; (
+        
+      ))}
+    <span class="hljs-tag">&lt;/&gt;</span></span>
+  )
+}</code></pre></div></figure>
+<p>Three things happen on submit:</p>
+<ol>
+<li><code>formRef.current?.reset()</code> clears the input through direct DOM manipulation. Inside a transition, <a target="_blank" rel="noopener" href="https://react.dev/reference/react/useState"><code>useState</code></a> setters are deferred until the transition completes, but <code>useOptimistic</code> setters and direct DOM calls like <code>formRef.reset()</code> apply on the current frame.</li>
+<li><code>setPendingComments</code> adds the new comment to the pending list with a client-generated UUID.</li>
+<li>The form <code>action</code> runs the handler inside a transition.</li>
+</ol>
+<p>The server component renders the real list alongside it:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>features/task/components/comment-section.tsx</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">
+
+
+
+<span class="hljs-keyword">async</span> <span class="hljs-keyword">function</span> <span class="hljs-title function_">CommentSection</span>(<span class="hljs-params">{ taskId }</span>) {
+  <span class="hljs-keyword">const</span> comments = <span class="hljs-keyword">await</span> <span class="hljs-title function_">getComments</span>(taskId)
+
+  <span class="hljs-keyword">return</span> (
+    <span class="language-xml"><span class="hljs-tag">&lt;<span class="hljs-name">div</span>&gt;</span>
+      
+      {comments.map((comment) =&gt; (
+        
+      ))}
+    <span class="hljs-tag">&lt;/<span class="hljs-name">div</span>&gt;</span></span>
+  )
+}</code></pre></div></figure>
+<p>The input now clears on submit and a faded comment card appears at the top of the list. When the server confirms, the faded card disappears and the real comment takes its place in the server-rendered list.</p>
+<h3 id="step-5-move-cards-between-columns">Step 5: Move cards between columns</h3>
+<p>The board has three columns: Todo, In Progress, and Done. Each column renders tasks from the server-provided <code>tasks</code> prop.</p>
+<p>Dropping a card starts a Server Function that writes the new status. The <code>tasks</code> prop doesn&#39;t change until the next server render arrives, so the client needs a temporary task list for the pending move.</p>
+<p>Here the Server Function is called on drop:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>features/task/components/board.tsx</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-string">&#x27;use client&#x27;</span>
+
+  <span class="hljs-keyword">const</span> tasks = <span class="hljs-title function_">use</span>(tasksPromise)
+
+  <span class="hljs-keyword">function</span> <span class="hljs-title function_">handleDrop</span>(<span class="hljs-params">targetStatus, taskId</span>) {
+    <span class="hljs-title function_">updateStatus</span>(taskId, targetStatus)
+  }
+
+  <span class="hljs-comment">// ...render columns from tasks</span>
+}</code></pre></div></figure>
+<p>The component receives a promise from the parent server component (see Step 1&#39;s `` boundary) and unwraps it with <a target="_blank" rel="noopener" href="https://react.dev/reference/react/use"><code>use</code></a>. With this version, a card dragged from &quot;Todo&quot; to &quot;In Progress&quot; stays in the old column while the server processes the update, then jumps to the new column after the response arrives.</p>
+<p>Add <code>useOptimistic</code> with a reducer to remap the card&#39;s status on the current frame. The reducer receives the full task list and an action describing which card moved where:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>features/task/components/board.tsx</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-string">&#x27;use client&#x27;</span>
+
+  <span class="hljs-keyword">const</span> tasks = <span class="hljs-title function_">use</span>(tasksPromise)
+  <span class="hljs-keyword">const</span> [optimisticTasks, moveTask] = <span class="hljs-title function_">useOptimistic</span>(
+    tasks,
+    <span class="hljs-function">(<span class="hljs-params">currentTasks, <span class="hljs-attr">action</span>: { taskId: <span class="hljs-built_in">string</span>; status: Status }</span>) =&gt;</span>
+      currentTasks.<span class="hljs-title function_">map</span>(<span class="hljs-function">(<span class="hljs-params">t</span>) =&gt;</span>
+        t.<span class="hljs-property">id</span> === action.<span class="hljs-property">taskId</span> ? { ...t, <span class="hljs-attr">status</span>: action.<span class="hljs-property">status</span> } : t
+      )
+  )
+
+  <span class="hljs-keyword">function</span> <span class="hljs-title function_">handleDrop</span>(<span class="hljs-params">targetStatus, taskId</span>) {
+    <span class="hljs-title function_">startTransition</span>(<span class="hljs-title function_">async</span> () =&gt; {
+      <span class="hljs-title function_">moveTask</span>({ taskId, <span class="hljs-attr">status</span>: targetStatus })
+      <span class="hljs-keyword">const</span> result = <span class="hljs-keyword">await</span> <span class="hljs-title function_">updateStatus</span>(taskId, targetStatus)
+      <span class="hljs-keyword">if</span> (!result.<span class="hljs-property">success</span>) toast.<span class="hljs-title function_">error</span>(result.<span class="hljs-property">error</span>)
+    })
+  }
+
+  <span class="hljs-keyword">return</span> (
+    <span class="language-xml"><span class="hljs-tag">&lt;<span class="hljs-name">div</span> <span class="hljs-attr">className</span>=<span class="hljs-string">&quot;grid grid-cols-3 gap-4&quot;</span>&gt;</span>
+      {columns.map((col) =&gt; (
+         t.status === col.status)}
+          onDrop={(taskId) =&gt; handleDrop(col.status, taskId)}
+        /&gt;</span>
+      ))}
+    &lt;/div&gt;
+  )
+}</code></pre></div></figure>
+<p>The reducer maps over the task list and updates the status of the dragged card, leaving the rest unchanged. If a background refresh arrives mid-drag, for example from polling or another user&#39;s mutation, React re-runs the reducer with the updated base data so the optimistic move sits on top of fresh data. The Server Function returns an error result when the task no longer exists, which the client displays in a toast.</p>
+<p>This step uses the standalone <code>startTransition</code> instead of <code>useTransition</code> because the hook&#39;s <code>isPending</code> would trigger the board fade from Step 3. The optimistic move already covers the visual feedback, so no pending indicator is needed. If the Server Function returns an expected error, the card reverts. Unexpected errors are forwarded to the nearest <a href="#/doc/nextjs/app/getting-started/error-handling">error boundary</a>.</p>
+<p>A card dragged from &quot;Todo&quot; to &quot;In Progress&quot; now lands in the target column the moment you release.</p>
+<h3 id="step-6-manage-form-lifecycle">Step 6: Manage form lifecycle</h3>
+<p>The board has a &quot;New Task&quot; button that opens a create dialog. The form action creates the task on the server, then refreshes the board.</p>
+<p>The dialog coordinates three pieces of client state while the action is pending: the submit button, the field values, and whether the dialog is open. <a target="_blank" rel="noopener" href="https://react.dev/reference/react/useActionState"><code>useActionState</code></a> handles all three.</p>
+<p>Here a form manages submission state manually and calls the Server Function in an <code>onSubmit</code> handler:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>features/task/components/create-task-modal.tsx</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-string">&#x27;use client&#x27;</span>
+
+  <span class="hljs-keyword">const</span> [isOpen, setIsOpen] = <span class="hljs-title function_">useState</span>(<span class="hljs-literal">false</span>)
+  <span class="hljs-keyword">const</span> [isSubmitting, setIsSubmitting] = <span class="hljs-title function_">useState</span>(<span class="hljs-literal">false</span>)
+
+  <span class="hljs-keyword">async</span> <span class="hljs-keyword">function</span> <span class="hljs-title function_">handleSubmit</span>(<span class="hljs-params">e</span>) {
+    e.<span class="hljs-title function_">preventDefault</span>()
+    <span class="hljs-keyword">const</span> formData = <span class="hljs-keyword">new</span> <span class="hljs-title class_">FormData</span>(e.<span class="hljs-property">currentTarget</span>)
+    <span class="hljs-keyword">const</span> title = formData.<span class="hljs-title function_">get</span>(<span class="hljs-string">&#x27;title&#x27;</span>)
+    <span class="hljs-keyword">if</span> (!title.<span class="hljs-title function_">trim</span>()) <span class="hljs-keyword">return</span>
+
+    <span class="hljs-title function_">setIsSubmitting</span>(<span class="hljs-literal">true</span>)
+    <span class="hljs-keyword">await</span> <span class="hljs-title function_">createTask</span>({ title <span class="hljs-comment">/* ... */</span> })
+    <span class="hljs-title function_">setIsSubmitting</span>(<span class="hljs-literal">false</span>)
+    <span class="hljs-title function_">setIsOpen</span>(<span class="hljs-literal">false</span>)
+  }
+
+  <span class="hljs-keyword">return</span> (
+    
+      <span class="language-xml"><span class="hljs-tag">&lt;<span class="hljs-name">form</span> <span class="hljs-attr">onSubmit</span>=<span class="hljs-string">{handleSubmit}</span>&gt;</span>
+        <span class="hljs-tag">&lt;<span class="hljs-name">input</span> <span class="hljs-attr">name</span>=<span class="hljs-string">&quot;title&quot;</span> <span class="hljs-attr">placeholder</span>=<span class="hljs-string">&quot;Task title...&quot;</span> <span class="hljs-attr">required</span> /&gt;</span>
+        <span class="hljs-tag">&lt;<span class="hljs-name">button</span> <span class="hljs-attr">type</span>=<span class="hljs-string">&quot;submit&quot;</span> <span class="hljs-attr">disabled</span>=<span class="hljs-string">{isSubmitting}</span>&gt;</span>
+          {isSubmitting ? &#x27;Creating...&#x27; : &#x27;Create Task&#x27;}
+        <span class="hljs-tag">&lt;/<span class="hljs-name">button</span>&gt;</span>
+      <span class="hljs-tag">&lt;/<span class="hljs-name">form</span>&gt;</span></span>
+    
+  )
+}</code></pre></div></figure>
+<p>With this version, the submit handler runs, but two separate <code>useState</code> calls manage the pending state. The dialog closes before the board shows the new task, because <code>setIsOpen(false)</code> fires outside of a transition. The form fields also keep their values across submissions unless you track a reset key yourself.</p>
+<p><code>useActionState</code> handles all three concerns: <code>isPending</code> for the button, key-based reset for the fields, and a wrap around the dialog close:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>features/task/components/create-task-modal.tsx</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-string">&#x27;use client&#x27;</span>
+
+  <span class="hljs-keyword">const</span> [isOpen, setIsOpen] = <span class="hljs-title function_">useState</span>(<span class="hljs-literal">false</span>)
+
+  <span class="hljs-keyword">const</span> [{ key }, formAction, isPending] = <span class="hljs-title function_">useActionState</span>(
+    <span class="hljs-title function_">async</span> (prev, formData) =&gt; {
+      <span class="hljs-keyword">const</span> title = <span class="hljs-title class_">String</span>(formData.<span class="hljs-title function_">get</span>(<span class="hljs-string">&#x27;title&#x27;</span>))
+      <span class="hljs-keyword">if</span> (!title.<span class="hljs-title function_">trim</span>()) <span class="hljs-keyword">return</span> prev
+
+      <span class="hljs-keyword">await</span> <span class="hljs-title function_">createTask</span>({
+        title,
+        <span class="hljs-attr">description</span>: <span class="hljs-title class_">String</span>(formData.<span class="hljs-title function_">get</span>(<span class="hljs-string">&#x27;description&#x27;</span>)),
+        <span class="hljs-attr">status</span>: <span class="hljs-string">&#x27;todo&#x27;</span>,
+        <span class="hljs-attr">priority</span>: <span class="hljs-string">&#x27;medium&#x27;</span>,
+      })
+
+      <span class="hljs-title function_">startTransition</span>(<span class="hljs-function">() =&gt;</span> <span class="hljs-title function_">setIsOpen</span>(<span class="hljs-literal">false</span>))
+      <span class="hljs-keyword">return</span> { <span class="hljs-attr">key</span>: prev.<span class="hljs-property">key</span> + <span class="hljs-number">1</span> }
+    },
+    { <span class="hljs-attr">key</span>: <span class="hljs-number">0</span> }
+  )
+
+  <span class="hljs-keyword">return</span> (
+    
+      <span class="language-xml"><span class="hljs-tag">&lt;<span class="hljs-name">form</span> <span class="hljs-attr">action</span>=<span class="hljs-string">{formAction}</span>&gt;</span>
+        <span class="hljs-tag">&lt;<span class="hljs-name">div</span> <span class="hljs-attr">key</span>=<span class="hljs-string">{key}</span>&gt;</span>
+          <span class="hljs-tag">&lt;<span class="hljs-name">input</span> <span class="hljs-attr">name</span>=<span class="hljs-string">&quot;title&quot;</span> <span class="hljs-attr">placeholder</span>=<span class="hljs-string">&quot;Task title...&quot;</span> <span class="hljs-attr">required</span> /&gt;</span>
+          <span class="hljs-tag">&lt;<span class="hljs-name">input</span> <span class="hljs-attr">name</span>=<span class="hljs-string">&quot;description&quot;</span> <span class="hljs-attr">placeholder</span>=<span class="hljs-string">&quot;Describe the task...&quot;</span> /&gt;</span>
+        <span class="hljs-tag">&lt;/<span class="hljs-name">div</span>&gt;</span>
+        <span class="hljs-tag">&lt;<span class="hljs-name">button</span> <span class="hljs-attr">type</span>=<span class="hljs-string">&quot;submit&quot;</span> <span class="hljs-attr">disabled</span>=<span class="hljs-string">{isPending}</span>&gt;</span>
+          {isPending ? &#x27;Creating...&#x27; : &#x27;Create Task&#x27;}
+        <span class="hljs-tag">&lt;/<span class="hljs-name">button</span>&gt;</span>
+      <span class="hljs-tag">&lt;/<span class="hljs-name">form</span>&gt;</span></span>
+    
+  )
+}</code></pre></div></figure>
+<p>The <code>key</code> in the returned state controls form reset. On success, <code>key</code> increments, which remounts the <code>&lt;div key={key}&gt;</code> and resets every input inside it.</p>
+<p><code>useActionState</code> runs the action as a transition, so the dialog stays open and <code>isPending</code> stays <code>true</code> while <code>createTask</code> runs. State updates after the <code>await</code> aren&#39;t automatically part of that transition, so wrapping <code>setIsOpen(false)</code> in <code>startTransition</code> runs the close as part of the transition.</p>
+<p>With that wrap in place, React batches the dialog close with the board update that <code>refresh()</code> triggers inside <code>createTask</code>, so the new task appears at the moment the dialog closes. Without it, the dialog closes first and the board updates a frame later.</p>
+<blockquote>
+<p><strong>Good to know:</strong> This limitation is documented in React under <a target="_blank" rel="noopener" href="https://react.dev/reference/react/useTransition#react-doesnt-treat-my-state-update-after-await-as-a-transition">React doesn&#39;t treat my state update after <code>await</code> as a transition</a>. Until it&#39;s fixed, wrapping post-<code>await</code> state updates in <code>startTransition</code> is the recommended workaround.</p>
+</blockquote>
+<p>The same post-<code>await</code> window is where side effects like toasts belong:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-keyword">await</span> <span class="hljs-title function_">createTask</span>({
+  <span class="hljs-comment">/* … */</span>
+})
+
+<span class="hljs-title function_">startTransition</span>(<span class="hljs-function">() =&gt;</span> <span class="hljs-title function_">setIsOpen</span>(<span class="hljs-literal">false</span>))
+toast.<span class="hljs-title function_">success</span>(<span class="hljs-string">&#x27;Task created&#x27;</span>)</code></pre></div></figure>
+<p>Side effects that don&#39;t affect rendered state, such as analytics, toasts, and focus changes, run after the <code>await</code> resolves. They don&#39;t need a transition because they don&#39;t update React state.</p>
+<p>The button text now changes to &quot;Creating...&quot; and dims on submit. When the server responds, the fields clear, the dialog closes, the new task appears on the board, and a toast confirms the action.</p>
+<blockquote>
+<p><strong>Good to know:</strong> The companion app adds status, priority, assignee, and label pickers to the modal. The pattern is the same: hidden inputs track each picker&#39;s state, and <code>key</code> resets them all on success.</p>
+</blockquote>
+<h3 id="step-7-signal-pending-deletion-to-a-parent">Step 7: Signal pending deletion to a parent</h3>
+<p>Each comment card has a delete button that removes the comment on the server, and the comment disappears from the list after the next render.</p>
+<p>Between the click and that render, the card still shows the old data. The list itself can&#39;t show the pending removal, so the signal has to come from the button.</p>
+<p>This step reuses the <code>data-pending</code> CSS hook from Step 3, but drives it from <code>useOptimistic(false)</code> instead of the <code>isPending</code> from <code>useTransition</code>.</p>
+<p>Here the Server Function is called directly:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>features/task/components/delete-button.tsx</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-string">&#x27;use client&#x27;</span>
+
+  <span class="hljs-keyword">return</span> (
+    <span class="language-xml"><span class="hljs-tag">&lt;<span class="hljs-name">button</span>
+      <span class="hljs-attr">onClick</span>=<span class="hljs-string">{()</span> =&gt;</span> deleteComment(commentId)}
+      aria-label=&quot;Delete comment&quot;
+    &gt;
+      
+    <span class="hljs-tag">&lt;/<span class="hljs-name">button</span>&gt;</span></span>
+  )
+}</code></pre></div></figure>
+<p>With this version, the comment stays fully visible until the next server render.</p>
+<p>Wrap the action in a <code>&lt;form&gt;</code>, track pending state with <code>useOptimistic(false)</code>, and expose it through a <code>data-pending</code> attribute. Accept the action as a <code>deleteAction</code> prop so the parent comment card can react with CSS:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>features/task/components/delete-button.tsx</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-string">&#x27;use client&#x27;</span>
+
+  deleteAction,
+}: {
+  <span class="hljs-attr">deleteAction</span>: <span class="hljs-function">() =&gt;</span> <span class="hljs-built_in">void</span> | <span class="hljs-title class_">Promise</span>&lt;<span class="hljs-built_in">void</span>&gt;
+}) {
+  <span class="hljs-keyword">const</span> [isPending, setIsPending] = <span class="hljs-title function_">useOptimistic</span>(<span class="hljs-literal">false</span>)
+
+  <span class="hljs-keyword">return</span> (
+    <span class="language-xml"><span class="hljs-tag">&lt;<span class="hljs-name">form</span>
+      <span class="hljs-attr">action</span>=<span class="hljs-string">{async</span> () =&gt;</span> {
+        setIsPending(true)
+        await deleteAction()
+      }}
+    &gt;
+      <span class="hljs-tag">&lt;<span class="hljs-name">button</span>
+        <span class="hljs-attr">type</span>=<span class="hljs-string">&quot;submit&quot;</span>
+        <span class="hljs-attr">disabled</span>=<span class="hljs-string">{isPending}</span>
+        <span class="hljs-attr">data-pending</span>=<span class="hljs-string">{isPending</span> ? &#x27;&#x27; <span class="hljs-attr">:</span> <span class="hljs-attr">undefined</span>}
+        <span class="hljs-attr">aria-label</span>=<span class="hljs-string">&quot;Delete comment&quot;</span>
+      &gt;</span>
+        
+      <span class="hljs-tag">&lt;/<span class="hljs-name">button</span>&gt;</span>
+    <span class="hljs-tag">&lt;/<span class="hljs-name">form</span>&gt;</span></span>
+  )
+}</code></pre></div></figure>
+<p>The parent comment card uses Tailwind&#39;s <code>has-data-pending:</code> variant to fade itself when any descendant sets the <code>data-pending</code> attribute. The button is the only component that knows when deletion is pending, so exposing that state as a CSS attribute lets any ancestor dim itself without lifting state or threading callbacks:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>features/task/components/comment-card.tsx</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">&lt;div className=<span class="hljs-string">&quot;rounded-lg px-3 transition-all has-data-pending:opacity-30&quot;</span>&gt;
+  
+  {deleteAction &amp;&amp; }
+&lt;/div&gt;</code></pre></div></figure>
+<p>The parent server component binds the Server Function to the comment ID, which keeps <code>DeleteButton</code> reusable:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>features/task/components/comment-section.tsx</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"></code></pre></div></figure>
+<p>The card now fades to 30% opacity the moment the click registers. When the server confirms and the next render arrives, the card unmounts from the list.</p>
+<h3 id="step-8-make-repeat-navigation-instant">Step 8: Make repeat navigation instant</h3>
+<p>Every pattern so far smooths a single interaction. Across navigations, the same reads rerun and the same fallbacks paint again. <a href="#/doc/nextjs/app/getting-started/caching">Caching</a> the reusable reads and <a href="#/doc/nextjs/app/guides/prefetching">prefetching</a> them with the real request closes that gap without moving the data model into the browser.</p>
+<p>This step uses <a href="#/doc/nextjs/app/api-reference/config/next-config-js/cacheComponents">Cache Components</a>, introduced in Next.js 16. Steps 1 through 7 work without it. If you aren&#39;t using Cache Components, see <a href="#/doc/nextjs/app/guides/caching-without-cache-components">Caching without Cache Components</a>.</p>
+<p>Enable it in <code>next.config.ts</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>next.config.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">
+
+<span class="hljs-keyword">const</span> <span class="hljs-attr">nextConfig</span>: <span class="hljs-title class_">NextConfig</span> = {
+  <span class="hljs-attr">cacheComponents</span>: <span class="hljs-literal">true</span>,
+}</code></pre></div></figure>
+<p>Enabling Cache Components applies prerender validation across every route, not just the ones in this step. A route that reads request data such as <code>cookies()</code>, <code>headers()</code>, or <code>searchParams</code> outside <a target="_blank" rel="noopener" href="https://react.dev/reference/react/Suspense">``</a> now blocks prerendering and needs the Step 1 treatment. To turn it on in an existing app, see <a href="#/doc/nextjs/app/guides/migrating-to-cache-components">Migrating to Cache Components</a>.</p>
+<h4 id="cache-reusable-reads">Cache reusable reads</h4>
+<p>For each server read, ask whether it should be reused across requests and whether each write can invalidate it precisely. A task is stable enough to cache and has a clear per-id tag:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>features/task/task-queries.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">
+  <span class="hljs-string">&#x27;use cache&#x27;</span>
+  <span class="hljs-title function_">cacheLife</span>(<span class="hljs-string">&#x27;hours&#x27;</span>)
+  <span class="hljs-title function_">cacheTag</span>(<span class="hljs-string">&#x27;tasks&#x27;</span>, <span class="hljs-string">`task-<span class="hljs-subst">${id}</span>`</span>)
+
+  <span class="hljs-keyword">return</span> <span class="hljs-title function_">getTaskById</span>(id)
+}</code></pre></div></figure>
+<p>The per-id tag <code>task-${id}</code> gives a single task its own handle. The broader <code>tasks</code> tag covers the list. See the <a href="#/doc/nextjs/app/getting-started/caching">Caching guide</a> for cache scoping (<code>&#39;use cache: private&#39;</code>, <code>&#39;use cache: remote&#39;</code>), cache lifetimes, and tag patterns.</p>
+<h4 id="invalidate-from-mutations">Invalidate from mutations</h4>
+<p><a href="#/doc/nextjs/app/api-reference/functions/refresh"><code>refresh()</code></a> reruns dynamic work but leaves cached entries in place. Replace it with <a href="#/doc/nextjs/app/api-reference/functions/updateTag"><code>updateTag</code></a> for the tags each write touched:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>features/task/task-actions.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-string">&#x27;use server&#x27;</span>
+
+  <span class="hljs-keyword">const</span> updated = <span class="hljs-keyword">await</span> <span class="hljs-title function_">updateTaskStatus</span>(taskId, newStatus)
+  <span class="hljs-keyword">if</span> (!updated) {
+    <span class="hljs-keyword">return</span> { <span class="hljs-attr">success</span>: <span class="hljs-literal">false</span> <span class="hljs-keyword">as</span> <span class="hljs-keyword">const</span>, <span class="hljs-attr">error</span>: <span class="hljs-string">&#x27;Task no longer exists&#x27;</span> }
+  }
+
+  <span class="hljs-title function_">updateTag</span>(<span class="hljs-string">&#x27;tasks&#x27;</span>)
+  <span class="hljs-title function_">updateTag</span>(<span class="hljs-string">`task-<span class="hljs-subst">${taskId}</span>`</span>)
+  <span class="hljs-keyword">return</span> { <span class="hljs-attr">success</span>: <span class="hljs-literal">true</span> <span class="hljs-keyword">as</span> <span class="hljs-keyword">const</span>, <span class="hljs-attr">status</span>: newStatus }
+}</code></pre></div></figure>
+<p>Every Server Function follows the same shape: run the write, then call <code>updateTag</code> for the cached reads that changed. Dynamic reads do not have tags to invalidate, so use <code>refresh()</code> for those mutations.</p>
+<p>In this demo, the comment thread stays dynamic because readers expect the current discussion to update immediately on the open task page. Adding or deleting a comment calls <code>refresh()</code>, which reruns the dynamic comment read for the current route while leaving the task caches in place. See the <a href="#/doc/nextjs/app/getting-started/revalidating">Revalidating guide</a> for tag patterns, time-based revalidation, and on-demand invalidation from route handlers.</p>
+<h4 id="prefetch-the-destination-with-the-real-request">Prefetch the destination with the real request</h4>
+<p>Under <a href="#/doc/nextjs/app/guides/adopting-partial-prefetching">Partial Prefetching</a> (Next.js 16.3 and later), `` prefetches the destination&#39;s <a href="#/doc/nextjs/app/glossary@app-shell">App Shell</a>: the route output that is shared across links for the current user. The shell does not include <a href="#/doc/nextjs/app/glossary@url-data">URL data</a>, because <code>params</code> and <code>searchParams</code> are link-specific. Opt the link into <a href="#/doc/nextjs/app/guides/optimizing-prefetching">per-link prefetching</a> with <code>prefetch={true}</code> to resolve that URL data ahead of the click:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>features/task/components/task-card.tsx</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">
+  </code></pre></div></figure>
+<p>Per-link prefetching is most valuable when the destination has URL-specific work that users are likely to need next. Cached reads make the prefetched output reusable and tag-invalidatable in the <a href="#/doc/nextjs/app/glossary@client-cache">Client Cache</a>; dynamic reads can still resolve before the click, but each prefetch can do real server work. In the companion app, the task cards prefetch the detail page as they scroll into view, so it paints instantly by the time the user clicks.</p>
+<h2 id="next-steps">Next steps</h2>
+<p>The patterns in this guide combine a handful of primitives:</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Situation</th>
+<th>Use</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Slow data should stream in without blocking the page</td>
+<td><a target="_blank" rel="noopener" href="https://react.dev/reference/react/Suspense">``</a></td>
+</tr>
+<tr>
+<td>A value should update while async work runs</td>
+<td><a target="_blank" rel="noopener" href="https://react.dev/reference/react/useOptimistic"><code>useOptimistic</code></a></td>
+</tr>
+<tr>
+<td>Async work needs pending state, error handling, or coordinated UI updates</td>
+<td><a target="_blank" rel="noopener" href="https://react.dev/reference/react/useTransition"><code>useTransition</code></a></td>
+</tr>
+<tr>
+<td>A form needs pending, reset, and result state</td>
+<td><a target="_blank" rel="noopener" href="https://react.dev/reference/react/useActionState"><code>useActionState</code></a></td>
+</tr>
+<tr>
+<td>An ancestor should show pending state for work happening elsewhere</td>
+<td><a target="_blank" rel="noopener" href="https://react.dev/reference/react-dom/components/form#props"><code>data-pending</code></a> attribute styled with CSS</td>
+</tr>
+<tr>
+<td>Reusable reads should survive across requests and stay fresh after writes</td>
+<td><a href="#/doc/nextjs/app/api-reference/directives/use-cache"><code>&#39;use cache&#39;</code></a> with <a href="#/doc/nextjs/app/api-reference/functions/cacheTag"><code>cacheTag</code></a>, revalidated by <a href="#/doc/nextjs/app/api-reference/functions/updateTag"><code>updateTag</code></a> or <a href="#/doc/nextjs/app/api-reference/functions/revalidateTag"><code>revalidateTag</code></a></td>
+</tr>
+<tr>
+<td>Navigation between pages of an interactive app should feel instant</td>
+<td><a href="#/doc/nextjs/app/api-reference/components/link">``</a> prefetching with <a href="#/doc/nextjs/app/guides/adopting-partial-prefetching">Partial Prefetching</a>, and <a href="#/doc/nextjs/app/guides/optimizing-prefetching">per-link prefetching</a> via <code>prefetch={true}</code> for content that depends on URL data</td>
+</tr>
+</tbody></table></div>
+<p>Most patterns mix two or more of these. Reach for whichever primitive fits the constraint you&#39;re solving.</p>
+<p>Related guides:</p>
+<ul>
+<li><a href="#/doc/nextjs/app/guides/client-side-data-fetching">Client-side data fetching</a> for direct browser fetching, providing initial data from a Server Component, and client cache coordination</li>
+<li><a href="#/doc/nextjs/app/guides/streaming">Streaming</a> for loading boundaries and `` patterns</li>
+<li><a href="#/doc/nextjs/app/guides/instant-navigation">Instant Navigation</a> for validating that navigations stay instant</li>
+<li><a href="#/doc/nextjs/app/guides/view-transitions">View Transitions</a> for animating state changes</li>
+<li><a href="#/doc/nextjs/app/guides/single-page-applications@mutating-data-with-server-actions">Single-page applications</a> for a shared-reducer <code>useOptimistic</code> example that keeps client and server list updates in sync</li>
+</ul>

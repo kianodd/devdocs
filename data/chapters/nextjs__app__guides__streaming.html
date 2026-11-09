@@ -1,0 +1,562 @@
+<h2 id="what-is-streaming">What is streaming?</h2>
+<p>In traditional server-side rendering, the server produces the full HTML document before sending anything. A single slow database query or API call can block the entire page. Streaming changes this by using <a target="_blank" rel="noopener" href="https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Transfer-Encoding">chunked transfer encoding</a> to send parts of the response as they become ready. The browser starts rendering HTML while the server is still generating the rest.</p>
+<p>This is especially impactful for pages that combine fast static content (headers, navigation, layout) with slower dynamic content (personalized data, analytics, recommendations). The static parts can be prerendered and served from a CDN, painting instantly, while the dynamic parts stream in from the server as they become ready.</p>
+<p>React&#39;s server renderer produces HTML in chunks aligned with `` boundaries. Next.js integrates this into the App Router so streaming works without additional configuration.</p>
+<h2 id="example">Example</h2>
+<p>The companion <a target="_blank" rel="noopener" href="https://streaming-demo.labs.vercel.dev/">streaming demo</a> (<a target="_blank" rel="noopener" href="https://github.com/nextjs/streaming-demo">source</a>) lets you see each concept from this guide in action:</p>
+<ul>
+<li>Page-level streaming with <code>loading.tsx</code> (skeleton appears instantly, content streams in after ~2s)</li>
+<li>Granular streaming with sibling `` boundaries that resolve independently</li>
+<li>Hydration comparison: a single blocking pass vs split hydration with Suspense boundaries</li>
+<li>Raw HTML streaming in a Route Handler, with early CSS discovery</li>
+<li>A configurable <code>ReadableStream</code> API endpoint for experimenting with chunk sizes and browser buffering</li>
+</ul>
+<h2 id="how-the-app-router-delivers-a-page">How the App Router delivers a page</h2>
+<p>When a browser requests a page, two streams work together during the initial page load:</p>
+<h3 id="the-html-stream">The HTML stream</h3>
+<p>React&#39;s server renderer produces progressive HTML chunks. The static parts of your page (layouts, navigation, Suspense fallbacks) render first and are sent immediately. When a `` boundary&#39;s content is ready, for example when an async <a href="#/doc/nextjs/app/glossary@server-component">Server Component</a> resolves, React streams its completed HTML along with inline <code>&lt;script&gt;</code> tags: one that swaps the fallback DOM node with the new content, and another carrying the <a href="#the-component-payload">component payload</a> so React can later hydrate it. The browser executes the swap instantly, without waiting for the page&#39;s JavaScript bundle to load or hydration to complete. This is what the user <em>sees</em>: the page painting progressively, section by section.</p>
+<h3 id="the-component-payload">The component payload</h3>
+<p>The component payload is a serialized representation of the component tree that React uses to <a href="#/doc/nextjs/app/glossary@hydration">hydrate</a> the page and handle client-side updates. On initial load, it arrives embedded in the HTML stream (as described above). On <strong>client-side navigation</strong>, only the component payload is fetched (with an <code>rsc: 1</code> request header) and no HTML is transferred at all. React uses it to update the component tree in place.</p>
+<h3 id="the-static-shell">The static shell</h3>
+<p>Everything that renders before any async work resolves is called the <strong>static shell</strong>: your layouts, navigation, and the fallback UI defined by your `` boundaries. It is sent immediately, giving the user something to see and interact with while dynamic content streams in. With <a href="#/doc/nextjs/app/getting-started/caching">Cache Components</a>, the static shell is prerendered at build time and served instantly from the edge.</p>
+<p>Each `` boundary is an independent streaming point. Components inside different boundaries resolve and stream in independently. They don&#39;t block each other.</p>
+<h2 id="page-level-streaming-with-loadingjs">Page-level streaming with <code>loading.js</code></h2>
+<p>The simplest way to add streaming is with a <code>loading.js</code> file. Place it alongside your <code>page.js</code> and Next.js automatically wraps the page content in a `` boundary, using your loading component as the fallback.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app/dashboard/loading.tsx</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">
+  <span class="hljs-keyword">return</span> (
+    <span class="language-xml"><span class="hljs-tag">&lt;<span class="hljs-name">div</span> <span class="hljs-attr">className</span>=<span class="hljs-string">&quot;animate-pulse&quot;</span>&gt;</span>
+      <span class="hljs-tag">&lt;<span class="hljs-name">div</span> <span class="hljs-attr">className</span>=<span class="hljs-string">&quot;h-8 w-48 bg-gray-200 rounded mb-4&quot;</span> /&gt;</span>
+      <span class="hljs-tag">&lt;<span class="hljs-name">div</span> <span class="hljs-attr">className</span>=<span class="hljs-string">&quot;h-4 w-full bg-gray-200 rounded mb-2&quot;</span> /&gt;</span>
+      <span class="hljs-tag">&lt;<span class="hljs-name">div</span> <span class="hljs-attr">className</span>=<span class="hljs-string">&quot;h-4 w-full bg-gray-200 rounded mb-2&quot;</span> /&gt;</span>
+      <span class="hljs-tag">&lt;<span class="hljs-name">div</span> <span class="hljs-attr">className</span>=<span class="hljs-string">&quot;h-4 w-2/3 bg-gray-200 rounded&quot;</span> /&gt;</span>
+    <span class="hljs-tag">&lt;/<span class="hljs-name">div</span>&gt;</span></span>
+  )
+}</code></pre></div></figure>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app/dashboard/loading.js</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript">
+  <span class="hljs-keyword">return</span> (
+    <span class="language-xml"><span class="hljs-tag">&lt;<span class="hljs-name">div</span> <span class="hljs-attr">className</span>=<span class="hljs-string">&quot;animate-pulse&quot;</span>&gt;</span>
+      <span class="hljs-tag">&lt;<span class="hljs-name">div</span> <span class="hljs-attr">className</span>=<span class="hljs-string">&quot;h-8 w-48 bg-gray-200 rounded mb-4&quot;</span> /&gt;</span>
+      <span class="hljs-tag">&lt;<span class="hljs-name">div</span> <span class="hljs-attr">className</span>=<span class="hljs-string">&quot;h-4 w-full bg-gray-200 rounded mb-2&quot;</span> /&gt;</span>
+      <span class="hljs-tag">&lt;<span class="hljs-name">div</span> <span class="hljs-attr">className</span>=<span class="hljs-string">&quot;h-4 w-full bg-gray-200 rounded mb-2&quot;</span> /&gt;</span>
+      <span class="hljs-tag">&lt;<span class="hljs-name">div</span> <span class="hljs-attr">className</span>=<span class="hljs-string">&quot;h-4 w-2/3 bg-gray-200 rounded&quot;</span> /&gt;</span>
+    <span class="hljs-tag">&lt;/<span class="hljs-name">div</span>&gt;</span></span>
+  )
+}</code></pre></div></figure>
+<p>Behind the scenes, <code>loading.js</code> is nested inside <code>layout.js</code> and wraps <code>page.js</code> in a `` boundary:</p>
+<p>This means:</p>
+<ul>
+<li>The layout renders immediately as part of the static shell.</li>
+<li>The loading skeleton is shown instantly as the Suspense fallback.</li>
+<li>When the page component finishes loading, its HTML replaces the skeleton.</li>
+</ul>
+<p><code>loading.js</code> is useful when there&#39;s nothing meaningful to show until the page&#39;s data resolves. If the page needs to await data before it can render anything, a full-page skeleton is a reasonable fallback.</p>
+<p>See the <a href="#/doc/nextjs/app/api-reference/file-conventions/loading"><code>loading.js</code> API reference</a> for more details.</p>
+<h2 id="granular-streaming-with">Granular streaming with ``</h2>
+<p>`` lets you control exactly which parts of the page stream independently. Instead of a full-page skeleton, you can push fallbacks down into specific sections so the static shell includes more real content.</p>
+<h3 id="parallel-streaming-with-sibling-boundaries">Parallel streaming with sibling boundaries</h3>
+<p>When multiple components perform async work (fetching data, reading from a database), wrap each one in its own `` boundary. Each boundary streams independently as its async work completes, in whatever order that happens, without blocking each other:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app/dashboard/page.tsx</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">
+  <span class="hljs-keyword">return</span> (
+    <span class="language-xml"><span class="hljs-tag">&lt;<span class="hljs-name">div</span>&gt;</span>
+      <span class="hljs-tag">&lt;<span class="hljs-name">h1</span>&gt;</span>Dashboard<span class="hljs-tag">&lt;/<span class="hljs-name">h1</span>&gt;</span>
+      <span class="hljs-tag">&lt;<span class="hljs-name">div</span> <span class="hljs-attr">className</span>=<span class="hljs-string">&quot;grid grid-cols-2 gap-4&quot;</span>&gt;</span>
+        Loading revenue...<span class="hljs-tag">&lt;/<span class="hljs-name">p</span>&gt;</span>}&gt;
+          
+        
+        Loading orders...<span class="hljs-tag">&lt;/<span class="hljs-name">p</span>&gt;</span></span>}&gt;
+          
+        
+      &lt;/div&gt;
+      <span class="hljs-title class_">Loading</span> recommendations...&lt;/p&gt;}&gt;
+        
+      
+    &lt;/div&gt;
+  )
+}</code></pre></div></figure>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app/dashboard/page.js</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript">
+  <span class="hljs-keyword">return</span> (
+    <span class="language-xml"><span class="hljs-tag">&lt;<span class="hljs-name">div</span>&gt;</span>
+      <span class="hljs-tag">&lt;<span class="hljs-name">h1</span>&gt;</span>Dashboard<span class="hljs-tag">&lt;/<span class="hljs-name">h1</span>&gt;</span>
+      <span class="hljs-tag">&lt;<span class="hljs-name">div</span> <span class="hljs-attr">className</span>=<span class="hljs-string">&quot;grid grid-cols-2 gap-4&quot;</span>&gt;</span>
+        Loading revenue...<span class="hljs-tag">&lt;/<span class="hljs-name">p</span>&gt;</span>}&gt;
+          
+        
+        Loading orders...<span class="hljs-tag">&lt;/<span class="hljs-name">p</span>&gt;</span></span>}&gt;
+          
+        
+      &lt;/div&gt;
+      <span class="hljs-title class_">Loading</span> recommendations...&lt;/p&gt;}&gt;
+        
+      
+    &lt;/div&gt;
+  )
+}</code></pre></div></figure>
+<p>In this example, if <code>Revenue</code> resolves in 200ms, <code>RecentOrders</code> in 1s, and <code>Recommendations</code> in 3s, the user sees each section appear as soon as its data is ready.</p>
+<h3 id="nested-boundaries-for-progressive-detail">Nested boundaries for progressive detail</h3>
+<p>You can nest `` boundaries to create a layered loading experience. For example, a product page might stream the header immediately, the product details next, and the reviews last:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app/product/[id]/page.tsx</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">
+  <span class="hljs-keyword">const</span> products = <span class="hljs-keyword">await</span> <span class="hljs-title function_">getTopProducts</span>()
+  <span class="hljs-keyword">return</span> products.<span class="hljs-title function_">map</span>(<span class="hljs-function">(<span class="hljs-params">product</span>) =&gt;</span> ({ <span class="hljs-attr">id</span>: product.<span class="hljs-property">id</span> }))
+}
+
+  params,
+}: {
+  <span class="hljs-attr">params</span>: <span class="hljs-title class_">Promise</span>&lt;{ <span class="hljs-attr">id</span>: <span class="hljs-built_in">string</span> }&gt;
+}) {
+  <span class="hljs-keyword">const</span> { id } = <span class="hljs-keyword">await</span> params
+
+  <span class="hljs-keyword">return</span> (
+    <span class="language-xml"><span class="hljs-tag">&lt;<span class="hljs-name">div</span>&gt;</span>
+      <span class="hljs-tag">&lt;<span class="hljs-name">h1</span>&gt;</span>Product<span class="hljs-tag">&lt;/<span class="hljs-name">h1</span>&gt;</span>
+      Loading product details...<span class="hljs-tag">&lt;/<span class="hljs-name">p</span>&gt;</span></span>}&gt;
+        
+        <span class="hljs-title class_">Loading</span> reviews...&lt;/p&gt;}&gt;
+          
+        
+      
+    &lt;/div&gt;
+  )
+}</code></pre></div></figure>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app/product/[id]/page.js</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript">
+  <span class="hljs-keyword">const</span> products = <span class="hljs-keyword">await</span> <span class="hljs-title function_">getTopProducts</span>()
+  <span class="hljs-keyword">return</span> products.<span class="hljs-title function_">map</span>(<span class="hljs-function">(<span class="hljs-params">product</span>) =&gt;</span> ({ <span class="hljs-attr">id</span>: product.<span class="hljs-property">id</span> }))
+}
+
+  <span class="hljs-keyword">const</span> { id } = <span class="hljs-keyword">await</span> params
+
+  <span class="hljs-keyword">return</span> (
+    <span class="language-xml"><span class="hljs-tag">&lt;<span class="hljs-name">div</span>&gt;</span>
+      <span class="hljs-tag">&lt;<span class="hljs-name">h1</span>&gt;</span>Product<span class="hljs-tag">&lt;/<span class="hljs-name">h1</span>&gt;</span>
+      Loading product details...<span class="hljs-tag">&lt;/<span class="hljs-name">p</span>&gt;</span></span>}&gt;
+        
+        <span class="hljs-title class_">Loading</span> reviews...&lt;/p&gt;}&gt;
+          
+        
+      
+    &lt;/div&gt;
+  )
+}</code></pre></div></figure>
+<p>The outer boundary shows &quot;Loading product details...&quot; until <code>ProductDetails</code> resolves. Once it does, the inner boundary becomes visible, showing &quot;Loading reviews...&quot; until <code>Reviews</code> resolves. This creates a progressive reveal.</p>
+<h3 id="push-dynamic-access-down">Push dynamic access down</h3>
+<p>The key to maximizing what streams instantly is to defer dynamic data access to the component that actually needs it. This applies to <code>params</code>, <code>searchParams</code>, <code>cookies()</code>, <code>headers()</code>, and data fetches. If you <code>await</code> any of these at the top of a layout or page, everything below that point becomes dynamic and cannot be prerendered as part of the static shell.</p>
+<p>Instead, pass the promise down and let the consuming component resolve it inside a `` boundary:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app/dashboard/layout.tsx</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">
+  children,
+}: {
+  <span class="hljs-attr">children</span>: <span class="hljs-title class_">React</span>.<span class="hljs-property">ReactNode</span>
+}) {
+  <span class="hljs-keyword">const</span> cookieStore = <span class="hljs-title function_">cookies</span>() <span class="hljs-comment">// Start the work, but don&#x27;t await</span>
+
+  <span class="hljs-keyword">return</span> (
+    <span class="language-xml"><span class="hljs-tag">&lt;<span class="hljs-name">div</span>&gt;</span>
+      
+        Loading user...<span class="hljs-tag">&lt;/<span class="hljs-name">p</span>&gt;</span></span>}&gt;
+          
+        
+      
+      {children}
+    &lt;/div&gt;
+  )
+}</code></pre></div></figure>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app/dashboard/layout.js</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript">
+  <span class="hljs-keyword">const</span> cookieStore = <span class="hljs-title function_">cookies</span>() <span class="hljs-comment">// Start the work, but don&#x27;t await</span>
+
+  <span class="hljs-keyword">return</span> (
+    <span class="language-xml"><span class="hljs-tag">&lt;<span class="hljs-name">div</span>&gt;</span>
+      
+        Loading user...<span class="hljs-tag">&lt;/<span class="hljs-name">p</span>&gt;</span></span>}&gt;
+          
+        
+      
+      {children}
+    &lt;/div&gt;
+  )
+}</code></pre></div></figure>
+<p>In this example, <code>and `{children}` render as part of the static shell because nothing in the layout awaits. Only</code> suspends when it resolves the cookie promise. If the layout had called <code>await cookies()</code> at the top instead, the entire layout and all its children would be blocked from prerendering.</p>
+<p>The same principle applies to <code>params</code> and <code>searchParams</code>. Rather than destructuring them at the page level, pass the promise to the component that needs the value:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app/shop/[category]/page.tsx</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">
+  <span class="hljs-keyword">const</span> categories = <span class="hljs-keyword">await</span> <span class="hljs-title function_">getCategories</span>()
+  <span class="hljs-keyword">return</span> categories.<span class="hljs-title function_">map</span>(<span class="hljs-function">(<span class="hljs-params">c</span>) =&gt;</span> ({ <span class="hljs-attr">category</span>: c.<span class="hljs-property">slug</span> }))
+}
+
+  params,
+}: {
+  <span class="hljs-attr">params</span>: <span class="hljs-title class_">Promise</span>&lt;{ <span class="hljs-attr">category</span>: <span class="hljs-built_in">string</span> }&gt;
+}) {
+  <span class="hljs-keyword">return</span> (
+    <span class="language-xml"><span class="hljs-tag">&lt;<span class="hljs-name">div</span>&gt;</span>
+      
+      Loading products...<span class="hljs-tag">&lt;/<span class="hljs-name">p</span>&gt;</span></span>}&gt;
+        
+      
+    &lt;/div&gt;
+  )
+}</code></pre></div></figure>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app/shop/[category]/page.js</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript">
+  <span class="hljs-keyword">const</span> categories = <span class="hljs-keyword">await</span> <span class="hljs-title function_">getCategories</span>()
+  <span class="hljs-keyword">return</span> categories.<span class="hljs-title function_">map</span>(<span class="hljs-function">(<span class="hljs-params">c</span>) =&gt;</span> ({ <span class="hljs-attr">category</span>: c.<span class="hljs-property">slug</span> }))
+}
+
+  <span class="hljs-keyword">return</span> (
+    <span class="language-xml"><span class="hljs-tag">&lt;<span class="hljs-name">div</span>&gt;</span>
+      
+      Loading products...<span class="hljs-tag">&lt;/<span class="hljs-name">p</span>&gt;</span></span>}&gt;
+        
+      
+    &lt;/div&gt;
+  )
+}</code></pre></div></figure>
+<p><code>paints as part of the static shell.</code> resolves <code>params</code> when it needs the category, suspending only within its boundary.</p>
+<p>You can also unwrap the promise inline with <code>.then()</code>, so the child component receives a plain value instead of a promise:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app/shop/[category]/page.tsx</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-title class_">Loading</span> products...&lt;/p&gt;}&gt;
+  {params.<span class="hljs-title function_">then</span>(<span class="hljs-function">(<span class="hljs-params">{ category }</span>) =&gt;</span> (
+    
+  ))}</code></pre></div></figure>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app/shop/[category]/page.js</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript"><span class="hljs-title class_">Loading</span> products...&lt;/p&gt;}&gt;
+  {params.<span class="hljs-title function_">then</span>(<span class="hljs-function">(<span class="hljs-params">{ category }</span>) =&gt;</span> (
+    
+  ))}</code></pre></div></figure>
+<p>This keeps <code>ProductGrid</code> simple (it takes a <code>string</code>, not a <code>Promise</code>) while still deferring the <code>params</code> access to inside the Suspense boundary.</p>
+<h3 id="when-to-use-loadingjs-vs">When to use <code>loading.js</code> vs ``</h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th></th>
+<th><code>loading.js</code></th>
+<th>``</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Scope</strong></td>
+<td>Entire page</td>
+<td>Any component</td>
+</tr>
+<tr>
+<td><strong>Setup</strong></td>
+<td>Drop in a file</td>
+<td>Wrap components explicitly</td>
+</tr>
+<tr>
+<td><strong>Navigation</strong></td>
+<td>Prefetched as instant fallback</td>
+<td>Not prefetched by default</td>
+</tr>
+<tr>
+<td><strong>Best for</strong></td>
+<td>Pages where nothing renders without data</td>
+<td>Most pages, for granular control</td>
+</tr>
+</tbody></table></div>
+<p>Prefer explicit `` boundaries close to the dynamic access. When the prerenderer encounters dynamic work, it walks up the tree looking for the nearest Suspense boundary. If none is found, the build fails with a <a target="_blank" rel="noopener" href="https://nextjs.org/docs/messages/blocking-prerender-dynamic">blocking route error</a>. A <code>loading.js</code> high in the tree is a valid boundary, so the framework finds it and stops, but now the entire page falls back to a full-page skeleton instead of streaming granularly.</p>
+<h3 id="error-handling-mid-stream">Error handling mid-stream</h3>
+<p>If a component throws an error after streaming has started, the nearest <a href="#/doc/nextjs/app/api-reference/file-conventions/error"><code>error.js</code></a> boundary catches it and renders the error UI in place of the failed component. The rest of the page remains intact, only the section that errored is replaced.</p>
+<p>Because the HTTP status code (<code>200 OK</code>) has already been sent with the first chunk, it cannot be changed to a <code>4xx</code> or <code>5xx</code>. The error is handled entirely within the streamed HTML. See <a href="#the-http-contract">The HTTP contract</a> for more on this constraint.</p>
+<h2 id="streaming-data-to-the-client">Streaming data to the client</h2>
+<p>You can start a fetch in a <a href="#/doc/nextjs/app/glossary@server-component">Server Component</a> and pass the unresolved promise as a prop to a <a href="#/doc/nextjs/app/glossary@client-component">Client Component</a>. The promise can be passed through as many layers as needed. Only the component that calls React&#39;s <a target="_blank" rel="noopener" href="https://react.dev/reference/react/use"><code>use</code></a> API to read the value needs a `` boundary around it:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app/dashboard/page.tsx</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">
+
+
+<span class="hljs-keyword">type</span> <span class="hljs-title class_">Stats</span> = { <span class="hljs-attr">revenue</span>: <span class="hljs-built_in">number</span>; <span class="hljs-attr">orders</span>: <span class="hljs-built_in">number</span> }
+
+<span class="hljs-keyword">async</span> <span class="hljs-keyword">function</span> <span class="hljs-title function_">getStats</span>(<span class="hljs-params"></span>): <span class="hljs-title class_">Promise</span> {
+  <span class="hljs-keyword">const</span> res = <span class="hljs-keyword">await</span> <span class="hljs-title function_">fetch</span>(<span class="hljs-string">&#x27;https://api.example.com/stats&#x27;</span>)
+  <span class="hljs-keyword">return</span> res.<span class="hljs-title function_">json</span>()
+}
+
+  <span class="hljs-comment">// Start the fetch during server render, don&#x27;t await it</span>
+  <span class="hljs-keyword">const</span> statsPromise = <span class="hljs-title function_">getStats</span>()
+
+  <span class="hljs-keyword">return</span> (
+    <span class="hljs-title class_">Loading</span> chart...&lt;/p&gt;}&gt;
+      
+    
+  )
+}</code></pre></div></figure>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app/dashboard/page.js</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript">
+
+
+<span class="hljs-keyword">async</span> <span class="hljs-keyword">function</span> <span class="hljs-title function_">getStats</span>(<span class="hljs-params"></span>) {
+  <span class="hljs-keyword">const</span> res = <span class="hljs-keyword">await</span> <span class="hljs-title function_">fetch</span>(<span class="hljs-string">&#x27;https://api.example.com/stats&#x27;</span>)
+  <span class="hljs-keyword">return</span> res.<span class="hljs-title function_">json</span>()
+}
+
+  <span class="hljs-comment">// Start the fetch during server render, don&#x27;t await it</span>
+  <span class="hljs-keyword">const</span> statsPromise = <span class="hljs-title function_">getStats</span>()
+
+  <span class="hljs-keyword">return</span> (
+    <span class="hljs-title class_">Loading</span> chart...&lt;/p&gt;}&gt;
+      
+    
+  )
+}</code></pre></div></figure>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app/dashboard/stats-chart.tsx</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-string">&#x27;use client&#x27;</span>
+
+
+<span class="hljs-keyword">type</span> <span class="hljs-title class_">Stats</span> = { <span class="hljs-attr">revenue</span>: <span class="hljs-built_in">number</span>; <span class="hljs-attr">orders</span>: <span class="hljs-built_in">number</span> }
+
+  <span class="hljs-keyword">const</span> stats = <span class="hljs-title function_">use</span>(dataPromise)
+
+  <span class="hljs-keyword">return</span> <span class="language-xml"><span class="hljs-tag">&lt;<span class="hljs-name">div</span>&gt;</span><span class="hljs-tag">&lt;/<span class="hljs-name">div</span>&gt;</span></span>
+}</code></pre></div></figure>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app/dashboard/stats-chart.js</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript"><span class="hljs-string">&#x27;use client&#x27;</span>
+
+  <span class="hljs-keyword">const</span> stats = <span class="hljs-title function_">use</span>(dataPromise)
+
+  <span class="hljs-keyword">return</span> <span class="language-xml"><span class="hljs-tag">&lt;<span class="hljs-name">div</span>&gt;</span><span class="hljs-tag">&lt;/<span class="hljs-name">div</span>&gt;</span></span>
+}</code></pre></div></figure>
+<p>The fallback is sent immediately with the static shell. When the promise resolves, React streams the completed HTML into the page.</p>
+<h3 id="sharing-a-promise-across-the-tree">Sharing a promise across the tree</h3>
+<p>When multiple components need the same data, start the fetch once and pass the promise through a context provider so any component in the subtree can resolve it with <code>use()</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app/layout.tsx</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">
+<span class="hljs-comment">// Stores the promise in React context for the subtree</span>
+
+  <span class="hljs-keyword">const</span> userPromise = <span class="hljs-title function_">getUser</span>()
+
+  <span class="hljs-keyword">return</span> {children}
+}</code></pre></div></figure>
+<p>See <a href="#/doc/nextjs/app/guides/single-page-applications@using-reacts-use-within-a-context-provider">Using React&#39;s <code>use</code> within a Context Provider</a> for the full pattern.</p>
+<h2 id="streaming-in-route-handlers">Streaming in Route Handlers</h2>
+<p>The patterns above rely on React and Suspense to stream UI. Outside of React rendering, <a href="#/doc/nextjs/app/api-reference/file-conventions/route">Route Handlers</a> can stream raw responses using the Web Streams API. This is useful for Server-Sent Events, large file generation, or any response where you want data to arrive progressively:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app/api/stream/route.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">
+  <span class="hljs-keyword">const</span> encoder = <span class="hljs-keyword">new</span> <span class="hljs-title class_">TextEncoder</span>()
+
+  <span class="hljs-keyword">const</span> stream = <span class="hljs-keyword">new</span> <span class="hljs-title class_">ReadableStream</span>({
+    <span class="hljs-keyword">async</span> <span class="hljs-title function_">start</span>(<span class="hljs-params">controller</span>) {
+      <span class="hljs-keyword">for</span> (<span class="hljs-keyword">let</span> i = <span class="hljs-number">0</span>; i &lt; <span class="hljs-number">10</span>; i++) {
+        controller.<span class="hljs-title function_">enqueue</span>(encoder.<span class="hljs-title function_">encode</span>(<span class="hljs-string">`Chunk <span class="hljs-subst">${i + <span class="hljs-number">1</span>}</span>\n`</span>))
+        <span class="hljs-keyword">await</span> <span class="hljs-keyword">new</span> <span class="hljs-title class_">Promise</span>(<span class="hljs-function">(<span class="hljs-params">resolve</span>) =&gt;</span> <span class="hljs-built_in">setTimeout</span>(resolve, <span class="hljs-number">200</span>))
+      }
+      controller.<span class="hljs-title function_">close</span>()
+    },
+  })
+
+  <span class="hljs-keyword">return</span> <span class="hljs-keyword">new</span> <span class="hljs-title class_">Response</span>(stream, {
+    <span class="hljs-attr">headers</span>: {
+      <span class="hljs-string">&#x27;Content-Type&#x27;</span>: <span class="hljs-string">&#x27;text/plain; charset=utf-8&#x27;</span>,
+      <span class="hljs-string">&#x27;X-Content-Type-Options&#x27;</span>: <span class="hljs-string">&#x27;nosniff&#x27;</span>,
+    },
+  })
+}</code></pre></div></figure>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app/api/stream/route.js</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript">
+  <span class="hljs-keyword">const</span> encoder = <span class="hljs-keyword">new</span> <span class="hljs-title class_">TextEncoder</span>()
+
+  <span class="hljs-keyword">const</span> stream = <span class="hljs-keyword">new</span> <span class="hljs-title class_">ReadableStream</span>({
+    <span class="hljs-keyword">async</span> <span class="hljs-title function_">start</span>(<span class="hljs-params">controller</span>) {
+      <span class="hljs-keyword">for</span> (<span class="hljs-keyword">let</span> i = <span class="hljs-number">0</span>; i &lt; <span class="hljs-number">10</span>; i++) {
+        controller.<span class="hljs-title function_">enqueue</span>(encoder.<span class="hljs-title function_">encode</span>(<span class="hljs-string">`Chunk <span class="hljs-subst">${i + <span class="hljs-number">1</span>}</span>\n`</span>))
+        <span class="hljs-keyword">await</span> <span class="hljs-keyword">new</span> <span class="hljs-title class_">Promise</span>(<span class="hljs-function">(<span class="hljs-params">resolve</span>) =&gt;</span> <span class="hljs-built_in">setTimeout</span>(resolve, <span class="hljs-number">200</span>))
+      }
+      controller.<span class="hljs-title function_">close</span>()
+    },
+  })
+
+  <span class="hljs-keyword">return</span> <span class="hljs-keyword">new</span> <span class="hljs-title class_">Response</span>(stream, {
+    <span class="hljs-attr">headers</span>: {
+      <span class="hljs-string">&#x27;Content-Type&#x27;</span>: <span class="hljs-string">&#x27;text/plain; charset=utf-8&#x27;</span>,
+      <span class="hljs-string">&#x27;X-Content-Type-Options&#x27;</span>: <span class="hljs-string">&#x27;nosniff&#x27;</span>,
+    },
+  })
+}</code></pre></div></figure>
+<p>Visit this route directly in the browser or with <code>curl</code> to see chunks arrive one at a time:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Terminal</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-bash"><span class="tk-cmd">curl</span> http://localhost:3000/api/stream</code></pre></div></figure>
+<p>You can also stream files without loading them entirely into memory. Use <code>FileHandle.readableWebStream()</code> to get a Web <code>ReadableStream</code> directly from a file:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app/api/download/route.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">
+  <span class="hljs-keyword">const</span> file = <span class="hljs-keyword">await</span> <span class="hljs-title function_">open</span>(<span class="hljs-string">&#x27;/path/to/large-file.csv&#x27;</span>)
+
+  <span class="hljs-keyword">return</span> <span class="hljs-keyword">new</span> <span class="hljs-title class_">Response</span>(file.<span class="hljs-title function_">readableWebStream</span>(), {
+    <span class="hljs-attr">headers</span>: {
+      <span class="hljs-string">&#x27;Content-Type&#x27;</span>: <span class="hljs-string">&#x27;text/csv&#x27;</span>,
+      <span class="hljs-string">&#x27;Content-Disposition&#x27;</span>: <span class="hljs-string">&#x27;attachment; filename=&quot;data.csv&quot;&#x27;</span>,
+    },
+  })
+}</code></pre></div></figure>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app/api/download/route.js</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript">
+  <span class="hljs-keyword">const</span> file = <span class="hljs-keyword">await</span> <span class="hljs-title function_">open</span>(<span class="hljs-string">&#x27;/path/to/large-file.csv&#x27;</span>)
+
+  <span class="hljs-keyword">return</span> <span class="hljs-keyword">new</span> <span class="hljs-title class_">Response</span>(file.<span class="hljs-title function_">readableWebStream</span>(), {
+    <span class="hljs-attr">headers</span>: {
+      <span class="hljs-string">&#x27;Content-Type&#x27;</span>: <span class="hljs-string">&#x27;text/csv&#x27;</span>,
+      <span class="hljs-string">&#x27;Content-Disposition&#x27;</span>: <span class="hljs-string">&#x27;attachment; filename=&quot;data.csv&quot;&#x27;</span>,
+    },
+  })
+}</code></pre></div></figure>
+<p>See the <a href="#/doc/nextjs/app/api-reference/file-conventions/route">Route Handler API reference</a> for more details on building streaming endpoints.</p>
+<h2 id="streaming-and-web-vitals">Streaming and Web Vitals</h2>
+<p><a target="_blank" rel="noopener" href="https://web.dev/articles/vitals">Web Vitals</a> are the metrics Google uses to measure user experience. Streaming directly affects several of them.</p>
+<h3 id="ttfb-and-fcp">TTFB and FCP</h3>
+<p>Without streaming, the server waits for all data before sending any HTML, so TTFB equals the slowest query. With streaming, the server sends the static shell as soon as it&#39;s ready. TTFB drops to the time it takes to render your layouts and fallbacks. The browser paints the static shell immediately, so FCP is decoupled from your data fetching time.</p>
+<h3 id="lcp-largest-contentful-paint">LCP (Largest Contentful Paint)</h3>
+<p>If your LCP element (a hero image, a main heading, a product photo) is inside a Suspense boundary, it can&#39;t paint until that boundary&#39;s content is swapped in. The element then depends on the work the server does to render it, not on your initial server response time. Revealing it costs something on the client too, because React streams a small inline script alongside the boundary&#39;s HTML and the content only appears once that script runs.</p>
+<p>Data fetching is not the only reason a boundary delays your LCP element. React also holds back a large boundary, because sending its HTML takes time. See <a target="_blank" rel="noopener" href="https://react.dev/reference/react/Suspense#what-activates-a-suspense-boundary">what activates a Suspense boundary</a>.</p>
+<blockquote>
+<p><strong>Good to know:</strong> As a rule of thumb, if there&#39;s a Suspense boundary, React might use it. Under a slow network or a busy CPU, concurrent rendering can fall back to it even when you didn&#39;t expect it. Adding a boundary means accepting that, so don&#39;t add one you don&#39;t need.</p>
+</blockquote>
+<p>To keep LCP fast:</p>
+<ul>
+<li>Keep LCP elements <strong>outside</strong> or <strong>above</strong> Suspense boundaries so they render as part of the static shell.</li>
+<li>Use the <a href="#/doc/nextjs/app/api-reference/components/image@preload"><code>preload</code></a> prop on <code>next/image</code> for a known LCP image that needs to start loading before the browser discovers its <code>&lt;img&gt;</code> element. See the <a href="#/doc/nextjs/app/api-reference/components/image@preload">Image loading guidance</a> to choose between preloading, eager loading, and fetch priority. Preloading controls when the image is fetched, not when it paints. An image inside a boundary still waits for the swap.</li>
+<li>For non-image LCP elements (text, headings), render them outside Suspense boundaries.</li>
+</ul>
+<h3 id="cls-cumulative-layout-shift">CLS (Cumulative Layout Shift)</h3>
+<p>When a Suspense fallback is replaced by the resolved content, the browser reflows the page. If the fallback and the resolved content are different sizes, the surrounding layout shifts. To minimize CLS:</p>
+<ul>
+<li>Design skeleton fallbacks that <strong>match the dimensions</strong> of the content they represent. A skeleton with the same height and width as the final card grid prevents shifts.</li>
+<li>Use fixed or min-height containers around Suspense boundaries so the space is reserved before content arrives.</li>
+</ul>
+<h3 id="inp-interaction-to-next-paint">INP (Interaction to Next Paint)</h3>
+<p>Streaming enables <a target="_blank" rel="noopener" href="https://react.dev/reference/react-dom/client/hydrateRoot">selective hydration</a>: React hydrates components independently as they stream in, and prioritizes hydrating whatever the user is interacting with. Each `` boundary is a hydration unit. Without them, React hydrates the entire page in one blocking pass. With them, hydration is broken into smaller tasks that yield to the browser, keeping the main thread responsive. The <a target="_blank" rel="noopener" href="https://streaming-demo.labs.vercel.dev/hydration-single">companion demo</a> lets you compare a single blocking hydration pass with <a target="_blank" rel="noopener" href="https://streaming-demo.labs.vercel.dev/hydration-split">split hydration</a> using Suspense boundaries.</p>
+<h3 id="early-resource-discovery">Early resource discovery</h3>
+<p>The static shell includes <code>&lt;link&gt;</code> and <code>&lt;script&gt;</code> tags in the very first HTML chunk. The browser discovers and starts fetching CSS, JavaScript, and fonts immediately, while the server is still generating content. Resources are fetched during server think time rather than after it.</p>
+<p>In the <a href="#parallel-streaming-with-sibling-boundaries">dashboard example</a> above, the <code>&lt;h1&gt;</code> renders in the shell (good for LCP), each data section streams independently behind its own Suspense boundary (good for INP since hydration is split), and the skeleton fallbacks reserve space (good for CLS).</p>
+<h2 id="the-http-contract">The HTTP contract</h2>
+<p>Once streaming begins, the HTTP response headers (including the status code) have already been sent to the client. <strong>You cannot change the status code or headers after streaming starts.</strong> Everything in this section flows from this fundamental constraint.</p>
+<h3 id="status-codes">Status codes</h3>
+<p>When a `` fallback renders or a component suspends, the server must commit to <code>200 OK</code> to start sending the HTML stream. If a <a href="#/doc/nextjs/app/api-reference/functions/not-found"><code>notFound()</code></a> fires mid-stream, Next.js cannot go back and change the status to <code>404</code>. Instead, it injects <code>&lt;meta name=&quot;robots&quot; content=&quot;noindex&quot;&gt;</code> into the streamed HTML so that search engines don&#39;t index the page. Similarly, a <a href="#/doc/nextjs/app/api-reference/functions/redirect"><code>redirect()</code></a> mid-stream becomes a client-side redirect rather than an HTTP redirect header.</p>
+<h3 id="when-does-streaming-start">When does streaming start?</h3>
+<p>The response body begins streaming when a Suspense fallback renders (for example, a <code>loading.tsx</code>) or when a component suspends under a `` boundary. To return a <code>404</code>, place <code>notFound()</code> before the boundary:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app/post/[slug]/page.tsx</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">
+  <span class="hljs-keyword">const</span> posts = <span class="hljs-keyword">await</span> <span class="hljs-title function_">getPublishedPosts</span>()
+  <span class="hljs-keyword">return</span> posts.<span class="hljs-title function_">map</span>(<span class="hljs-function">(<span class="hljs-params">post</span>) =&gt;</span> ({ <span class="hljs-attr">slug</span>: post.<span class="hljs-property">slug</span> }))
+}
+
+  params,
+}: {
+  <span class="hljs-attr">params</span>: <span class="hljs-title class_">Promise</span>&lt;{ <span class="hljs-attr">slug</span>: <span class="hljs-built_in">string</span> }&gt;
+}) {
+  <span class="hljs-keyword">const</span> { slug } = <span class="hljs-keyword">await</span> params
+  <span class="hljs-keyword">const</span> exists = <span class="hljs-keyword">await</span> <span class="hljs-title function_">checkSlugExists</span>(slug) <span class="hljs-comment">// Fast existence check</span>
+  <span class="hljs-keyword">if</span> (!exists) <span class="hljs-title function_">notFound</span>() <span class="hljs-comment">// Returns a 404 before streaming starts</span>
+
+  <span class="hljs-keyword">return</span> (
+    <span class="hljs-title class_">Loading</span> post...&lt;/p&gt;}&gt;
+      
+    
+  )
+}</code></pre></div></figure>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app/post/[slug]/page.js</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript">
+  <span class="hljs-keyword">const</span> posts = <span class="hljs-keyword">await</span> <span class="hljs-title function_">getPublishedPosts</span>()
+  <span class="hljs-keyword">return</span> posts.<span class="hljs-title function_">map</span>(<span class="hljs-function">(<span class="hljs-params">post</span>) =&gt;</span> ({ <span class="hljs-attr">slug</span>: post.<span class="hljs-property">slug</span> }))
+}
+
+  <span class="hljs-keyword">const</span> { slug } = <span class="hljs-keyword">await</span> params
+  <span class="hljs-keyword">const</span> exists = <span class="hljs-keyword">await</span> <span class="hljs-title function_">checkSlugExists</span>(slug) <span class="hljs-comment">// Fast existence check</span>
+  <span class="hljs-keyword">if</span> (!exists) <span class="hljs-title function_">notFound</span>() <span class="hljs-comment">// Returns a 404 before streaming starts</span>
+
+  <span class="hljs-keyword">return</span> (
+    <span class="hljs-title class_">Loading</span> post...&lt;/p&gt;}&gt;
+      
+    
+  )
+}</code></pre></div></figure>
+<blockquote>
+<p><strong>Good to know:</strong> With <a href="#/doc/nextjs/app/getting-started/caching">Cache Components</a>, Next.js sends the prerendered shell and headers that preload CSS, fonts, and images while the request-time check runs. This starts a <code>200</code> response even when the shell has no visible UI or the route sets <code>instant = false</code>. A later <code>notFound()</code> still renders the not-found UI and adds <code>noindex</code>.</p>
+<p>To return a request-time <code>404</code>, use <a href="#/doc/nextjs/app/api-reference/file-conventions/proxy">Proxy</a> before the page renders. Proxy can also redirect, rewrite, or return a response before rendering starts. Redirects configured in <a href="#/doc/nextjs/app/api-reference/config/next-config-js/redirects"><code>next.config.js</code></a> also run before the page renders.</p>
+</blockquote>
+<h3 id="bots-and-crawlers">Bots and crawlers</h3>
+<p>HTML-limited bots and crawlers need metadata to be available in the <code>&lt;head&gt;</code> of the initial HTML. Next.js detects them by their user agent and waits for <a href="#/doc/nextjs/app/api-reference/functions/generate-metadata"><code>generateMetadata</code></a> to resolve before streaming the page content. Full browsers and DOM-capable crawlers can instead receive <a href="#/doc/nextjs/app/api-reference/functions/generate-metadata@streaming-metadata">streaming metadata</a> alongside the page content.</p>
+<p>You can customize which bots receive blocking metadata with the <a href="#/doc/nextjs/app/api-reference/config/next-config-js/htmlLimitedBots"><code>htmlLimitedBots</code></a> configuration option. See the <a href="#/doc/nextjs/app/api-reference/file-conventions/loading@seo"><code>loading.js</code> SEO section</a> for more details.</p>
+<h4 id="cache-components">Cache Components</h4>
+<p>With <a href="#/doc/nextjs/app/getting-started/caching">Cache Components</a>, visitors and DOM-capable crawlers receive the prerendered shell immediately, and dynamic content streams in as it resolves. HTML-limited bots skip the prerendered shell and render the page dynamically so metadata can be placed in the <code>&lt;head&gt;</code>. Once the metadata resolves, the remaining page content can still stream.</p>
+<p>Keep this in mind when your prerendered shell depends on inputs that only exist while prerendering, such as build-time data or values that are not reachable in the request-time environment. Visitors and DOM-capable crawlers receive the shell without re-running that code, but an HTML-limited bot re-renders it dynamically, so a page that loads for a person can fail to render for a crawler. Make sure any data the shell relies on is also available at request time.</p>
+<h2 id="what-can-affect-streaming">What can affect streaming</h2>
+<p>Any layer between your server and the client that buffers the response can diminish the benefits of streaming. The HTML may be fully generated progressively on the server, but if a proxy, CDN, or even the client itself collects all the chunks before rendering them, the user sees a single delayed response instead of progressive rendering.</p>
+<h3 id="reverse-proxies">Reverse proxies</h3>
+<p>Nginx and similar reverse proxies buffer responses by default. Disable buffering by setting the <code>X-Accel-Buffering</code> header to <code>no</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>next.config.js</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript"><span class="hljs-variable language_">module</span>.<span class="hljs-property">exports</span> = {
+  <span class="hljs-keyword">async</span> <span class="hljs-title function_">headers</span>(<span class="hljs-params"></span>) {
+    <span class="hljs-keyword">return</span> [
+      {
+        <span class="hljs-attr">source</span>: <span class="hljs-string">&#x27;/:path*{/}?&#x27;</span>,
+        <span class="hljs-attr">headers</span>: [
+          {
+            <span class="hljs-attr">key</span>: <span class="hljs-string">&#x27;X-Accel-Buffering&#x27;</span>,
+            <span class="hljs-attr">value</span>: <span class="hljs-string">&#x27;no&#x27;</span>,
+          },
+        ],
+      },
+    ]
+  },
+}</code></pre></div></figure>
+<h3 id="cdns">CDNs</h3>
+<p>Content Delivery Networks may buffer entire responses before forwarding them to the client. Check your CDN provider&#39;s documentation for streaming support. Some require specific configuration or plan tiers to pass through chunked responses.</p>
+<h3 id="serverless-platforms">Serverless platforms</h3>
+<p>Not all serverless environments support streaming. AWS Lambda, for example, requires <a target="_blank" rel="noopener" href="https://docs.aws.amazon.com/lambda/latest/dg/configuration-response-streaming.html">response streaming mode</a> to be explicitly enabled (it is not the default). Vercel supports streaming natively.</p>
+<h3 id="compression">Compression</h3>
+<p>Gzip and Brotli compression can buffer chunks internally before flushing, as the compression algorithm needs enough data to compress efficiently. This can add latency to the first visible chunk. If you notice streaming delays, check whether your compression layer is flushing aggressively enough.</p>
+<h3 id="clients">Clients</h3>
+<p>Buffering also happens at the client. <a target="_blank" rel="noopener" href="https://bugs.webkit.org/show_bug.cgi?id=252413">Safari/WebKit</a> buffers streaming responses until 1024 bytes have been received, so very small responses paint all at once instead of progressively. Real applications easily exceed this threshold (layouts, styles, scripts), so it only affects minimal demos or tiny Route Handler responses.</p>
+<p>Command-line tools like <code>curl</code> also buffer by default. The <code>-N</code> flag disables output buffering, but <code>curl</code> still relies on newline characters to flush lines to the terminal. A stream that sends chunks without newlines may appear to stall even with <code>-N</code>.</p>
+<h3 id="verifying-that-streaming-works">Verifying that streaming works</h3>
+<p>This section is about confirming the HTTP response is actually arriving in chunks through your infrastructure. For guidance on designing meaningful loading states and placing Suspense boundaries effectively, see <a href="#granular-streaming-with-suspense">Granular streaming with ``</a> and the <a href="#/doc/nextjs/app/getting-started/caching">Cache Components</a> guide.</p>
+<p><strong>Check the Network tab.</strong> In Chrome DevTools, select the document request and look at the &quot;Timing&quot; breakdown. A long &quot;Content Download&quot; phase with an early &quot;Time to First Byte&quot; confirms the response is streaming rather than arriving all at once.</p>
+<p><strong>Observe raw chunks.</strong> To see exactly what the server sends and when, use a small script that reads the response as a stream. This is more reliable than <code>curl</code> for observing timed chunks, since <code>curl</code> has its own buffering behavior:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>stream-observer.mjs</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript"><span class="hljs-keyword">const</span> res = <span class="hljs-keyword">await</span> <span class="hljs-title function_">fetch</span>(
+  <span class="hljs-string">&#x27;https://streaming-demo.labs.vercel.dev/suspense-demo&#x27;</span>,
+  {
+    <span class="hljs-attr">headers</span>: { <span class="hljs-string">&#x27;Accept-Encoding&#x27;</span>: <span class="hljs-string">&#x27;identity&#x27;</span> },
+  }
+)
+
+<span class="hljs-keyword">const</span> reader = res.<span class="hljs-property">body</span>.<span class="hljs-title function_">getReader</span>()
+<span class="hljs-keyword">const</span> decoder = <span class="hljs-keyword">new</span> <span class="hljs-title class_">TextDecoder</span>()
+<span class="hljs-keyword">let</span> i = <span class="hljs-number">0</span>
+<span class="hljs-keyword">const</span> start = <span class="hljs-title class_">Date</span>.<span class="hljs-title function_">now</span>()
+
+<span class="hljs-keyword">while</span> (<span class="hljs-literal">true</span>) {
+  <span class="hljs-keyword">const</span> { done, value } = <span class="hljs-keyword">await</span> reader.<span class="hljs-title function_">read</span>()
+  <span class="hljs-keyword">if</span> (done) <span class="hljs-keyword">break</span>
+  <span class="hljs-variable language_">console</span>.<span class="hljs-title function_">log</span>(<span class="hljs-string">`\nchunk <span class="hljs-subst">${i++}</span> (+<span class="hljs-subst">${<span class="hljs-built_in">Date</span>.now() - start}</span>ms)\n`</span>)
+  <span class="hljs-variable language_">console</span>.<span class="hljs-title function_">log</span>(decoder.<span class="hljs-title function_">decode</span>(value))
+}</code></pre></div></figure>
+<p>Run with <code>node stream-observer.mjs</code>. For a page with two sibling Suspense boundaries (like the <a target="_blank" rel="noopener" href="https://streaming-demo.labs.vercel.dev/suspense-demo">companion demo&#39;s Suspense page</a>), you will see output similar to:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Terminal.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">chunk 0 (+0ms)    # Static shell: &lt;head&gt;, CSS, nav, fallback skeletons,
+                  # &lt;template id=&quot;B:0&quot;&gt; and &lt;template id=&quot;B:1&quot;&gt; placeholders,
+                  # bootstrap scripts
+chunk 1 (+170ms)  # Component payload (self.__next_f.push) for hydration
+chunk 2 (+1000ms) # Weather widget: payload + &lt;div hidden id=&quot;S:0&quot;&gt; (swaps B:0)
+chunk 3 (+3000ms) # Analytics dashboard: payload + &lt;div hidden id=&quot;S:1&quot;&gt; (swaps B:1)</code></pre></div></figure>
+<p>The <code>&lt;template id=&quot;B:0&quot;&gt;</code> markers are the Suspense fallback placeholders. When a boundary resolves, React streams a <code>&lt;div hidden id=&quot;S:0&quot;&gt;</code> containing the completed HTML and a script that swaps it into the page. The timestamps show each boundary resolving independently.</p>
+<blockquote>
+<p><strong>Good to know:</strong> The <code>Accept-Encoding: identity</code> header disables compression so chunks are not buffered by the compression layer.</p>
+</blockquote>
+<p><strong>Compare a bot request.</strong> Add a bot user agent to the same script with <code>headers: { &#39;User-Agent&#39;: &#39;Twitterbot/1.0&#39;, &#39;Accept-Encoding&#39;: &#39;identity&#39; }</code>. Now <code>await fetch()</code> itself blocks until the full render completes (around 3 seconds for this page), because the server holds the response until it has the finished document. The body then arrives all at once, with none of the staggered <code>+1000ms</code> / <code>+3000ms</code> timestamps:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Terminal.ts</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">chunk 0 (+0ms) # Entire document in a single burst, after fetch() already waited</code></pre></div></figure>
+<p>This is the <a href="#bots-and-crawlers">bots and crawlers</a> behavior: the server waits for the full render and sends one fully formed HTML document instead of streaming.</p>
+<h3 id="platform-support">Platform support</h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Deployment Option</th>
+<th>Supported</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><a href="#/doc/nextjs/app/getting-started/deploying@nodejs-server">Node.js server</a></td>
+<td>Yes</td>
+</tr>
+<tr>
+<td><a href="#/doc/nextjs/app/getting-started/deploying@docker">Docker container</a></td>
+<td>Yes</td>
+</tr>
+<tr>
+<td><a href="#/doc/nextjs/app/getting-started/deploying@static-export">Static export</a></td>
+<td>No</td>
+</tr>
+<tr>
+<td><a href="#/doc/nextjs/app/getting-started/deploying@adapters">Adapters</a></td>
+<td>Platform-specific</td>
+</tr>
+</tbody></table></div>
+<p>See the <a href="#/doc/nextjs/app/guides/self-hosting@streaming-and-suspense">Self-Hosting guide</a> for detailed configuration instructions.</p>
+<h2 id="summary">Summary</h2>
+<p>The trigger is <strong>your code</strong>: async work, non-deterministic output, or runtime data. When the framework encounters these, it walks up the tree looking for a `` boundary to use as a fallback. Everything above those boundaries forms the <a href="#the-static-shell">static shell</a>, which is sent immediately. As each boundary resolves, React streams the result into the page.</p>
+<p>The key decisions are <strong>what to cache</strong> and <strong>where to place Suspense boundaries</strong>. Cache what you can with <a href="#/doc/nextjs/app/api-reference/directives/use-cache"><code>&quot;use cache&quot;</code></a> to grow the static shell. Push dynamic access down to the components that need it, and wrap those in ``. Everything else becomes part of the shell.</p>
+<p>For a step-by-step workflow that applies these patterns to an existing route, see <a href="#/doc/nextjs/app/guides/optimizing-the-static-shell">Optimizing the static shell</a>.</p>
+<h2 id="further-reading">Further reading</h2>
+<ul>
+<li><a target="_blank" rel="noopener" href="https://rscexplorer.dev/">RSC Explorer</a> - interactive tool to explore the component payload format and see how React reconstructs the tree from streamed chunks</li>
+<li><a target="_blank" rel="noopener" href="https://web.dev/articles/streams">Streams API on web.dev</a> - introduction to the Web Streams API that underpins streaming in Route Handlers</li>
+<li><a target="_blank" rel="noopener" href="https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Transfer-Encoding">Chunked transfer encoding (MDN)</a> - the HTTP/1.1 mechanism that enables streaming responses</li>
+<li><a target="_blank" rel="noopener" href="https://browser.engineering/">browser.engineering</a> - deep dive into how browsers handle network responses, rendering, and progressive display</li>
+<li><a href="#/doc/nextjs/app/guides/preventing-flash-before-hydration">Preventing flash before hydration</a> - how to update server-rendered HTML with client-specific values (locale, theme, persisted state) before the browser paints</li>
+</ul>

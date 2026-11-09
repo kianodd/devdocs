@@ -1,0 +1,424 @@
+<p>User preferences, browser settings, and client-side storage aren&#39;t available during server rendering. The server emits a reasonable default, but any UI that depends on client-only state (locale, time zone, theme, persisted interactions) needs to be updated before the user sees it. Correcting it after the browser has painted produces a flash of unstyled content (FOUC).</p>
+<p>Some common approaches to this problem:</p>
+<ul>
+<li>A Client Component that re-renders with client values causes a hydration error.</li>
+<li>Deferring to <code>useEffect</code> avoids the error but introduces a visible flash.</li>
+<li>Rendering only on the server means giving up on client-specific formatting entirely.</li>
+</ul>
+<p>Using an <strong>inline script</strong> that runs synchronously as the browser parses the HTML, you can update the DOM <strong>before the first paint</strong>. This guide covers dates, themes, and persisted UI state.</p>
+<h2 id="example">Example</h2>
+<p>The companion <a target="_blank" rel="noopener" href="https://preventing-flash-before-hydration.labs.vercel.dev/">demo</a> (<a target="_blank" rel="noopener" href="https://github.com/nextjs/preventing-flash-before-hydration">source</a>) is built with <code>LANG=ja_JP.UTF-8</code> to simulate a server/client locale mismatch. It lets you compare:</p>
+<ul>
+<li>Inline script date formatting with no flash and no hydration error</li>
+<li>A Client Component that calls <code>toLocaleDateString()</code> directly, showing the hydration error</li>
+<li>An accordion that persists its open section to <code>localStorage</code> using a lazy <code>useState</code> initializer</li>
+</ul>
+<p>Use Chrome DevTools <a target="_blank" rel="noopener" href="https://developer.chrome.com/docs/devtools/sensors">Sensors</a> to override your locale (e.g. <code>ru-RU</code>) and see how each approach behaves.</p>
+<h2 id="dates-and-formatting">Dates and formatting</h2>
+<p>A UTC timestamp like <code>2026-06-15T18:00:00Z</code> represents a fixed point in time, but how it is formatted for display depends on the user&#39;s locale and time zone. <code>toLocaleDateString()</code> and <code>Intl.DateTimeFormat</code> on the server use the server&#39;s settings, which may not match the user&#39;s.</p>
+<h3 id="the-problem">The problem</h3>
+<p>A natural approach is a Client Component that formats the date:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app/components/event-date.tsx</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-string">&#x27;use client&#x27;</span>
+
+  <span class="hljs-keyword">return</span> <span class="language-xml"><span class="hljs-tag">&lt;<span class="hljs-name">p</span>&gt;</span>{new Date(date).toLocaleDateString()}<span class="hljs-tag">&lt;/<span class="hljs-name">p</span>&gt;</span></span>
+}</code></pre></div></figure>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app/components/event-date.js</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript"><span class="hljs-string">&#x27;use client&#x27;</span>
+
+  <span class="hljs-keyword">return</span> <span class="language-xml"><span class="hljs-tag">&lt;<span class="hljs-name">p</span>&gt;</span>{new Date(date).toLocaleDateString()}<span class="hljs-tag">&lt;/<span class="hljs-name">p</span>&gt;</span></span>
+}</code></pre></div></figure>
+<p>During SSR, <code>toLocaleDateString()</code> runs in Node.js and formats using the server&#39;s locale (e.g. <code>6/15/2026</code>). On hydration, React re-executes the component in the browser and produces the user&#39;s locale (e.g. <code>2026/6/15</code>). React detects the mismatch, throws a hydration error, and the user sees a flash.</p>
+<p>You could work around this with <code>useEffect</code> to update the date after hydration, but the user still sees the server-formatted date first. A Server Component avoids the error entirely, but the date is permanently in the server&#39;s locale.</p>
+<blockquote>
+<p><strong>Good to know:</strong> This issue is easy to miss in local development if your machine&#39;s locale matches your browser&#39;s. Run your dev server with <code>TZ</code> and <code>LANG</code> set differently from your browser to catch mismatches early (e.g. <code>TZ=UTC LANG=ja_JP.UTF-8 next dev</code>). <code>TZ=UTC</code> is a good default since most servers run in UTC.</p>
+</blockquote>
+<h3 id="fixing-it-with-an-inline-script">Fixing it with an inline script</h3>
+<ol>
+<li>The server renders the date with its locale into a <code>&lt;p&gt;</code>.</li>
+<li>Place a <code>&lt;script&gt;</code> (via <a target="_blank" rel="noopener" href="https://react.dev/reference/react-dom/components/common#dangerously-setting-the-inner-html"><code>dangerouslySetInnerHTML</code></a>) after the element. The browser runs it <strong>synchronously</strong> during HTML parsing, before the first paint.</li>
+<li>Add <a target="_blank" rel="noopener" href="https://react.dev/reference/react-dom/client/hydrateRoot#suppressing-unavoidable-hydration-mismatch-errors"><code>suppressHydrationWarning</code></a> to the element, since the inline script changes the text before React hydrates. See <a href="#understanding-suppresshydrationwarning">Understanding <code>suppressHydrationWarning</code></a> below.</li>
+</ol>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app/events/page.tsx</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">
+  <span class="hljs-keyword">const</span> event = <span class="hljs-keyword">await</span> <span class="hljs-title function_">getEvent</span>(<span class="hljs-string">&#x27;nextjs-conf&#x27;</span>)
+
+  <span class="hljs-keyword">return</span> (
+    <span class="language-xml"><span class="hljs-tag">&lt;<span class="hljs-name">section</span>&gt;</span>
+      <span class="hljs-tag">&lt;<span class="hljs-name">h1</span>&gt;</span>{event.name}<span class="hljs-tag">&lt;/<span class="hljs-name">h1</span>&gt;</span>
+      <span class="hljs-tag">&lt;<span class="hljs-name">p</span> <span class="hljs-attr">id</span>=<span class="hljs-string">&quot;event-date&quot;</span> <span class="hljs-attr">suppressHydrationWarning</span>&gt;</span>
+        {new Date(event.date).toLocaleDateString()}
+      <span class="hljs-tag">&lt;/<span class="hljs-name">p</span>&gt;</span>
+      <span class="hljs-tag">&lt;<span class="hljs-name">script</span>
+        <span class="hljs-attr">dangerouslySetInnerHTML</span>=<span class="hljs-string">{{</span>
+          <span class="hljs-attr">__html:</span> `<span class="hljs-attr">document.getElementById</span>(&quot;<span class="hljs-attr">event-date</span>&quot;)<span class="hljs-attr">.textContent</span>=<span class="hljs-string">new</span> <span class="hljs-attr">Date</span>(&quot;${<span class="hljs-attr">event.date</span>}&quot;)<span class="hljs-attr">.toLocaleDateString</span>()`,
+        }}
+      /&gt;</span><span class="language-javascript">
+    &lt;/section&gt;</span></span>
+  )
+}</code></pre></div></figure>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app/events/page.js</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript">
+  <span class="hljs-keyword">const</span> event = <span class="hljs-keyword">await</span> <span class="hljs-title function_">getEvent</span>(<span class="hljs-string">&#x27;nextjs-conf&#x27;</span>)
+
+  <span class="hljs-keyword">return</span> (
+    <span class="language-xml"><span class="hljs-tag">&lt;<span class="hljs-name">section</span>&gt;</span>
+      <span class="hljs-tag">&lt;<span class="hljs-name">h1</span>&gt;</span>{event.name}<span class="hljs-tag">&lt;/<span class="hljs-name">h1</span>&gt;</span>
+      <span class="hljs-tag">&lt;<span class="hljs-name">p</span> <span class="hljs-attr">id</span>=<span class="hljs-string">&quot;event-date&quot;</span> <span class="hljs-attr">suppressHydrationWarning</span>&gt;</span>
+        {new Date(event.date).toLocaleDateString()}
+      <span class="hljs-tag">&lt;/<span class="hljs-name">p</span>&gt;</span>
+      <span class="hljs-tag">&lt;<span class="hljs-name">script</span>
+        <span class="hljs-attr">dangerouslySetInnerHTML</span>=<span class="hljs-string">{{</span>
+          <span class="hljs-attr">__html:</span> `<span class="hljs-attr">document.getElementById</span>(&quot;<span class="hljs-attr">event-date</span>&quot;)<span class="hljs-attr">.textContent</span>=<span class="hljs-string">new</span> <span class="hljs-attr">Date</span>(&quot;${<span class="hljs-attr">event.date</span>}&quot;)<span class="hljs-attr">.toLocaleDateString</span>()`,
+        }}
+      /&gt;</span><span class="language-javascript">
+    &lt;/section&gt;</span></span>
+  )
+}</code></pre></div></figure>
+<p>This works on full page loads (direct visits, refreshes). For client-side navigations via ``, see <a href="#extracting-a-reusable-component">Extracting a reusable component</a>.</p>
+<h3 id="understanding-suppresshydrationwarning">Understanding <code>suppressHydrationWarning</code></h3>
+<p>When React hydrates and finds a text mismatch:</p>
+<ul>
+<li><strong>Without <code>suppressHydrationWarning</code></strong>: React treats it as a hydration error and recovers by client-rendering from the nearest error or Suspense boundary. This causes a flash, and inline script corrections on <strong>other components within that boundary are lost</strong> because the scripts don&#39;t re-execute when React rebuilds the DOM.</li>
+<li><strong>With <code>suppressHydrationWarning</code></strong>: React keeps whatever is in the DOM and discards the client&#39;s output for that element. The DOM wins.</li>
+</ul>
+<p>The inline script puts the correct value in the DOM before React hydrates. Even for Server Components, React compares the DOM against the RSC payload during hydration, and the inline script has changed the text. <code>suppressHydrationWarning</code> tells React to accept the DOM rather than the payload.</p>
+<h3 id="extracting-a-reusable-component">Extracting a reusable component</h3>
+<p>Scripts inserted via DOM updates don&#39;t execute in the browser. On client-side navigations, React renders the component from the RSC payload and the script won&#39;t run. Making the component a Client Component solves this: <code>toLocaleDateString()</code> runs directly in the browser on soft navigations, while the inline script handles hard navigations. <a target="_blank" rel="noopener" href="https://react.dev/reference/react/useId"><code>useId</code></a> generates a stable unique ID for each instance.</p>
+<p>React also warns in development when rendering produces <code>&lt;script&gt;</code> tags. To avoid this, wrap the script in a helper that sets <code>type=&quot;text/javascript&quot;</code> on the server and <code>type=&quot;text/plain&quot;</code> on the client. <code>suppressHydrationWarning</code> handles the type mismatch.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app/components/inline-script.tsx</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">
+  <span class="hljs-keyword">return</span> (
+    <span class="language-xml"><span class="hljs-tag">&lt;<span class="hljs-name">script</span>
+      <span class="hljs-attr">type</span>=<span class="hljs-string">{typeof</span> <span class="hljs-attr">window</span> === <span class="hljs-string">&#x27;undefined&#x27;</span> ? &#x27;<span class="hljs-attr">text</span>/<span class="hljs-attr">javascript</span>&#x27; <span class="hljs-attr">:</span> &#x27;<span class="hljs-attr">text</span>/<span class="hljs-attr">plain</span>&#x27;}
+      <span class="hljs-attr">suppressHydrationWarning</span>
+      <span class="hljs-attr">dangerouslySetInnerHTML</span>=<span class="hljs-string">{{</span> <span class="hljs-attr">__html:</span> <span class="hljs-attr">html</span> }}
+    /&gt;</span></span>
+  )
+}</code></pre></div></figure>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app/components/inline-script.js</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript">
+  <span class="hljs-keyword">return</span> (
+    <span class="language-xml"><span class="hljs-tag">&lt;<span class="hljs-name">script</span>
+      <span class="hljs-attr">type</span>=<span class="hljs-string">{typeof</span> <span class="hljs-attr">window</span> === <span class="hljs-string">&#x27;undefined&#x27;</span> ? &#x27;<span class="hljs-attr">text</span>/<span class="hljs-attr">javascript</span>&#x27; <span class="hljs-attr">:</span> &#x27;<span class="hljs-attr">text</span>/<span class="hljs-attr">plain</span>&#x27;}
+      <span class="hljs-attr">suppressHydrationWarning</span>
+      <span class="hljs-attr">dangerouslySetInnerHTML</span>=<span class="hljs-string">{{</span> <span class="hljs-attr">__html:</span> <span class="hljs-attr">html</span> }}
+    /&gt;</span></span>
+  )
+}</code></pre></div></figure>
+<blockquote>
+<p><strong>Good to know</strong>: <a href="#/doc/nextjs/app/api-reference/functions/use-server-inserted-html"><code>useServerInsertedHTML</code></a> also avoids the warning, but it can&#39;t replace <code>InlineScript</code> here. It inserts the script ahead of the component&#39;s markup, so the script runs before the <code>&lt;time&gt;</code> element exists. It suits scripts that act on the document instead, such as the theme script in <a href="#themes">Themes</a>.</p>
+</blockquote>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app/components/local-date.tsx</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-string">&#x27;use client&#x27;</span>
+
+  date,
+  options,
+}: {
+  <span class="hljs-attr">date</span>: <span class="hljs-built_in">string</span>
+  <span class="hljs-attr">options</span>?: <span class="hljs-title class_">Intl</span>.<span class="hljs-property">DateTimeFormatOptions</span>
+}) {
+  <span class="hljs-keyword">const</span> id = <span class="hljs-title function_">useId</span>()
+
+  <span class="hljs-keyword">return</span> (
+    <span class="language-xml"><span class="hljs-tag">&lt;&gt;</span>
+      <span class="hljs-tag">&lt;<span class="hljs-name">time</span> <span class="hljs-attr">id</span>=<span class="hljs-string">{id}</span> <span class="hljs-attr">dateTime</span>=<span class="hljs-string">{date}</span> <span class="hljs-attr">suppressHydrationWarning</span>&gt;</span>
+        {new Date(date).toLocaleDateString(undefined, options)}
+      <span class="hljs-tag">&lt;/<span class="hljs-name">time</span>&gt;</span>
+      
+    <span class="hljs-tag">&lt;/&gt;</span></span>
+  )
+}</code></pre></div></figure>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app/components/local-date.js</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript"><span class="hljs-string">&#x27;use client&#x27;</span>
+
+  <span class="hljs-keyword">const</span> id = <span class="hljs-title function_">useId</span>()
+
+  <span class="hljs-keyword">return</span> (
+    <span class="language-xml"><span class="hljs-tag">&lt;&gt;</span>
+      <span class="hljs-tag">&lt;<span class="hljs-name">time</span> <span class="hljs-attr">id</span>=<span class="hljs-string">{id}</span> <span class="hljs-attr">dateTime</span>=<span class="hljs-string">{date}</span> <span class="hljs-attr">suppressHydrationWarning</span>&gt;</span>
+        {new Date(date).toLocaleDateString(undefined, options)}
+      <span class="hljs-tag">&lt;/<span class="hljs-name">time</span>&gt;</span>
+      
+    <span class="hljs-tag">&lt;/&gt;</span></span>
+  )
+}</code></pre></div></figure>
+<ul>
+<li><strong>Hard navigation</strong> (initial load, refresh): The script executes during HTML parsing and corrects the date. <code>suppressHydrationWarning</code> tells React to accept the DOM.</li>
+<li><strong>Client-side navigation</strong> (via ``): <code>toLocaleDateString()</code> runs in the browser as part of the Client Component render. The script is <code>text/plain</code> and ignored.</li>
+</ul>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app/events/page.tsx</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">
+  <span class="hljs-keyword">const</span> event = <span class="hljs-keyword">await</span> <span class="hljs-title function_">getEvent</span>(<span class="hljs-string">&#x27;nextjs-conf&#x27;</span>)
+
+  <span class="hljs-keyword">return</span> (
+    <span class="language-xml"><span class="hljs-tag">&lt;<span class="hljs-name">section</span>&gt;</span>
+      <span class="hljs-tag">&lt;<span class="hljs-name">h1</span>&gt;</span>{event.name}<span class="hljs-tag">&lt;/<span class="hljs-name">h1</span>&gt;</span>
+      
+    <span class="hljs-tag">&lt;/<span class="hljs-name">section</span>&gt;</span></span>
+  )
+}</code></pre></div></figure>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app/events/page.js</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript">
+  <span class="hljs-keyword">const</span> event = <span class="hljs-keyword">await</span> <span class="hljs-title function_">getEvent</span>(<span class="hljs-string">&#x27;nextjs-conf&#x27;</span>)
+
+  <span class="hljs-keyword">return</span> (
+    <span class="language-xml"><span class="hljs-tag">&lt;<span class="hljs-name">section</span>&gt;</span>
+      <span class="hljs-tag">&lt;<span class="hljs-name">h1</span>&gt;</span>{event.name}<span class="hljs-tag">&lt;/<span class="hljs-name">h1</span>&gt;</span>
+      
+    <span class="hljs-tag">&lt;/<span class="hljs-name">section</span>&gt;</span></span>
+  )
+}</code></pre></div></figure>
+<blockquote>
+<p><strong>Good to know:</strong></p>
+<ul>
+<li>Use a <a target="_blank" rel="noopener" href="https://developer.mozilla.org/en-US/docs/Web/HTML/Element/time"><code>&lt;time&gt;</code></a> element with a <code>dateTime</code> attribute so search engines and screen readers can parse the ISO string regardless of the displayed text.</li>
+<li>Inline scripts with <code>dangerouslySetInnerHTML</code> are blocked by strict <a target="_blank" rel="noopener" href="https://developer.mozilla.org/en-US/docs/Web/HTTP/CSP">Content Security Policies</a> that don&#39;t allow <code>&#39;unsafe-inline&#39;</code>. If your app uses a CSP, you&#39;ll need to add a <a href="#/doc/nextjs/app/guides/content-security-policy">nonce</a>.</li>
+</ul>
+</blockquote>
+<h2 id="themes">Themes</h2>
+<p>Your page may be server-rendered with a default theme (e.g. light), but the user has saved a dark mode preference in <code>localStorage</code>. The same inline script technique works: read the value and set a <code>data-theme</code> attribute on <code>&lt;html&gt;</code> before the browser paints.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app/layout.tsx</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">
+  <span class="hljs-keyword">return</span> (
+    <span class="language-xml"><span class="hljs-tag">&lt;<span class="hljs-name">html</span> <span class="hljs-attr">lang</span>=<span class="hljs-string">&quot;en&quot;</span> <span class="hljs-attr">data-theme</span>=<span class="hljs-string">&quot;light&quot;</span> <span class="hljs-attr">suppressHydrationWarning</span>&gt;</span>
+      <span class="hljs-tag">&lt;<span class="hljs-name">head</span>&gt;</span>
+        <span class="hljs-tag">&lt;<span class="hljs-name">script</span>
+          <span class="hljs-attr">dangerouslySetInnerHTML</span>=<span class="hljs-string">{{</span>
+            <span class="hljs-attr">__html:</span> `(<span class="hljs-attr">function</span>(){<span class="hljs-attr">try</span>{<span class="hljs-attr">var</span> <span class="hljs-attr">t</span>=<span class="hljs-string">localStorage.getItem(</span>&quot;<span class="hljs-attr">theme</span>&quot;);<span class="hljs-attr">if</span>(<span class="hljs-attr">t</span>)<span class="hljs-attr">document.documentElement.setAttribute</span>(&quot;<span class="hljs-attr">data-theme</span>&quot;,<span class="hljs-attr">t</span>)}<span class="hljs-attr">catch</span>(<span class="hljs-attr">e</span>){}})()`,
+          }}
+        /&gt;</span><span class="language-javascript">
+      &lt;/head&gt;
+      <span class="language-xml"><span class="hljs-tag">&lt;<span class="hljs-name">body</span>&gt;</span>{children}<span class="hljs-tag">&lt;/<span class="hljs-name">body</span>&gt;</span></span>
+    &lt;/html&gt;</span></span>
+  )
+}</code></pre></div></figure>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app/layout.js</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript">
+  <span class="hljs-keyword">return</span> (
+    <span class="language-xml"><span class="hljs-tag">&lt;<span class="hljs-name">html</span> <span class="hljs-attr">lang</span>=<span class="hljs-string">&quot;en&quot;</span> <span class="hljs-attr">data-theme</span>=<span class="hljs-string">&quot;light&quot;</span> <span class="hljs-attr">suppressHydrationWarning</span>&gt;</span>
+      <span class="hljs-tag">&lt;<span class="hljs-name">head</span>&gt;</span>
+        <span class="hljs-tag">&lt;<span class="hljs-name">script</span>
+          <span class="hljs-attr">dangerouslySetInnerHTML</span>=<span class="hljs-string">{{</span>
+            <span class="hljs-attr">__html:</span> `(<span class="hljs-attr">function</span>(){<span class="hljs-attr">try</span>{<span class="hljs-attr">var</span> <span class="hljs-attr">t</span>=<span class="hljs-string">localStorage.getItem(</span>&quot;<span class="hljs-attr">theme</span>&quot;);<span class="hljs-attr">if</span>(<span class="hljs-attr">t</span>)<span class="hljs-attr">document.documentElement.setAttribute</span>(&quot;<span class="hljs-attr">data-theme</span>&quot;,<span class="hljs-attr">t</span>)}<span class="hljs-attr">catch</span>(<span class="hljs-attr">e</span>){}})()`,
+          }}
+        /&gt;</span><span class="language-javascript">
+      &lt;/head&gt;
+      <span class="language-xml"><span class="hljs-tag">&lt;<span class="hljs-name">body</span>&gt;</span>{children}<span class="hljs-tag">&lt;/<span class="hljs-name">body</span>&gt;</span></span>
+    &lt;/html&gt;</span></span>
+  )
+}</code></pre></div></figure>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app/globals.css</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">[data-theme=&#x27;light&#x27;] {
+  --background: #ffffff;
+  --foreground: #000000;
+}
+
+[data-theme=&#x27;dark&#x27;] {
+  --background: #0a0a0a;
+  --foreground: #ededed;
+}</code></pre></div></figure>
+<p>The script runs in <code>&lt;head&gt;</code>, so the correct theme is applied before any content is painted. The <code>try/catch</code> handles cases where <code>localStorage</code> is unavailable.</p>
+<blockquote>
+<p><strong>Good to know</strong>: You can also return the theme script from <a href="#/doc/nextjs/app/api-reference/functions/use-server-inserted-html"><code>useServerInsertedHTML</code></a> in a Client Component, with a <code>useRef</code> flag so it&#39;s only inserted once. This avoids the script warning, but the script runs on the initial document only. That&#39;s fine for a theme, because the attribute it sets on <code>&lt;html&gt;</code> persists across navigations.</p>
+</blockquote>
+<h3 id="storing-the-theme-in-a-cookie">Storing the theme in a cookie</h3>
+<p>Unlike <code>localStorage</code>, a cookie is sent with every request, so the server <em>can</em> read it with <a href="#/doc/nextjs/app/api-reference/functions/cookies"><code>cookies()</code></a>. But reading it in the root layout opts the entire app out of static prerendering (and under <a href="#/doc/nextjs/app/api-reference/config/next-config-js/cacheComponents">Cache Components</a>, forces blocking every segment under the layout). To keep the page statically prerendered with a generic default and still avoid the flash, read the cookie in the inline script instead:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app/layout.tsx</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript">
+  <span class="hljs-keyword">return</span> (
+    <span class="language-xml"><span class="hljs-tag">&lt;<span class="hljs-name">html</span> <span class="hljs-attr">lang</span>=<span class="hljs-string">&quot;en&quot;</span> <span class="hljs-attr">data-theme</span>=<span class="hljs-string">&quot;light&quot;</span> <span class="hljs-attr">suppressHydrationWarning</span>&gt;</span>
+      <span class="hljs-tag">&lt;<span class="hljs-name">head</span>&gt;</span>
+        <span class="hljs-tag">&lt;<span class="hljs-name">script</span>
+          <span class="hljs-attr">dangerouslySetInnerHTML</span>=<span class="hljs-string">{{</span>
+            <span class="hljs-attr">__html:</span> `(<span class="hljs-attr">function</span>(){<span class="hljs-attr">try</span>{<span class="hljs-attr">var</span> <span class="hljs-attr">m</span>=<span class="hljs-string">document.cookie.match(/(?:^|;</span> )<span class="hljs-attr">theme</span>=<span class="hljs-string">([^;]*)/);if(m)document.documentElement.setAttribute(</span>&quot;<span class="hljs-attr">data-theme</span>&quot;,<span class="hljs-attr">decodeURIComponent</span>(<span class="hljs-attr">m</span>[<span class="hljs-attr">1</span>]))}<span class="hljs-attr">catch</span>(<span class="hljs-attr">e</span>){}})()`,
+          }}
+        /&gt;</span><span class="language-javascript">
+      &lt;/head&gt;
+      <span class="language-xml"><span class="hljs-tag">&lt;<span class="hljs-name">body</span>&gt;</span>{children}<span class="hljs-tag">&lt;/<span class="hljs-name">body</span>&gt;</span></span>
+    &lt;/html&gt;</span></span>
+  )
+}</code></pre></div></figure>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app/layout.js</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript">
+  <span class="hljs-keyword">return</span> (
+    <span class="language-xml"><span class="hljs-tag">&lt;<span class="hljs-name">html</span> <span class="hljs-attr">lang</span>=<span class="hljs-string">&quot;en&quot;</span> <span class="hljs-attr">data-theme</span>=<span class="hljs-string">&quot;light&quot;</span> <span class="hljs-attr">suppressHydrationWarning</span>&gt;</span>
+      <span class="hljs-tag">&lt;<span class="hljs-name">head</span>&gt;</span>
+        <span class="hljs-tag">&lt;<span class="hljs-name">script</span>
+          <span class="hljs-attr">dangerouslySetInnerHTML</span>=<span class="hljs-string">{{</span>
+            <span class="hljs-attr">__html:</span> `(<span class="hljs-attr">function</span>(){<span class="hljs-attr">try</span>{<span class="hljs-attr">var</span> <span class="hljs-attr">m</span>=<span class="hljs-string">document.cookie.match(/(?:^|;</span> )<span class="hljs-attr">theme</span>=<span class="hljs-string">([^;]*)/);if(m)document.documentElement.setAttribute(</span>&quot;<span class="hljs-attr">data-theme</span>&quot;,<span class="hljs-attr">decodeURIComponent</span>(<span class="hljs-attr">m</span>[<span class="hljs-attr">1</span>]))}<span class="hljs-attr">catch</span>(<span class="hljs-attr">e</span>){}})()`,
+          }}
+        /&gt;</span><span class="language-javascript">
+      &lt;/head&gt;
+      <span class="language-xml"><span class="hljs-tag">&lt;<span class="hljs-name">body</span>&gt;</span>{children}<span class="hljs-tag">&lt;/<span class="hljs-name">body</span>&gt;</span></span>
+    &lt;/html&gt;</span></span>
+  )
+}</code></pre></div></figure>
+<p>To switch themes, set the attribute on <code>&lt;html&gt;</code> and persist the choice to the cookie:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JavaScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript"><span class="hljs-keyword">const</span> theme = <span class="hljs-string">&#x27;dark&#x27;</span>
+<span class="hljs-variable language_">document</span>.<span class="hljs-property">documentElement</span>.<span class="hljs-title function_">setAttribute</span>(<span class="hljs-string">&#x27;data-theme&#x27;</span>, theme)
+<span class="hljs-variable language_">document</span>.<span class="hljs-property">cookie</span> = <span class="hljs-string">`theme=<span class="hljs-subst">${<span class="hljs-built_in">encodeURIComponent</span>(theme)}</span>; path=/; max-age=31536000; SameSite=Lax`</span></code></pre></div></figure>
+<h2 id="syncing-with-react-state">Syncing with React state</h2>
+<p>When a Client Component manages interactive state (like which accordion section is open), React&#39;s initial state must match the DOM that the inline script set. Use a <strong>lazy state initializer</strong> that reads from the same source as the script.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app/components/accordion.tsx</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-string">&#x27;use client&#x27;</span>
+
+
+
+<span class="hljs-keyword">const</span> <span class="hljs-variable constant_">STORAGE_KEY</span> = <span class="hljs-string">&#x27;open-section&#x27;</span>
+
+<span class="hljs-keyword">const</span> sections = [
+  {
+    <span class="hljs-attr">id</span>: <span class="hljs-string">&#x27;setup&#x27;</span>,
+    <span class="hljs-attr">title</span>: <span class="hljs-string">&#x27;Setup&#x27;</span>,
+    <span class="hljs-attr">content</span>: <span class="hljs-string">&#x27;Install dependencies and create your project.&#x27;</span>,
+  },
+  {
+    <span class="hljs-attr">id</span>: <span class="hljs-string">&#x27;usage&#x27;</span>,
+    <span class="hljs-attr">title</span>: <span class="hljs-string">&#x27;Usage&#x27;</span>,
+    <span class="hljs-attr">content</span>: <span class="hljs-string">&#x27;Import the component and pass your data.&#x27;</span>,
+  },
+  {
+    <span class="hljs-attr">id</span>: <span class="hljs-string">&#x27;deploy&#x27;</span>,
+    <span class="hljs-attr">title</span>: <span class="hljs-string">&#x27;Deploy&#x27;</span>,
+    <span class="hljs-attr">content</span>: <span class="hljs-string">&#x27;Push to your Git provider and deploy.&#x27;</span>,
+  },
+]
+
+<span class="hljs-keyword">const</span> <span class="hljs-variable constant_">DEFAULT_ID</span> = sections[<span class="hljs-number">0</span>].<span class="hljs-property">id</span>
+<span class="hljs-keyword">const</span> <span class="hljs-variable constant_">SECTION_IDS</span> = sections.<span class="hljs-title function_">map</span>(<span class="hljs-function">(<span class="hljs-params">s</span>) =&gt;</span> s.<span class="hljs-property">id</span>)
+
+  <span class="hljs-keyword">const</span> [openId, setOpenId] = <span class="hljs-title function_">useState</span>(<span class="hljs-function">() =&gt;</span> {
+    <span class="hljs-keyword">if</span> (<span class="hljs-keyword">typeof</span> <span class="hljs-variable language_">window</span> === <span class="hljs-string">&#x27;undefined&#x27;</span>) <span class="hljs-keyword">return</span> <span class="hljs-variable constant_">DEFAULT_ID</span>
+    <span class="hljs-keyword">return</span> <span class="hljs-variable language_">localStorage</span>.<span class="hljs-title function_">getItem</span>(<span class="hljs-variable constant_">STORAGE_KEY</span>) ?? <span class="hljs-variable constant_">DEFAULT_ID</span>
+  })
+
+  <span class="hljs-keyword">const</span> handleToggle = <span class="hljs-title function_">useCallback</span>(
+    <span class="hljs-function">(<span class="hljs-params"><span class="hljs-attr">id</span>: <span class="hljs-built_in">string</span></span>) =&gt;</span> <span class="hljs-function">(<span class="hljs-params"><span class="hljs-attr">e</span>: <span class="hljs-title class_">React</span>.<span class="hljs-title class_">ToggleEvent</span></span>) =&gt;</span> {
+      <span class="hljs-keyword">if</span> (e.<span class="hljs-property">newState</span> === <span class="hljs-string">&#x27;open&#x27;</span>) {
+        <span class="hljs-title function_">setOpenId</span>(id)
+        <span class="hljs-variable language_">localStorage</span>.<span class="hljs-title function_">setItem</span>(<span class="hljs-variable constant_">STORAGE_KEY</span>, id)
+      }
+    },
+    []
+  )
+
+  <span class="hljs-keyword">return</span> (
+    <span class="language-xml"><span class="hljs-tag">&lt;<span class="hljs-name">div</span>&gt;</span>
+      {sections.map((section) =&gt; (
+        <span class="hljs-tag">&lt;<span class="hljs-name">details</span>
+          <span class="hljs-attr">key</span>=<span class="hljs-string">{section.id}</span>
+          <span class="hljs-attr">name</span>=<span class="hljs-string">&quot;accordion&quot;</span>
+          <span class="hljs-attr">id</span>=<span class="hljs-string">{</span>`<span class="hljs-attr">section-</span>${<span class="hljs-attr">section.id</span>}`}
+          <span class="hljs-attr">open</span>=<span class="hljs-string">{openId</span> === <span class="hljs-string">section.id}</span>
+          <span class="hljs-attr">onToggle</span>=<span class="hljs-string">{handleToggle(section.id)}</span>
+        &gt;</span>
+          <span class="hljs-tag">&lt;<span class="hljs-name">summary</span>&gt;</span>{section.title}<span class="hljs-tag">&lt;/<span class="hljs-name">summary</span>&gt;</span>
+          <span class="hljs-tag">&lt;<span class="hljs-name">p</span>&gt;</span>{section.content}<span class="hljs-tag">&lt;/<span class="hljs-name">p</span>&gt;</span>
+        <span class="hljs-tag">&lt;/<span class="hljs-name">details</span>&gt;</span>
+      ))}
+      
+    <span class="hljs-tag">&lt;/<span class="hljs-name">div</span>&gt;</span></span>
+  )
+}</code></pre></div></figure>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app/components/accordion.js</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript"><span class="hljs-string">&#x27;use client&#x27;</span>
+
+
+
+<span class="hljs-keyword">const</span> <span class="hljs-variable constant_">STORAGE_KEY</span> = <span class="hljs-string">&#x27;open-section&#x27;</span>
+
+<span class="hljs-keyword">const</span> sections = [
+  {
+    <span class="hljs-attr">id</span>: <span class="hljs-string">&#x27;setup&#x27;</span>,
+    <span class="hljs-attr">title</span>: <span class="hljs-string">&#x27;Setup&#x27;</span>,
+    <span class="hljs-attr">content</span>: <span class="hljs-string">&#x27;Install dependencies and create your project.&#x27;</span>,
+  },
+  {
+    <span class="hljs-attr">id</span>: <span class="hljs-string">&#x27;usage&#x27;</span>,
+    <span class="hljs-attr">title</span>: <span class="hljs-string">&#x27;Usage&#x27;</span>,
+    <span class="hljs-attr">content</span>: <span class="hljs-string">&#x27;Import the component and pass your data.&#x27;</span>,
+  },
+  {
+    <span class="hljs-attr">id</span>: <span class="hljs-string">&#x27;deploy&#x27;</span>,
+    <span class="hljs-attr">title</span>: <span class="hljs-string">&#x27;Deploy&#x27;</span>,
+    <span class="hljs-attr">content</span>: <span class="hljs-string">&#x27;Push to your Git provider and deploy.&#x27;</span>,
+  },
+]
+
+<span class="hljs-keyword">const</span> <span class="hljs-variable constant_">DEFAULT_ID</span> = sections[<span class="hljs-number">0</span>].<span class="hljs-property">id</span>
+<span class="hljs-keyword">const</span> <span class="hljs-variable constant_">SECTION_IDS</span> = sections.<span class="hljs-title function_">map</span>(<span class="hljs-function">(<span class="hljs-params">s</span>) =&gt;</span> s.<span class="hljs-property">id</span>)
+
+  <span class="hljs-keyword">const</span> [openId, setOpenId] = <span class="hljs-title function_">useState</span>(<span class="hljs-function">() =&gt;</span> {
+    <span class="hljs-keyword">if</span> (<span class="hljs-keyword">typeof</span> <span class="hljs-variable language_">window</span> === <span class="hljs-string">&#x27;undefined&#x27;</span>) <span class="hljs-keyword">return</span> <span class="hljs-variable constant_">DEFAULT_ID</span>
+    <span class="hljs-keyword">return</span> <span class="hljs-variable language_">localStorage</span>.<span class="hljs-title function_">getItem</span>(<span class="hljs-variable constant_">STORAGE_KEY</span>) ?? <span class="hljs-variable constant_">DEFAULT_ID</span>
+  })
+
+  <span class="hljs-keyword">const</span> handleToggle = <span class="hljs-title function_">useCallback</span>(
+    <span class="hljs-function">(<span class="hljs-params">id</span>) =&gt;</span> <span class="hljs-function">(<span class="hljs-params">e</span>) =&gt;</span> {
+      <span class="hljs-keyword">if</span> (e.<span class="hljs-property">newState</span> === <span class="hljs-string">&#x27;open&#x27;</span>) {
+        <span class="hljs-title function_">setOpenId</span>(id)
+        <span class="hljs-variable language_">localStorage</span>.<span class="hljs-title function_">setItem</span>(<span class="hljs-variable constant_">STORAGE_KEY</span>, id)
+      }
+    },
+    []
+  )
+
+  <span class="hljs-keyword">return</span> (
+    <span class="language-xml"><span class="hljs-tag">&lt;<span class="hljs-name">div</span>&gt;</span>
+      {sections.map((section) =&gt; (
+        <span class="hljs-tag">&lt;<span class="hljs-name">details</span>
+          <span class="hljs-attr">key</span>=<span class="hljs-string">{section.id}</span>
+          <span class="hljs-attr">name</span>=<span class="hljs-string">&quot;accordion&quot;</span>
+          <span class="hljs-attr">id</span>=<span class="hljs-string">{</span>`<span class="hljs-attr">section-</span>${<span class="hljs-attr">section.id</span>}`}
+          <span class="hljs-attr">open</span>=<span class="hljs-string">{openId</span> === <span class="hljs-string">section.id}</span>
+          <span class="hljs-attr">onToggle</span>=<span class="hljs-string">{handleToggle(section.id)}</span>
+        &gt;</span>
+          <span class="hljs-tag">&lt;<span class="hljs-name">summary</span>&gt;</span>{section.title}<span class="hljs-tag">&lt;/<span class="hljs-name">summary</span>&gt;</span>
+          <span class="hljs-tag">&lt;<span class="hljs-name">p</span>&gt;</span>{section.content}<span class="hljs-tag">&lt;/<span class="hljs-name">p</span>&gt;</span>
+        <span class="hljs-tag">&lt;/<span class="hljs-name">details</span>&gt;</span>
+      ))}
+      
+    <span class="hljs-tag">&lt;/<span class="hljs-name">div</span>&gt;</span></span>
+  )
+}</code></pre></div></figure>
+<p>The inline script and the lazy <code>useState</code> initializer both read from <code>localStorage</code>. They always agree, so React&#39;s initial state matches the DOM.</p>
+<h2 id="re-applying-attributes-in-development">Re-applying attributes in development</h2>
+<p>The inline script sets the attribute during parsing, which is all a production build needs. In development, though, <a target="_blank" rel="noopener" href="https://react.dev/reference/react/StrictMode">React&#39;s Strict Mode</a> remounts components once to surface bugs, and on that remount it resets <code>&lt;html&gt;</code>, <code>&lt;head&gt;</code>, and <code>&lt;body&gt;</code> to only the attributes it manages from JSX, clearing the one the script set. The page then renders without the attribute, ignoring the value&#39;s source of truth.</p>
+<p>One way to fix this is to do what you would do without the inline script at all. Read the stored value on the client and apply it, in the component that owns the theme, in a <a target="_blank" rel="noopener" href="https://react.dev/reference/react/useLayoutEffect"><code>useLayoutEffect</code></a> that runs <a href="#why-not-useeffect">before paint</a>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>app/components/theme-toggle.tsx</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-typescript"><span class="hljs-string">&#x27;use client&#x27;</span>
+
+  <span class="hljs-comment">// Re-apply after React clears it on the dev remount. This is a no-op in production.</span>
+  <span class="hljs-title function_">useLayoutEffect</span>(<span class="hljs-function">() =&gt;</span> {
+    <span class="hljs-keyword">const</span> theme = <span class="hljs-variable language_">localStorage</span>.<span class="hljs-title function_">getItem</span>(<span class="hljs-string">&#x27;theme&#x27;</span>)
+    <span class="hljs-keyword">if</span> (theme) <span class="hljs-variable language_">document</span>.<span class="hljs-property">documentElement</span>.<span class="hljs-title function_">setAttribute</span>(<span class="hljs-string">&#x27;data-theme&#x27;</span>, theme)
+  }, [])
+
+  <span class="hljs-keyword">function</span> <span class="hljs-title function_">toggle</span>(<span class="hljs-params"></span>) {
+    <span class="hljs-keyword">const</span> next =
+      (<span class="hljs-variable language_">localStorage</span>.<span class="hljs-title function_">getItem</span>(<span class="hljs-string">&#x27;theme&#x27;</span>) ?? <span class="hljs-string">&#x27;light&#x27;</span>) === <span class="hljs-string">&#x27;dark&#x27;</span> ? <span class="hljs-string">&#x27;light&#x27;</span> : <span class="hljs-string">&#x27;dark&#x27;</span>
+    <span class="hljs-variable language_">localStorage</span>.<span class="hljs-title function_">setItem</span>(<span class="hljs-string">&#x27;theme&#x27;</span>, next)
+    <span class="hljs-variable language_">document</span>.<span class="hljs-property">documentElement</span>.<span class="hljs-title function_">setAttribute</span>(<span class="hljs-string">&#x27;data-theme&#x27;</span>, next)
+  }
+
+  <span class="hljs-keyword">return</span> <span class="language-xml"><span class="hljs-tag">&lt;<span class="hljs-name">button</span> <span class="hljs-attr">onClick</span>=<span class="hljs-string">{toggle}</span>&gt;</span>Toggle theme<span class="hljs-tag">&lt;/<span class="hljs-name">button</span>&gt;</span></span>
+}</code></pre></div></figure>
+<h2 id="when-to-use-other-approaches">When to use other approaches</h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Situation</th>
+<th>Approach</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Date depends on request data (cookies, headers)</td>
+<td>Use <a href="#/doc/nextjs/app/api-reference/functions/headers"><code>headers()</code></a> or <a href="#/doc/nextjs/app/api-reference/functions/cookies"><code>cookies()</code></a> to read request data and format server-side</td>
+</tr>
+<tr>
+<td>Date updates live (countdown timers, clocks)</td>
+<td>Use a Client Component with <code>useEffect</code> and <code>suppressHydrationWarning</code></td>
+</tr>
+<tr>
+<td>Page is already fully dynamic</td>
+<td>Format the date on the server using the <code>Accept-Language</code> header</td>
+</tr>
+<tr>
+<td>Translating content between languages</td>
+<td>Use <a href="#/doc/nextjs/app/guides/internationalization">internationalization</a> with per-locale static builds or dynamic rendering</td>
+</tr>
+</tbody></table></div>
+<h3 id="why-not-useeffect">Why not <code>useEffect</code>?</h3>
+<p><code>useEffect</code> runs after hydration and paint. The user sees the server value first, then the correction. Setting state in an effect also triggers a re-render, which can reactivate parent Suspense boundaries.</p>
+<p><code>useLayoutEffect</code> runs before paint but after hydration. It prevents the flash between hydration and paint, but not the flash between the HTML arriving and React hydrating. On slow connections, the browser paints the server HTML before React has loaded. The inline script runs during HTML <strong>parsing</strong>, before React is involved.</p>
+<h3 id="why-not-read-from-headers-or-cookies-at-request-time">Why not read from headers or cookies at request time?</h3>
+<p>Reading <code>Accept-Language</code> with <code>await headers()</code> lets the server format per-request. With Cache Components, you can wrap just the date in a Suspense fallback so the rest of the page stays static. But you&#39;d need to show a fallback instead of immediate content, and <code>Accept-Language</code> doesn&#39;t include time zone information.</p>
+<h2 id="next-steps">Next steps</h2>
+<ul>
+<li><a href="#/doc/nextjs/app/api-reference/functions/cookies">Read cookies</a> or <a href="#/doc/nextjs/app/api-reference/functions/headers">headers</a> when you need to format based on request data.</li>
+<li><a href="#/doc/nextjs/app/guides/internationalization">Configure internationalization</a> for multi-language support.</li>
+<li><a target="_blank" rel="noopener" href="https://nextjs.org/docs/messages/react-hydration-error">React hydration error</a> for solutions to other common causes of hydration mismatches.</li>
+</ul>
