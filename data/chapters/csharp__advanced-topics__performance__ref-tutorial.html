@@ -1,0 +1,378 @@
+<p>Often, performance tuning for a .NET application involves two techniques. First, reduce the number and size of heap allocations. Second, reduce how often data is copied. Visual Studio provides great <a href="/visualstudio/profiling/dotnet-alloc-tool">tools</a> that help analyze how your application is using memory. Once you&#39;ve determined where your app makes unnecessary allocations, you make changes to minimize those allocations. You convert <code>class</code> types to <code>struct</code> types. You use <code>ref</code> safety <a href="#/doc/csharp/advanced-topics/performance/index">features</a> to preserve semantics and minimize extra copying.</p>
+<p>Use <a target="_blank" rel="noopener" href="https://visualstudio.microsoft.com/">Visual Studio 17.5</a> for the best experience with this tutorial. The .NET object allocation tool used to analyze memory usage is part of Visual Studio. You can use <a target="_blank" rel="noopener" href="https://code.visualstudio.com/">Visual Studio Code</a> and the command line to run the application and make all the changes. However, you won&#39;t be able to see the analysis results of your changes.</p>
+<p>The application you&#39;ll use is a simulation of an IoT application that monitors several sensors to determine if an intruder has entered a secret gallery with valuables. The IoT sensors are constantly sending data that measures the mix of Oxygen (O2) and Carbon Dioxide (CO2) in the air. They also report the temperature and relative humidity. Each of these values is fluctuating slightly all the time. However, when a person enters the room, the change a bit more, and always in the same direction: Oxygen decreases, Carbon Dioxide increases, temperature increases, as does relative humidity. When the sensors combine to show increases, the intruder alarm is triggered.</p>
+<p>In this tutorial, you&#39;ll run the application, take measurements on memory allocations, then improve the performance by reducing the number of allocations. The source code is available in the <a href="/samples/dotnet/samples/performance-allocations/">samples browser</a>.</p>
+<h2 id="explore-the-starter-application">Explore the starter application</h2>
+<p>Download the application and run the starter sample. The starter application works correctly, but because it allocates many small objects with each measurement cycle, its performance slowly degrades as it runs over time.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Terminal</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-bash"><span class="tk-cmd">Press</span> &lt;return&gt; to start simulation
+
+<span class="tk-cmd">Debounced</span> measurements:
+    <span class="tk-cmd">Temp:</span>      67.332
+    <span class="tk-cmd">Humidity:</span>  41.077%
+    <span class="tk-cmd">Oxygen:</span>    21.097%
+    <span class="tk-cmd">CO2</span> (ppm): 404.906
+<span class="tk-cmd">Average</span> measurements:
+    <span class="tk-cmd">Temp:</span>      67.332
+    <span class="tk-cmd">Humidity:</span>  41.077%
+    <span class="tk-cmd">Oxygen:</span>    21.097%
+    <span class="tk-cmd">CO2</span> (ppm): 404.906
+
+<span class="tk-cmd">Debounced</span> measurements:
+    <span class="tk-cmd">Temp:</span>      67.349
+    <span class="tk-cmd">Humidity:</span>  46.605%
+    <span class="tk-cmd">Oxygen:</span>    20.998%
+    <span class="tk-cmd">CO2</span> (ppm): 408.707
+<span class="tk-cmd">Average</span> measurements:
+    <span class="tk-cmd">Temp:</span>      67.349
+    <span class="tk-cmd">Humidity:</span>  46.605%
+    <span class="tk-cmd">Oxygen:</span>    20.998%
+    <span class="tk-cmd">CO2</span> (ppm): 408.707</code></pre></div></figure>
+<p>Many rows removed.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Terminal</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-bash"><span class="tk-cmd">Debounced</span> measurements:
+    <span class="tk-cmd">Temp:</span>      67.597
+    <span class="tk-cmd">Humidity:</span>  46.543%
+    <span class="tk-cmd">Oxygen:</span>    19.021%
+    <span class="tk-cmd">CO2</span> (ppm): 429.149
+<span class="tk-cmd">Average</span> measurements:
+    <span class="tk-cmd">Temp:</span>      67.568
+    <span class="tk-cmd">Humidity:</span>  45.684%
+    <span class="tk-cmd">Oxygen:</span>    19.631%
+    <span class="tk-cmd">CO2</span> (ppm): 423.498
+<span class="tk-cmd">Current</span> intruders: 3
+<span class="tk-cmd">Calculated</span> intruder risk: High
+
+<span class="tk-cmd">Debounced</span> measurements:
+    <span class="tk-cmd">Temp:</span>      67.602
+    <span class="tk-cmd">Humidity:</span>  46.835%
+    <span class="tk-cmd">Oxygen:</span>    19.003%
+    <span class="tk-cmd">CO2</span> (ppm): 429.393
+<span class="tk-cmd">Average</span> measurements:
+    <span class="tk-cmd">Temp:</span>      67.568
+    <span class="tk-cmd">Humidity:</span>  45.684%
+    <span class="tk-cmd">Oxygen:</span>    19.631%
+    <span class="tk-cmd">CO2</span> (ppm): 423.498
+<span class="tk-cmd">Current</span> intruders: 3
+<span class="tk-cmd">Calculated</span> intruder risk: High</code></pre></div></figure>
+<p>You can explore the code to learn how the application works. The main program runs the simulation. After you press ``, it creates a room, and gathers some initial baseline data:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">Console.WriteLine(&quot;Press &lt;return&gt; to start simulation&quot;);
+Console.ReadLine();
+var room = new Room(&quot;gallery&quot;);
+var r = new Random();
+
+int counter = 0;
+
+room.TakeMeasurements(
+    m =&gt;
+    {
+        Console.WriteLine(room.Debounce);
+        Console.WriteLine(room.Average);
+        Console.WriteLine();
+        counter++;
+        return counter &lt; 20000;
+    });</code></pre></div></figure>
+<p>Once that baseline data has been established, it runs the simulation on the room, where a random number generator determines if an intruder has entered the room:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">counter = 0;
+room.TakeMeasurements(
+    m =&gt;
+    {
+        Console.WriteLine(room.Debounce);
+        Console.WriteLine(room.Average);
+        room.Intruders += (room.Intruders, r.Next(5)) switch
+        {
+            ( &gt; 0, 0) =&gt; -1,
+            ( &lt; 3, 1) =&gt; 1,
+            _ =&gt; 0
+        };
+
+        // 
+        Console.WriteLine($&quot;Current intruders: {room.Intruders}&quot;);
+        Console.WriteLine($&quot;Calculated intruder risk: {room.RiskStatus}&quot;);
+        // 
+        Console.WriteLine();
+        counter++;
+        return counter &lt; 200000;
+    });</code></pre></div></figure>
+<p>Other types contain the measurements, a debounced measurement that is the average of the last 50 measurements, and the average of all measurements taken.</p>
+<p>Next, run the application using the <a href="/visualstudio/profiling/dotnet-alloc-tool">.NET object allocation tool</a>. Make sure you&#39;re using the <code>Release</code> build, not the <code>Debug</code> build. On the <em>Debug</em> menu, open the <em>Performance profiler</em>. Check the <em>.NET Object Allocation Tracking</em> option, but nothing else. Run your application to completion. The profiler measures object allocations and reports on allocations and garbage collection cycles. You should see a graph similar to the following image:</p>
+<p><img src="assets/ms/csharp/advanced-topics/performance/media/ref-tutorial/profilerallocationgraph.png" loading="lazy" alt="image"></p>
+<p>The previous graph shows that working to minimize allocations will provide performance benefits. You see a sawtooth pattern in the live objects graph. That tells you that numerous objects are created that quickly become garbage. They&#39;re later collected, as shown in the object delta graph. The downward red bars indicate a garbage collection cycle.</p>
+<p>Next, look at the <em>Allocations</em> tab below the graphs. This table shows what types are allocated the most:</p>
+<p><img src="assets/ms/csharp/advanced-topics/performance/media/ref-tutorial/allocationsbytype.png" loading="lazy" alt="image"></p>
+<p>The <code>String?displayProperty=nameWithType</code> type accounts for the most allocations. The most important task should be to minimize the frequency of string allocations. This application prints numerous formatted output to the console constantly. For this simulation, we want to keep  messages, so we&#39;ll concentrate on the next two rows: the <code>SensorMeasurement</code> type, and the <code>IntruderRisk</code> type.</p>
+<p>Double-click on the <code>SensorMeasurement</code> line. You can see that all the allocations take place in the <code>static</code> method <code>SensorMeasurement.TakeMeasurement</code>. You can see the method in the following snippet:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">    public static SensorMeasurement TakeMeasurement(string room, int intruders)
+    {
+        return new SensorMeasurement
+        {
+            CO2 = (CO2Concentration + intruders * 10) + (20 * generator.NextDouble() - 10.0),
+            O2 = (O2Concentration - intruders * 0.01) + (0.005 * generator.NextDouble() - 0.0025),
+            Temperature = (TemperatureSetting + intruders * 0.05) + (0.5 * generator.NextDouble() - 0.25),
+            Humidity = (HumiditySetting + intruders * 0.005) + (0.20 * generator.NextDouble() - 0.10),
+            Room = room,
+            TimeRecorded = DateTime.Now
+        };
+    }
+    </code></pre></div></figure>
+<p>Every measurement allocates a new <code>SensorMeasurement</code> object, which is a <code>class</code> type. Every <code>SensorMeasurement</code> created causes a heap allocation.</p>
+<h2 id="change-classes-to-structs">Change classes to structs</h2>
+<p>The following code shows the initial declaration of <code>SensorMeasurement</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">public class SensorMeasurement
+{
+    private static readonly Random generator = new Random();
+
+    // 
+    public static SensorMeasurement TakeMeasurement(string room, int intruders)
+    {
+        return new SensorMeasurement
+        {
+            CO2 = (CO2Concentration + intruders * 10) + (20 * generator.NextDouble() - 10.0),
+            O2 = (O2Concentration - intruders * 0.01) + (0.005 * generator.NextDouble() - 0.0025),
+            Temperature = (TemperatureSetting + intruders * 0.05) + (0.5 * generator.NextDouble() - 0.25),
+            Humidity = (HumiditySetting + intruders * 0.005) + (0.20 * generator.NextDouble() - 0.10),
+            Room = room,
+            TimeRecorded = DateTime.Now
+        };
+    }
+    // 
+
+    private const double CO2Concentration = 409.8; // increases with people.
+    private const double O2Concentration = 0.2100; // decreases
+    private const double TemperatureSetting = 67.5; // increases
+    private const double HumiditySetting = 0.4500; // increases
+
+    public required double CO2 { get; init; }
+    public required double O2 { get; init; }
+    public required double Temperature { get; init; }
+    public required double Humidity { get; init; }
+    public required string Room { get; init; }
+    public required DateTime TimeRecorded { get; init; }
+
+    public override string ToString() =&gt; $&quot;&quot;&quot;
+            Room: {Room} at {TimeRecorded}:
+                Temp:      {Temperature:F3}
+                Humidity:  {Humidity:P3}
+                Oxygen:    {O2:P3}
+                CO2 (ppm): {CO2:F3}
+            &quot;&quot;&quot;;
+}</code></pre></div></figure>
+<p>The type was originally created as a <code>class</code> because it contains numerous <code>double</code> measurements. It&#39;s larger than you&#39;d want to copy in hot paths. However, that decision meant a large number of allocations. Change the type from a <code>class</code> to a <code>struct</code>.</p>
+<p>Changing from a <code>class</code> to <code>struct</code> introduces a few compiler errors because the original code used <code>null</code> reference checks in a few spots. The first is in the <code>DebounceMeasurement</code> class, in the <code>AddMeasurement</code> method:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">    public void AddMeasurement(SensorMeasurement datum)
+    {
+        int index = totalMeasurements % debounceSize;
+        recentMeasurements[index] = datum;
+        totalMeasurements++;
+        double sumCO2 = 0;
+        double sumO2 = 0;
+        double sumTemp = 0;
+        double sumHumidity = 0;
+        for (int i = 0; i &lt; debounceSize; i++)
+        {
+            if (recentMeasurements[i] is not null)
+            {
+                sumCO2 += recentMeasurements[i].CO2;
+                sumO2+= recentMeasurements[i].O2;
+                sumTemp+= recentMeasurements[i].Temperature;
+                sumHumidity += recentMeasurements[i].Humidity;
+            }
+        }
+        O2 = sumO2 / ((totalMeasurements &gt; debounceSize) ? debounceSize : totalMeasurements);
+        CO2 = sumCO2 / ((totalMeasurements &gt; debounceSize) ? debounceSize : totalMeasurements);
+        Temperature = sumTemp / ((totalMeasurements &gt; debounceSize) ? debounceSize : totalMeasurements);
+        Humidity = sumHumidity / ((totalMeasurements &gt; debounceSize) ? debounceSize : totalMeasurements);
+    }
+    </code></pre></div></figure>
+<p>The <code>DebounceMeasurement</code> type contains an array of 50 measurements. The readings for a sensor are reported as the average of the last 50 measurements. That reduces the noise in the readings. Before a full 50 readings have been taken, these values are <code>null</code>. The code checks for <code>null</code> reference to report the correct average on system startup. After changing the <code>SensorMeasurement</code> type to a struct, you must use a different test. The <code>SensorMeasurement</code> type includes a <code>string</code> for the room identifier, so you can use that test instead:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">if (recentMeasurements[i].Room is not null)</code></pre></div></figure>
+<p>The other three compiler errors are all in the method that repeatedly takes measurements in a room:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">    public void TakeMeasurements(Func&lt;SensorMeasurement, bool&gt; MeasurementHandler)
+    {
+        SensorMeasurement? measure = default;
+        do {
+            measure = SensorMeasurement.TakeMeasurement(Name, Intruders);
+            Average.AddMeasurement(measure);
+            Debounce.AddMeasurement(measure);
+        } while (MeasurementHandler(measure));
+    }
+    </code></pre></div></figure>
+<p>In the starter method, the local variable for the <code>SensorMeasurement</code> is a <em>nullable reference</em>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">SensorMeasurement? measure = default;</code></pre></div></figure>
+<p>Now that the <code>SensorMeasurement</code> is a <code>struct</code> instead of a <code>class</code>, the nullable is a <em>nullable value type</em>. You can change the declaration to a value type to fix the remaining compiler errors:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">SensorMeasurement measure = default;</code></pre></div></figure>
+<p>Now that the compiler errors have been addressed, you should examine the code to ensure the semantics haven&#39;t changed. Because <code>struct</code> types are passed by value, modifications made to method parameters aren&#39;t visible after the method returns.</p>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>Changing a type from a <code>class</code> to a <code>struct</code> can change the semantics of your program. When a <code>class</code> type is passed to a method, any mutations made in the method are made to the argument. When a <code>struct</code> type is passed to a method, and mutations made in the method are made to <em>a copy</em> of the argument. That means any method that modifies its arguments by design should be updated to use the <code>ref</code> modifier on any argument type you&#39;ve changed from a <code>class</code> to a <code>struct</code>.</p>
+</div></aside>
+<p>The <code>SensorMeasurement</code> type doesn&#39;t include any methods that change state, so that&#39;s not a concern in this sample. You can prove that by adding the <code>readonly</code> modifier to the <code>SensorMeasurement</code> struct:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">public readonly struct SensorMeasurement</code></pre></div></figure>
+<p>The compiler enforces the <code>readonly</code> nature of the <code>SensorMeasurement</code> struct. If your inspection of the code missed some method that modified state, the compiler would tell you. Your app still builds without errors, so this type is <code>readonly</code>. Adding the <code>readonly</code> modifier when you change a type from a <code>class</code> to a <code>struct</code> can help you find members that modify the state of the <code>struct</code>.</p>
+<h2 id="avoid-making-copies">Avoid making copies</h2>
+<p>You&#39;ve removed a large number of unnecessary allocations from your app. The <code>SensorMeasurement</code> type doesn&#39;t appear in the table anywhere.</p>
+<p>Now, it&#39;s doing extra working copying the <code>SensorMeasurement</code> structure every time it&#39;s used as a parameter or a return value. The <code>SensorMeasurement</code> struct contains four doubles, a <code>DateTime</code> and a <code>string</code>. That structure is measurably larger than a reference. Let&#39;s add the <code>ref</code> or <code>in</code> modifiers to places where the <code>SensorMeasurement</code> type is used.</p>
+<p>The next step is to find methods that return a measurement, or take a measurement as an argument, and use references where possible. Start in the <code>SensorMeasurement</code> struct. The static <code>TakeMeasurement</code> method creates and returns a new <code>SensorMeasurement</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">    public static SensorMeasurement TakeMeasurement(string room, int intruders)
+    {
+        return new SensorMeasurement
+        {
+            CO2 = (CO2Concentration + intruders * 10) + (20 * generator.NextDouble() - 10.0),
+            O2 = (O2Concentration - intruders * 0.01) + (0.005 * generator.NextDouble() - 0.0025),
+            Temperature = (TemperatureSetting + intruders * 0.05) + (0.5 * generator.NextDouble() - 0.25),
+            Humidity = (HumiditySetting + intruders * 0.005) + (0.20 * generator.NextDouble() - 0.10),
+            Room = room,
+            TimeRecorded = DateTime.Now
+        };
+    }
+    </code></pre></div></figure>
+<p>We&#39;ll leave this one as is, returning by value. If you tried to return by <code>ref</code>, you&#39;d get a compiler error. You can&#39;t return a <code>ref</code> to a new structure locally created in the method. The design of the immutable struct means you can only set the values of the measurement at construction. This method must create a new measurement struct.</p>
+<p>Let&#39;s look again at <code>DebounceMeasurement.AddMeasurement</code>. You should add the <code>in</code> modifier to the <code>measurement</code> parameter:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">    public void AddMeasurement(in SensorMeasurement datum)
+    {
+        int index = totalMeasurements % debounceSize;
+        recentMeasurements[index] = datum;
+        totalMeasurements++;
+        double sumCO2 = 0;
+        double sumO2 = 0;
+        double sumTemp = 0;
+        double sumHumidity = 0;
+        for (int i = 0; i &lt; debounceSize; i++)
+        {
+            if (recentMeasurements[i].Room is not null)
+            {
+                sumCO2 += recentMeasurements[i].CO2;
+                sumO2+= recentMeasurements[i].O2;
+                sumTemp+= recentMeasurements[i].Temperature;
+                sumHumidity += recentMeasurements[i].Humidity;
+            }
+        }
+        O2 = sumO2 / ((totalMeasurements &gt; debounceSize) ? debounceSize : totalMeasurements);
+        CO2 = sumCO2 / ((totalMeasurements &gt; debounceSize) ? debounceSize : totalMeasurements);
+        Temperature = sumTemp / ((totalMeasurements &gt; debounceSize) ? debounceSize : totalMeasurements);
+        Humidity = sumHumidity / ((totalMeasurements &gt; debounceSize) ? debounceSize : totalMeasurements);
+    }
+    </code></pre></div></figure>
+<p>That saves one copy operation. The <code>in</code> parameter is a reference to the copy already created by the caller. You can also save a copy with the <code>TakeMeasurement</code> method in the <code>Room</code> type. This method illustrates how the compiler provides safety when you pass arguments by <code>ref</code>. The initial <code>TakeMeasurement</code> method in the <code>Room</code> type takes an argument of <code>Func&lt;SensorMeasurement, bool&gt;</code>. If you try to add the <code>in</code> or <code>ref</code> modifier to that declaration, the compiler reports an error. You can&#39;t pass a <code>ref</code> argument to a lambda expression. The compiler can&#39;t guarantee that the called expression doesn&#39;t copy the reference. If the lambda expression <em>captures</em> the reference, the reference could have a lifetime longer than the value it refers to. Accessing it outside its <em>ref safe context</em> would result in memory corruption. The <code>ref</code> safety rules don&#39;t allow it. You can learn more in the overview of <a href="#/doc/csharp/advanced-topics/performance/index@ref-safe-context">ref safety features</a>.</p>
+<h2 id="preserve-semantics">Preserve semantics</h2>
+<p>The final sets of changes won&#39;t have a major impact on this application&#39;s performance because the types aren&#39;t created in hot paths. These changes illustrate some of the other techniques you&#39;d use in your performance tuning. Let&#39;s take a look at the initial <code>Room</code> class:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">public class Room
+{
+    public AverageMeasurement Average { get; } = new ();
+    public DebounceMeasurement Debounce { get; } = new ();
+    public string Name { get; }
+
+    public IntruderRisk RiskStatus
+    {
+        get
+        {
+            var CO2Variance = (Debounce.CO2 - Average.CO2) &gt; 10.0 / 4;
+            var O2Variance = (Average.O2 - Debounce.O2) &gt; 0.005 / 4.0;
+            var TempVariance = (Debounce.Temperature - Average.Temperature) &gt; 0.05 / 4.0;
+            var HumidityVariance = (Debounce.Humidity - Average.Humidity) &gt; 0.20 / 4;
+            IntruderRisk risk = IntruderRisk.None;
+            if (CO2Variance) { risk++; }
+            if (O2Variance) { risk++; }
+            if (TempVariance) { risk++; }
+            if (HumidityVariance) { risk++; }
+            return risk;
+        }
+    }
+
+    public int Intruders { get; set; }
+
+    
+    public Room(string name)
+    {
+        Name = name;
+    }
+
+    // 
+    public void TakeMeasurements(Func&lt;SensorMeasurement, bool&gt; MeasurementHandler)
+    {
+        SensorMeasurement? measure = default;
+        do {
+            measure = SensorMeasurement.TakeMeasurement(Name, Intruders);
+            Average.AddMeasurement(measure);
+            Debounce.AddMeasurement(measure);
+        } while (MeasurementHandler(measure));
+    }
+    // 
+}</code></pre></div></figure>
+<p>This type contains several properties. Some are <code>class</code> types. Creating a <code>Room</code> object involves multiple allocations. One for the <code>Room</code> itself, and one for each of the members of a <code>class</code> type that it contains. You can convert two of these properties from <code>class</code> types to <code>struct</code> types: the <code>DebounceMeasurement</code> and <code>AverageMeasurement</code> types. Let&#39;s work through that transformation with both types.</p>
+<p>Change the <code>DebounceMeasurement</code> type from a <code>class</code> to <code>struct</code>. That introduces a compiler error <code>CS8983: A &#39;struct&#39; with field initializers must include an explicitly declared constructor</code>. You can fix this by adding an empty parameterless constructor:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">    public DebounceMeasurement() { }
+    </code></pre></div></figure>
+<p>You can learn more about this requirement in the language reference article on <a href="#/doc/csharp/language-reference/builtin-types/struct@struct-initialization-and-default-values">structs</a>.</p>
+<p> The <code>ToString?displayProperty=nameWithType</code> override doesn&#39;t modify any of the values of the struct. You can add the <code>readonly</code> modifier to that method declaration. The <code>DebounceMeasurement</code> type is <em>mutable</em>, so you&#39;ll need to take care that modifications don&#39;t affect copies that are discarded. The <code>AddMeasurement</code> method does modify the state of the object. It&#39;s called from the <code>Room</code> class, in the <code>TakeMeasurements</code> method. You want those changes to persist after calling the method. You can change the <code>Room.Debounce</code> property to return a <em>reference</em> to a single instance of the <code>DebounceMeasurement</code> type:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">    private DebounceMeasurement debounce = new();
+    public ref readonly DebounceMeasurement Debounce { get { return ref debounce; } }
+    </code></pre></div></figure>
+<p>There are a few changes in the previous example. First, the <em>property</em> is a readonly property that returns a readonly reference to the instance owned by this room. It&#39;s now backed by a declared field that&#39;s initialized when the <code>Room</code> object is instantiated. After making these changes, you&#39;ll update the implementation of <code>AddMeasurement</code> method. It uses the private backing field, <code>debounce</code>, not the readonly property <code>Debounce</code>. That way, the changes take place on the single instance created during initialization.</p>
+<p>The same technique works with the <code>Average</code> property. First, you modify the <code>AverageMeasurement</code> type from a <code>class</code> to a <code>struct</code>, and add the <code>readonly</code> modifier on the <code>ToString</code> method:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">﻿namespace IntruderAlert;
+
+public struct AverageMeasurement
+{
+    private double sumCO2 = 0;
+    private double sumO2 = 0;
+    private double sumTemperature = 0;
+    private double sumHumidity = 0;
+    private int totalMeasurements = 0;
+
+    public AverageMeasurement() { }
+
+    public readonly double CO2 =&gt; sumCO2 / totalMeasurements;
+    public readonly double O2 =&gt; sumO2 / totalMeasurements;
+    public readonly double Temperature =&gt; sumTemperature / totalMeasurements;
+    public readonly double Humidity =&gt; sumHumidity / totalMeasurements;
+
+    public void AddMeasurement(in SensorMeasurement datum)
+    {
+        totalMeasurements++;
+        sumCO2 += datum.CO2;
+        sumO2 += datum.O2;
+        sumTemperature += datum.Temperature;
+        sumHumidity+= datum.Humidity;
+    }
+
+    public readonly override string ToString() =&gt; $&quot;&quot;&quot;
+        Average measurements:
+            Temp:      {Temperature:F3}
+            Humidity:  {Humidity:P3}
+            Oxygen:    {O2:P3}
+            CO2 (ppm): {CO2:F3}
+        &quot;&quot;&quot;;
+}</code></pre></div></figure>
+<p>Then, you modify the <code>Room</code> class following the same technique you used for the <code>Debounce</code> property. The <code>Average</code> property returns a <code>readonly ref</code> to the private field for the average measurement. The <code>AddMeasurement</code> method modifies the internal fields.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">    private AverageMeasurement average = new();
+    public  ref readonly AverageMeasurement Average { get { return ref average; } }
+    </code></pre></div></figure>
+<h2 id="avoid-boxing">Avoid boxing</h2>
+<p>There&#39;s one final change to improve performance. The main program is printing stats for the room, including the risk assessment:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">        Console.WriteLine($&quot;Current intruders: {room.Intruders}&quot;);
+        Console.WriteLine($&quot;Calculated intruder risk: {room.RiskStatus}&quot;);
+        </code></pre></div></figure>
+<p>The call to the generated <code>ToString</code> boxes the enum value. You can avoid that by writing an override in the <code>Room</code> class that formats the string based on the value of estimated risk:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">    public override string ToString() =&gt;
+        $&quot;Calculated intruder risk: {RiskStatus switch
+        {
+            IntruderRisk.None =&gt; &quot;None&quot;,
+            IntruderRisk.Low =&gt; &quot;Low&quot;,
+            IntruderRisk.Medium =&gt; &quot;Medium&quot;,
+            IntruderRisk.High =&gt; &quot;High&quot;,
+            IntruderRisk.Extreme =&gt; &quot;Extreme&quot;,
+            _ =&gt; &quot;Error!&quot;
+        }}, Current intruders: {Intruders.ToString()}&quot;;
+    </code></pre></div></figure>
+<p>Then, modify the code in the main program to call this new <code>ToString</code> method:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">        Console.WriteLine(room.ToString());
+        </code></pre></div></figure>
+<p>Run the app using the profiler and look at the updated table for allocations.</p>
+<p><img src="assets/ms/csharp/advanced-topics/performance/media/ref-tutorial/final-allocations.png" loading="lazy" alt="image"></p>
+<p>You&#39;ve removed numerous allocations, and provided your app with a performance boost.</p>
+<h2 id="using-ref-safety-in-your-application">Using ref safety in your application</h2>
+<p>These techniques are low-level performance tuning. They can increase performance in your application when applied to hot paths, and when you&#39;ve measured the impact before and after the changes. In most cases, the cycle you&#39;ll follow is:</p>
+<ul>
+<li><em>Measure allocations</em>: Determine what types are being allocated the most, and when you can reduce the heap allocations.</li>
+<li><em>Convert class to struct</em>: Many times, types can be converted from a <code>class</code> to a <code>struct</code>. Your app uses stack space instead of making heap allocations.</li>
+<li><em>Preserve semantics</em>: Converting a <code>class</code> to a <code>struct</code> can impact the semantics for parameters and return values. Any method that modifies its parameters should now mark those parameters with the <code>ref</code> modifier. That ensures the modifications are made to the correct object. Similarly, if a property or method return value should be modified by the caller, that return should be marked with the <code>ref</code> modifier.</li>
+<li><em>Avoid copies</em>: When you pass a large struct as a parameter, you can mark the parameter with the <code>in</code> modifier. You can pass a reference in fewer bytes, and ensure that the method doesn&#39;t modify the original value. You can also return values by <code>readonly ref</code> to return a reference that can&#39;t be modified.</li>
+</ul>
+<p>Using these techniques you can improve performance in hot paths of your code.</p>

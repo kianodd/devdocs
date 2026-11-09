@@ -1,0 +1,294 @@
+<p><strong>Async streams</strong> model a streaming source of data. Data streams often retrieve or generate elements asynchronously. They provide a natural programming model for asynchronous streaming data sources.</p>
+<p>In this tutorial, you&#39;ll learn how to:</p>
+<blockquote>
+<p>[!div class=&quot;checklist&quot;]</p>
+<ul>
+<li>Create a data source that generates a sequence of data elements asynchronously.</li>
+<li>Consume that data source asynchronously.</li>
+<li>Support cancellation and captured contexts for asynchronous streams.</li>
+<li>Recognize when the new interface and data source are preferred to earlier synchronous data sequences.</li>
+</ul>
+</blockquote>
+<h2 id="prerequisites">Prerequisites</h2>
+<p>You&#39;ll need to set up your machine to run .NET, including the C# compiler. The C# compiler is available with <a target="_blank" rel="noopener" href="https://visualstudio.microsoft.com/downloads">Visual Studio 2022</a> or the <a target="_blank" rel="noopener" href="https://dotnet.microsoft.com/download">.NET SDK</a>.</p>
+<p>You&#39;ll need to create a <a target="_blank" rel="noopener" href="https://help.github.com/articles/creating-a-personal-access-token-for-the-command-line/#creating-a-token">GitHub access token</a> so that you can access the GitHub GraphQL endpoint. Select the following permissions for your GitHub Access Token:</p>
+<ul>
+<li>repo:status</li>
+<li>public_repo</li>
+</ul>
+<p>Save the access token in a safe place so you can use it to gain access to the GitHub API endpoint.</p>
+<aside class="callout callout-warning"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 4 2.8 20h18.4L12 4z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M12 10v4.4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="17" r="1.3" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Warning</p><p>Keep your personal access token secure. Any software with your personal access token could make GitHub API calls using your access rights.</p>
+</div></aside>
+<p>This tutorial assumes you&#39;re familiar with C# and .NET, including either Visual Studio or the .NET CLI.</p>
+<h2 id="run-the-starter-application">Run the starter application</h2>
+<p>You can get the code for the starter application used in this tutorial from the <a target="_blank" rel="noopener" href="https://github.com/dotnet/docs">dotnet/docs</a> repository in the <a target="_blank" rel="noopener" href="https://github.com/dotnet/docs/tree/main/docs/csharp/asynchronous-programming/snippets/generate-consume-asynchronous-streams/start">asynchronous-programming/snippets</a> folder.</p>
+<p>The starter application is a console application that uses the <a target="_blank" rel="noopener" href="https://developer.github.com/v4/">GitHub GraphQL</a> interface to retrieve recent issues written in the <a target="_blank" rel="noopener" href="https://github.com/dotnet/docs">dotnet/docs</a> repository. Start by looking at the following code for the starter app <code>Main</code> method:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">    static async Task Main(string[] args)
+    {
+        //Follow these steps to create a GitHub Access Token
+        // https://help.github.com/articles/creating-a-personal-access-token-for-the-command-line/#creating-a-token
+        //Select the following permissions for your GitHub Access Token:
+        // - repo:status
+        // - public_repo
+        // Replace the 3rd parameter to the following code with your GitHub access token.
+        var key = GetEnvVariable(&quot;GitHubKey&quot;,
+        &quot;You must store your GitHub key in the &#x27;GitHubKey&#x27; environment variable&quot;,
+        &quot;&quot;);
+
+        var client = new GitHubClient(new Octokit.ProductHeaderValue(&quot;IssueQueryDemo&quot;))
+        {
+            Credentials = new Octokit.Credentials(key)
+        };
+
+        // 
+        var progressReporter = new progressStatus((num) =&gt;
+        {
+            Console.WriteLine($&quot;Received {num} issues in total&quot;);
+        });
+        CancellationTokenSource cancellationSource = new CancellationTokenSource();
+
+        try
+        {
+            var results = await RunPagedQueryAsync(client, PagedIssueQuery, &quot;docs&quot;,
+                cancellationSource.Token, progressReporter);
+            foreach(var issue in results)
+                Console.WriteLine(issue);
+        }
+        catch (OperationCanceledException)
+        {
+            Console.WriteLine(&quot;Work has been cancelled&quot;);
+        }
+        // 
+    }
+    </code></pre></div></figure>
+<p>You can either set a <code>GitHubKey</code> environment variable to your personal access token, or you can replace the last argument in the call to <code>GetEnvVariable</code> with your personal access token. Don&#39;t put your access code in source code if you&#39;ll be sharing the source with others. Never upload access codes to a shared source repository.</p>
+<p>After creating the GitHub client, the code in <code>Main</code> creates a progress reporting object and a cancellation token. Once those objects are created, <code>Main</code> calls <code>RunPagedQueryAsync</code> to retrieve the most recent 250 created issues. After that task has finished, the results are displayed.</p>
+<p>When you run the starter application, you can make some important observations about how this application runs.  You&#39;ll see progress reported for each page returned from GitHub. You can observe a noticeable pause before GitHub returns each new page of issues. Finally, the issues are displayed only after all 10 pages have been retrieved from GitHub.</p>
+<h2 id="examine-the-implementation">Examine the implementation</h2>
+<p>The implementation reveals why you observed the behavior discussed in the previous section. Examine the code for <code>RunPagedQueryAsync</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">    private static async Task RunPagedQueryAsync(GitHubClient client, string queryText, string repoName, CancellationToken cancel, IProgress&lt;int&gt; progress)
+    {
+        var issueAndPRQuery = new GraphQLRequest
+        {
+            Query = queryText
+        };
+        issueAndPRQuery.Variables[&quot;repo_name&quot;] = repoName;
+
+        JArray finalResults = new JArray();
+        bool hasMorePages = true;
+        int pagesReturned = 0;
+        int issuesReturned = 0;
+
+        // Stop with 10 pages, because these are large repos:
+        while (hasMorePages &amp;&amp; (pagesReturned++ &lt; 10))
+        {
+            var postBody = issueAndPRQuery.ToJsonText();
+            var response = await client.Connection.Post&lt;string&gt;(new Uri(&quot;https://api.github.com/graphql&quot;),
+                postBody, &quot;application/json&quot;, &quot;application/json&quot;);
+
+            JObject results = JObject.Parse(response.HttpResponse.Body.ToString()!);
+
+            int totalCount = (int)issues(results)[&quot;totalCount&quot;]!;
+            hasMorePages = (bool)pageInfo(results)[&quot;hasPreviousPage&quot;]!;
+            issueAndPRQuery.Variables[&quot;start_cursor&quot;] = pageInfo(results)[&quot;startCursor&quot;]!.ToString();
+            issuesReturned += issues(results)[&quot;nodes&quot;]!.Count();
+            // 
+            finalResults.Merge(issues(results)[&quot;nodes&quot;]!);
+            progress?.Report(issuesReturned);
+            cancel.ThrowIfCancellationRequested();
+            // 
+        }
+        return finalResults;
+
+        JObject issues(JObject result) =&gt; (JObject)result[&quot;data&quot;]![&quot;repository&quot;]![&quot;issues&quot;]!;
+        JObject pageInfo(JObject result) =&gt; (JObject)issues(result)[&quot;pageInfo&quot;]!;
+    }
+    </code></pre></div></figure>
+<p>The very first thing this method does is to create the POST object, using the <code>GraphQLRequest</code> class:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">public class GraphQLRequest
+{
+    [JsonProperty(&quot;query&quot;)]
+    public string? Query { get; set; }
+
+    [JsonProperty(&quot;variables&quot;)]
+    public IDictionary&lt;string, object&gt; Variables { get; } = new Dictionary&lt;string, object&gt;();
+
+    public string ToJsonText() =&gt;
+        JsonConvert.SerializeObject(this);
+}</code></pre></div></figure>
+<p>which helps to form the POST object body, and correctly convert it to JSON presented as single string with the <code>ToJsonText</code> method, which removes all newline characters from your request body marking them with the <code>\</code> (backslash) escape character.</p>
+<p>Let&#39;s concentrate on the paging algorithm and async structure of the preceding code. (You can consult the <a target="_blank" rel="noopener" href="https://developer.github.com/v4/guides/">GitHub GraphQL documentation</a> for details on the GitHub GraphQL API.) The <code>RunPagedQueryAsync</code> method enumerates the issues from most recent to oldest. It requests 25 issues per page and examines the <code>pageInfo</code> structure of the response to continue with the previous page. That follows GraphQL&#39;s standard paging support for multi-page responses. The response includes a <code>pageInfo</code> object that includes a <code>hasPreviousPages</code> value and a <code>startCursor</code> value used to request the previous page. The issues are in the <code>nodes</code> array. The <code>RunPagedQueryAsync</code> method appends these nodes to an array that contains all the results from all pages.</p>
+<p>After retrieving and restoring a page of results, <code>RunPagedQueryAsync</code> reports progress and checks for cancellation. If cancellation has been requested, <code>RunPagedQueryAsync</code> throws an <code>OperationCanceledException</code>.</p>
+<p>There are several elements in this code that can be improved. Most importantly, <code>RunPagedQueryAsync</code> must allocate storage for all the issues returned. This sample stops at 250 issues because retrieving all open issues would require much more memory to store all the retrieved issues. The protocols for supporting progress reports and cancellation make the algorithm harder to understand on its first reading. More types and APIs are involved. You must trace the communications through the <code>CancellationTokenSource</code> and its associated <code>CancellationToken</code> to understand where cancellation is requested and where it&#39;s granted.</p>
+<h2 id="async-streams-provide-a-better-way">Async streams provide a better way</h2>
+<p>Async streams and the associated language support address all those concerns. The code that generates the sequence can now use <code>yield return</code> to return elements in a method that was declared with the <code>async</code> modifier. You can consume an async stream using an <code>await foreach</code> loop just as you consume any sequence using a <code>foreach</code> loop.</p>
+<p>These new language features depend on three new interfaces added to .NET Standard 2.1 and implemented in .NET Core 3.0:</p>
+<ul>
+<li><code>IAsyncEnumerable1?displayProperty=nameWithType</code></li>
+<li><code>IAsyncEnumerator1?displayProperty=nameWithType</code></li>
+<li><code>IAsyncDisposable?displayProperty=nameWithType</code></li>
+</ul>
+<p>These three interfaces should be familiar to most C# developers. They behave in a manner similar to their synchronous counterparts:</p>
+<ul>
+<li><code>IEnumerable1?displayProperty=nameWithType</code></li>
+<li><code>IEnumerator1?displayProperty=nameWithType</code></li>
+<li><code>IDisposable?displayProperty=nameWithType</code></li>
+</ul>
+<p>One type that may be unfamiliar is <code>ValueTask?displayProperty=nameWithType</code>. The <code>ValueTask</code> struct provides a similar API to the <code>Task?displayProperty=nameWithType</code> class. <code>ValueTask</code> is used in these interfaces for performance reasons.</p>
+<h2 id="convert-to-async-streams">Convert to async streams</h2>
+<p>Next, convert the <code>RunPagedQueryAsync</code> method to generate an async stream. First, change the signature of <code>RunPagedQueryAsync</code> to return an <code>IAsyncEnumerable</code>, and remove the cancellation token and progress objects from the parameter list as shown in the following code:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">    private static async IAsyncEnumerable RunPagedQueryAsync(GitHubClient client,
+        string queryText, string repoName)
+    </code></pre></div></figure>
+<p>The starter code processes each page as the page is retrieved, as shown in the following code:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">            finalResults.Merge(issues(results)[&quot;nodes&quot;]!);
+            progress?.Report(issuesReturned);
+            cancel.ThrowIfCancellationRequested();
+            </code></pre></div></figure>
+<p>Replace those three lines with the following code:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">            foreach (JObject issue in issues(results)[&quot;nodes&quot;]!)
+                yield return issue;
+            </code></pre></div></figure>
+<p>You can also remove the declaration of <code>finalResults</code> earlier in this method and the <code>return</code> statement that follows the loop you modified.</p>
+<p>You&#39;ve finished the changes to generate an async stream. The finished method should resemble the following code:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">    // 
+    private static async IAsyncEnumerable RunPagedQueryAsync(GitHubClient client,
+        string queryText, string repoName)
+    // 
+    {
+        var issueAndPRQuery = new GraphQLRequest
+        {
+            Query = queryText
+        };
+        issueAndPRQuery.Variables[&quot;repo_name&quot;] = repoName;
+
+        bool hasMorePages = true;
+        int pagesReturned = 0;
+        int issuesReturned = 0;
+
+        // Stop with 10 pages, because these are large repos:
+        while (hasMorePages &amp;&amp; (pagesReturned++ &lt; 10))
+        {
+            var postBody = issueAndPRQuery.ToJsonText();
+            var response = await client.Connection.Post&lt;string&gt;(new Uri(&quot;https://api.github.com/graphql&quot;),
+                postBody, &quot;application/json&quot;, &quot;application/json&quot;);
+
+            JObject results = JObject.Parse(response.HttpResponse.Body.ToString()!);
+
+            int totalCount = (int)issues(results)[&quot;totalCount&quot;]!;
+            hasMorePages = (bool)pageInfo(results)[&quot;hasPreviousPage&quot;]!;
+            issueAndPRQuery.Variables[&quot;start_cursor&quot;] = pageInfo(results)[&quot;startCursor&quot;]!.ToString();
+            issuesReturned += issues(results)[&quot;nodes&quot;]!.Count();
+
+            // 
+            foreach (JObject issue in issues(results)[&quot;nodes&quot;]!)
+                yield return issue;
+            // 
+        }
+
+        JObject issues(JObject result) =&gt; (JObject)result[&quot;data&quot;]![&quot;repository&quot;]![&quot;issues&quot;]!;
+        JObject pageInfo(JObject result) =&gt; (JObject)issues(result)[&quot;pageInfo&quot;]!;
+    }
+    </code></pre></div></figure>
+<p>Next, you change the code that consumes the collection to consume the async stream. Find the following code in <code>Main</code> that processes the collection of issues:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">        var progressReporter = new progressStatus((num) =&gt;
+        {
+            Console.WriteLine($&quot;Received {num} issues in total&quot;);
+        });
+        CancellationTokenSource cancellationSource = new CancellationTokenSource();
+
+        try
+        {
+            var results = await RunPagedQueryAsync(client, PagedIssueQuery, &quot;docs&quot;,
+                cancellationSource.Token, progressReporter);
+            foreach(var issue in results)
+                Console.WriteLine(issue);
+        }
+        catch (OperationCanceledException)
+        {
+            Console.WriteLine(&quot;Work has been cancelled&quot;);
+        }
+        </code></pre></div></figure>
+<p>Replace that code with the following <code>await foreach</code> loop:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">        int num = 0;
+        await foreach (var issue in RunPagedQueryAsync(client, PagedIssueQuery, &quot;docs&quot;))
+        {
+            Console.WriteLine(issue);
+            Console.WriteLine($&quot;Received {++num} issues in total&quot;);
+        }
+        </code></pre></div></figure>
+<p>The new interface <code>IAsyncEnumerator1</code> derives from <code>IAsyncDisposable</code>. That means the preceding loop will asynchronously dispose the stream when the loop finishes. You can imagine the loop looks like the following code:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">int num = 0;
+var enumerator = RunPagedQueryAsync(client, PagedIssueQuery, &quot;docs&quot;).GetAsyncEnumerator();
+try
+{
+    while (await enumerator.MoveNextAsync())
+    {
+        var issue = enumerator.Current;
+        Console.WriteLine(issue);
+        Console.WriteLine($&quot;Received {++num} issues in total&quot;);
+    }
+} finally
+{
+    if (enumerator != null)
+        await enumerator.DisposeAsync();
+}</code></pre></div></figure>
+<p>By default, stream elements are processed in the captured context. If you want to disable capturing of the context, use the <code>ConfigureAwait?displayProperty=nameWithType</code> extension method. For more information about synchronization contexts and capturing the current context, see the article on <a href="../../standard/asynchronous-programming-patterns/consuming-the-task-based-asynchronous-pattern.md">consuming the Task-based asynchronous pattern</a>.</p>
+<p>Async streams support cancellation using the same protocol as other <code>async</code> methods. You would modify the signature for the async iterator method as follows to support cancellation:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">    private static async IAsyncEnumerable RunPagedQueryAsync(GitHubClient client,
+        string queryText, string repoName, [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        var issueAndPRQuery = new GraphQLRequest
+        {
+            Query = queryText
+        };
+        issueAndPRQuery.Variables[&quot;repo_name&quot;] = repoName;
+
+        bool hasMorePages = true;
+        int pagesReturned = 0;
+        int issuesReturned = 0;
+
+        // Stop with 10 pages, because these are large repos:
+        while (hasMorePages &amp;&amp; (pagesReturned++ &lt; 10))
+        {
+            var postBody = issueAndPRQuery.ToJsonText();
+            var response = await client.Connection.Post&lt;string&gt;(new Uri(&quot;https://api.github.com/graphql&quot;),
+                postBody, &quot;application/json&quot;, &quot;application/json&quot;);
+
+            JObject results = JObject.Parse(response.HttpResponse.Body.ToString()!);
+
+            int totalCount = (int)issues(results)[&quot;totalCount&quot;]!;
+            hasMorePages = (bool)pageInfo(results)[&quot;hasPreviousPage&quot;]!;
+            issueAndPRQuery.Variables[&quot;start_cursor&quot;] = pageInfo(results)[&quot;startCursor&quot;]!.ToString();
+            issuesReturned += issues(results)[&quot;nodes&quot;]!.Count();
+
+            // 
+            foreach (JObject issue in issues(results)[&quot;nodes&quot;]!)
+                yield return issue;
+            // 
+        }
+
+        JObject issues(JObject result) =&gt; (JObject)result[&quot;data&quot;]![&quot;repository&quot;]![&quot;issues&quot;]!;
+        JObject pageInfo(JObject result) =&gt; (JObject)issues(result)[&quot;pageInfo&quot;]!;
+    }
+    </code></pre></div></figure>
+<p>The <code>EnumeratorCancellationAttribute?displayProperty=nameWithType</code> attribute causes the compiler to generate code for the <code>IAsyncEnumerator1</code> that makes the token passed to <code>GetAsyncEnumerator</code> visible to the body of the async iterator as that argument. Inside <code>runQueryAsync</code>, you could examine the state of the token and cancel further work if requested.</p>
+<p>You use another extension method, <code>WithCancellation</code>, to pass the cancellation token to the async stream. You would modify the loop enumerating the issues as follows:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">    private static async Task EnumerateWithCancellation(GitHubClient client)
+    {
+        int num = 0;
+        var cancellation = new CancellationTokenSource();
+        await foreach (var issue in RunPagedQueryAsync(client, PagedIssueQuery, &quot;docs&quot;)
+            .WithCancellation(cancellation.Token))
+        {
+            Console.WriteLine(issue);
+            Console.WriteLine($&quot;Received {++num} issues in total&quot;);
+        }
+    }
+    </code></pre></div></figure>
+<p>You can get the code for the finished tutorial from the <a target="_blank" rel="noopener" href="https://github.com/dotnet/docs">dotnet/docs</a> repository in the <a target="_blank" rel="noopener" href="https://github.com/dotnet/docs/tree/main/docs/csharp/asynchronous-programming/snippets/generate-consume-asynchronous-streams/finished">asynchronous-programming/snippets</a> folder.</p>
+<h2 id="run-the-finished-application">Run the finished application</h2>
+<p>Run the application again. Contrast its behavior with the behavior of the starter application. The first page of results is enumerated as soon as it&#39;s available. There&#39;s an observable pause as each new page is requested and retrieved, then the next page&#39;s results are quickly enumerated. The <code>try</code> / <code>catch</code> block isn&#39;t needed to handle cancellation: the caller can stop enumerating the collection. Progress is clearly reported because the async stream generates results as each page is downloaded. The status for each issue returned is seamlessly included in the <code>await foreach</code> loop. You don&#39;t need a callback object to track progress.</p>
+<p>You can see improvements in memory use by examining the code. You no longer need to allocate a collection to store all the results before they&#39;re enumerated. The caller can determine how to consume the results and if a storage collection is needed.</p>
+<p>Run both the starter and finished applications and you can observe the differences between the implementations for yourself. You can delete the GitHub access token you created when you started this tutorial after you&#39;ve finished. If an attacker gained access to that token, they could access GitHub APIs using your credentials.</p>
+<p>In this tutorial, you used async streams to read a individual items from a network API that returns pages of data. Async streams can also read from &quot;never ending streams&quot; like a stock ticker, or sensor device. The call to <code>MoveNextAsync</code> returns the next item as soon as it&#39;s available.</p>

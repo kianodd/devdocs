@@ -1,0 +1,120 @@
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>The techniques described in this section improve performance when applied to <em>hot paths</em> in your code. <em>Hot paths</em> are those sections of your codebase that are executed often and repeatedly in normal operations. Applying these techniques to code that isn&#39;t often executed will have minimal impact. Before making any changes to improve performance, it&#39;s critical to measure a baseline. Then, analyze that baseline to determine where memory bottlenecks occur. You can learn about many cross platform tools to measure your application&#39;s performance in the section on <a href="../../../core/diagnostics/index.md">Diagnostics and instrumentation</a>. You can practice a profiling session in the tutorial to <a href="/visualstudio/profiling/memory-usage">Measure memory usage</a> in the Visual Studio documentation.</p>
+<p>Once you&#39;ve measured memory usage and have determined that you can reduce allocations, use the techniques in this section to reduce allocations. After each successive change, measure memory usage again. Make sure each change has a positive impact on the memory usage in your application.</p>
+</div></aside>
+<p>Performance work in .NET often means removing allocations from your code. Every block of memory you allocate must eventually be freed. Fewer allocations reduce time spent in garbage collection. It allows for more predictable execution time by removing garbage collections from specific code paths.</p>
+<p>A common tactic to reduce allocations is to change critical data structures from <code>class</code> types to <code>struct</code> types. This change impacts the semantics of using those types. Parameters and returns are now passed by value instead of by reference. The cost of copying a value is negligible if the types are small, three words or less (considering one word being of natural size of one integer). It&#39;s measurable and can have real performance impact for larger types. To combat the effect of copying, developers can pass these types by <code>ref</code> to get back the intended semantics.</p>
+<p>The C# <code>ref</code> features give you the ability to express the desired semantics for <code>struct</code> types without negatively impacting their overall usability. Prior to these enhancements, developers needed to resort to <code>unsafe</code> constructs with pointers and raw memory to achieve the same performance impact. The compiler generates <em>verifiably safe code</em> for the new <code>ref</code> related features. <em>Verifiably safe code</em> means the compiler detects possible buffer overruns or accessing unallocated or freed memory. The compiler detects and prevents some errors.</p>
+<h2 id="pass-and-return-by-reference">Pass and return by reference</h2>
+<p>Variables in C# store <em>values</em>. In <code>struct</code> types, the value is the contents of an instance of the type. In <code>class</code> types, the value is a reference to a block of memory that stores an instance of the type. Adding the <code>ref</code> modifier means that the variable stores the <em>reference</em> to the value. In <code>struct</code> types, the reference points to the storage containing the value. In <code>class</code> types, the reference points to the storage containing the reference to the block of memory.</p>
+<p>In C#, parameters to methods are <em>passed by value</em>, and return values are <em>return by value</em>. The <em>value</em> of the argument is passed to the method. The <em>value</em> of the return argument is the return value.</p>
+<p>The <code>ref</code>, <code>in</code>, <code>ref readonly</code>, or <code>out</code> modifier indicates that the argument is <em>passed by reference</em>. A <em>reference</em> to the storage location is passed to the method. Adding <code>ref</code> to the method signature means the return value is <em>returned by reference</em>. A <em>reference</em> to the storage location is the return value.</p>
+<p>You can also use <em>ref assignment</em> to have a variable refer to another variable. A typical assignment copies the <em>value</em> of the right hand side to the variable on the left hand side of the assignment. A <em>ref assignment</em> copies the memory location of the variable on the right hand side to the variable on the left hand side. The <code>ref</code> now refers to the original variable:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">int anInteger = 42; // assignment.
+ref int location = ref anInteger; // ref assignment.
+ref int sameLocation = ref location; // ref assignment
+
+Console.WriteLine(location); // output: 42
+
+sameLocation = 19; // assignment
+
+Console.WriteLine(anInteger); // output: 19</code></pre></div></figure>
+<p>When you <em>assign</em> a variable, you change its <em>value</em>. When you <em>ref assign</em> a variable, you change what it refers to.</p>
+<p>You can work directly with the storage for values using <code>ref</code> variables, pass by reference, and ref assignment. Scope rules enforced by the compiler ensure safety when working directly with storage.</p>
+<p>The <code>ref readonly</code> and <code>in</code> modifiers both indicate that the argument should be passed by reference and can&#39;t be reassigned in the method. The difference is that <code>ref readonly</code> indicates that the method uses the parameter as a variable. The method might capture the parameter, or it might return the parameter by readonly reference. In those cases, you should use the <code>ref readonly</code> modifier. Otherwise, the <code>in</code> modifier offers more flexibility. You don&#39;t need to add the <code>in</code> modifier to an argument for an <code>in</code> parameter, so you can update existing API signatures safely using the <code>in</code> modifier. The compiler issues a warning if you don&#39;t add either the <code>ref</code> or <code>in</code> modifier to an argument for a <code>ref readonly</code> parameter.</p>
+<h2 id="ref-safe-context">Ref safe context</h2>
+<p>C# includes rules for <code>ref</code> expressions to ensure that a <code>ref</code> expression can&#39;t be accessed where the storage it refers to is no longer valid. Consider the following example:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">public ref int CantEscape()
+{
+    int index = 42;
+    return ref index; // Error: index&#x27;s ref safe context is the body of CantEscape
+}</code></pre></div></figure>
+<p>The compiler reports an error because you can&#39;t return a reference to a local variable from a method. The caller can&#39;t access the storage being referred to. The <em>ref safe context</em> defines the scope in which a <code>ref</code> expression is safe to access or modify. The following table lists the <em>ref safe contexts</em> for variable types. <code>ref</code> fields can&#39;t be declared in a <code>class</code> or a non-ref <code>struct</code>, so those rows aren&#39;t in the table:</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Declaration</th>
+<th><em>ref safe context</em></th>
+</tr>
+</thead>
+<tbody><tr>
+<td>non-ref local</td>
+<td>block where local is declared</td>
+</tr>
+<tr>
+<td>non-ref parameter</td>
+<td>current method</td>
+</tr>
+<tr>
+<td><code>ref</code>, <code>ref readonly</code>, <code>in</code> parameter</td>
+<td>calling method</td>
+</tr>
+<tr>
+<td><code>out</code> parameter</td>
+<td>current method</td>
+</tr>
+<tr>
+<td><code>class</code> field</td>
+<td>calling method</td>
+</tr>
+<tr>
+<td>non-ref <code>struct</code> field</td>
+<td>current method</td>
+</tr>
+<tr>
+<td><code>ref</code> field of <code>ref struct</code></td>
+<td>calling method</td>
+</tr>
+</tbody></table></div>
+<p>A variable can be <code>ref</code> returned if its <em>ref safe context</em> is the calling method. If its <em>ref safe context</em> is the current method or a block, <code>ref</code> return is disallowed. The following snippet shows two examples. A member field can be accessed from the scope calling a method, so a class or struct field&#39;s <em>ref safe context</em> is the calling method. The <em>ref safe context</em> for a parameter with the <code>ref</code>, or <code>in</code> modifiers is the entire method. Both can be <code>ref</code> returned from a member method:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">    private int anIndex;
+
+    public ref int RetrieveIndexRef()
+    {
+        return ref anIndex;
+    }
+
+    public ref int RefMin(ref int left, ref int right)
+    {
+        if (left &lt; right)
+            return ref left;
+        else
+            return ref right;
+    }
+    </code></pre></div></figure>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>When the <code>ref readonly</code> or <code>in</code> modifier is applied to a parameter, that parameter can be returned by <code>ref readonly</code>, not <code>ref</code>.</p>
+</div></aside>
+<p>The compiler ensures that a reference can&#39;t escape its <em>ref safe context</em>. You can use <code>ref</code> parameters, <code>ref return</code>, and <code>ref</code> local variables safely because the compiler detects if you&#39;ve accidentally written code where a <code>ref</code> expression could be accessed when its storage isn&#39;t valid.</p>
+<h2 id="safe-context-and-ref-structs">Safe context and ref structs</h2>
+<p><code>ref struct</code> types require more rules to ensure they can be used safely. A <code>ref struct</code> type can include <code>ref</code> fields. That requires the introduction of a <em>safe context</em>. For most types, the <em>safe context</em> is the calling method. In other words, a value that&#39;s not a <code>ref struct</code> can always be returned from a method.</p>
+<p>Informally, the <em>safe context</em> for a <code>ref struct</code> is the scope where all of its <code>ref</code> fields can be accessed. In other words, it&#39;s the intersection of the <em>ref safe context</em> of all its <code>ref</code> fields. The following method returns a <code>ReadOnlySpan&lt;char&gt;</code> to a member field, so its <em>safe context</em> is the method:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">    private string longMessage = &quot;This is a long message&quot;;
+
+    public ReadOnlySpan&lt;char&gt; Safe()
+    {
+        var span = longMessage.AsSpan();
+        return span;
+    }
+    </code></pre></div></figure>
+<p>In contrast, the following code emits an error because the <code>ref field</code> member of the <code>Span&lt;int&gt;</code> refers to the stack allocated array of integers. It can&#39;t escape the method:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">public Span&lt;int&gt; M()
+{
+    int length = 3;
+    Span&lt;int&gt; numbers = stackalloc int[length];
+    for (var i = 0; i &lt; length; i++)
+    {
+        numbers[i] = i;
+    }
+    return numbers; // Error! numbers can&#x27;t escape this method.
+}</code></pre></div></figure>
+<h2 id="unify-memory-types">Unify memory types</h2>
+<p>The introduction of <code>Span1?displayProperty=fullName</code> and <code>Memory1?displayProperty=fullName</code> provide a unified model for working with memory. <code>ReadOnlySpan1?displayProperty=fullName</code> and <code>ReadOnlyMemory1?displayProperty=fullName</code> provide readonly versions for accessing memory. They all provide an abstraction over a block of memory storing an array of similar elements. The difference is that <code>Span</code> and <code>ReadOnlySpan</code> are <code>ref struct</code> types whereas <code>Memory</code> and <code>ReadOnlyMemory</code> are <code>struct</code> types. Spans contain a <code>ref field</code>. Therefore instances of a span can&#39;t leave its <em>safe context</em>. The <em>safe context</em> of a <code>ref struct</code> is the <em>ref safe context</em> of its <code>ref field</code>. The implementation of <code>Memory</code> and <code>ReadOnlyMemory</code> remove this restriction. You use these types to directly access memory buffers.</p>
+<h2 id="improve-performance-with-ref-safety">Improve performance with ref safety</h2>
+<p>Using these features to improve performance involves these tasks:</p>
+<ul>
+<li><em>Avoid allocations</em>:  When you change a type from a <code>class</code> to a <code>struct</code>, you change how it&#39;s stored. Local variables are stored on the stack. Members are stored inline when the container object is allocated. This change means fewer allocations and that decreases the work the garbage collector does. It might also decrease memory pressure so the garbage collector runs less often.</li>
+<li><em>Preserve reference semantics</em>: Changing a type from a <code>class</code> to a <code>struct</code> changes the semantics of passing a variable to a method. Code that modified the state of its parameters needs modification. Now that the parameter is a <code>struct</code>, the method is modifying a copy of the original object. You can restore the original semantics by passing that parameter as a <code>ref</code> parameter. After that change, the method modifies the original <code>struct</code> again.</li>
+<li><em>Avoid copying data</em>: Copying larger <code>struct</code> types can impact performance in some code paths. You can also add the <code>ref</code> modifier to pass larger data structures to methods by reference instead of by value.</li>
+<li><em>Restrict modifications</em>: When a <code>struct</code> type is passed by reference, the called method could modify the state of the struct. You can replace the <code>ref</code> modifier with the <code>ref readonly</code> or <code>in</code> modifiers to indicate that the argument can&#39;t be modified. Prefer <code>ref readonly</code> when the method captures the parameter or returns it by readonly reference. You can also create <code>readonly struct</code> types or <code>struct</code> types with <code>readonly</code> members to provide more control over what members of a <code>struct</code> can be modified.</li>
+<li><em>Directly manipulate memory</em>: Some algorithms are most efficient when treating data structures as a block of memory containing a sequence of elements. The <code>Span</code> and <code>Memory</code> types provide safe access to blocks of memory.</li>
+</ul>
+<p>None of these techniques require <code>unsafe</code> code. Used wisely, you can get performance characteristics from safe code that was previously only possible by using unsafe techniques. You can try the techniques yourself in the tutorial on <a href="#/doc/csharp/advanced-topics/performance/ref-tutorial">reducing memory allocations</a>.</p>

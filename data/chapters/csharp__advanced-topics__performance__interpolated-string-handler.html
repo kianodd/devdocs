@@ -1,0 +1,282 @@
+<p>In this tutorial, you learn how to:</p>
+<blockquote>
+<p>[!div class=&quot;checklist&quot;]</p>
+<ul>
+<li>Implement the string interpolation handler pattern.</li>
+<li>Interact with the receiver in a string interpolation operation.</li>
+<li>Add arguments to the string interpolation handler.</li>
+<li>Understand the new library features for string interpolation.</li>
+</ul>
+</blockquote>
+<h2 id="prerequisites">Prerequisites</h2>
+<p>Set up your machine to run .NET. The C# compiler is available through <a target="_blank" rel="noopener" href="https://visualstudio.microsoft.com/downloads/">Visual Studio</a> or the <a target="_blank" rel="noopener" href="https://dotnet.microsoft.com/download">.NET SDK</a>.</p>
+<p>This tutorial assumes you&#39;re familiar with C# and .NET, including either Visual Studio or Visual Studio Code and the C# DevKit.</p>
+<p>You can write a custom <a href="#implement-the-handler-pattern"><em>interpolated string handler</em></a>. An interpolated string handler is a type that processes the placeholder expression in an interpolated string. Without a custom handler, the system processes placeholders similar to <code>Format?displayProperty=nameWithType</code>. Each placeholder is formatted as text, and then the components are concatenated to form the resulting string.</p>
+<p>You can write a handler for any scenario where you use information about the resulting string. Consider questions like: Is it used? What constraints are on the format? Some examples include:</p>
+<ul>
+<li>You might require none of the resulting strings are greater than some limit, such as 80 characters. You can process the interpolated strings to fill a fixed-length buffer, and stop processing once that buffer length is reached.</li>
+<li>You might have a tabular format, and each placeholder must have a fixed length. A custom handler can enforce that constraint, rather than forcing all client code to conform.</li>
+</ul>
+<p>In this tutorial, you create a string interpolation handler for one of the core performance scenarios: logging libraries. Depending on the configured log level, the work to construct a log message isn&#39;t needed. If logging is off, the work to construct a string from an interpolated string expression isn&#39;t needed. The message is never printed, so any string concatenation can be skipped. In addition, any expressions used in the placeholders, including generating stack traces, don&#39;t need to be done.</p>
+<p>An interpolated string handler can determine if the formatted string is used, and only perform the necessary work if needed.</p>
+<h2 id="initial-implementation">Initial implementation</h2>
+<p>Start with a basic <code>Logger</code> class that supports different levels:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">    public enum LogLevel
+    {
+        Off,
+        Critical,
+        Error,
+        Warning,
+        Information,
+        Trace
+    }
+
+    public class Logger
+    {
+        public LogLevel EnabledLevel { get; init; } = LogLevel.Error;
+
+        public void LogMessage(LogLevel level, string msg)
+        {
+            if (EnabledLevel &lt; level) return;
+            Console.WriteLine(msg);
+        }
+    }
+    </code></pre></div></figure>
+<p>This <code>Logger</code> supports six different levels. When a message doesn&#39;t pass the log level filter, the logger produces no output. The public API for the logger accepts a fully formatted string as the message. The caller does all the work to create the string.</p>
+<h2 id="implement-the-handler-pattern">Implement the handler pattern</h2>
+<p>In this step, you build an <em>interpolated string handler</em> that recreates the current behavior. An interpolated string handler is a type that must have the following characteristics:</p>
+<ul>
+<li>The <code>InterpolatedStringHandlerAttribute?displayProperty=fullName</code> applied to the type.</li>
+<li>A constructor that has two <code>int</code> parameters, <code>literalLength</code> and <code>formattedCount</code>. (More parameters are allowed).</li>
+<li>A public <code>AppendLiteral</code> method with the signature: <code>public void AppendLiteral(string s)</code>.</li>
+<li>A generic public <code>AppendFormatted</code> method with the signature: <code>public void AppendFormatted(T t)</code>.</li>
+</ul>
+<p>Internally, the builder creates the formatted string and provides a member for a client to retrieve that string. The following code shows a <code>LogInterpolatedStringHandler</code> type that meets these requirements:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">    [InterpolatedStringHandler]
+    public struct LogInterpolatedStringHandler
+    {
+        // Storage for the built-up string
+        StringBuilder builder;
+
+        public LogInterpolatedStringHandler(int literalLength, int formattedCount)
+        {
+            builder = new StringBuilder(literalLength);
+            Console.WriteLine($&quot;\tliteral length: {literalLength}, formattedCount: {formattedCount}&quot;);
+        }
+
+        public void AppendLiteral(string s)
+        {
+            Console.WriteLine($&quot;\tAppendLiteral called: {{{s}}}&quot;);
+            
+            builder.Append(s);
+            Console.WriteLine($&quot;\tAppended the literal string&quot;);
+        }
+
+        public void AppendFormatted(T t)
+        {
+            Console.WriteLine($&quot;\tAppendFormatted called: {{{t}}} is of type {typeof(T)}&quot;);
+
+            builder.Append(t?.ToString());
+            Console.WriteLine($&quot;\tAppended the formatted object&quot;);
+        }
+
+        public override string ToString() =&gt; builder.ToString();
+    }
+    </code></pre></div></figure>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>When the interpolated string expression is a compile-time constant (that is, it has no placeholders), the compiler uses the target type <code>string</code> instead of invoking a custom interpolated string handler. This behavior means constant interpolated strings bypass custom handlers entirely.</p>
+</div></aside>
+<p>You can now add an overload to <code>LogMessage</code> in the <code>Logger</code> class to try your new interpolated string handler:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">        public void LogMessage(LogLevel level, LogInterpolatedStringHandler builder)
+        {
+            if (EnabledLevel &lt; level) return;
+            Console.WriteLine(builder.ToString());
+        }
+        </code></pre></div></figure>
+<p>You don&#39;t need to remove the original <code>LogMessage</code> method. When the argument is an interpolated string expression, the compiler prefers a method with an interpolated handler parameter over a method with a <code>string</code> parameter.</p>
+<p>You can verify that the new handler is invoked by using the following code as the main program:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">        var logger = new Logger() { EnabledLevel = LogLevel.Warning };
+        var time = DateTime.Now;
+
+        logger.LogMessage(LogLevel.Error, $&quot;Error Level. CurrentTime: {time}. This is an error. It will be printed.&quot;);
+        logger.LogMessage(LogLevel.Trace, $&quot;Trace Level. CurrentTime: {time}. This won&#x27;t be printed.&quot;);
+        logger.LogMessage(LogLevel.Warning, &quot;Warning Level. This warning is a string, not an interpolated string expression.&quot;);
+        </code></pre></div></figure>
+<p>Running the application produces output similar to the following text:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">        literal length: 65, formattedCount: 1
+        AppendLiteral called: {Error Level. CurrentTime: }
+        Appended the literal string
+        AppendFormatted called: {10/20/2021 12:19:10 PM} is of type System.DateTime
+        Appended the formatted object
+        AppendLiteral called: {. This is an error. It will be printed.}
+        Appended the literal string
+Error Level. CurrentTime: 10/20/2021 12:19:10 PM. This is an error. It will be printed.
+        literal length: 50, formattedCount: 1
+        AppendLiteral called: {Trace Level. CurrentTime: }
+        Appended the literal string
+        AppendFormatted called: {10/20/2021 12:19:10 PM} is of type System.DateTime
+        Appended the formatted object
+        AppendLiteral called: {. This won&#x27;t be printed.}
+        Appended the literal string
+Warning Level. This warning is a string, not an interpolated string expression.</code></pre></div></figure>
+<p>Tracing through the output, you can see how the compiler adds code to call the handler and build the string:</p>
+<ul>
+<li>The compiler adds a call to construct the handler, passing the total length of the literal text in the format string, and the number of placeholders.</li>
+<li>The compiler adds calls to <code>AppendLiteral</code> and <code>AppendFormatted</code> for each section of the literal string and for each placeholder.</li>
+<li>The compiler invokes the <code>LogMessage</code> method using the <code>CoreInterpolatedStringHandler</code> as the argument.</li>
+</ul>
+<p>Finally, notice that the last warning doesn&#39;t invoke the interpolated string handler. The argument is a <code>string</code>, so that call invokes the other overload with a string parameter.</p>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>Use <code>ref struct</code> for interpolated string handlers only if absolutely necessary. <code>ref struct</code> types have limitations as they must be stored on the stack. For example, they don&#39;t work if an interpolated string hole contains an <code>await</code> expression because the compiler needs to store the handler in the compiler-generated <code>IAsyncStateMachine</code> implementation.</p>
+</div></aside>
+<h2 id="add-more-capabilities-to-the-handler">Add more capabilities to the handler</h2>
+<p>The preceding version of the interpolated string handler implements the pattern. To avoid processing every placeholder expression, you need more information in the handler. In this section, you improve your handler so that it does less work when the constructed string isn&#39;t written to the log. You use <code>InterpolatedStringHandlerArgumentAttribute?displayProperty=fullName</code> to specify a mapping between parameters to a public API and parameters to a handler&#39;s constructor. That mapping provides the handler with the information needed to determine if the interpolated string should be evaluated.</p>
+<p>Start with changes to the handler. First, add a field to track if the handler is enabled. Add two parameters to the constructor: one to specify the log level for this message, and the other a reference to the log object:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">        private readonly bool enabled;
+
+        public LogInterpolatedStringHandler(int literalLength, int formattedCount, Logger logger, LogLevel logLevel)
+        {
+            enabled = logger.EnabledLevel &gt;= logLevel;
+            builder = new StringBuilder(literalLength);
+            Console.WriteLine($&quot;\tliteral length: {literalLength}, formattedCount: {formattedCount}&quot;);
+        }
+        </code></pre></div></figure>
+<p>Next, use the field so that your handler only appends literals or formatted objects when the final string is used:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">        public void AppendLiteral(string s)
+        {
+            Console.WriteLine($&quot;\tAppendLiteral called: {{{s}}}&quot;);
+            if (!enabled) return;
+
+            builder.Append(s);
+            Console.WriteLine($&quot;\tAppended the literal string&quot;);
+        }
+
+        public void AppendFormatted(T t)
+        {
+            Console.WriteLine($&quot;\tAppendFormatted called: {{{t}}} is of type {typeof(T)}&quot;);
+            if (!enabled) return;
+
+            builder.Append(t?.ToString());
+            Console.WriteLine($&quot;\tAppended the formatted object&quot;);
+        }
+        </code></pre></div></figure>
+<p>Next, update the <code>LogMessage</code> declaration so that the compiler passes the additional parameters to the handler&#39;s constructor. Handle this step by using the <code>InterpolatedStringHandlerArgumentAttribute?displayProperty=nameWithType</code> on the handler argument:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">        public void LogMessage(LogLevel level, [InterpolatedStringHandlerArgument(&quot;&quot;, &quot;level&quot;)] LogInterpolatedStringHandler builder)
+        {
+            if (EnabledLevel &lt; level) return;
+            Console.WriteLine(builder.ToString());
+        }
+        </code></pre></div></figure>
+<p>This attribute specifies the list of arguments to <code>LogMessage</code> that map to the parameters that follow the required <code>literalLength</code> and <code>formattedCount</code> parameters. The empty string (<code>&quot;&quot;</code>), specifies the receiver. The compiler substitutes the value of the <code>Logger</code> object represented by <code>this</code> for the next argument to the handler&#39;s constructor. The compiler substitutes the value of <code>level</code> for the following argument. You can provide any number of arguments for any handler you write. The arguments that you add are string arguments.</p>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>If the <code>InterpolatedStringHandlerArgumentAttribute</code> constructor argument list is empty, the behavior is the same as if the attribute was omitted entirely.</p>
+</div></aside>
+<p>You can run this version by using the same test code. This time, you see the following results:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">        literal length: 65, formattedCount: 1
+        AppendLiteral called: {Error Level. CurrentTime: }
+        Appended the literal string
+        AppendFormatted called: {10/20/2021 12:19:10 PM} is of type System.DateTime
+        Appended the formatted object
+        AppendLiteral called: {. This is an error. It will be printed.}
+        Appended the literal string
+Error Level. CurrentTime: 10/20/2021 12:19:10 PM. This is an error. It will be printed.
+        literal length: 50, formattedCount: 1
+        AppendLiteral called: {Trace Level. CurrentTime: }
+        AppendFormatted called: {10/20/2021 12:19:10 PM} is of type System.DateTime
+        AppendLiteral called: {. This won&#x27;t be printed.}
+Warning Level. This warning is a string, not an interpolated string expression.</code></pre></div></figure>
+<p>You see that the <code>AppendLiteral</code> and <code>AppendFormat</code> methods are called, but they aren&#39;t doing any work. The handler determined that the final string isn&#39;t needed, so the handler doesn&#39;t build it. There are still a couple of improvements to make.</p>
+<p>First, you can add an overload of <code>AppendFormatted</code> that constrains the argument to a type that implements <code>IFormattable?displayProperty=nameWithType</code>. This overload enables callers to add format strings in the placeholders. While making this change, also change the return type of the other <code>AppendFormatted</code> and <code>AppendLiteral</code> methods, from <code>void</code> to <code>bool</code>. If any of these methods have different return types, you get a compilation error. That change enables <em>short circuiting</em>. The methods return <code>false</code> to indicate that processing of the interpolated string expression should be stopped. Returning <code>true</code> indicates that it should continue. In this example, you&#39;re using it to stop processing when the resulting string isn&#39;t needed. Short circuiting supports more fine-grained actions. You could stop processing the expression once it reaches a certain length, to support fixed-length buffers. Or some condition could indicate remaining elements aren&#39;t needed.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">        public void AppendFormatted(T t, string format) where T : IFormattable
+        {
+            Console.WriteLine($&quot;\tAppendFormatted (IFormattable version) called: {t} with format {{{format}}} is of type {typeof(T)},&quot;);
+
+            builder.Append(t?.ToString(format, null));
+            Console.WriteLine($&quot;\tAppended the formatted object&quot;);
+        }
+
+        public void AppendFormatted(T t, int alignment, string format) where T : IFormattable
+        {
+            Console.WriteLine($&quot;\tAppendFormatted (IFormattable version) called: {t} with alignment {alignment} and format {{{format}}} is of type {typeof(T)},&quot;);
+            var formatString =$&quot;{alignment}:{format}&quot;;
+            builder.Append(string.Format($&quot;{{0,{formatString}}}&quot;, t));
+            Console.WriteLine($&quot;\tAppended the formatted object&quot;);
+        }
+        </code></pre></div></figure>
+<p>With that addition, you can specify format strings in your interpolated string expression:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">        var time = DateTime.Now;
+
+        logger.LogMessage(LogLevel.Error, $&quot;Error Level. CurrentTime: {time}. The time doesn&#x27;t use formatting.&quot;);
+        logger.LogMessage(LogLevel.Error, $&quot;Error Level. CurrentTime: {time:t}. This is an error. It will be printed.&quot;);
+        logger.LogMessage(LogLevel.Trace, $&quot;Trace Level. CurrentTime: {time:t}. This won&#x27;t be printed.&quot;);
+        </code></pre></div></figure>
+<p>The <code>:t</code> on the first message specifies the &quot;short time format&quot; for the current time. The previous example showed one of the overloads to the <code>AppendFormatted</code> method that you can create for your handler. You don&#39;t need to specify a generic argument for the object being formatted. You might have more efficient ways to convert types you create to string. You can write overloads of <code>AppendFormatted</code> that takes those types instead of a generic argument. The compiler picks the best overload. The runtime uses this technique to convert <code>Span1?displayProperty=nameWithType</code> to string output. You can add an integer parameter to specify the <em>alignment</em> of the output, with or without an <code>IFormattable</code>. The <code>DefaultInterpolatedStringHandler?displayProperty=nameWithType</code> that ships with .NET 6 contains nine overloads of <code>AppendFormatted</code> for different uses. You can use it as a reference while building a handler for your purposes.</p>
+<p>Run the sample now, and you see that for the <code>Trace</code> message, only the first <code>AppendLiteral</code> is called:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">        literal length: 60, formattedCount: 1
+        AppendLiteral called: Error Level. CurrentTime:
+        Appended the literal string
+        AppendFormatted called: 10/20/2021 12:18:29 PM is of type System.DateTime
+        Appended the formatted object
+        AppendLiteral called: . The time doesn&#x27;t use formatting.
+        Appended the literal string
+Error Level. CurrentTime: 10/20/2021 12:18:29 PM. The time doesn&#x27;t use formatting.
+        literal length: 65, formattedCount: 1
+        AppendLiteral called: Error Level. CurrentTime:
+        Appended the literal string
+        AppendFormatted (IFormattable version) called: 10/20/2021 12:18:29 PM with format {t} is of type System.DateTime,
+        Appended the formatted object
+        AppendLiteral called: . This is an error. It will be printed.
+        Appended the literal string
+Error Level. CurrentTime: 12:18 PM. This is an error. It will be printed.
+        literal length: 50, formattedCount: 1
+        AppendLiteral called: Trace Level. CurrentTime:
+Warning Level. This warning is a string, not an interpolated string expression.</code></pre></div></figure>
+<p>You can make one final update to the handler&#39;s constructor that improves efficiency. The handler can add a final <code>out bool</code> parameter. Setting that parameter to <code>false</code> indicates that the handler shouldn&#39;t be called at all to process the interpolated string expression:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">        public LogInterpolatedStringHandler(int literalLength, int formattedCount, Logger logger, LogLevel level, out bool isEnabled)
+        {
+            isEnabled = logger.EnabledLevel &gt;= level;
+            Console.WriteLine($&quot;\tliteral length: {literalLength}, formattedCount: {formattedCount}&quot;);
+            builder = isEnabled ? new StringBuilder(literalLength) : default!;
+        }
+        </code></pre></div></figure>
+<p>That change means you can remove the <code>enabled</code> field. Then, you can change the return type of <code>AppendLiteral</code> and <code>AppendFormatted</code> to <code>void</code>.
+Now, when you run the sample, you see the following output:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">        literal length: 60, formattedCount: 1
+        AppendLiteral called: Error Level. CurrentTime:
+        Appended the literal string
+        AppendFormatted called: 10/20/2021 12:19:10 PM is of type System.DateTime
+        Appended the formatted object
+        AppendLiteral called: . The time doesn&#x27;t use formatting.
+        Appended the literal string
+Error Level. CurrentTime: 10/20/2021 12:19:10 PM. The time doesn&#x27;t use formatting.
+        literal length: 65, formattedCount: 1
+        AppendLiteral called: Error Level. CurrentTime:
+        Appended the literal string
+        AppendFormatted (IFormattable version) called: 10/20/2021 12:19:10 PM with format {t} is of type System.DateTime,
+        Appended the formatted object
+        AppendLiteral called: . This is an error. It will be printed.
+        Appended the literal string
+Error Level. CurrentTime: 12:19 PM. This is an error. It will be printed.
+        literal length: 50, formattedCount: 1
+Warning Level. This warning is a string, not an interpolated string expression.</code></pre></div></figure>
+<p>The only output when <code>LogLevel.Trace</code> was specified is the output from the constructor. The handler indicated that it&#39;s not enabled, so none of the <code>Append</code> methods are invoked.</p>
+<p>This example illustrates an important point for interpolated string handlers, especially when logging libraries are used. Any side-effects in the placeholders might not occur. Add the following code to your main program and see this behavior in action:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">        int index = 0;
+        int numberOfIncrements = 0;
+        for (var level = LogLevel.Critical; level &lt;= LogLevel.Trace; level++)
+        {
+            Console.WriteLine(level);
+            logger.LogMessage(level, $&quot;{level}: Increment index {index++}&quot;);
+            numberOfIncrements++;
+        }
+        Console.WriteLine($&quot;Value of index {index}, value of numberOfIncrements: {numberOfIncrements}&quot;);
+
+        </code></pre></div></figure>
+<p>You can see the <code>index</code> variable is incremented each iteration of the loop. Because the placeholders are evaluated only for <code>Critical</code>, <code>Error</code>, and <code>Warning</code> levels, not for <code>Information</code>, and <code>Trace</code>, the final value of <code>index</code> doesn&#39;t match the expectation:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">Critical
+Critical: Increment index 0
+Error
+Error: Increment index 1
+Warning
+Warning: Increment index 2
+Information
+Trace
+Value of index 3, value of numberOfIncrements: 5</code></pre></div></figure>
+<p>Interpolated string handlers provide greater control over how an interpolated string expression is converted to a string. The .NET runtime team used this feature to improve performance in several areas. You can make use of the same capability in your own libraries. To explore further, look at the <code>DefaultInterpolatedStringHandler?displayProperty=fullName</code>. It provides a more complete implementation than you built here. You see many more overloads that are possible for the <code>Append</code> methods.</p>
