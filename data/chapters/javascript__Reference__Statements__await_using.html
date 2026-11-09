@@ -1,0 +1,160 @@
+<p>The <strong><code>await using</code></strong> declaration declares block-scoped local variables that are <em>asynchronously disposed</em>. Like <code>const</code>, variables declared with <code>await using</code> must be initialized and cannot be reassigned. The variable&#39;s value must be either <code>null</code>, <code>undefined</code>, or an object with a <a href="#/doc/javascript/Reference/Global_Objects/Symbol/asyncDispose"><code>[Symbol.asyncDispose]()</code></a> or <a href="#/doc/javascript/Reference/Global_Objects/Symbol/dispose"><code>[Symbol.dispose]()</code></a> method. When the variable goes out of scope, the <code>[Symbol.asyncDispose]()</code> or <code>[Symbol.dispose]()</code> method of the object is called and awaited, to ensure that resources are freed.</p>
+<h2 id="syntax">Syntax</h2>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">await using name1 = value1;
+await using name1 = value1, name2 = value2;
+await using name1 = value1, name2 = value2, /* …, */ nameN = valueN;</code></pre></div></figure>
+<ul>
+<li><code>nameN</code><ul>
+<li>: The name of the variable to declare. Each must be a legal JavaScript <a href="#/doc/javascript/Reference/Lexical_grammar@identifiers">identifier</a> and <em>not</em> a <a href="#/doc/javascript/Reference/Operators/Destructuring">destructuring binding pattern</a>.</li>
+</ul>
+</li>
+<li><code>valueN</code><ul>
+<li>: Initial value of the variable. It can be any legal expression but its value must be either <code>null</code>, <code>undefined</code>, or an object with a <a href="#/doc/javascript/Reference/Global_Objects/Symbol/asyncDispose"><code>[Symbol.asyncDispose]()</code></a> or <a href="#/doc/javascript/Reference/Global_Objects/Symbol/dispose"><code>[Symbol.dispose]()</code></a> method.</li>
+</ul>
+</li>
+</ul>
+<h2 id="description">Description</h2>
+<p>This declaration can only be used in places where both <code>await</code> and <code>using</code> can be used, which include:</p>
+<ul>
+<li>Inside a <a href="#/doc/javascript/Reference/Statements/block">block</a> (if the block is also in an async context)</li>
+<li>Inside an <a href="#/doc/javascript/Reference/Statements/async_function">async function</a> or async generator function body</li>
+<li>At the top level of a <a href="#/doc/javascript/Guide/Modules">module</a></li>
+<li>In the initializer of a <a href="#/doc/javascript/Reference/Statements/for"><code>for</code></a>, <a href="#/doc/javascript/Reference/Statements/for...of"><code>for...of</code></a> (if the <code>for</code> loop is also in an async context), or <a href="#/doc/javascript/Reference/Statements/for-await...of"><code>for await...of</code></a> loop</li>
+</ul>
+<p>An <code>await using</code> declares an async disposable resource that&#39;s tied to the lifetime of the variable&#39;s scope (block, function, module, etc.). When the scope exits, the resource is disposed of asynchronously. Its syntax may be somewhat confusing, because the <code>await</code> does not have an awaiting effect when the variable is first declared, but only when the variable goes out of scope.</p>
+<p>When a variable is first declared and its value is non-nullish, a <em>disposer</em> is retrieved from the object. The <code>[Symbol.asyncDispose]</code> property is tried first, and falls back to <code>[Symbol.dispose]</code> if <code>[Symbol.asyncDispose]</code> is <code>undefined</code>. If neither property contains a function, a <code>TypeError</code> is thrown. Notably, the <code>[Symbol.dispose]()</code> method is wrapped into a function that looks like <code>async () =&gt; { object[Symbol.dispose](); }</code>, which means if it returns a promise, that promise is <em>not</em> awaited. This disposer is saved to the scope.</p>
+<p>When the variable goes out of scope, the disposer is called and awaited. If the scope contains multiple <code>using</code> or <code>await using</code> declarations, all disposers are run in sequence in the reverse order of declaration, regardless of the type of declaration. All disposers are guaranteed to run (much like the <code>finally</code> block in <code>try...catch...finally</code>). All errors thrown during disposal, including the initial error that caused the scope exit (if applicable), are all aggregated inside one <code>SuppressedError</code>, with each earlier exception as the <code>suppressed</code> property and the later exception as the <code>error</code> property. This <code>SuppressedError</code> is thrown after disposal is complete.</p>
+<p>The variable is allowed to have value <code>null</code> or <code>undefined</code>, so the resource can be optionally present. As long as one <code>await using</code> variable is declared in this scope, at least one <code>await</code> is guaranteed to happen on scope exit, even if the variable actually has value <code>null</code> or <code>undefined</code>. This prevents the disposal from happening synchronously, causing timing issues (see <a href="#/doc/javascript/Reference/Operators/await@control_flow_effects_of_await">control flow effects of <code>await</code></a>).</p>
+<p><code>await using</code> ties resource management to lexical scopes, which is both convenient and sometimes confusing. See below for some examples where it may not behave how you expect. If you want to hand-manage resource disposal, while maintaining the same error handling guarantees, you can use <code>AsyncDisposableStack</code> instead.</p>
+<h2 id="examples">Examples</h2>
+<p>You should also check <code>using</code> for more examples, especially some general caveats with respect to scope-based resource management.</p>
+<h3 id="basic-usage">Basic usage</h3>
+<p>Usually, you use <code>await using</code> on some library-provided resource that already implements the async disposable protocol. For example, the Node.js <a target="_blank" rel="noopener" href="https://nodejs.org/api/fs.html#filehandlesymbolasyncdispose"><code>FileHandle</code></a> is async disposable:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JavaScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript">
+
+<span class="hljs-keyword">async</span> <span class="hljs-keyword">function</span> <span class="hljs-title function_">example</span>(<span class="hljs-params"></span>) {
+  <span class="hljs-keyword">await</span> <span class="hljs-keyword">using</span> file = <span class="hljs-keyword">await</span> fs.<span class="hljs-title function_">open</span>(<span class="hljs-string">&quot;example.txt&quot;</span>, <span class="hljs-string">&quot;r&quot;</span>);
+  <span class="hljs-variable language_">console</span>.<span class="hljs-title function_">log</span>(<span class="hljs-keyword">await</span> file.<span class="hljs-title function_">read</span>());
+  <span class="hljs-comment">// Before `file` goes out of scope, it is disposed by calling `file[Symbol.asyncDispose]()` and awaited.</span>
+}</code></pre></div></figure>
+<p>Note that there are two <code>await</code> operations in the declaration for <code>file</code>, which do different things and are both necessary. <code>await fs.open()</code> causes an await during <em>acquisition</em>: it waits for the file to be opened and unwraps the returned promise into a <code>FileHandle</code> object. <code>await using file</code> causes an await during <em>disposal</em>: it makes <code>file</code> disposed asynchronously when the variable goes out of scope.</p>
+<h3 id="await-using-with-for-awaitof"><code>await using</code> with <code>for await...of</code></h3>
+<p>It&#39;s very easy to confuse the following three syntaxes:</p>
+<ul>
+<li><code>for await (using x of y) { ... }</code></li>
+<li><code>for (await using x of y) { ... }</code></li>
+<li><code>for (using x of await y) { ... }</code></li>
+</ul>
+<p>It may be even more confusing to know that they can be used together.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JavaScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript"><span class="hljs-keyword">for</span> <span class="hljs-keyword">await</span> (<span class="hljs-keyword">await</span> <span class="hljs-keyword">using</span> x <span class="hljs-keyword">of</span> <span class="hljs-keyword">await</span> y) {
+  <span class="hljs-comment">// ...</span>
+}</code></pre></div></figure>
+<p>First, <code>await y</code> does what you expect: we <code>await</code> the promise <code>y</code>, which is expected to resolve to an object we iterate over. Let us set this variant aside.</p>
+<p>The <code>for await...of</code> loop requires the <code>y</code> object to be an <em>async iterable</em>. This means that the object must have a <code>[Symbol.asyncIterator]</code> method that returns an <em>async iterator</em>, whose <code>next()</code> method returns a promise representing the result. This is for when the iterable doesn&#39;t know what the next value is, or even if it&#39;s done yet, until some async operation is complete.</p>
+<p>On the other hand, the <code>await using x</code> syntax requires the <code>x</code> object, as yielded from the iterable, to be an <em>async disposable</em>. This means that the object must have a <code>[Symbol.asyncDispose]</code> method that returns a promise representing the disposal operation. This is a separate concern from the iteration itself, and is only called when the variable <code>x</code> goes out of scope.</p>
+<p>In other words, all of the following four combinations are valid and do different things:</p>
+<ul>
+<li><code>for (using x of y)</code>: <code>y</code> is synchronously iterated, yielding one result at a time, which can be disposed synchronously.</li>
+<li><code>for await (using x of y)</code>: <code>y</code> is asynchronously iterated, yielding one result at a time after awaiting, but the result value can be disposed synchronously.</li>
+<li><code>for (await using x of y)</code>: <code>y</code> is synchronously iterated, yielding one result at a time, but the result value can only be disposed asynchronously.</li>
+<li><code>for await (await using x of y)</code>: <code>y</code> is asynchronously iterated, yielding one result at a time after awaiting, and the result value can only be disposed asynchronously.</li>
+</ul>
+<p>Below, we create some fictitious values of <code>y</code> to demonstrate their use cases. For asynchronous APIs, we base our code on the Node.js <a target="_blank" rel="noopener" href="https://nodejs.org/api/fs.html#promises-api"><code>fs/promises</code></a> module.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JavaScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript"><span class="hljs-keyword">const</span> syncIterableOfSyncDisposables = [
+  stream1.<span class="hljs-title function_">getReader</span>(),
+  stream2.<span class="hljs-title function_">getReader</span>(),
+];
+<span class="hljs-keyword">for</span> (<span class="hljs-keyword">using</span> reader <span class="hljs-keyword">of</span> syncIterableOfSyncDisposables) {
+  <span class="hljs-variable language_">console</span>.<span class="hljs-title function_">log</span>(reader.<span class="hljs-title function_">read</span>());
+}</code></pre></div></figure>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JavaScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript"><span class="hljs-keyword">async</span> <span class="hljs-keyword">function</span>* <span class="hljs-title function_">requestMany</span>(<span class="hljs-params">urls</span>) {
+  <span class="hljs-keyword">for</span> (<span class="hljs-keyword">const</span> url <span class="hljs-keyword">of</span> urls) {
+    <span class="hljs-keyword">const</span> res = <span class="hljs-keyword">await</span> <span class="hljs-title function_">fetch</span>(url);
+    <span class="hljs-keyword">yield</span> res.<span class="hljs-property">body</span>.<span class="hljs-title function_">getReader</span>();
+  }
+}
+<span class="hljs-keyword">const</span> asyncIterableOfSyncDisposables = <span class="hljs-title function_">requestMany</span>([
+  <span class="hljs-string">&quot;https://example.com&quot;</span>,
+  <span class="hljs-string">&quot;https://example.org&quot;</span>,
+]);
+<span class="hljs-keyword">for</span> <span class="hljs-keyword">await</span> (<span class="hljs-keyword">using</span> reader <span class="hljs-keyword">of</span> asyncIterableOfSyncDisposables) {
+  <span class="hljs-variable language_">console</span>.<span class="hljs-title function_">log</span>(reader.<span class="hljs-title function_">read</span>());
+}</code></pre></div></figure>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JavaScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript"><span class="hljs-keyword">const</span> syncIterableOfAsyncDisposables = <span class="hljs-keyword">await</span> <span class="hljs-title class_">Promise</span>.<span class="hljs-title function_">all</span>(
+  fs.<span class="hljs-title function_">globSync</span>(<span class="hljs-string">&quot;*.txt&quot;</span>).<span class="hljs-title function_">map</span>(<span class="hljs-function">(<span class="hljs-params">path</span>) =&gt;</span> fs.<span class="hljs-title function_">open</span>(path, <span class="hljs-string">&quot;r&quot;</span>)),
+);
+<span class="hljs-keyword">for</span> (<span class="hljs-keyword">await</span> <span class="hljs-keyword">using</span> file <span class="hljs-keyword">of</span> syncIterableOfAsyncDisposables) {
+  <span class="hljs-variable language_">console</span>.<span class="hljs-title function_">log</span>(<span class="hljs-keyword">await</span> file.<span class="hljs-title function_">read</span>());
+}</code></pre></div></figure>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JavaScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript"><span class="hljs-keyword">async</span> <span class="hljs-keyword">function</span>* <span class="hljs-title function_">globHandles</span>(<span class="hljs-params">pattern</span>) {
+  <span class="hljs-keyword">for</span> <span class="hljs-keyword">await</span> (<span class="hljs-keyword">const</span> path <span class="hljs-keyword">of</span> fs.<span class="hljs-title function_">glob</span>(pattern)) {
+    <span class="hljs-keyword">yield</span> <span class="hljs-keyword">await</span> fs.<span class="hljs-title function_">open</span>(path, <span class="hljs-string">&quot;r&quot;</span>);
+  }
+}
+<span class="hljs-keyword">const</span> asyncIterableOfAsyncDisposables = <span class="hljs-title function_">globHandles</span>(<span class="hljs-string">&quot;*.txt&quot;</span>);
+<span class="hljs-keyword">for</span> <span class="hljs-keyword">await</span> (<span class="hljs-keyword">await</span> <span class="hljs-keyword">using</span> file <span class="hljs-keyword">of</span> asyncIterableOfAsyncDisposables) {
+  <span class="hljs-variable language_">console</span>.<span class="hljs-title function_">log</span>(<span class="hljs-keyword">await</span> file.<span class="hljs-title function_">read</span>());
+}</code></pre></div></figure>
+<h3 id="implicit-await-on-scope-exit">Implicit await on scope exit</h3>
+<p>As soon as one <code>await using</code> is declared in a scope, the scope will always have an <code>await</code> on exit, even if the variable is <code>null</code> or <code>undefined</code>. This ensures stable execution order and error handling. The <a href="#/doc/javascript/Reference/Operators/await@control_flow_effects_of_await">Control flow effects of await</a> examples have more details on this.</p>
+<p>In the example below, the <code>example()</code> call below doesn&#39;t resolve until one tick after, because of an implicit <code>await</code> when the function returns.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JavaScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript"><span class="hljs-keyword">async</span> <span class="hljs-keyword">function</span> <span class="hljs-title function_">example</span>(<span class="hljs-params"></span>) {
+  <span class="hljs-keyword">await</span> <span class="hljs-keyword">using</span> nothing = <span class="hljs-literal">null</span>;
+  <span class="hljs-variable language_">console</span>.<span class="hljs-title function_">log</span>(<span class="hljs-string">&quot;Example call&quot;</span>);
+}
+
+<span class="hljs-title function_">example</span>().<span class="hljs-title function_">then</span>(<span class="hljs-function">() =&gt;</span> <span class="hljs-variable language_">console</span>.<span class="hljs-title function_">log</span>(<span class="hljs-string">&quot;Example done&quot;</span>));
+<span class="hljs-title class_">Promise</span>.<span class="hljs-title function_">resolve</span>().<span class="hljs-title function_">then</span>(<span class="hljs-function">() =&gt;</span> <span class="hljs-variable language_">console</span>.<span class="hljs-title function_">log</span>(<span class="hljs-string">&quot;Microtask done&quot;</span>));
+<span class="hljs-comment">// Output:</span>
+<span class="hljs-comment">// Example call</span>
+<span class="hljs-comment">// Microtask done</span>
+<span class="hljs-comment">// Example done</span></code></pre></div></figure>
+<p>Consider the same code but with a synchronous <code>using</code> instead. This time, the <code>example()</code> call immediately resolves, so the two <code>then()</code> handlers are called in the same tick.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JavaScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript"><span class="hljs-keyword">async</span> <span class="hljs-keyword">function</span> <span class="hljs-title function_">example</span>(<span class="hljs-params"></span>) {
+  <span class="hljs-keyword">using</span> nothing = <span class="hljs-literal">null</span>;
+  <span class="hljs-variable language_">console</span>.<span class="hljs-title function_">log</span>(<span class="hljs-string">&quot;Example call&quot;</span>);
+}
+
+<span class="hljs-title function_">example</span>().<span class="hljs-title function_">then</span>(<span class="hljs-function">() =&gt;</span> <span class="hljs-variable language_">console</span>.<span class="hljs-title function_">log</span>(<span class="hljs-string">&quot;Example done&quot;</span>));
+<span class="hljs-title class_">Promise</span>.<span class="hljs-title function_">resolve</span>().<span class="hljs-title function_">then</span>(<span class="hljs-function">() =&gt;</span> <span class="hljs-variable language_">console</span>.<span class="hljs-title function_">log</span>(<span class="hljs-string">&quot;Microtask done&quot;</span>));
+<span class="hljs-comment">// Output:</span>
+<span class="hljs-comment">// Example call</span>
+<span class="hljs-comment">// Example done</span>
+<span class="hljs-comment">// Microtask done</span></code></pre></div></figure>
+<p>For a more realistic example, consider two concurrent calls to a function:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JavaScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript"><span class="hljs-keyword">class</span> <span class="hljs-title class_">Resource</span> {
+  #name;
+  <span class="hljs-title function_">constructor</span>(<span class="hljs-params">name</span>) {
+    <span class="hljs-variable language_">this</span>.#name = name;
+  }
+  <span class="hljs-keyword">async</span> [<span class="hljs-title class_">Symbol</span>.<span class="hljs-property">asyncDispose</span>]() {
+    <span class="hljs-variable language_">console</span>.<span class="hljs-title function_">log</span>(<span class="hljs-string">`Disposing resource <span class="hljs-subst">${<span class="hljs-variable language_">this</span>.#name}</span>`</span>);
+  }
+}
+
+<span class="hljs-keyword">async</span> <span class="hljs-keyword">function</span> <span class="hljs-title function_">example</span>(<span class="hljs-params">id, createOptionalResource</span>) {
+  <span class="hljs-keyword">await</span> <span class="hljs-keyword">using</span> required = <span class="hljs-keyword">new</span> <span class="hljs-title class_">Resource</span>(<span class="hljs-string">`required <span class="hljs-subst">${id}</span>`</span>);
+  <span class="hljs-keyword">await</span> <span class="hljs-keyword">using</span> optional = createOptionalResource
+    ? <span class="hljs-keyword">new</span> <span class="hljs-title class_">Resource</span>(<span class="hljs-string">&quot;optional&quot;</span>)
+    : <span class="hljs-literal">null</span>;
+  <span class="hljs-keyword">await</span> <span class="hljs-keyword">using</span> another = <span class="hljs-keyword">new</span> <span class="hljs-title class_">Resource</span>(<span class="hljs-string">`another <span class="hljs-subst">${id}</span>`</span>);
+}
+
+<span class="hljs-title function_">example</span>(<span class="hljs-number">1</span>, <span class="hljs-literal">true</span>);
+<span class="hljs-title function_">example</span>(<span class="hljs-number">2</span>, <span class="hljs-literal">false</span>);
+<span class="hljs-comment">// Output:</span>
+<span class="hljs-comment">// Disposing resource another 1</span>
+<span class="hljs-comment">// Disposing resource another 2</span>
+<span class="hljs-comment">// Disposing resource optional</span>
+<span class="hljs-comment">// Disposing resource required 1</span>
+<span class="hljs-comment">// Disposing resource required 2</span></code></pre></div></figure>
+<p>As you can see, the <code>required 2</code> resource is disposed in the same tick as <code>required 1</code>. If the <code>optional</code> resource did not cause a redundant <code>await</code>, then <code>required 2</code> would have been disposed earlier, which would be simultaneous with <code>optional</code>.</p>
+<h2 id="see-also">See also</h2>
+<ul>
+<li><a href="#/doc/javascript/Guide/Resource_management">JavaScript resource management</a></li>
+<li><code>const</code></li>
+<li><code>let</code></li>
+<li><code>using</code></li>
+<li><code>Symbol.asyncDispose</code></li>
+<li><code>AsyncDisposableStack</code></li>
+</ul>
