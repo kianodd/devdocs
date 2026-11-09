@@ -3,7 +3,7 @@
    Courses are built at build time (data/catalog.json). Progress, downloads,
    settings live locally in the browser. */
 
-const APP_VERSION = '2.6.1';
+const APP_VERSION = '2.7.0';
 const $ = (s, el) => (el || document).querySelector(s);
 const $$ = (s, el) => [...(el || document).querySelectorAll(s)];
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -1212,6 +1212,7 @@ async function importDownloadsZip(file) {
 
 /* ---------------- changelog ---------------- */
 const CHANGELOG = [
+  { v: '2.7.0', fa: ['دوره جدید Next.js اضافه شد: ۴۷۹ فصل کامل از مستندات رسمی nextjs.org، با بخش‌های جدا برای App Router و Pages Router و دقیقاً به ترتیب سایت', 'بخش‌های مخصوص هر روتر (AppOnly/PagesOnly) در هر فصل فقط نسخه مربوط به همان روتر را نشان می‌دهند', 'نام فایل کدها حالا روی کارت کد نمایش داده می‌شود'], en: ['New course: Next.js — all 479 chapters from the official nextjs.org docs, with separate App Router and Pages Router sections in the site\u2019s own order', 'Router-specific blocks (AppOnly/PagesOnly) show only the relevant router\u2019s content in each chapter', 'Code cards now show the code file name'] },
   { v: '2.6.1', fa: ['تایتل بزرگ صفحه‌ها هنگام اسکرول، وقتی به نوار بالایی می‌رسد محو و مخفی می‌شود و دیگر از زیر شیشه‌ی نوار دیده نمی‌شود'], en: ['The large page title now fades out and hides as it reaches the top bar, so it no longer shows through the glass bar'] },
   { v: '2.6.0', fa: ['دوره جدید Astro اضافه شد: ۴۲۶ فصل کامل از مستندات رسمی، با همان ترتیب و بخش‌بندی سایت اصلی', 'دوره جدید NestJS SSR اضافه شد: ۱۶ فصل کامل از داک رسمی پکیج nestjs-ssr', 'لینک‌های داخلی هر دو دوره داخل خود اپ باز می‌شوند'], en: ['New course: Astro — all 426 chapters from the official docs, in the site\u2019s own order and sections', 'New course: NestJS SSR — all 16 chapters from the official nestjs-ssr docs', 'Internal links in both courses open inside the app'] },
   { v: '2.5.1', fa: ['دکمه منوی صفحه مطلب به نوار بالا رفت', 'سبک Material حذف شد', 'آکاردئون‌های پیشرفت حالا تک‌فعال‌اند و درست باز و بسته می‌شوند', 'نمایش مدت‌زمان درس در صفحه مطلب اصلاح شد', 'پیش‌نمایش شیشه‌ای در تنظیمات مرتب و بازطراحی شد'], en: ['Chapter menu button moved to the top bar', 'Material style removed', 'Progress accordions are now single-open and toggle reliably', 'Fixed the duration display on chapter pages', 'Glass preview in Settings redesigned'] },
