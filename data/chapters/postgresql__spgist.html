@@ -1,0 +1,390 @@
+<p>index</p>
+<p>SP-GiST</p>
+<h2 id="introduction">Introduction</h2>
+<p>SP-GiST is an abbreviation for space-partitioned GiST. SP-GiST supports partitioned search trees, which facilitate development of a wide range of different non-balanced data structures, such as quad-trees, k-d trees, and radix trees (tries). The common feature of these structures is that they repeatedly divide the search space into partitions that need not be of equal size. Searches that are well matched to the partitioning rule can be very fast.</p>
+<p>These popular data structures were originally developed for in-memory usage. In main memory, they are usually designed as a set of dynamically allocated nodes linked by pointers. This is not suitable for direct storing on disk, since these chains of pointers can be rather long which would require too many disk accesses. In contrast, disk-based data structures should have a high fanout to minimize I/O. The challenge addressed by SP-GiST is to map search tree nodes to disk pages in such a way that a search need access only a few disk pages, even if it traverses many nodes.</p>
+<p>Like GiST, SP-GiST is meant to allow the development of custom data types with the appropriate access methods, by an expert in the domain of the data type, rather than a database expert.</p>
+<p>Some of the information here is derived from Purdue University&#39;s SP-GiST Indexing Project <a target="_blank" rel="noopener" href="https://www.cs.purdue.edu/spgist/">web site</a>. The SP-GiST implementation in PostgreSQL is primarily maintained by Teodor Sigaev and Oleg Bartunov, and there is more information on their <a target="_blank" rel="noopener" href="http://www.sai.msu.su/~megera/wiki/spgist_dev">web site</a>.</p>
+<h2 id="built-in-operator-classes">Built-in Operator Classes</h2>
+<p>The core PostgreSQL distribution includes the SP-GiST operator classes shown in <a href="#spgist-builtin-opclasses-table">Built-in Operator Classes</a>.</p>
+<p>+------------------+----------------------------+-----------------------+
+| Name             | Indexable Operators        | Ordering Operators    |
++==================+============================+=======================+
+| <code>box_ops</code>        | <code>&lt;&lt; (box,box)</code>             | <code>&lt;-&gt; (box,point)</code>     |
+|                  +----------------------------+                       |
+|                  | <code>&amp;&lt; (box,box)</code>             |                       |
+|                  +----------------------------+                       |
+|                  | <code>&amp;&gt; (box,box)</code>             |                       |
+|                  +----------------------------+                       |
+|                  | <code>&gt;&gt; (box,box)</code>             |                       |
+|                  +----------------------------+                       |
+|                  | <code>&lt;@ (box,box)</code>             |                       |
+|                  +----------------------------+                       |
+|                  | <code>@&gt; (box,box)</code>             |                       |
+|                  +----------------------------+                       |
+|                  | <code>~= (box,box)</code>             |                       |
+|                  +----------------------------+                       |
+|                  | <code>&amp;&amp; (box,box)</code>             |                       |
+|                  +----------------------------+                       |
+|                  | <code>&lt;&lt;| (box,box)</code>            |                       |
+|                  +----------------------------+                       |
+|                  | <code>&amp;&lt;| (box,box)</code>            |                       |
+|                  +----------------------------+                       |
+|                  | <code>|&amp;&gt; (box,box)</code>            |                       |
+|                  +----------------------------+                       |
+|                  | <code>|&gt;&gt; (box,box)</code>            |                       |
++------------------+----------------------------+-----------------------+
+| <code>inet_ops</code>       | <code>&lt;&lt; (inet,inet)</code>           |                       |
+|                  +----------------------------+                       |
+|                  | <code>&lt;&lt;= (inet,inet)</code>          |                       |
+|                  +----------------------------+                       |
+|                  | <code>&gt;&gt; (inet,inet)</code>           |                       |
+|                  +----------------------------+                       |
+|                  | <code>&gt;&gt;= (inet,inet)</code>          |                       |
+|                  +----------------------------+                       |
+|                  | <code>= (inet,inet)</code>            |                       |
+|                  +----------------------------+                       |
+|                  | <code>&lt;&gt; (inet,inet)</code>           |                       |
+|                  +----------------------------+                       |
+|                  | <code>&lt; (inet,inet)</code>            |                       |
+|                  +----------------------------+                       |
+|                  | <code>&lt;= (inet,inet)</code>           |                       |
+|                  +----------------------------+                       |
+|                  | <code>&gt; (inet,inet)</code>            |                       |
+|                  +----------------------------+                       |
+|                  | <code>&gt;= (inet,inet)</code>           |                       |
+|                  +----------------------------+                       |
+|                  | <code>&amp;&amp; (inet,inet)</code>           |                       |
++------------------+----------------------------+-----------------------+
+| <code>kd_point_ops</code>   | <code>|&gt;&gt; (point,point)</code>        | <code>&lt;-&gt; (point,point)</code>   |
+|                  +----------------------------+                       |
+|                  | <code>&lt;&lt; (point,point)</code>         |                       |
+|                  +----------------------------+                       |
+|                  | <code>&gt;&gt; (point,point)</code>         |                       |
+|                  +----------------------------+                       |
+|                  | <code>&lt;&lt;| (point,point)</code>        |                       |
+|                  +----------------------------+                       |
+|                  | <code>~= (point,point)</code>         |                       |
+|                  +----------------------------+                       |
+|                  | <code>&lt;@ (point,box)</code>           |                       |
++------------------+----------------------------+-----------------------+
+| <code>poly_ops</code>       | <code>&lt;&lt; (polygon,polygon)</code>     | <code>&lt;-&gt; (polygon,point)</code> |
+|                  +----------------------------+                       |
+|                  | <code>&amp;&lt; (polygon,polygon)</code>     |                       |
+|                  +----------------------------+                       |
+|                  | <code>&amp;&gt; (polygon,polygon)</code>     |                       |
+|                  +----------------------------+                       |
+|                  | <code>&gt;&gt; (polygon,polygon)</code>     |                       |
+|                  +----------------------------+                       |
+|                  | <code>&lt;@ (polygon,polygon)</code>     |                       |
+|                  +----------------------------+                       |
+|                  | <code>@&gt; (polygon,polygon)</code>     |                       |
+|                  +----------------------------+                       |
+|                  | <code>~= (polygon,polygon)</code>     |                       |
+|                  +----------------------------+                       |
+|                  | <code>&amp;&amp; (polygon,polygon)</code>     |                       |
+|                  +----------------------------+                       |
+|                  | <code>&lt;&lt;| (polygon,polygon)</code>    |                       |
+|                  +----------------------------+                       |
+|                  | <code>&amp;&lt;| (polygon,polygon)</code>    |                       |
+|                  +----------------------------+                       |
+|                  | <code>|&gt;&gt; (polygon,polygon)</code>    |                       |
+|                  +----------------------------+                       |
+|                  | <code>|&amp;&gt; (polygon,polygon)</code>    |                       |
++------------------+----------------------------+-----------------------+
+| <code>quad_point_ops</code> | <code>|&gt;&gt; (point,point)</code>        | <code>&lt;-&gt; (point,point)</code>   |
+|                  +----------------------------+                       |
+|                  | <code>&lt;&lt; (point,point)</code>         |                       |
+|                  +----------------------------+                       |
+|                  | <code>&gt;&gt; (point,point)</code>         |                       |
+|                  +----------------------------+                       |
+|                  | <code>&lt;&lt;| (point,point)</code>        |                       |
+|                  +----------------------------+                       |
+|                  | <code>~= (point,point)</code>         |                       |
+|                  +----------------------------+                       |
+|                  | <code>&lt;@ (point,box)</code>           |                       |
++------------------+----------------------------+-----------------------+
+| <code>range_ops</code>      | <code>= (anyrange,anyrange)</code>    |                       |
+|                  +----------------------------+                       |
+|                  | <code>&amp;&amp; (anyrange,anyrange)</code>   |                       |
+|                  +----------------------------+                       |
+|                  | <code>@&gt; (anyrange,anyelement)</code> |                       |
+|                  +----------------------------+                       |
+|                  | <code>@&gt; (anyrange,anyrange)</code>   |                       |
+|                  +----------------------------+                       |
+|                  | <code>&lt;@ (anyrange,anyrange)</code>   |                       |
+|                  +----------------------------+                       |
+|                  | <code>&lt;&lt; (anyrange,anyrange)</code>   |                       |
+|                  +----------------------------+                       |
+|                  | <code>&gt;&gt; (anyrange,anyrange)</code>   |                       |
+|                  +----------------------------+                       |
+|                  | <code>&amp;&lt; (anyrange,anyrange)</code>   |                       |
+|                  +----------------------------+                       |
+|                  | <code>&amp;&gt; (anyrange,anyrange)</code>   |                       |
+|                  +----------------------------+                       |
+|                  | <code>-|- (anyrange,anyrange)</code>  |                       |
++------------------+----------------------------+-----------------------+
+| <code>text_ops</code>       | <code>= (text,text)</code>            |                       |
+|                  +----------------------------+                       |
+|                  | <code>&lt; (text,text)</code>            |                       |
+|                  +----------------------------+                       |
+|                  | <code>&lt;= (text,text)</code>           |                       |
+|                  +----------------------------+                       |
+|                  | <code>&gt; (text,text)</code>            |                       |
+|                  +----------------------------+                       |
+|                  | <code>&gt;= (text,text)</code>           |                       |
+|                  +----------------------------+                       |
+|                  | <code>~&lt;~ (text,text)</code>          |                       |
+|                  +----------------------------+                       |
+|                  | <code>~&lt;=~ (text,text)</code>         |                       |
+|                  +----------------------------+                       |
+|                  | <code>~&gt;=~ (text,text)</code>         |                       |
+|                  +----------------------------+                       |
+|                  | <code>~&gt;~ (text,text)</code>          |                       |
+|                  +----------------------------+                       |
+|                  | <code>^@ (text,text)</code>           |                       |
++------------------+----------------------------+-----------------------+</p>
+<p>: Built-in SP-GiST Operator Classes </p>
+<p>Of the two operator classes for type <code>point</code>, <code>quad_point_ops</code> is the default. <code>kd_point_ops</code> supports the same operators but uses a different index data structure that may offer better performance in some applications.</p>
+<p>The <code>quad_point_ops</code>, <code>kd_point_ops</code> and <code>poly_ops</code> operator classes support the <code>&lt;-&gt;</code> ordering operator, which enables the k-nearest neighbor (<code>k-NN</code>) search over indexed point or polygon data sets.</p>
+<h2 id="extensibility">Extensibility</h2>
+<p>SP-GiST offers an interface with a high level of abstraction, requiring the access method developer to implement only methods specific to a given data type. The SP-GiST core is responsible for efficient disk mapping and searching the tree structure. It also takes care of concurrency and logging considerations.</p>
+<p>Leaf tuples of an SP-GiST tree usually contain values of the same data type as the indexed column, although it is also possible for them to contain lossy representations of the indexed column. Leaf tuples stored at the root level will directly represent the original indexed data value, but leaf tuples at lower levels might contain only a partial value, such as a suffix. In that case the operator class support functions must be able to reconstruct the original value using information accumulated from the inner tuples that are passed through to reach the leaf level.</p>
+<p>When an SP-GiST index is created with <code>INCLUDE</code> columns, the values of those columns are also stored in leaf tuples. The <code>INCLUDE</code> columns are of no concern to the SP-GiST operator class, so they are not discussed further here.</p>
+<p>Inner tuples are more complex, since they are branching points in the search tree. Each inner tuple contains a set of one or more nodes, which represent groups of similar leaf values. A node contains a downlink that leads either to another, lower-level inner tuple, or to a short list of leaf tuples that all lie on the same index page. Each node normally has a label that describes it; for example, in a radix tree the node label could be the next character of the string value. (Alternatively, an operator class can omit the node labels, if it works with a fixed set of nodes for all inner tuples; see <a href="#spgist-null-labels">SP-GiST Without Node Labels</a>.) Optionally, an inner tuple can have a prefix value that describes all its members. In a radix tree this could be the common prefix of the represented strings. The prefix value is not necessarily really a prefix, but can be any data needed by the operator class; for example, in a quad-tree it can store the central point that the four quadrants are measured with respect to. A quad-tree inner tuple would then also contain four nodes corresponding to the quadrants around this central point.</p>
+<p>Some tree algorithms require knowledge of level (or depth) of the current tuple, so the SP-GiST core provides the possibility for operator classes to manage level counting while descending the tree. There is also support for incrementally reconstructing the represented value when that is needed, and for passing down additional data (called traverse values) during a tree descent.</p>
+<p>The SP-GiST core code takes care of null entries. Although SP-GiST indexes do store entries for nulls in indexed columns, this is hidden from the index operator class code: no null index entries or search conditions will ever be passed to the operator class methods. (It is assumed that SP-GiST operators are strict and so cannot succeed for null values.) Null values are therefore not discussed further here.</p>
+<p>There are five user-defined methods that an index operator class for SP-GiST must provide, and two are optional. All five mandatory methods follow the convention of accepting two <code>internal</code> arguments, the first of which is a pointer to a C struct containing input values for the support method, while the second argument is a pointer to a C struct where output values must be placed. Four of the mandatory methods just return <code>void</code>, since all their results appear in the output struct; but <code>leaf_consistent</code> returns a <code>boolean</code> result. The methods must not modify any fields of their input structs. In all cases, the output struct is initialized to zeroes before calling the user-defined method. The optional sixth method <code>compress</code> accepts a <code>datum</code> to be indexed as the only argument and returns a value suitable for physical storage in a leaf tuple. The optional seventh method <code>options</code> accepts an <code>internal</code> pointer to a C struct, where opclass-specific parameters should be placed, and returns <code>void</code>.</p>
+<p>The five mandatory user-defined methods are:</p>
+<p><code>config</code></p>
+<p>:   Returns static information about the index implementation, including the data type OIDs of the prefix and node label data types.</p>
+<pre><code>The SQL declaration of the function must look like this: 
+</code></pre>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>SQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-sql"><span class="hljs-keyword">CREATE</span> <span class="hljs-keyword">FUNCTION</span> my_config(internal, internal) <span class="hljs-keyword">RETURNS</span> void ...</code></pre></div></figure>
+<p> The first argument is a pointer to a spgConfigIn C struct, containing input data for the function. The second argument is a pointer to a spgConfigOut C struct, which the function must fill with result data. </p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>SQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-sql">typedef struct spgConfigIn
+{
+    Oid         attType;        <span class="hljs-comment">/* Data type to be indexed */</span>
+} spgConfigIn;
+
+typedef struct spgConfigOut
+{
+    Oid         prefixType;     <span class="hljs-comment">/* Data type of inner-tuple prefixes */</span>
+    Oid         labelType;      <span class="hljs-comment">/* Data type of inner-tuple node labels */</span>
+    Oid         leafType;       <span class="hljs-comment">/* Data type of leaf-tuple values */</span>
+    bool        canReturnData;  <span class="hljs-comment">/* Opclass can reconstruct original data */</span>
+    bool        longValuesOK;   <span class="hljs-comment">/* Opclass can cope with values &gt; 1 page */</span>
+} spgConfigOut;</code></pre></div></figure>
+<p> attType is passed in order to support polymorphic index operator classes; for ordinary fixed-data-type operator classes, it will always have the same value and so can be ignored.</p>
+<pre><code>For operator classes that do not use prefixes, prefixType can be set to `VOIDOID`. Likewise, for operator classes that do not use node labels, labelType can be set to `VOIDOID`. canReturnData should be set true if the operator class is capable of reconstructing the originally-supplied index value. longValuesOK should be set true only when the attType is of variable length and the operator class is capable of segmenting long values by repeated suffixing (see [SP-GiST Limits](#spgist-limits)).
+
+leafType should match the index storage type defined by the operator class\&#39;s opckeytype catalog entry. (Note that opckeytype can be zero, implying the storage type is the same as the operator class\&#39;s input type, which is the most common situation.) For reasons of backward compatibility, the `config` method can set leafType to some other value, and that value will be used; but this is deprecated since the index contents are then incorrectly identified in the catalogs. Also, it\&#39;s permissible to leave leafType uninitialized (zero); that is interpreted as meaning the index storage type derived from opckeytype.
+
+When attType and leafType are different, the optional method `compress` must be provided. Method `compress` is responsible for transformation of datums to be indexed from attType to leafType.
+</code></pre>
+<p><code>choose</code></p>
+<p>:   Chooses a method for inserting a new value into an inner tuple.</p>
+<pre><code>The SQL declaration of the function must look like this: 
+</code></pre>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>SQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-sql"><span class="hljs-keyword">CREATE</span> <span class="hljs-keyword">FUNCTION</span> my_choose(internal, internal) <span class="hljs-keyword">RETURNS</span> void ...</code></pre></div></figure>
+<p> The first argument is a pointer to a spgChooseIn C struct, containing input data for the function. The second argument is a pointer to a spgChooseOut C struct, which the function must fill with result data. </p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>SQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-sql">typedef struct spgChooseIn
+{
+    Datum       datum;          <span class="hljs-comment">/* original datum to be indexed */</span>
+    Datum       leafDatum;      <span class="hljs-comment">/* current datum to be stored at leaf */</span>
+    <span class="hljs-type">int</span>         level;          <span class="hljs-comment">/* current level (counting from zero) */</span>
+
+    <span class="hljs-comment">/* Data from current inner tuple */</span>
+    bool        allTheSame;     <span class="hljs-comment">/* tuple is marked all-the-same? */</span>
+    bool        hasPrefix;      <span class="hljs-comment">/* tuple has a prefix? */</span>
+    Datum       prefixDatum;    <span class="hljs-comment">/* if so, the prefix value */</span>
+    <span class="hljs-type">int</span>         nNodes;         <span class="hljs-comment">/* number of nodes in the inner tuple */</span>
+    Datum      <span class="hljs-operator">*</span>nodeLabels;     <span class="hljs-comment">/* node label values (NULL if none) */</span>
+} spgChooseIn;
+
+typedef enum spgChooseResultType
+{
+    spgMatchNode <span class="hljs-operator">=</span> <span class="hljs-number">1</span>,           <span class="hljs-comment">/* descend into existing node */</span>
+    spgAddNode,                 <span class="hljs-comment">/* add a node to the inner tuple */</span>
+    spgSplitTuple               <span class="hljs-comment">/* split inner tuple (change its prefix) */</span>
+} spgChooseResultType;
+
+typedef struct spgChooseOut
+{
+    spgChooseResultType resultType;     <span class="hljs-comment">/* action code, see above */</span>
+    <span class="hljs-keyword">union</span>
+    {
+        struct                  <span class="hljs-comment">/* results for spgMatchNode */</span>
+        {
+            <span class="hljs-type">int</span>         nodeN;      <span class="hljs-comment">/* descend to this node (index from 0) */</span>
+            <span class="hljs-type">int</span>         levelAdd;   <span class="hljs-comment">/* increment level by this much */</span>
+            Datum       restDatum;  <span class="hljs-comment">/* new leaf datum */</span>
+        }           matchNode;
+        struct                  <span class="hljs-comment">/* results for spgAddNode */</span>
+        {
+            Datum       nodeLabel;  <span class="hljs-comment">/* new node&#x27;s label */</span>
+            <span class="hljs-type">int</span>         nodeN;      <span class="hljs-comment">/* where to insert it (index from 0) */</span>
+        }           addNode;
+        struct                  <span class="hljs-comment">/* results for spgSplitTuple */</span>
+        {
+            <span class="hljs-comment">/* Info to form new upper-level inner tuple with one child tuple */</span>
+            bool        prefixHasPrefix;    <span class="hljs-comment">/* tuple should have a prefix? */</span>
+            Datum       prefixPrefixDatum;  <span class="hljs-comment">/* if so, its value */</span>
+            <span class="hljs-type">int</span>         prefixNNodes;       <span class="hljs-comment">/* number of nodes */</span>
+            Datum      <span class="hljs-operator">*</span>prefixNodeLabels;   <span class="hljs-comment">/* their labels (or NULL for
+                                             * no labels) */</span>
+            <span class="hljs-type">int</span>         childNodeN;         <span class="hljs-comment">/* which node gets child tuple */</span>
+
+            <span class="hljs-comment">/* Info to form new lower-level inner tuple with all old nodes */</span>
+            bool        postfixHasPrefix;   <span class="hljs-comment">/* tuple should have a prefix? */</span>
+            Datum       postfixPrefixDatum; <span class="hljs-comment">/* if so, its value */</span>
+        }           splitTuple;
+    }           <span class="hljs-keyword">result</span>;
+} spgChooseOut;</code></pre></div></figure>
+<p> datum is the original datum of spgConfigIn.attType type that was to be inserted into the index. leafDatum is a value of spgConfigOut.leafType type, which is initially a result of method <code>compress</code> applied to datum when method <code>compress</code> is provided, or the same value as datum otherwise. leafDatum can change at lower levels of the tree if the <code>choose</code> or <code>picksplit</code> methods change it. When the insertion search reaches a leaf page, the current value of leafDatum is what will be stored in the newly created leaf tuple. level is the current inner tuple&#39;s level, starting at zero for the root level. allTheSame is true if the current inner tuple is marked as containing multiple equivalent nodes (see <a href="#spgist-all-the-same"> Inner Tuples</a>). hasPrefix is true if the current inner tuple contains a prefix; if so, prefixDatum is its value. nNodes is the number of child nodes contained in the inner tuple, and nodeLabels is an array of their label values, or NULL if there are no labels.</p>
+<pre><code>The `choose` function can determine either that the new value matches one of the existing child nodes, or that a new child node must be added, or that the new value is inconsistent with the tuple prefix and so the inner tuple must be split to create a less restrictive prefix.
+
+If the new value matches one of the existing child nodes, set resultType to `spgMatchNode`. Set nodeN to the index (from zero) of that node in the node array. Set levelAdd to the increment in level caused by descending through that node, or leave it as zero if the operator class does not use levels. Set restDatum to equal leafDatum if the operator class does not modify datums from one level to the next, or otherwise set it to the modified value to be used as leafDatum at the next level.
+
+If a new child node must be added, set resultType to `spgAddNode`. Set nodeLabel to the label to be used for the new node, and set nodeN to the index (from zero) at which to insert the node in the node array. After the node has been added, the `choose` function will be called again with the modified inner tuple; that call should result in an `spgMatchNode` result.
+
+If the new value is inconsistent with the tuple prefix, set resultType to `spgSplitTuple`. This action moves all the existing nodes into a new lower-level inner tuple, and replaces the existing inner tuple with a tuple having a single downlink pointing to the new lower-level inner tuple. Set prefixHasPrefix to indicate whether the new upper tuple should have a prefix, and if so set prefixPrefixDatum to the prefix value. This new prefix value must be sufficiently less restrictive than the original to accept the new value to be indexed. Set prefixNNodes to the number of nodes needed in the new tuple, and set prefixNodeLabels to a palloc\&#39;d array holding their labels, or to NULL if node labels are not required. Note that the total size of the new upper tuple must be no more than the total size of the tuple it is replacing; this constrains the lengths of the new prefix and new labels. Set childNodeN to the index (from zero) of the node that will downlink to the new lower-level inner tuple. Set postfixHasPrefix to indicate whether the new lower-level inner tuple should have a prefix, and if so set postfixPrefixDatum to the prefix value. The combination of these two prefixes and the downlink node\&#39;s label (if any) must have the same meaning as the original prefix, because there is no opportunity to alter the node labels that are moved to the new lower-level tuple, nor to change any child index entries. After the node has been split, the `choose` function will be called again with the replacement inner tuple. That call may return an `spgAddNode` result, if no suitable node was created by the `spgSplitTuple` action. Eventually `choose` must return `spgMatchNode` to allow the insertion to descend to the next level.
+</code></pre>
+<p><code>picksplit</code></p>
+<p>:   Decides how to create a new inner tuple over a set of leaf tuples.</p>
+<pre><code>The SQL declaration of the function must look like this: 
+</code></pre>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>SQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-sql"><span class="hljs-keyword">CREATE</span> <span class="hljs-keyword">FUNCTION</span> my_picksplit(internal, internal) <span class="hljs-keyword">RETURNS</span> void ...</code></pre></div></figure>
+<p> The first argument is a pointer to a spgPickSplitIn C struct, containing input data for the function. The second argument is a pointer to a spgPickSplitOut C struct, which the function must fill with result data. </p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>SQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-sql">typedef struct spgPickSplitIn
+{
+    <span class="hljs-type">int</span>         nTuples;        <span class="hljs-comment">/* number of leaf tuples */</span>
+    Datum      <span class="hljs-operator">*</span>datums;         <span class="hljs-comment">/* their datums (array of length nTuples) */</span>
+    <span class="hljs-type">int</span>         level;          <span class="hljs-comment">/* current level (counting from zero) */</span>
+} spgPickSplitIn;
+
+typedef struct spgPickSplitOut
+{
+    bool        hasPrefix;      <span class="hljs-comment">/* new inner tuple should have a prefix? */</span>
+    Datum       prefixDatum;    <span class="hljs-comment">/* if so, its value */</span>
+
+    <span class="hljs-type">int</span>         nNodes;         <span class="hljs-comment">/* number of nodes for new inner tuple */</span>
+    Datum      <span class="hljs-operator">*</span>nodeLabels;     <span class="hljs-comment">/* their labels (or NULL for no labels) */</span>
+
+    <span class="hljs-type">int</span>        <span class="hljs-operator">*</span>mapTuplesToNodes;   <span class="hljs-comment">/* node index for each leaf tuple */</span>
+    Datum      <span class="hljs-operator">*</span>leafTupleDatums;    <span class="hljs-comment">/* datum to store in each new leaf tuple */</span>
+} spgPickSplitOut;</code></pre></div></figure>
+<p> nTuples is the number of leaf tuples provided. datums is an array of their datum values of spgConfigOut.leafType type. level is the current level that all the leaf tuples share, which will become the level of the new inner tuple.</p>
+<pre><code>Set hasPrefix to indicate whether the new inner tuple should have a prefix, and if so set prefixDatum to the prefix value. Set nNodes to indicate the number of nodes that the new inner tuple will contain, and set nodeLabels to an array of their label values, or to NULL if node labels are not required. Set mapTuplesToNodes to an array that gives the index (from zero) of the node that each leaf tuple should be assigned to. Set leafTupleDatums to an array of the values to be stored in the new leaf tuples (these will be the same as the input datums if the operator class does not modify datums from one level to the next). Note that the `picksplit` function is responsible for palloc\&#39;ing the nodeLabels, mapTuplesToNodes and leafTupleDatums arrays.
+
+If more than one leaf tuple is supplied, it is expected that the `picksplit` function will classify them into more than one node; otherwise it is not possible to split the leaf tuples across multiple pages, which is the ultimate purpose of this operation. Therefore, if the `picksplit` function ends up placing all the leaf tuples in the same node, the core SP-GiST code will override that decision and generate an inner tuple in which the leaf tuples are assigned at random to several identically-labeled nodes. Such a tuple is marked `allTheSame` to signify that this has happened. The `choose` and `inner_consistent` functions must take suitable care with such inner tuples. See [ Inner Tuples](#spgist-all-the-same) for more information.
+
+`picksplit` can be applied to a single leaf tuple only in the case that the `config` function set longValuesOK to true and a larger-than-a-page input value has been supplied. In this case the point of the operation is to strip off a prefix and produce a new, shorter leaf datum value. The call will be repeated until a leaf datum short enough to fit on a page has been produced. See [SP-GiST Limits](#spgist-limits) for more information.
+</code></pre>
+<p><code>inner_consistent</code></p>
+<p>:   Returns set of nodes (branches) to follow during tree search.</p>
+<pre><code>The SQL declaration of the function must look like this: 
+</code></pre>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>SQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-sql"><span class="hljs-keyword">CREATE</span> <span class="hljs-keyword">FUNCTION</span> my_inner_consistent(internal, internal) <span class="hljs-keyword">RETURNS</span> void ...</code></pre></div></figure>
+<p> The first argument is a pointer to a spgInnerConsistentIn C struct, containing input data for the function. The second argument is a pointer to a spgInnerConsistentOut C struct, which the function must fill with result data. </p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>SQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-sql">typedef struct spgInnerConsistentIn
+{
+    ScanKey     scankeys;       <span class="hljs-comment">/* array of operators and comparison values */</span>
+    ScanKey     orderbys;       <span class="hljs-comment">/* array of ordering operators and comparison
+                                 * values */</span>
+    <span class="hljs-type">int</span>         nkeys;          <span class="hljs-comment">/* length of scankeys array */</span>
+    <span class="hljs-type">int</span>         norderbys;      <span class="hljs-comment">/* length of orderbys array */</span>
+
+    Datum       reconstructedValue;     <span class="hljs-comment">/* value reconstructed at parent */</span>
+    void       <span class="hljs-operator">*</span>traversalValue; <span class="hljs-comment">/* opclass-specific traverse value */</span>
+    MemoryContext traversalMemoryContext;   <span class="hljs-comment">/* put new traverse values here */</span>
+    <span class="hljs-type">int</span>         level;          <span class="hljs-comment">/* current level (counting from zero) */</span>
+    bool        returnData;     <span class="hljs-comment">/* original data must be returned? */</span>
+
+    <span class="hljs-comment">/* Data from current inner tuple */</span>
+    bool        allTheSame;     <span class="hljs-comment">/* tuple is marked all-the-same? */</span>
+    bool        hasPrefix;      <span class="hljs-comment">/* tuple has a prefix? */</span>
+    Datum       prefixDatum;    <span class="hljs-comment">/* if so, the prefix value */</span>
+    <span class="hljs-type">int</span>         nNodes;         <span class="hljs-comment">/* number of nodes in the inner tuple */</span>
+    Datum      <span class="hljs-operator">*</span>nodeLabels;     <span class="hljs-comment">/* node label values (NULL if none) */</span>
+} spgInnerConsistentIn;
+
+typedef struct spgInnerConsistentOut
+{
+    <span class="hljs-type">int</span>         nNodes;         <span class="hljs-comment">/* number of child nodes to be visited */</span>
+    <span class="hljs-type">int</span>        <span class="hljs-operator">*</span>nodeNumbers;    <span class="hljs-comment">/* their indexes in the node array */</span>
+    <span class="hljs-type">int</span>        <span class="hljs-operator">*</span>levelAdds;      <span class="hljs-comment">/* increment level by this much for each */</span>
+    Datum      <span class="hljs-operator">*</span>reconstructedValues;    <span class="hljs-comment">/* associated reconstructed values */</span>
+    void      <span class="hljs-operator">*</span><span class="hljs-operator">*</span>traversalValues;        <span class="hljs-comment">/* opclass-specific traverse values */</span>
+    <span class="hljs-keyword">double</span>    <span class="hljs-operator">*</span><span class="hljs-operator">*</span>distances;              <span class="hljs-comment">/* associated distances */</span>
+} spgInnerConsistentOut;</code></pre></div></figure>
+<p> The array scankeys, of length nkeys, describes the index search condition(s). These conditions are combined with AND only index entries that satisfy all of them are interesting. (Note that nkeys = 0 implies that all index entries satisfy the query.) Usually the consistent function only cares about the sk_strategy and sk_argument fields of each array entry, which respectively give the indexable operator and comparison value. In particular it is not necessary to check sk_flags to see if the comparison value is NULL, because the SP-GiST core code will filter out such conditions. The array orderbys, of length norderbys, describes ordering operators (if any) in the same manner. reconstructedValue is the value reconstructed for the parent tuple; it is <code>(Datum) 0</code> at the root level or if the <code>inner_consistent</code> function did not provide a value at the parent level. traversalValue is a pointer to any traverse data passed down from the previous call of <code>inner_consistent</code> on the parent index tuple, or NULL at the root level. traversalMemoryContext is the memory context in which to store output traverse values (see below). level is the current inner tuple&#39;s level, starting at zero for the root level. returnData is <code>true</code> if reconstructed data is required for this query; this will only be so if the <code>config</code> function asserted canReturnData. allTheSame is true if the current inner tuple is marked &quot;all-the-same&quot;; in this case all the nodes have the same label (if any) and so either all or none of them match the query (see <a href="#spgist-all-the-same"> Inner Tuples</a>). hasPrefix is true if the current inner tuple contains a prefix; if so, prefixDatum is its value. nNodes is the number of child nodes contained in the inner tuple, and nodeLabels is an array of their label values, or NULL if the nodes do not have labels.</p>
+<pre><code>nNodes must be set to the number of child nodes that need to be visited by the search, and nodeNumbers must be set to an array of their indexes. If the operator class keeps track of levels, set levelAdds to an array of the level increments required when descending to each node to be visited. (Often these increments will be the same for all the nodes, but that\&#39;s not necessarily so, so an array is used.) If value reconstruction is needed, set reconstructedValues to an array of the values reconstructed for each child node to be visited; otherwise, leave reconstructedValues as NULL. The reconstructed values are assumed to be of type spgConfigOut.leafType. (However, since the core system will do nothing with them except possibly copy them, it is sufficient for them to have the same `typlen` and `typbyval` properties as leafType.) If ordered search is performed, set distances to an array of distance values according to orderbys array (nodes with lowest distances will be processed first). Leave it NULL otherwise. If it is desired to pass down additional out-of-band information (&quot;traverse values&quot;) to lower levels of the tree search, set traversalValues to an array of the appropriate traverse values, one for each child node to be visited; otherwise, leave traversalValues as NULL. Note that the `inner_consistent` function is responsible for palloc\&#39;ing the nodeNumbers, levelAdds, distances, reconstructedValues, and traversalValues arrays in the current memory context. However, any output traverse values pointed to by the traversalValues array should be allocated in traversalMemoryContext. Each traverse value must be a single palloc\&#39;d chunk.
+</code></pre>
+<p><code>leaf_consistent</code></p>
+<p>:   Returns true if a leaf tuple satisfies a query.</p>
+<pre><code>The SQL declaration of the function must look like this: 
+</code></pre>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>SQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-sql"><span class="hljs-keyword">CREATE</span> <span class="hljs-keyword">FUNCTION</span> my_leaf_consistent(internal, internal) <span class="hljs-keyword">RETURNS</span> bool ...</code></pre></div></figure>
+<p> The first argument is a pointer to a spgLeafConsistentIn C struct, containing input data for the function. The second argument is a pointer to a spgLeafConsistentOut C struct, which the function must fill with result data. </p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>SQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-sql">typedef struct spgLeafConsistentIn
+{
+    ScanKey     scankeys;       <span class="hljs-comment">/* array of operators and comparison values */</span>
+    ScanKey     orderbys;       <span class="hljs-comment">/* array of ordering operators and comparison
+                                 * values */</span>
+    <span class="hljs-type">int</span>         nkeys;          <span class="hljs-comment">/* length of scankeys array */</span>
+    <span class="hljs-type">int</span>         norderbys;      <span class="hljs-comment">/* length of orderbys array */</span>
+
+    Datum       reconstructedValue;     <span class="hljs-comment">/* value reconstructed at parent */</span>
+    void       <span class="hljs-operator">*</span>traversalValue; <span class="hljs-comment">/* opclass-specific traverse value */</span>
+    <span class="hljs-type">int</span>         level;          <span class="hljs-comment">/* current level (counting from zero) */</span>
+    bool        returnData;     <span class="hljs-comment">/* original data must be returned? */</span>
+
+    Datum       leafDatum;      <span class="hljs-comment">/* datum in leaf tuple */</span>
+} spgLeafConsistentIn;
+
+typedef struct spgLeafConsistentOut
+{
+    Datum       leafValue;        <span class="hljs-comment">/* reconstructed original data, if any */</span>
+    bool        recheck;          <span class="hljs-comment">/* set true if operator must be rechecked */</span>
+    bool        recheckDistances; <span class="hljs-comment">/* set true if distances must be rechecked */</span>
+    <span class="hljs-keyword">double</span>     <span class="hljs-operator">*</span>distances;        <span class="hljs-comment">/* associated distances */</span>
+} spgLeafConsistentOut;</code></pre></div></figure>
+<p> The array scankeys, of length nkeys, describes the index search condition(s). These conditions are combined with AND only index entries that satisfy all of them satisfy the query. (Note that nkeys = 0 implies that all index entries satisfy the query.) Usually the consistent function only cares about the sk_strategy and sk_argument fields of each array entry, which respectively give the indexable operator and comparison value. In particular it is not necessary to check sk_flags to see if the comparison value is NULL, because the SP-GiST core code will filter out such conditions. The array orderbys, of length norderbys, describes the ordering operators in the same manner. reconstructedValue is the value reconstructed for the parent tuple; it is <code>(Datum) 0</code> at the root level or if the <code>inner_consistent</code> function did not provide a value at the parent level. traversalValue is a pointer to any traverse data passed down from the previous call of <code>inner_consistent</code> on the parent index tuple, or NULL at the root level. level is the current leaf tuple&#39;s level, starting at zero for the root level. returnData is <code>true</code> if reconstructed data is required for this query; this will only be so if the <code>config</code> function asserted canReturnData. leafDatum is the key value of spgConfigOut.leafType stored in the current leaf tuple.</p>
+<pre><code>The function must return `true` if the leaf tuple matches the query, or `false` if not. In the `true` case, if returnData is `true` then leafValue must be set to the value (of type spgConfigIn.attType) originally supplied to be indexed for this leaf tuple. Also, recheck may be set to `true` if the match is uncertain and so the operator(s) must be re-applied to the actual heap tuple to verify the match. If ordered search is performed, set distances to an array of distance values according to orderbys array. Leave it NULL otherwise. If at least one of returned distances is not exact, set recheckDistances to true. In this case, the executor will calculate the exact distances after fetching the tuple from the heap, and will reorder the tuples if needed.
+</code></pre>
+<p>The optional user-defined methods are:</p>
+<p><code>Datum compress(Datum in)</code></p>
+<p>:   Converts a data item into a format suitable for physical storage in a leaf tuple of the index. It accepts a value of type spgConfigIn.attType and returns a value of type spgConfigOut.leafType. The output value must not contain an out-of-line TOAST pointer.</p>
+<pre><code>Note: the `compress` method is only applied to values to be stored. The consistent methods receive query scankeys unchanged, without transformation using `compress`.
+</code></pre>
+<p><code>options</code></p>
+<p>:   Defines a set of user-visible parameters that control operator class behavior.</p>
+<pre><code>The SQL declaration of the function must look like this: 
+</code></pre>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>SQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-sql"><span class="hljs-keyword">CREATE</span> <span class="hljs-keyword">OR</span> REPLACE <span class="hljs-keyword">FUNCTION</span> my_options(internal)
+<span class="hljs-keyword">RETURNS</span> void
+<span class="hljs-keyword">AS</span> <span class="hljs-string">&#x27;MODULE_PATHNAME&#x27;</span>
+<span class="hljs-keyword">LANGUAGE</span> C STRICT;</code></pre></div></figure>
+<pre><code>The function is passed a pointer to a local_relopts struct, which needs to be filled with a set of operator class specific options. The options can be accessed from other support functions using the `PG_HAS_OPCLASS_OPTIONS()` and `PG_GET_OPCLASS_OPTIONS()` macros.
+
+Since the representation of the key in SP-GiST is flexible, it may depend on user-specified parameters.
+</code></pre>
+<p>All the SP-GiST support methods are normally called in a short-lived memory context; that is, <code>CurrentMemoryContext</code> will be reset after processing of each tuple. It is therefore not very important to worry about pfree&#39;ing everything you palloc. (The <code>config</code> method is an exception: it should try to avoid leaking memory. But usually the <code>config</code> method need do nothing but assign constants into the passed parameter struct.)</p>
+<p>If the indexed column is of a collatable data type, the index collation will be passed to all the support methods, using the standard <code>PG_GET_COLLATION()</code> mechanism.</p>
+<h2 id="implementation">Implementation</h2>
+<p>This section covers implementation details and other tricks that are useful for implementers of SP-GiST operator classes to know.</p>
+<h3 id="sp-gist-limits">SP-GiST Limits</h3>
+<p>Individual leaf tuples and inner tuples must fit on a single index page (8kB by default). Therefore, when indexing values of variable-length data types, long values can only be supported by methods such as radix trees, in which each level of the tree includes a prefix that is short enough to fit on a page, and the final leaf level includes a suffix also short enough to fit on a page. The operator class should set longValuesOK to true only if it is prepared to arrange for this to happen. Otherwise, the SP-GiST core will reject any request to index a value that is too large to fit on an index page.</p>
+<p>Likewise, it is the operator class&#39;s responsibility that inner tuples do not grow too large to fit on an index page; this limits the number of child nodes that can be used in one inner tuple, as well as the maximum size of a prefix value.</p>
+<p>Another limitation is that when an inner tuple&#39;s node points to a set of leaf tuples, those tuples must all be in the same index page. (This is a design decision to reduce seeking and save space in the links that chain such tuples together.) If the set of leaf tuples grows too large for a page, a split is performed and an intermediate inner tuple is inserted. For this to fix the problem, the new inner tuple <em>must</em> divide the set of leaf values into more than one node group. If the operator class&#39;s <code>picksplit</code> function fails to do that, the SP-GiST core resorts to extraordinary measures described in <a href="#spgist-all-the-same"> Inner Tuples</a>.</p>
+<p>When longValuesOK is true, it is expected that successive levels of the SP-GiST tree will absorb more and more information into the prefixes and node labels of the inner tuples, making the required leaf datum smaller and smaller, so that eventually it will fit on a page. To prevent bugs in operator classes from causing infinite insertion loops, the SP-GiST core will raise an error if the leaf datum does not become any smaller within ten cycles of <code>choose</code> method calls.</p>
+<h3 id="sp-gist-without-node-labels">SP-GiST Without Node Labels</h3>
+<p>Some tree algorithms use a fixed set of nodes for each inner tuple; for example, in a quad-tree there are always exactly four nodes corresponding to the four quadrants around the inner tuple&#39;s centroid point. In such a case the code typically works with the nodes by number, and there is no need for explicit node labels. To suppress node labels (and thereby save some space), the <code>picksplit</code> function can return NULL for the nodeLabels array, and likewise the <code>choose</code> function can return NULL for the prefixNodeLabels array during a <code>spgSplitTuple</code> action. This will in turn result in nodeLabels being NULL during subsequent calls to <code>choose</code> and <code>inner_consistent</code>. In principle, node labels could be used for some inner tuples and omitted for others in the same index.</p>
+<p>When working with an inner tuple having unlabeled nodes, it is an error for <code>choose</code> to return <code>spgAddNode</code>, since the set of nodes is supposed to be fixed in such cases.</p>
+<h3 id="all-the-same-inner-tuples">&quot;All-the-Same&quot; Inner Tuples</h3>
+<p>The SP-GiST core can override the results of the operator class&#39;s <code>picksplit</code> function when <code>picksplit</code> fails to divide the supplied leaf values into at least two node categories. When this happens, the new inner tuple is created with multiple nodes that each have the same label (if any) that <code>picksplit</code> gave to the one node it did use, and the leaf values are divided at random among these equivalent nodes. The <code>allTheSame</code> flag is set on the inner tuple to warn the <code>choose</code> and <code>inner_consistent</code> functions that the tuple does not have the node set that they might otherwise expect.</p>
+<p>When dealing with an <code>allTheSame</code> tuple, a <code>choose</code> result of <code>spgMatchNode</code> is interpreted to mean that the new value can be assigned to any of the equivalent nodes; the core code will ignore the supplied nodeN value and descend into one of the nodes at random (so as to keep the tree balanced). It is an error for <code>choose</code> to return <code>spgAddNode</code>, since that would make the nodes not all equivalent; the <code>spgSplitTuple</code> action must be used if the value to be inserted doesn&#39;t match the existing nodes.</p>
+<p>When dealing with an <code>allTheSame</code> tuple, the <code>inner_consistent</code> function should return either all or none of the nodes as targets for continuing the index search, since they are all equivalent. This may or may not require any special-case code, depending on how much the <code>inner_consistent</code> function normally assumes about the meaning of the nodes.</p>
+<h2 id="examples">Examples</h2>
+<p>The PostgreSQL source distribution includes several examples of index operator classes for SP-GiST, as described in <a href="#spgist-builtin-opclasses-table">Built-in Operator Classes</a>. Look into <code>src/backend/access/spgist/</code> and <code>src/backend/utils/adt/</code> to see the code.</p>

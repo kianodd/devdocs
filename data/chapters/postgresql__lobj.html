@@ -1,0 +1,391 @@
+<p>large object</p>
+<p>BLOB</p>
+<p>large object</p>
+<p>PostgreSQL has a large object facility, which provides stream-style access to user data that is stored in a special large-object structure. Streaming access is useful when working with data values that are too large to manipulate conveniently as a whole.</p>
+<p>This chapter describes the implementation and the programming and query language interfaces to PostgreSQL large object data. We use the libpq C library for the examples in this chapter, but most programming interfaces native to PostgreSQL support equivalent functionality. Other interfaces might use the large object interface internally to provide generic support for large values. This is not described here.</p>
+<h2 id="introduction">Introduction</h2>
+<p>TOAST</p>
+<p>versus large objects</p>
+<p>All large objects are stored in a single system table named <a href="#catalog-pg-largeobject">pg_largeobject</a>. Each large object also has an entry in the system table <a href="#catalog-pg-largeobject-metadata">pg_largeobject_metadata</a>. Large objects can be created, modified, and deleted using a read/write API that is similar to standard operations on files.</p>
+<p>PostgreSQL also supports a storage system called <a href="#storage-toast">&quot;TOAST&quot;</a>, which automatically stores values larger than a single database page into a secondary storage area per table. This makes the large object facility partially obsolete. One remaining advantage of the large object facility is that it allows values up to 4 TB in size, whereas TOASTed fields can be at most 1 GB. Also, reading and updating portions of a large object can be done efficiently, while most operations on a TOASTed field will read or write the whole value as a unit.</p>
+<h2 id="implementation-features">Implementation Features</h2>
+<p>The large object implementation breaks large objects up into &quot;chunks&quot; and stores the chunks in rows in the database. A B-tree index guarantees fast searches for the correct chunk number when doing random access reads and writes.</p>
+<p>The chunks stored for a large object do not have to be contiguous. For example, if an application opens a new large object, seeks to offset 1000000, and writes a few bytes there, this does not result in allocation of 1000000 bytes worth of storage; only of chunks covering the range of data bytes actually written. A read operation will, however, read out zeroes for any unallocated locations preceding the last existing chunk. This corresponds to the common behavior of &quot;sparsely allocated&quot; files in Unix file systems.</p>
+<p>As of PostgreSQL 9.0, large objects have an owner and a set of access permissions, which can be managed using <a href="#sql-grant">???</a> and <a href="#sql-revoke">???</a>. <code>SELECT</code> privileges are required to read a large object, and <code>UPDATE</code> privileges are required to write or truncate it. Only the large object&#39;s owner (or a database superuser) can delete, comment on, or change the owner of a large object. To adjust this behavior for compatibility with prior releases, see the <a href="#guc-lo-compat-privileges">???</a> run-time parameter.</p>
+<h2 id="client-interfaces">Client Interfaces</h2>
+<p>This section describes the facilities that PostgreSQL&#39;s libpq client interface library provides for accessing large objects. The PostgreSQL large object interface is modeled after the Unix file-system interface, with analogues of <code>open</code>, <code>read</code>, <code>write</code>, <code>lseek</code>, etc.</p>
+<p>All large object manipulation using these functions <em>must</em> take place within an SQL transaction block, since large object file descriptors are only valid for the duration of a transaction. Write operations, including <code>lo_open</code> with the <code>INV_WRITE</code> mode, are not allowed in a read-only transaction.</p>
+<p>If an error occurs while executing any one of these functions, the function will return an otherwise-impossible value, typically 0 or -1. A message describing the error is stored in the connection object and can be retrieved with <a href="#libpq-PQerrorMessage">???</a>.</p>
+<p>Client applications that use these functions should include the header file <code>libpq/libpq-fs.h</code> and link with the libpq library.</p>
+<p>Client applications cannot use these functions while a libpq connection is in pipeline mode.</p>
+<h3 id="creating-a-large-object">Creating a Large Object</h3>
+<p>[]{.indexterm} The function Oid lo_create(PGconn *conn, Oid lobjId); creates a new large object. The OID to be assigned can be specified by &lt;lobjId&gt;; if so, failure occurs if that OID is already in use for some large object. If &lt;lobjId&gt; is <code>InvalidOid</code> (zero) then <code>lo_create</code> assigns an unused OID. The return value is the OID that was assigned to the new large object, or <code>InvalidOid</code> (zero) on failure.</p>
+<p>An example: </p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>SQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-sql">inv_oid <span class="hljs-operator">=</span> lo_create(conn, desired_oid);</code></pre></div></figure>
+<p>[]{.indexterm} The older function Oid lo_creat(PGconn *conn, int mode); also creates a new large object, always assigning an unused OID. The return value is the OID that was assigned to the new large object, or <code>InvalidOid</code> (zero) on failure.</p>
+<p>In PostgreSQL releases 8.1 and later, the &lt;mode&gt; is ignored, so that <code>lo_creat</code> is exactly equivalent to <code>lo_create</code> with a zero second argument. However, there is little reason to use <code>lo_creat</code> unless you need to work with servers older than 8.1. To work with such an old server, you must use <code>lo_creat</code> not <code>lo_create</code>, and you must set &lt;mode&gt; to one of <code>INV_READ</code>, <code>INV_WRITE</code>, or <code>INV_READ</code> <code>|</code> <code>INV_WRITE</code>. (These symbolic constants are defined in the header file <code>libpq/libpq-fs.h</code>.)</p>
+<p>An example: </p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>SQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-sql">inv_oid <span class="hljs-operator">=</span> lo_creat(conn, INV_READ<span class="hljs-operator">|</span>INV_WRITE);</code></pre></div></figure>
+<h3 id="importing-a-large-object">Importing a Large Object</h3>
+<p>[]{.indexterm} To import an operating system file as a large object, call Oid lo_import(PGconn *conn, const char *filename); &lt;filename&gt; specifies the operating system name of the file to be imported as a large object. The return value is the OID that was assigned to the new large object, or <code>InvalidOid</code> (zero) on failure. Note that the file is read by the client interface library, not by the server; so it must exist in the client file system and be readable by the client application.</p>
+<p>[]{.indexterm} The function Oid lo_import_with_oid(PGconn *conn, const char *filename, Oid lobjId); also imports a new large object. The OID to be assigned can be specified by &lt;lobjId&gt;; if so, failure occurs if that OID is already in use for some large object. If &lt;lobjId&gt; is <code>InvalidOid</code> (zero) then <code>lo_import_with_oid</code> assigns an unused OID (this is the same behavior as <code>lo_import</code>). The return value is the OID that was assigned to the new large object, or <code>InvalidOid</code> (zero) on failure.</p>
+<p><code>lo_import_with_oid</code> is new as of PostgreSQL 8.4 and uses <code>lo_create</code> internally which is new in 8.1; if this function is run against 8.0 or before, it will fail and return <code>InvalidOid</code>.</p>
+<h3 id="exporting-a-large-object">Exporting a Large Object</h3>
+<p>[]{.indexterm} To export a large object into an operating system file, call int lo_export(PGconn *conn, Oid lobjId, const char *filename); The <code>lobjId</code> argument specifies the OID of the large object to export and the <code>filename</code> argument specifies the operating system name of the file. Note that the file is written by the client interface library, not by the server. Returns 1 on success, -1 on failure.</p>
+<h3 id="opening-an-existing-large-object">Opening an Existing Large Object</h3>
+<p>[]{.indexterm} To open an existing large object for reading or writing, call int lo_open(PGconn *conn, Oid lobjId, int mode); The <code>lobjId</code> argument specifies the OID of the large object to open. The <code>mode</code> bits control whether the object is opened for reading (<code>INV_READ</code>), writing (<code>INV_WRITE</code>), or both. (These symbolic constants are defined in the header file <code>libpq/libpq-fs.h</code>.) <code>lo_open</code> returns a (non-negative) large object descriptor for later use in <code>lo_read</code>, <code>lo_write</code>, <code>lo_lseek</code>, <code>lo_lseek64</code>, <code>lo_tell</code>, <code>lo_tell64</code>, <code>lo_truncate</code>, <code>lo_truncate64</code>, and <code>lo_close</code>. The descriptor is only valid for the duration of the current transaction. On failure, -1 is returned.</p>
+<p>The server currently does not distinguish between modes <code>INV_WRITE</code> and <code>INV_READ</code> <code>|</code> <code>INV_WRITE</code>: you are allowed to read from the descriptor in either case. However there is a significant difference between these modes and <code>INV_READ</code> alone: with <code>INV_READ</code> you cannot write on the descriptor, and the data read from it will reflect the contents of the large object at the time of the transaction snapshot that was active when <code>lo_open</code> was executed, regardless of later writes by this or other transactions. Reading from a descriptor opened with <code>INV_WRITE</code> returns data that reflects all writes of other committed transactions as well as writes of the current transaction. This is similar to the behavior of <code>REPEATABLE READ</code> versus <code>READ COMMITTED</code> transaction modes for ordinary SQL <code>SELECT</code> commands.</p>
+<p><code>lo_open</code> will fail if <code>SELECT</code> privilege is not available for the large object, or if <code>INV_WRITE</code> is specified and <code>UPDATE</code> privilege is not available. (Prior to PostgreSQL 11, these privilege checks were instead performed at the first actual read or write call using the descriptor.) These privilege checks can be disabled with the <a href="#guc-lo-compat-privileges">???</a> run-time parameter.</p>
+<p>An example: </p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>SQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-sql">inv_fd <span class="hljs-operator">=</span> lo_open(conn, inv_oid, INV_READ<span class="hljs-operator">|</span>INV_WRITE);</code></pre></div></figure>
+<h3 id="writing-data-to-a-large-object">Writing Data to a Large Object</h3>
+<p>[]{.indexterm} The function int lo_write(PGconn *conn, int fd, const char *buf, size_t len); writes <code>len</code> bytes from <code>buf</code> (which must be of size <code>len</code>) to large object descriptor <code>fd</code>. The <code>fd</code> argument must have been returned by a previous <code>lo_open</code>. The number of bytes actually written is returned (in the current implementation, this will always equal <code>len</code> unless there is an error). In the event of an error, the return value is -1.</p>
+<p>Although the <code>len</code> parameter is declared as <code>size_t</code>, this function will reject length values larger than <code>INT_MAX</code>. In practice, it&#39;s best to transfer data in chunks of at most a few megabytes anyway.</p>
+<h3 id="reading-data-from-a-large-object">Reading Data from a Large Object</h3>
+<p>[]{.indexterm} The function int lo_read(PGconn *conn, int fd, char *buf, size_t len); reads up to <code>len</code> bytes from large object descriptor <code>fd</code> into <code>buf</code> (which must be of size <code>len</code>). The <code>fd</code> argument must have been returned by a previous <code>lo_open</code>. The number of bytes actually read is returned; this will be less than <code>len</code> if the end of the large object is reached first. In the event of an error, the return value is -1.</p>
+<p>Although the <code>len</code> parameter is declared as <code>size_t</code>, this function will reject length values larger than <code>INT_MAX</code>. In practice, it&#39;s best to transfer data in chunks of at most a few megabytes anyway.</p>
+<h3 id="seeking-in-a-large-object">Seeking in a Large Object</h3>
+<p>[]{.indexterm} To change the current read or write location associated with a large object descriptor, call int lo_lseek(PGconn *conn, int fd, int offset, int whence); This function moves the current location pointer for the large object descriptor identified by <code>fd</code> to the new location specified by <code>offset</code>. The valid values for <code>whence</code> are <code>SEEK_SET</code> (seek from object start), <code>SEEK_CUR</code> (seek from current position), and <code>SEEK_END</code> (seek from object end). The return value is the new location pointer, or -1 on error.</p>
+<p>[]{.indexterm} When dealing with large objects that might exceed 2GB in size, instead use int64_t lo_lseek64(PGconn *conn, int fd, int64_t offset, int whence); This function has the same behavior as <code>lo_lseek</code>, but it can accept an <code>offset</code> larger than 2GB and/or deliver a result larger than 2GB. Note that <code>lo_lseek</code> will fail if the new location pointer would be greater than 2GB.</p>
+<p><code>lo_lseek64</code> is new as of PostgreSQL 9.3. If this function is run against an older server version, it will fail and return -1.</p>
+<h3 id="obtaining-the-seek-position-of-a-large-object">Obtaining the Seek Position of a Large Object</h3>
+<p>[]{.indexterm} To obtain the current read or write location of a large object descriptor, call int lo_tell(PGconn *conn, int fd); If there is an error, the return value is -1.</p>
+<p>[]{.indexterm} When dealing with large objects that might exceed 2GB in size, instead use int64_t lo_tell64(PGconn *conn, int fd); This function has the same behavior as <code>lo_tell</code>, but it can deliver a result larger than 2GB. Note that <code>lo_tell</code> will fail if the current read/write location is greater than 2GB.</p>
+<p><code>lo_tell64</code> is new as of PostgreSQL 9.3. If this function is run against an older server version, it will fail and return -1.</p>
+<h3 id="truncating-a-large-object">Truncating a Large Object</h3>
+<p>[]{.indexterm} To truncate a large object to a given length, call int lo_truncate(PGconn *conn, int fd, size_t len); This function truncates the large object descriptor <code>fd</code> to length <code>len</code>. The <code>fd</code> argument must have been returned by a previous <code>lo_open</code>. If <code>len</code> is greater than the large object&#39;s current length, the large object is extended to the specified length with null bytes (&#39;\0&#39;). On success, <code>lo_truncate</code> returns zero. On error, the return value is -1.</p>
+<p>The read/write location associated with the descriptor <code>fd</code> is not changed.</p>
+<p>Although the <code>len</code> parameter is declared as <code>size_t</code>, <code>lo_truncate</code> will reject length values larger than <code>INT_MAX</code>.</p>
+<p>[]{.indexterm} When dealing with large objects that might exceed 2GB in size, instead use int lo_truncate64(PGconn *conn, int fd, int64_t len); This function has the same behavior as <code>lo_truncate</code>, but it can accept a <code>len</code> value exceeding 2GB.</p>
+<p><code>lo_truncate</code> is new as of PostgreSQL 8.3; if this function is run against an older server version, it will fail and return -1.</p>
+<p><code>lo_truncate64</code> is new as of PostgreSQL 9.3; if this function is run against an older server version, it will fail and return -1.</p>
+<h3 id="closing-a-large-object-descriptor">Closing a Large Object Descriptor</h3>
+<p>[]{.indexterm} A large object descriptor can be closed by calling int lo_close(PGconn *conn, int fd); where <code>fd</code> is a large object descriptor returned by <code>lo_open</code>. On success, <code>lo_close</code> returns zero. On error, the return value is -1.</p>
+<p>Any large object descriptors that remain open at the end of a transaction will be closed automatically.</p>
+<h3 id="removing-a-large-object">Removing a Large Object</h3>
+<p>[]{.indexterm} To remove a large object from the database, call int lo_unlink(PGconn *conn, Oid lobjId); The <code>lobjId</code> argument specifies the OID of the large object to remove. Returns 1 if successful, -1 on failure.</p>
+<h2 id="server-side-functions">Server-Side Functions</h2>
+<p>Server-side functions tailored for manipulating large objects from SQL are listed in <a href="#lo-funcs-table">SQL-Oriented Large Object Functions</a>.</p>
+<p>+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| Function                                                                                                                                                                                                                                         |
+|                                                                                                                                                                                                                                                  |
+| Description                                                                                                                                                                                                                                      |
+|                                                                                                                                                                                                                                                  |
+| Example(s)                                                                                                                                                                                                                                       |
++==================================================================================================================================================================================================================================================+
+| []{.indexterm} <code>lo_from_bytea</code> ( <code>loid</code> <code>oid</code>, <code>data</code> <code>bytea</code> ) oid                                                                                                                                                                              |
+|                                                                                                                                                                                                                                                  |
+| Creates a large object and stores <code>data</code> in it. If <code>loid</code> is zero then the system will choose a free OID, otherwise that OID is used (with an error if some large object already has that OID). On success, the large object&#39;s OID is returned. |
+|                                                                                                                                                                                                                                                  |
+| <code>lo_from_bytea(0, &#39;\xffffff00&#39;)</code> 24528                                                                                                                                                                                                           |
++--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| []{.indexterm} <code>lo_put</code> ( <code>loid</code> <code>oid</code>, <code>offset</code> <code>bigint</code>, <code>data</code> <code>bytea</code> ) void                                                                                                                                                                 |
+|                                                                                                                                                                                                                                                  |
+| Writes <code>data</code> starting at the given offset within the large object; the large object is enlarged if necessary.                                                                                                                                   |
+|                                                                                                                                                                                                                                                  |
+| <code>lo_put(24528, 1, &#39;\xaa&#39;)</code>                                                                                                                                                                                                                       |
++--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| []{.indexterm} <code>lo_get</code> ( <code>loid</code> <code>oid</code> [, <code>offset</code> <code>bigint</code>, <code>length</code> <code>integer</code>] ) bytea                                                                                                                                                       |
+|                                                                                                                                                                                                                                                  |
+| Extracts the large object&#39;s contents, or a substring thereof.                                                                                                                                                                                   |
+|                                                                                                                                                                                                                                                  |
+| <code>lo_get(24528, 0, 3)</code> \xffaaff                                                                                                                                                                                                                  |
++--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+</p>
+<p>: SQL-Oriented Large Object Functions </p>
+<p>There are additional server-side functions corresponding to each of the client-side functions described earlier; indeed, for the most part the client-side functions are simply interfaces to the equivalent server-side functions. The ones just as convenient to call via SQL commands are <code>lo_creat</code>[]{.indexterm}, <code>lo_create</code>, <code>lo_unlink</code>[]{.indexterm}, <code>lo_import</code>[]{.indexterm}, and <code>lo_export</code>[]{.indexterm}. Here are examples of their use: </p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>SQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-sql"><span class="hljs-keyword">CREATE TABLE</span> image (
+    name            text,
+    raster          oid
+);
+
+<span class="hljs-keyword">SELECT</span> lo_creat(<span class="hljs-number">-1</span>);       <span class="hljs-comment">-- returns OID of new, empty large object</span>
+
+<span class="hljs-keyword">SELECT</span> lo_create(<span class="hljs-number">43213</span>);   <span class="hljs-comment">-- attempts to create large object with OID 43213</span>
+
+<span class="hljs-keyword">SELECT</span> lo_unlink(<span class="hljs-number">173454</span>);  <span class="hljs-comment">-- deletes large object with OID 173454</span>
+
+<span class="hljs-keyword">INSERT INTO</span> image (name, raster)
+    <span class="hljs-keyword">VALUES</span> (<span class="hljs-string">&#x27;beautiful image&#x27;</span>, lo_import(<span class="hljs-string">&#x27;/etc/motd&#x27;</span>));
+
+<span class="hljs-keyword">INSERT INTO</span> image (name, raster)  <span class="hljs-comment">-- same as above, but specify OID to use</span>
+    <span class="hljs-keyword">VALUES</span> (<span class="hljs-string">&#x27;beautiful image&#x27;</span>, lo_import(<span class="hljs-string">&#x27;/etc/motd&#x27;</span>, <span class="hljs-number">68583</span>));
+
+<span class="hljs-keyword">SELECT</span> lo_export(image.raster, <span class="hljs-string">&#x27;/tmp/motd&#x27;</span>) <span class="hljs-keyword">FROM</span> image
+    <span class="hljs-keyword">WHERE</span> name <span class="hljs-operator">=</span> <span class="hljs-string">&#x27;beautiful image&#x27;</span>;</code></pre></div></figure>
+<p>The server-side <code>lo_import</code> and <code>lo_export</code> functions behave considerably differently from their client-side analogs. These two functions read and write files in the server&#39;s file system, using the permissions of the database&#39;s owning user. Therefore, by default their use is restricted to superusers. In contrast, the client-side import and export functions read and write files in the client&#39;s file system, using the permissions of the client program. The client-side functions do not require any database privileges, except the privilege to read or write the large object in question.</p>
+<p>It is possible to <a href="#sql-grant">???</a> use of the server-side <code>lo_import</code> and <code>lo_export</code> functions to non-superusers, but careful consideration of the security implications is required. A malicious user of such privileges could easily parlay them into becoming superuser (for example by rewriting server configuration files), or could attack the rest of the server&#39;s file system without bothering to obtain database superuser privileges as such. <em>Access to roles having such privilege must therefore be guarded just as carefully as access to superuser roles.</em> Nonetheless, if use of server-side <code>lo_import</code> or <code>lo_export</code> is needed for some routine task, it&#39;s safer to use a role with such privileges than one with full superuser privileges, as that helps to reduce the risk of damage from accidental errors.</p>
+<p>The functionality of <code>lo_read</code> and <code>lo_write</code> is also available via server-side calls, but the names of the server-side functions differ from the client side interfaces in that they do not contain underscores. You must call these functions as <code>loread</code> and <code>lowrite</code>.</p>
+<h2 id="example-program">Example Program</h2>
+<p><a href="#lo-example">example_title</a> is a sample program which shows how the large object interface in libpq can be used. Parts of the program are commented out but are left in the source for the reader&#39;s benefit. This program can also be found in <code>src/test/examples/testlo.c</code> in the source distribution.</p>
+<p>:::: {#lo-example .example}</p>
+<p>Large Objects with libpq Example Program</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>SQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-sql"><span class="hljs-comment">/*-----------------------------------------------------------------
+ *
+ * testlo.c
+ *    test using large objects with libpq
+ *
+ * Portions Copyright (c) 1996-2026, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1994, Regents of the University of California
+ *
+ *
+ * IDENTIFICATION
+ *    src/test/examples/testlo.c
+ *
+ *-----------------------------------------------------------------
+ */</span>
+#include <span class="hljs-operator">&lt;</span>stdio.h<span class="hljs-operator">&gt;</span>
+#include <span class="hljs-operator">&lt;</span>stdlib.h<span class="hljs-operator">&gt;</span>
+
+#include <span class="hljs-operator">&lt;</span>sys<span class="hljs-operator">/</span>types.h<span class="hljs-operator">&gt;</span>
+#include <span class="hljs-operator">&lt;</span>sys<span class="hljs-operator">/</span>stat.h<span class="hljs-operator">&gt;</span>
+#include <span class="hljs-operator">&lt;</span>fcntl.h<span class="hljs-operator">&gt;</span>
+#include <span class="hljs-operator">&lt;</span>unistd.h<span class="hljs-operator">&gt;</span>
+
+#include &quot;libpq-fe.h&quot;
+#include &quot;libpq/libpq-fs.h&quot;
+
+#<span class="hljs-keyword">define</span> BUFSIZE         <span class="hljs-number">1024</span>
+
+<span class="hljs-comment">/*
+ * importFile -
+ *    import file &quot;in_filename&quot; into database as large object &quot;lobjOid&quot;
+ *
+ */</span>
+<span class="hljs-keyword">static</span> Oid
+importFile(PGconn <span class="hljs-operator">*</span>conn, <span class="hljs-type">char</span> <span class="hljs-operator">*</span>filename)
+{
+    Oid         lobjId;
+    <span class="hljs-type">int</span>         lobj_fd;
+    <span class="hljs-type">char</span>        buf[BUFSIZE];
+    <span class="hljs-type">int</span>         nbytes,
+                tmp;
+    <span class="hljs-type">int</span>         fd;
+
+    <span class="hljs-comment">/*
+     * open the file to be read in
+     */</span>
+    fd <span class="hljs-operator">=</span> <span class="hljs-keyword">open</span>(filename, O_RDONLY, <span class="hljs-number">0666</span>);
+    if (fd <span class="hljs-operator">&lt;</span> <span class="hljs-number">0</span>)
+    {                           <span class="hljs-comment">/* error */</span>
+        fprintf(stderr, &quot;cannot open unix file\&quot;<span class="hljs-operator">%</span>s\&quot;\n&quot;, filename);
+    }
+
+    <span class="hljs-comment">/*
+     * create the large object
+     */</span>
+    lobjId <span class="hljs-operator">=</span> lo_creat(conn, INV_READ <span class="hljs-operator">|</span> INV_WRITE);
+    if (lobjId <span class="hljs-operator">=</span><span class="hljs-operator">=</span> <span class="hljs-number">0</span>)
+        fprintf(stderr, &quot;cannot create large object&quot;);
+
+    lobj_fd <span class="hljs-operator">=</span> lo_open(conn, lobjId, INV_WRITE);
+
+    <span class="hljs-comment">/*
+     * read in from the Unix file and write to the inversion file
+     */</span>
+    while ((nbytes <span class="hljs-operator">=</span> read(fd, buf, BUFSIZE)) <span class="hljs-operator">&gt;</span> <span class="hljs-number">0</span>)
+    {
+        tmp <span class="hljs-operator">=</span> lo_write(conn, lobj_fd, buf, nbytes);
+        if (tmp <span class="hljs-operator">&lt;</span> nbytes)
+            fprintf(stderr, &quot;error while reading \&quot;<span class="hljs-operator">%</span>s\&quot;&quot;, filename);
+    }
+
+    <span class="hljs-keyword">close</span>(fd);
+    lo_close(conn, lobj_fd);
+
+    <span class="hljs-keyword">return</span> lobjId;
+}
+
+<span class="hljs-keyword">static</span> void
+pickout(PGconn <span class="hljs-operator">*</span>conn, Oid lobjId, <span class="hljs-type">int</span> <span class="hljs-keyword">start</span>, <span class="hljs-type">int</span> len)
+{
+    <span class="hljs-type">int</span>         lobj_fd;
+    <span class="hljs-type">char</span>       <span class="hljs-operator">*</span>buf;
+    <span class="hljs-type">int</span>         nbytes;
+    <span class="hljs-type">int</span>         nread;
+
+    lobj_fd <span class="hljs-operator">=</span> lo_open(conn, lobjId, INV_READ);
+    if (lobj_fd <span class="hljs-operator">&lt;</span> <span class="hljs-number">0</span>)
+        fprintf(stderr, &quot;cannot open large object %u&quot;, lobjId);
+
+    lo_lseek(conn, lobj_fd, <span class="hljs-keyword">start</span>, SEEK_SET);
+    buf <span class="hljs-operator">=</span> malloc(len <span class="hljs-operator">+</span> <span class="hljs-number">1</span>);
+
+    nread <span class="hljs-operator">=</span> <span class="hljs-number">0</span>;
+    while (len <span class="hljs-operator">-</span> nread <span class="hljs-operator">&gt;</span> <span class="hljs-number">0</span>)
+    {
+        nbytes <span class="hljs-operator">=</span> lo_read(conn, lobj_fd, buf, len <span class="hljs-operator">-</span> nread);
+        buf[nbytes] <span class="hljs-operator">=</span> <span class="hljs-string">&#x27;\0&#x27;</span>;
+        fprintf(stderr, &quot;&gt;&gt;&gt; %s&quot;, buf);
+        nread <span class="hljs-operator">+</span><span class="hljs-operator">=</span> nbytes;
+        if (nbytes <span class="hljs-operator">&lt;=</span> <span class="hljs-number">0</span>)
+            break;              <span class="hljs-comment">/* no more data? */</span>
+    }
+    <span class="hljs-keyword">free</span>(buf);
+    fprintf(stderr, &quot;\n&quot;);
+    lo_close(conn, lobj_fd);
+}
+
+<span class="hljs-keyword">static</span> void
+overwrite(PGconn <span class="hljs-operator">*</span>conn, Oid lobjId, <span class="hljs-type">int</span> <span class="hljs-keyword">start</span>, <span class="hljs-type">int</span> len)
+{
+    <span class="hljs-type">int</span>         lobj_fd;
+    <span class="hljs-type">char</span>       <span class="hljs-operator">*</span>buf;
+    <span class="hljs-type">int</span>         nbytes;
+    <span class="hljs-type">int</span>         nwritten;
+    <span class="hljs-type">int</span>         i;
+
+    lobj_fd <span class="hljs-operator">=</span> lo_open(conn, lobjId, INV_WRITE);
+    if (lobj_fd <span class="hljs-operator">&lt;</span> <span class="hljs-number">0</span>)
+        fprintf(stderr, &quot;cannot open large object %u&quot;, lobjId);
+
+    lo_lseek(conn, lobj_fd, <span class="hljs-keyword">start</span>, SEEK_SET);
+    buf <span class="hljs-operator">=</span> malloc(len <span class="hljs-operator">+</span> <span class="hljs-number">1</span>);
+
+    <span class="hljs-keyword">for</span> (i <span class="hljs-operator">=</span> <span class="hljs-number">0</span>; i <span class="hljs-operator">&lt;</span> len; i<span class="hljs-operator">+</span><span class="hljs-operator">+</span>)
+        buf[i] <span class="hljs-operator">=</span> <span class="hljs-string">&#x27;X&#x27;</span>;
+    buf[i] <span class="hljs-operator">=</span> <span class="hljs-string">&#x27;\0&#x27;</span>;
+
+    nwritten <span class="hljs-operator">=</span> <span class="hljs-number">0</span>;
+    while (len <span class="hljs-operator">-</span> nwritten <span class="hljs-operator">&gt;</span> <span class="hljs-number">0</span>)
+    {
+        nbytes <span class="hljs-operator">=</span> lo_write(conn, lobj_fd, buf <span class="hljs-operator">+</span> nwritten, len <span class="hljs-operator">-</span> nwritten);
+        nwritten <span class="hljs-operator">+</span><span class="hljs-operator">=</span> nbytes;
+        if (nbytes <span class="hljs-operator">&lt;=</span> <span class="hljs-number">0</span>)
+        {
+            fprintf(stderr, &quot;\nWRITE FAILED!\n&quot;);
+            break;
+        }
+    }
+    <span class="hljs-keyword">free</span>(buf);
+    fprintf(stderr, &quot;\n&quot;);
+    lo_close(conn, lobj_fd);
+}
+
+
+<span class="hljs-comment">/*
+ * exportFile -
+ *    export large object &quot;lobjOid&quot; to file &quot;out_filename&quot;
+ *
+ */</span>
+<span class="hljs-keyword">static</span> void
+exportFile(PGconn <span class="hljs-operator">*</span>conn, Oid lobjId, <span class="hljs-type">char</span> <span class="hljs-operator">*</span>filename)
+{
+    <span class="hljs-type">int</span>         lobj_fd;
+    <span class="hljs-type">char</span>        buf[BUFSIZE];
+    <span class="hljs-type">int</span>         nbytes,
+                tmp;
+    <span class="hljs-type">int</span>         fd;
+
+    <span class="hljs-comment">/*
+     * open the large object
+     */</span>
+    lobj_fd <span class="hljs-operator">=</span> lo_open(conn, lobjId, INV_READ);
+    if (lobj_fd <span class="hljs-operator">&lt;</span> <span class="hljs-number">0</span>)
+        fprintf(stderr, &quot;cannot open large object %u&quot;, lobjId);
+
+    <span class="hljs-comment">/*
+     * open the file to be written to
+     */</span>
+    fd <span class="hljs-operator">=</span> <span class="hljs-keyword">open</span>(filename, O_CREAT <span class="hljs-operator">|</span> O_WRONLY <span class="hljs-operator">|</span> O_TRUNC, <span class="hljs-number">0666</span>);
+    if (fd <span class="hljs-operator">&lt;</span> <span class="hljs-number">0</span>)
+    {                           <span class="hljs-comment">/* error */</span>
+        fprintf(stderr, &quot;cannot open unix file\&quot;<span class="hljs-operator">%</span>s\&quot;&quot;,
+                filename);
+    }
+
+    <span class="hljs-comment">/*
+     * read in from the inversion file and write to the Unix file
+     */</span>
+    while ((nbytes <span class="hljs-operator">=</span> lo_read(conn, lobj_fd, buf, BUFSIZE)) <span class="hljs-operator">&gt;</span> <span class="hljs-number">0</span>)
+    {
+        tmp <span class="hljs-operator">=</span> write(fd, buf, nbytes);
+        if (tmp <span class="hljs-operator">&lt;</span> nbytes)
+        {
+            fprintf(stderr, &quot;error while writing \&quot;<span class="hljs-operator">%</span>s\&quot;&quot;,
+                    filename);
+        }
+    }
+
+    lo_close(conn, lobj_fd);
+    <span class="hljs-keyword">close</span>(fd);
+}
+
+<span class="hljs-keyword">static</span> void
+exit_nicely(PGconn <span class="hljs-operator">*</span>conn)
+{
+    PQfinish(conn);
+    exit(<span class="hljs-number">1</span>);
+}
+
+<span class="hljs-type">int</span>
+main(<span class="hljs-type">int</span> argc, <span class="hljs-type">char</span> <span class="hljs-operator">*</span><span class="hljs-operator">*</span>argv)
+{
+    <span class="hljs-type">char</span>       <span class="hljs-operator">*</span>in_filename,
+               <span class="hljs-operator">*</span>out_filename;
+    <span class="hljs-type">char</span>       <span class="hljs-operator">*</span>database;
+    Oid         lobjOid;
+    PGconn     <span class="hljs-operator">*</span>conn;
+    PGresult   <span class="hljs-operator">*</span>res;
+
+    if (argc <span class="hljs-operator">!=</span> <span class="hljs-number">4</span>)
+    {
+        fprintf(stderr, &quot;Usage: %s database_name in_filename out_filename\n&quot;,
+                argv[<span class="hljs-number">0</span>]);
+        exit(<span class="hljs-number">1</span>);
+    }
+
+    database <span class="hljs-operator">=</span> argv[<span class="hljs-number">1</span>];
+    in_filename <span class="hljs-operator">=</span> argv[<span class="hljs-number">2</span>];
+    out_filename <span class="hljs-operator">=</span> argv[<span class="hljs-number">3</span>];
+
+    <span class="hljs-comment">/*
+     * set up the connection
+     */</span>
+    conn <span class="hljs-operator">=</span> PQsetdb(<span class="hljs-keyword">NULL</span>, <span class="hljs-keyword">NULL</span>, <span class="hljs-keyword">NULL</span>, <span class="hljs-keyword">NULL</span>, database);
+
+    <span class="hljs-comment">/* check to see that the backend connection was successfully made */</span>
+    if (PQstatus(conn) <span class="hljs-operator">!=</span> CONNECTION_OK)
+    {
+        fprintf(stderr, &quot;%s&quot;, PQerrorMessage(conn));
+        exit_nicely(conn);
+    }
+
+    <span class="hljs-comment">/* Set always-secure search path, so malicious users can&#x27;t take control. */</span>
+    res <span class="hljs-operator">=</span> PQexec(conn,
+                 &quot;SELECT pg_catalog.set_config(&#x27;search_path&#x27;, &#x27;&#x27;, false)&quot;);
+    if (PQresultStatus(res) <span class="hljs-operator">!=</span> PGRES_TUPLES_OK)
+    {
+        fprintf(stderr, &quot;SET failed: %s&quot;, PQerrorMessage(conn));
+        PQclear(res);
+        exit_nicely(conn);
+    }
+    PQclear(res);
+
+    res <span class="hljs-operator">=</span> PQexec(conn, &quot;begin&quot;);
+    PQclear(res);
+    printf(&quot;importing file \&quot;<span class="hljs-operator">%</span>s\&quot; ...\n&quot;, in_filename);
+<span class="hljs-comment">/*  lobjOid = importFile(conn, in_filename); */</span>
+    lobjOid <span class="hljs-operator">=</span> lo_import(conn, in_filename);
+    if (lobjOid <span class="hljs-operator">=</span><span class="hljs-operator">=</span> <span class="hljs-number">0</span>)
+        fprintf(stderr, &quot;%s\n&quot;, PQerrorMessage(conn));
+    <span class="hljs-keyword">else</span>
+    {
+        printf(&quot;\tas large object %u.\n&quot;, lobjOid);
+
+        printf(&quot;picking out bytes 1000-2000 of the large object\n&quot;);
+        pickout(conn, lobjOid, <span class="hljs-number">1000</span>, <span class="hljs-number">1000</span>);
+
+        printf(&quot;overwriting bytes 1000-2000 of the large object with X&#x27;s\n&quot;);
+        overwrite(conn, lobjOid, <span class="hljs-number">1000</span>, <span class="hljs-number">1000</span>);
+
+        printf(&quot;exporting large object to file \&quot;<span class="hljs-operator">%</span>s\&quot; ...\n&quot;, out_filename);
+<span class="hljs-comment">/*      exportFile(conn, lobjOid, out_filename); */</span>
+        if (lo_export(conn, lobjOid, out_filename) <span class="hljs-operator">&lt;</span> <span class="hljs-number">0</span>)
+            fprintf(stderr, &quot;%s\n&quot;, PQerrorMessage(conn));
+    }
+
+    res <span class="hljs-operator">=</span> PQexec(conn, &quot;end&quot;);
+    PQclear(res);
+    PQfinish(conn);
+    <span class="hljs-keyword">return</span> <span class="hljs-number">0</span>;
+}</code></pre></div></figure>

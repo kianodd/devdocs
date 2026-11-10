@@ -1,0 +1,41 @@
+<p>Table Access Method</p>
+<p>tableam</p>
+<p>Table Access Method</p>
+<p>This chapter explains the interface between the core PostgreSQL system and table access methods, which manage the storage for tables. The core system knows little about these access methods beyond what is specified here, so it is possible to develop entirely new access method types by writing add-on code.</p>
+<p>Each table access method is described by a row in the <a href="#catalog-pg-am">pg_am</a> system catalog. The pg_am entry specifies a name and a handler function for the table access method. These entries can be created and deleted using the <a href="#sql-create-access-method">???</a> and <a href="#sql-drop-access-method">???</a> SQL commands.</p>
+<p>A table access method handler function must be declared to accept a single argument of type <code>internal</code> and to return the pseudo-type <code>table_am_handler</code>. The argument is a dummy value that simply serves to prevent handler functions from being called directly from SQL commands.</p>
+<p>Here is how an extension SQL script file might create a table access method handler:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>SQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-sql"><span class="hljs-keyword">CREATE</span> <span class="hljs-keyword">OR</span> REPLACE <span class="hljs-keyword">FUNCTION</span> my_tableam_handler(internal)
+  <span class="hljs-keyword">RETURNS</span> table_am_handler <span class="hljs-keyword">AS</span> <span class="hljs-string">&#x27;my_extension&#x27;</span>, <span class="hljs-string">&#x27;my_tableam_handler&#x27;</span>
+  <span class="hljs-keyword">LANGUAGE</span> C STRICT;
+
+<span class="hljs-keyword">CREATE</span> ACCESS <span class="hljs-keyword">METHOD</span> myam TYPE <span class="hljs-keyword">TABLE</span> HANDLER my_tableam_handler;</code></pre></div></figure>
+<p>The result of the function must be a pointer to a struct of type TableAmRoutine, which contains everything that the core code needs to know to make use of the table access method. The return value needs to be of server lifetime, which is typically achieved by defining it as a <code>static const</code> variable in global scope.</p>
+<p>Here is how a source file with the table access method handler might look like:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>SQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-sql">#include &quot;postgres.h&quot;
+
+#include &quot;access/tableam.h&quot;
+#include &quot;fmgr.h&quot;
+
+PG_MODULE_MAGIC;
+
+<span class="hljs-keyword">static</span> const TableAmRoutine my_tableam_methods <span class="hljs-operator">=</span> {
+    .type <span class="hljs-operator">=</span> T_TableAmRoutine,
+
+    <span class="hljs-comment">/* Methods of TableAmRoutine omitted from example, add them here. */</span>
+};
+
+PG_FUNCTION_INFO_V1(my_tableam_handler);
+
+Datum
+my_tableam_handler(PG_FUNCTION_ARGS)
+{
+    PG_RETURN_POINTER(<span class="hljs-operator">&amp;</span>my_tableam_methods);
+}</code></pre></div></figure>
+<p>The TableAmRoutine struct, also called the access method&#39;s API struct, defines the behavior of the access method using callbacks. These callbacks are pointers to plain C functions and are not visible or callable at the SQL level. All the callbacks and their behavior is defined in the TableAmRoutine structure (with comments inside the struct defining the requirements for callbacks). Most callbacks have wrapper functions, which are documented from the point of view of a user (rather than an implementor) of the table access method. For details, please refer to the <a target="_blank" rel="noopener" href="https://git.postgresql.org/gitweb/?p=postgresql.git;a=blob;f=src/include/access/tableam.h;hb=HEAD"><code>src/include/access/tableam.h</code></a> file.</p>
+<p>To implement an access method, an implementor will typically need to implement an AM-specific type of tuple table slot (see <a target="_blank" rel="noopener" href="https://git.postgresql.org/gitweb/?p=postgresql.git;a=blob;f=src/include/executor/tuptable.h;hb=HEAD"><code>src/include/executor/tuptable.h</code></a>), which allows code outside the access method to hold references to tuples of the AM, and to access the columns of the tuple.</p>
+<p>Currently, the way an AM actually stores data is fairly unconstrained. For example, it&#39;s possible, but not required, to use postgres&#39; shared buffer cache. In case it is used, it likely makes sense to use PostgreSQL&#39;s standard page layout as described in <a href="#storage-page-layout">???</a>.</p>
+<p>One fairly large constraint of the table access method API is that, currently, if the AM wants to support modifications and/or indexes, it is necessary for each tuple to have a tuple identifier (TID) consisting of a block number and an item number (see also <a href="#storage-page-layout">???</a>). It is not strictly necessary that the sub-parts of TIDs have the same meaning they e.g., have for <code>heap</code>, but if bitmap scan support is desired (it is optional), the block number needs to provide locality.</p>
+<p>For crash safety, an AM can use postgres&#39; <a href="#wal">WAL</a>, or a custom implementation. If WAL is chosen, either <a href="#generic-wal">Generic WAL Records</a> can be used, or a <a href="#custom-rmgr">Custom WAL Resource Manager</a> can be implemented.</p>
+<p>To implement transactional support in a manner that allows different table access methods be accessed within a single transaction, it likely is necessary to closely integrate with the machinery in <code>src/backend/access/transam/xlog.c</code>.</p>
+<p>Any developer of a new <code>table access method</code> can refer to the existing <code>heap</code> implementation present in <code>src/backend/access/heap/heapam_handler.c</code> for details of its implementation.</p>

@@ -1,0 +1,65 @@
+<p>This section explains how a type&#39;s slots relate to each other throughout the life of an object. It is not intended to be a complete canonical reference for the slots; instead, refer to the slot-specific documentation in type-structs for details about a particular slot.</p>
+<h2 id="life-events">Life Events</h2>
+<p>The figure below illustrates the order of events that can occur throughout an object&#39;s life. An arrow from <em>A</em> to <em>B</em> indicates that event <em>B</em> can occur after event <em>A</em> has occurred, with the arrow&#39;s label indicating the condition that must be true for <em>B</em> to occur after <em>A</em>.</p>
+<p>Explanation:</p>
+<ul>
+<li>When a new object is constructed by calling its type:<ol>
+<li>:c`~PyTypeObject.tp_new` is called to create a new object.</li>
+<li>:c`~PyTypeObject.tp_alloc` is directly called by :c`~PyTypeObject.tp_new` to allocate the memory for the new object.</li>
+<li>:c`~PyTypeObject.tp_init` initializes the newly created object. :c`!tp_init` can be called again to re-initialize an object, if desired. The :c`!tp_init` call can also be skipped entirely, for example by Python code calling :py`~object.__new__`.</li>
+</ol>
+</li>
+<li>After :c`!tp_init` completes, the object is ready to use.</li>
+<li>Some time after the last reference to an object is removed:<ol>
+<li>If an object is not marked as <em>finalized</em>, it might be finalized by marking it as <em>finalized</em> and calling its :c`~PyTypeObject.tp_finalize` function. Python does <em>not</em> finalize an object when the last reference to it is deleted; use :c`PyObject_CallFinalizerFromDealloc` to ensure that :c`~PyTypeObject.tp_finalize` is always called.</li>
+<li>If the object is marked as finalized, :c`~PyTypeObject.tp_clear` might be called by the garbage collector to clear references held by the object. It is <em>not</em> called when the object&#39;s reference count reaches zero.</li>
+<li>:c`~PyTypeObject.tp_dealloc` is called to destroy the object. To avoid code duplication, :c`~PyTypeObject.tp_dealloc` typically calls into :c`~PyTypeObject.tp_clear` to free up the object&#39;s references.</li>
+<li>When :c`~PyTypeObject.tp_dealloc` finishes object destruction, it directly calls :c`~PyTypeObject.tp_free` (usually set to :c`PyObject_Free` or :c`PyObject_GC_Del` automatically as appropriate for the type) to deallocate the memory.</li>
+</ol>
+</li>
+<li>The :c`~PyTypeObject.tp_finalize` function is permitted to add a reference to the object if desired. If it does, the object is <em>resurrected</em>, preventing its pending destruction. (Only :c`!tp_finalize` is allowed to resurrect an object; :c`~PyTypeObject.tp_clear` and :c`~PyTypeObject.tp_dealloc` cannot without calling into :c`!tp_finalize`.) Resurrecting an object may or may not cause the object&#39;s <em>finalized</em> mark to be removed. Currently, Python does not remove the <em>finalized</em> mark from a resurrected object if it supports garbage collection (i.e., the :c`Py_TPFLAGS_HAVE_GC` flag is set) but does remove the mark if the object does not support garbage collection; either or both of these behaviors may change in the future.</li>
+<li>:c`~PyTypeObject.tp_dealloc` can optionally call :c`~PyTypeObject.tp_finalize` via :c`PyObject_CallFinalizerFromDealloc` if it wishes to reuse that code to help with object destruction. This is recommended because it guarantees that :c`!tp_finalize` is always called before destruction. See the :c`~PyTypeObject.tp_dealloc` documentation for example code.</li>
+<li>If the object is a member of a cyclic isolate and either :c`~PyTypeObject.tp_clear` fails to break the reference cycle or the cyclic isolate is not detected (perhaps [gc.disable] was called, or the :c`Py_TPFLAGS_HAVE_GC` flag was erroneously omitted in one of the involved types), the objects remain indefinitely uncollectable (they &quot;leak&quot;). See [gc.garbage].</li>
+</ul>
+<p>If the object is marked as supporting garbage collection (the :c`Py_TPFLAGS_HAVE_GC` flag is set in :c`~PyTypeObject.tp_flags`), the following events are also possible:</p>
+<ul>
+<li>The garbage collector occasionally calls :c`~PyTypeObject.tp_traverse` to identify cyclic isolates .</li>
+<li>When the garbage collector discovers a cyclic isolate, it finalizes one of the objects in the group by marking it as <em>finalized</em> and calling its :c`~PyTypeObject.tp_finalize` function, if it has one. This repeats until the cyclic isolate doesn&#39;t exist or all of the objects have been finalized.</li>
+<li>:c`~PyTypeObject.tp_finalize` is permitted to resurrect the object by adding a reference from outside the cyclic isolate. The new reference causes the group of objects to no longer form a cyclic isolate (the reference cycle may still exist, but if it does the objects are no longer isolated).</li>
+<li>When the garbage collector discovers a cyclic isolate and all of the objects in the group have already been marked as <em>finalized</em>, the garbage collector clears one or more of the uncleared objects in the group (possibly concurrently) by calling each&#39;s :c`~PyTypeObject.tp_clear` function. This repeats as long as the cyclic isolate still exists and not all of the objects have been cleared.</li>
+</ul>
+<h2 id="cyclic-isolate-destruction">Cyclic Isolate Destruction</h2>
+<p>Listed below are the stages of life of a hypothetical cyclic isolate that continues to exist after each member object is finalized or cleared. It is a memory leak if a cyclic isolate progresses through all of these stages; it should vanish once all objects are cleared, if not sooner. A cyclic isolate can vanish either because the reference cycle is broken or because the objects are no longer isolated due to finalizer resurrection (see :c`~PyTypeObject.tp_finalize`).</p>
+<ol start="0">
+<li><strong>Reachable</strong> (not yet a cyclic isolate): All objects are in their normal, reachable state. A reference cycle could exist, but an external reference means the objects are not yet isolated.</li>
+<li><strong>Unreachable but consistent:</strong> The final reference from outside the cyclic group of objects has been removed, causing the objects to become isolated (thus a cyclic isolate is born). None of the group&#39;s objects have been finalized or cleared yet. The cyclic isolate remains at this stage until some future run of the garbage collector (not necessarily the next run because the next run might not scan every object).</li>
+<li><strong>Mix of finalized and not finalized:</strong> Objects in a cyclic isolate are finalized one at a time, which means that there is a period of time when the cyclic isolate is composed of a mix of finalized and non-finalized objects. Finalization order is unspecified, so it can appear random. A finalized object must behave in a sane manner when non-finalized objects interact with it, and a non-finalized object must be able to tolerate the finalization of an arbitrary subset of its referents.</li>
+<li><strong>All finalized:</strong> All objects in a cyclic isolate are finalized before any of them are cleared.</li>
+<li><strong>Mix of finalized and cleared:</strong> The objects can be cleared serially or concurrently (but with the GIL held); either way, some will finish before others. A finalized object must be able to tolerate the clearing of a subset of its referents. [442] calls this stage &quot;cyclic trash&quot;.</li>
+<li><strong>Leaked:</strong> If a cyclic isolate still exists after all objects in the group have been finalized and cleared, then the objects remain indefinitely uncollectable (see [gc.garbage]). It is a bug if a cyclic isolate reaches this stage---it means the :c`~PyTypeObject.tp_clear` methods of the participating objects have failed to break the reference cycle as required.</li>
+</ol>
+<p>If :c`~PyTypeObject.tp_clear` did not exist, then Python would have no way to safely break a reference cycle. Simply destroying an object in a cyclic isolate would result in a dangling pointer, triggering undefined behavior when an object referencing the destroyed object is itself destroyed. The clearing step makes object destruction a two-phase process: first :c`~PyTypeObject.tp_clear` is called to partially destroy the objects enough to detangle them from each other, then :c`~PyTypeObject.tp_dealloc` is called to complete the destruction.</p>
+<p>Unlike clearing, finalization is not a phase of destruction. A finalized object must still behave properly by continuing to fulfill its design contracts. An object&#39;s finalizer is allowed to execute arbitrary Python code, and is even allowed to prevent the impending destruction by adding a reference. The finalizer is only related to destruction by call order---if it runs, it runs before destruction, which starts with :c`~PyTypeObject.tp_clear` (if called) and concludes with :c`~PyTypeObject.tp_dealloc`.</p>
+<p>The finalization step is not necessary to safely reclaim the objects in a cyclic isolate, but its existence makes it easier to design types that behave in a sane manner when objects are cleared. Clearing an object might necessarily leave it in a broken, partially destroyed state---it might be unsafe to call any of the cleared object&#39;s methods or access any of its attributes. With finalization, only finalized objects can possibly interact with cleared objects; non-finalized objects are guaranteed to interact with only non-cleared (but potentially finalized) objects.</p>
+<p>To summarize the possible interactions:</p>
+<ul>
+<li>A non-finalized object might have references to or from non-finalized and finalized objects, but not to or from cleared objects.</li>
+<li>A finalized object might have references to or from non-finalized, finalized, and cleared objects.</li>
+<li>A cleared object might have references to or from finalized and cleared objects, but not to or from non-finalized objects.</li>
+</ul>
+<p>Without any reference cycles, an object can be simply destroyed once its last reference is deleted; the finalization and clearing steps are not necessary to safely reclaim unused objects. However, it can be useful to automatically call :c`~PyTypeObject.tp_finalize` and :c`~PyTypeObject.tp_clear` before destruction anyway because type design is simplified when all objects always experience the same series of events regardless of whether they participated in a cyclic isolate. Python currently only calls :c`~PyTypeObject.tp_finalize` and :c`~PyTypeObject.tp_clear` as needed to destroy a cyclic isolate; this may change in a future version.</p>
+<h2 id="functions">Functions</h2>
+<p>To allocate and free memory, see allocating-objects.</p>
+<blockquote>
+<p>Finalizes the object as described in :c`~PyTypeObject.tp_finalize`. Call this function (or :c`PyObject_CallFinalizerFromDealloc`) instead of calling :c`~PyTypeObject.tp_finalize` directly because this function may deduplicate multiple calls to :c`!tp_finalize`. Currently, calls are only deduplicated if the type supports garbage collection (i.e., the :c`Py_TPFLAGS_HAVE_GC` flag is set); this may change in the future.</p>
+<p>::: versionadded
+3.4
+:::</p>
+</blockquote>
+<blockquote>
+<p>Same as :c`PyObject_CallFinalizer` but meant to be called at the beginning of the object&#39;s destructor (:c`~PyTypeObject.tp_dealloc`). There must not be any references to the object. If the object&#39;s finalizer resurrects the object, this function returns -1; no further destruction should happen. Otherwise, this function returns 0 and destruction can continue normally.</p>
+<p>::: versionadded
+3.4
+:::</p>
+</blockquote>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">:c:member:`~PyTypeObject.tp_dealloc` for example code.</code></pre></div></figure>

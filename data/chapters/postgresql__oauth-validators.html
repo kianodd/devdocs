@@ -1,0 +1,212 @@
+<p>OAuth Validators</p>
+<p>PostgreSQL provides infrastructure for creating custom modules to perform server-side validation of OAuth bearer tokens. Because OAuth implementations vary so wildly, and bearer token validation is heavily dependent on the issuing party, the server cannot check the token itself; validator modules provide the integration layer between the server and the OAuth provider in use.</p>
+<p>OAuth validator modules must at least consist of an initialization function (see <a href="#oauth-validator-init">Initialization Functions</a>) and the required callback for performing validation (see <a href="#oauth-validator-callback-validate">Validate Callback</a>).</p>
+<p>Since a misbehaving validator might let unauthorized users into the database, correct implementation is crucial for server safety. See <a href="#oauth-validator-design">Safely Designing a Validator Module</a> for design considerations.</p>
+<h2 id="safely-designing-a-validator-module">Safely Designing a Validator Module</h2>
+<p>Read and understand the entirety of this section before implementing a validator module. A malfunctioning validator is potentially worse than no authentication at all, both because of the false sense of security it provides, and because it may contribute to attacks against other pieces of an OAuth ecosystem.</p>
+<h3 id="validator-responsibilities">Validator Responsibilities</h3>
+<p>Although different modules may take very different approaches to token validation, implementations generally need to perform three separate actions:</p>
+<p>Validate the Token</p>
+<p>:   The validator must first ensure that the presented token is in fact a valid Bearer token for use in client authentication. The correct way to do this depends on the provider, but it generally involves either cryptographic operations to prove that the token was created by a trusted party (offline validation), or the presentation of the token to that trusted party so that it can perform validation for you (online validation).</p>
+<pre><code>Online validation, usually implemented via [OAuth Token Introspection](https://datatracker.ietf.org/doc/html/rfc7662), requires fewer steps of a validator module and allows central revocation of a token in the event that it is stolen or misissued. However, it does require the module to make at least one network call per authentication attempt (all of which must complete within the configured [???](#guc-authentication-timeout)). Additionally, your provider may not provide introspection endpoints for use by external resource servers.
+
+Offline validation is much more involved, typically requiring a validator to maintain a list of trusted signing keys for a provider and then check the token\&#39;s cryptographic signature along with its contents. Implementations must follow the provider\&#39;s instructions to the letter, including any verification of issuer (\&quot;where is this token from?\&quot;), audience (\&quot;who is this token for?\&quot;), and validity period (\&quot;when can this token be used?\&quot;). Since there is no communication between the module and the provider, tokens cannot be centrally revoked using this method; offline validator implementations may wish to place restrictions on the maximum length of a token\&#39;s validity period.
+
+If the token cannot be validated, the module should immediately fail. Further authentication/authorization is pointless if the bearer token wasn\&#39;t issued by a trusted party.
+</code></pre>
+<p>Authorize the Client</p>
+<p>:   Next the validator must ensure that the end user has given the client permission to access the server on their behalf. This generally involves checking the scopes that have been assigned to the token, to make sure that they cover database access for the current HBA parameters.</p>
+<pre><code>The purpose of this step is to prevent an OAuth client from obtaining a token under false pretenses. If the validator requires all tokens to carry scopes that cover database access, the provider should then loudly prompt the user to grant that access during the flow. This gives them the opportunity to reject the request if the client isn\&#39;t supposed to be using their credentials to connect to databases.
+
+While it is possible to establish client authorization without explicit scopes by using out-of-band knowledge of the deployed architecture, doing so removes the user from the loop, which prevents them from catching deployment mistakes and allows any such mistakes to be exploited silently. Access to the database must be tightly restricted to only trusted clients [^1] if users are not prompted for additional scopes.
+
+Even if authorization fails, a module may choose to continue to pull authentication information from the token for use in auditing and debugging.
+</code></pre>
+<p>Authenticate the End User</p>
+<p>:   Finally, the validator should determine a user identifier for the token, either by asking the provider for this information or by extracting it from the token itself, and return that identifier to the server (which will then make a final authorization decision using the HBA configuration). This identifier will be available within the session via <a href="#functions-info-session-table"><code>system_user</code></a> and recorded in the server logs if <a href="#guc-log-connections">???</a> is enabled.</p>
+<pre><code>Different providers may record a variety of different authentication information for an end user, typically referred to as *claims*. Providers usually document which of these claims are trustworthy enough to use for authorization decisions and which are not. (For instance, it would probably not be wise to use an end user\&#39;s full name as the identifier for authentication, since many providers allow users to change their display names arbitrarily.) Ultimately, the choice of which claim (or combination of claims) to use comes down to the provider implementation and application requirements.
+
+Note that anonymous/pseudonymous login is possible as well, by enabling usermap delegation; see [Authorizing Users (Usermap Delegation)](#oauth-validator-design-usermap-delegation).
+</code></pre>
+<h3 id="general-coding-guidelines">General Coding Guidelines</h3>
+<p>Developers should keep the following in mind when implementing token validation:</p>
+<p>Token Confidentiality</p>
+<p>:   Modules should not write tokens, or pieces of tokens, into the server log. This is true even if the module considers the token invalid; an attacker who confuses a client into communicating with the wrong provider should not be able to retrieve that (otherwise valid) token from the disk.</p>
+<pre><code>Implementations that send tokens over the network (for example, to perform online token validation with a provider) must authenticate the peer and ensure that strong transport security is in use.
+</code></pre>
+<p>Logging</p>
+<p>:   To simply log the reason for a validation failure, modules may set the freeform error_detail field during the <a href="#oauth-validator-callback-validate">validate callback</a>. (<a href="#error-style-guide">???</a> has guidelines for writing good <code>DETAIL</code> messages.) error_detail is printed only to the server log, as part of the final authentication failure message, and it is not shared with the client.</p>
+<pre><code>Modules may also use the same [logging facilities](#error-message-reporting) as standard extensions; however, the rules for emitting log entries to the client are subtly different during the authentication phase of the connection. Generally speaking, modules should log problems at the `COMMERROR` level and return normally, instead of using `ERROR`/`FATAL` to unwind the stack, to avoid leaking information to unauthenticated clients.
+</code></pre>
+<p>Interruptibility</p>
+<p>:   Modules must remain interruptible by signals so that the server can correctly handle authentication timeouts and shutdown signals from pg_ctl. For example, blocking calls on sockets should generally be replaced with code that handles both socket events and interrupts without races (see <code>WaitLatchOrSocket()</code>, <code>WaitEventSetWait()</code>, et al), and long-running loops should periodically call <code>CHECK_FOR_INTERRUPTS()</code>. Failure to follow this guidance may result in unresponsive backend sessions.</p>
+<p>Testing</p>
+<p>:   The breadth of testing an OAuth system is well beyond the scope of this documentation, but at minimum, negative testing should be considered mandatory. It&#39;s trivial to design a module that lets authorized users in; the whole point of the system is to keep unauthorized users out.</p>
+<p>Documentation</p>
+<p>:   Validator implementations should document the contents and format of the authenticated ID that is reported to the server for each end user, since DBAs may need to use this information to construct pg_ident maps. (For instance, is it an email address? an organizational ID number? a UUID?) They should also document whether or not it is safe to use the module in <code>delegate_ident_mapping=1</code> mode, and what additional configuration is required in order to do so.</p>
+<pre><code>If an implementation provides [custom HBA options](#oauth-validator-hba), the names and syntax of those options should be documented as well.
+</code></pre>
+<h3 id="authorizing-users-usermap-delegation">Authorizing Users (Usermap Delegation)</h3>
+<p>The standard deliverable of a validation module is the user identifier, which the server will then compare to any configured <a href="#auth-username-maps"><code>pg_ident.conf</code> mappings</a> and determine whether the end user is authorized to connect. However, OAuth is itself an authorization framework, and tokens may carry information about user privileges. For example, a token may be associated with the organizational groups that a user belongs to, or list the roles that a user may assume, and duplicating that knowledge into local usermaps for every server may not be desirable.</p>
+<p>To bypass username mapping entirely, and have the validator module assume the additional responsibility of authorizing user connections, the HBA may be configured with <a href="#auth-oauth-delegate-ident-mapping">???</a>. The module may then use token scopes or an equivalent method to decide whether the user is allowed to connect under their desired role. The user identifier will still be recorded by the server, but it plays no part in determining whether to continue the connection.</p>
+<p>Using this scheme, authentication itself is optional. As long as the module reports that the connection is authorized, login will continue even if there is no recorded user identifier at all. This makes it possible to implement anonymous or pseudonymous access to the database, where the third-party provider performs all necessary authentication but does not provide any user-identifying information to the server. (Some providers may create an anonymized ID number that can be recorded instead, for later auditing.)</p>
+<p>Usermap delegation provides the most architectural flexibility, but it turns the validator module into a single point of failure for connection authorization. Use with caution.</p>
+<h2 id="initialization-functions">Initialization Functions</h2>
+<p>_PG_oauth_validator_module_init</p>
+<p>OAuth validator modules are dynamically loaded from the shared libraries listed in <a href="#guc-oauth-validator-libraries">???</a>. Modules are loaded on demand when requested from a login in progress. The normal library search path is used to locate the library. To provide the validator callbacks and to indicate that the library is an OAuth validator module a function named <code>_PG_oauth_validator_module_init</code> must be provided. The return value of the function must be a pointer to a struct of type OAuthValidatorCallbacks, which contains a magic number and pointers to the module&#39;s token validation functions. The returned pointer must be of server lifetime, which is typically achieved by defining it as a <code>static const</code> variable in global scope. </p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>SQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-sql">typedef struct OAuthValidatorCallbacks
+{
+    uint32        magic;            <span class="hljs-comment">/* must be set to PG_OAUTH_VALIDATOR_MAGIC */</span>
+
+    ValidatorStartupCB startup_cb;
+    ValidatorShutdownCB shutdown_cb;
+    ValidatorValidateCB validate_cb;
+} OAuthValidatorCallbacks;
+
+typedef const OAuthValidatorCallbacks <span class="hljs-operator">*</span>(<span class="hljs-operator">*</span>OAuthValidatorModuleInit) (void);</code></pre></div></figure>
+<p> Only the <code>validate_cb</code> callback is required, the others are optional.</p>
+<h2 id="oauth-validator-callbacks">OAuth Validator Callbacks</h2>
+<p>OAuth validator modules implement their functionality by defining a set of callbacks. The server will call them as required to process the authentication request from the user.</p>
+<h3 id="startup-callback">Startup Callback</h3>
+<p>The <code>startup_cb</code> callback is executed directly after loading the module. This callback can be used to set up local state, define <a href="#oauth-validator-hba">custom HBA options</a>, and perform additional initialization if required. If the validator module has state it can use state-&gt;private_data to store it. </p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>SQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-sql">typedef void (<span class="hljs-operator">*</span>ValidatorStartupCB) (ValidatorModuleState <span class="hljs-operator">*</span>state);</code></pre></div></figure>
+<h3 id="validate-callback">Validate Callback</h3>
+<p>The <code>validate_cb</code> callback is executed during the OAuth exchange when a user attempts to authenticate using OAuth. Any state set in previous calls will be available in state-&gt;private_data. </p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>SQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-sql">typedef bool (<span class="hljs-operator">*</span>ValidatorValidateCB) (const ValidatorModuleState <span class="hljs-operator">*</span>state,
+                                     const <span class="hljs-type">char</span> <span class="hljs-operator">*</span>token, const <span class="hljs-type">char</span> <span class="hljs-operator">*</span>role,
+                                     ValidatorModuleResult <span class="hljs-operator">*</span><span class="hljs-keyword">result</span>);</code></pre></div></figure>
+<p> &lt;token&gt; will contain the bearer token to validate. PostgreSQL has ensured that the token is well-formed syntactically, but no other validation has been performed. &lt;role&gt; will contain the role the user has requested to log in as. The callback must set output parameters in the <code>result</code> struct, which is defined as below: </p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>SQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-sql">typedef struct ValidatorModuleResult
+{
+    bool        authorized;
+    <span class="hljs-type">char</span>       <span class="hljs-operator">*</span>authn_id;
+    <span class="hljs-type">char</span>       <span class="hljs-operator">*</span>error_detail;
+} ValidatorModuleResult;</code></pre></div></figure>
+<p> The connection will only proceed if the module sets result-&gt;authorized to <code>true</code>. To authenticate the user, the authenticated user name (as determined using the token) shall be palloc&#39;d and returned in the result-&gt;authn_id field. Alternatively, result-&gt;authn_id may be set to NULL if the token is valid but the associated user identity cannot be determined. If the validator returns <code>true</code> and sets result-&gt;authn_id then the identity appears in the server log when <a href="#guc-log-connections">???</a> includes <code>authentication</code>. This happens before authorization and will log authentication even if the connection is later rejected due to authorization.</p>
+<p>A validator may return <code>false</code> to signal an internal error, in which case the connection fails. Otherwise the validator should return <code>true</code> to indicate that it has processed the token and made an authorization decision.</p>
+<p>In either failure case (validation error or internal error) the module may store a user-readable reason for the failure in result-&gt;error_detail. This will be printed to the server logs (not sent to the client) as a <code>DETAIL</code> entry for the authentication failure. The memory pointed to by error_detail may be either palloc&#39;d or of static duration. error_detail is ignored on success.</p>
+<p>The behavior after <code>validate_cb</code> returns depends on the specific HBA setup. Normally, the result-&gt;authn_id user name must exactly match the role that the user is logging in as. (This behavior may be modified with a usermap.) But when authenticating against an HBA rule with <code>delegate_ident_mapping</code> turned on, PostgreSQL will not perform any checks on the value of result-&gt;authn_id at all; in this case it is up to the validator to ensure that the token carries enough privileges for the user to log in under the indicated &lt;role&gt;.</p>
+<h3 id="shutdown-callback">Shutdown Callback</h3>
+<p>The <code>shutdown_cb</code> callback is executed when the server backend has finished validating tokens for the connection. If the validator module has any allocated state, this callback should free it to avoid resource leaks. </p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>SQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-sql">typedef void (<span class="hljs-operator">*</span>ValidatorShutdownCB) (ValidatorModuleState <span class="hljs-operator">*</span>state);</code></pre></div></figure>
+<h2 id="custom-hba-options">Custom HBA Options</h2>
+<p>Like other preloaded libraries, validator modules may define <a href="#runtime-config-custom">custom GUC parameters</a> for user configuration in <code>postgresql.conf</code>. However, it may be desirable to configure behavior at a more granular level (say, for a particular issuer or a group of users) instead of globally.</p>
+<p>Beginning in PostgreSQL 19, validator implementations may define custom options for use inside <code>pg_hba.conf</code>. These options are then <a href="#auth-oauth-validator-option">made available</a> to the user as <code>validator.option</code>. The API for registering and retrieving custom options is described below.</p>
+<h3 id="options-api">Options API</h3>
+<p>Modules register custom HBA option names during the <code>startup_cb</code> callback, using <code>RegisterOAuthHBAOptions()</code>: </p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>SQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-sql"><span class="hljs-comment">/*
+ * Register a list of custom option names for use in pg_hba.conf. For each name
+ * &quot;foo&quot; registered here, that option will be provided as &quot;validator.foo&quot; in
+ * the HBA.
+ *
+ * Valid option names consist of alphanumeric ASCII, underscore (_), and hyphen
+ * (-). Invalid option names will be ignored with a WARNING logged at
+ * connection time.
+ *
+ * This function may only be called during the startup_cb callback. Multiple
+ * calls are permitted, which will append to the existing list of registered
+ * options; options cannot be unregistered.
+ *
+ * Parameters:
+ *
+ * - state: the state pointer passed to the startup_cb callback
+ * - num:   the number of options in the opts array
+ * - opts:  an array of null-terminated option names to register
+ *
+ * The list of option names is copied internally, and the opts array is not
+ * required to remain valid after the call.
+ */</span>
+void RegisterOAuthHBAOptions(ValidatorModuleState <span class="hljs-operator">*</span>state, <span class="hljs-type">int</span> num,
+                             const <span class="hljs-type">char</span> <span class="hljs-operator">*</span>opts[]);</code></pre></div></figure>
+<p>Each option&#39;s value, if set, may be later retrieved using <code>GetOAuthHBAOption()</code>: </p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>SQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-sql"><span class="hljs-comment">/*
+ * Retrieve the string value of an HBA option which was registered via
+ * RegisterOAuthHBAOptions(). Usable only during validate_cb or shutdown_cb.
+ *
+ * If the user has set the corresponding option in pg_hba.conf, this function
+ * returns that value as a null-terminated string, which must not be modified
+ * or freed. NULL is returned instead if the user has not set this option, if
+ * the option name was not registered, or if this function is incorrectly called
+ * during the startup_cb.
+ *
+ * Parameters:
+ *
+ * - state:   the state pointer passed to the validate_cb/shutdown_cb callback
+ * - optname: the name of the option to retrieve
+ */</span>
+const <span class="hljs-type">char</span> <span class="hljs-operator">*</span>GetOAuthHBAOption(const ValidatorModuleState <span class="hljs-operator">*</span>state,
+                              const <span class="hljs-type">char</span> <span class="hljs-operator">*</span>optname);</code></pre></div></figure>
+<p>See <a href="#oauth-validator-hba-example-usage">Example Usage</a> for sample usage.</p>
+<h3 id="limitations">Limitations</h3>
+<ul>
+<li><p>Option names are limited to ASCII alphanumeric characters, underscores (<code>_</code>), and hyphens (<code>-</code>).</p>
+</li>
+<li><p>Option values are always freeform strings (in contrast to custom GUCs, which support numerics, booleans, and enums).</p>
+</li>
+<li><p>Option names and values cannot be checked by the server during a reload of the configuration. Any unregistered options in <code>pg_hba.conf</code> will instead result in connection failures. It is the responsibility of each module to document and verify the syntax of option values as needed. [^2]</p>
+</li>
+</ul>
+<h3 id="example-usage">Example Usage</h3>
+<p>For a hypothetical module, the options <code>foo</code> and <code>bar</code> could be registered as follows: </p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>SQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-sql"><span class="hljs-keyword">static</span> void
+validator_startup(ValidatorModuleState <span class="hljs-operator">*</span>state)
+{
+    <span class="hljs-keyword">static</span> const <span class="hljs-type">char</span> <span class="hljs-operator">*</span>opts[] <span class="hljs-operator">=</span> {
+        &quot;foo&quot;,      <span class="hljs-comment">/* description of access privileges */</span>
+        &quot;bar&quot;,      <span class="hljs-comment">/* magic URL for additional administrator powers */</span>
+    };
+
+    RegisterOAuthHBAOptions(state, lengthof(opts), opts);
+
+    <span class="hljs-comment">/* ...other setup... */</span>
+}</code></pre></div></figure>
+<p>The following sample entries in <code>pg_hba.conf</code> can then make use of these options: </p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>SQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-sql"># TYPE   DATABASE   <span class="hljs-keyword">USER</span>   ADDRESS    <span class="hljs-keyword">METHOD</span>
+hostssl  postgres   admin  <span class="hljs-number">0.0</span><span class="hljs-number">.0</span><span class="hljs-number">.0</span><span class="hljs-operator">/</span><span class="hljs-number">0</span>  oauth issuer<span class="hljs-operator">=</span>https:<span class="hljs-operator">/</span><span class="hljs-operator">/</span>admin.example.com \
+                                            <span class="hljs-keyword">scope</span><span class="hljs-operator">=</span>&quot;pg-admin openid email&quot; \
+                                            map<span class="hljs-operator">=</span>oauth<span class="hljs-operator">-</span>email \
+                                            validator.foo<span class="hljs-operator">=</span>&quot;admin access&quot; \
+                                            validator.bar<span class="hljs-operator">=</span>https:<span class="hljs-operator">/</span><span class="hljs-operator">/</span>magic.example.com
+
+hostssl  postgres   <span class="hljs-keyword">all</span>    <span class="hljs-number">0.0</span><span class="hljs-number">.0</span><span class="hljs-number">.0</span><span class="hljs-operator">/</span><span class="hljs-number">0</span>  oauth issuer<span class="hljs-operator">=</span>https:<span class="hljs-operator">/</span><span class="hljs-operator">/</span>www.example.com \
+                                            <span class="hljs-keyword">scope</span><span class="hljs-operator">=</span>&quot;pg-user openid email&quot; \
+                                            map<span class="hljs-operator">=</span>oauth<span class="hljs-operator">-</span>email \
+                                            validator.foo<span class="hljs-operator">=</span>&quot;user access&quot;</code></pre></div></figure>
+<p>The module can retrieve the option settings from the HBA during validation: </p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>SQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-sql"><span class="hljs-keyword">static</span> bool
+validate_token(const ValidatorModuleState <span class="hljs-operator">*</span>state,
+               const <span class="hljs-type">char</span> <span class="hljs-operator">*</span>token, const <span class="hljs-type">char</span> <span class="hljs-operator">*</span>role,
+               ValidatorModuleResult <span class="hljs-operator">*</span>res)
+{
+    const <span class="hljs-type">char</span> <span class="hljs-operator">*</span>foo <span class="hljs-operator">=</span> GetOAuthHBAOption(state, &quot;foo&quot;); <span class="hljs-comment">/* &quot;admin access&quot; or &quot;user access&quot; */</span>
+    const <span class="hljs-type">char</span> <span class="hljs-operator">*</span>bar <span class="hljs-operator">=</span> GetOAuthHBAOption(state, &quot;bar&quot;); <span class="hljs-comment">/* &quot;https://magic.example.com&quot; or NULL */</span>
+
+    if (bar <span class="hljs-operator">&amp;&amp;</span> <span class="hljs-operator">!</span>is_valid_url(bar))
+    {
+        res<span class="hljs-operator">-</span><span class="hljs-operator">&gt;</span>error_detail <span class="hljs-operator">=</span> psprintf(&quot;validator.bar (\&quot;<span class="hljs-operator">%</span>s\&quot;) is not a valid URL.&quot;, bar);
+        <span class="hljs-keyword">return</span> <span class="hljs-literal">false</span>;
+    }
+
+    <span class="hljs-comment">/* proceed to validate token */</span>
+}</code></pre></div></figure>
+<p>When multiple validators are in use, their registered option lists remain independent: </p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>SQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-sql"><span class="hljs-operator">&lt;</span>lineannotation<span class="hljs-operator">&gt;</span><span class="hljs-keyword">in</span> postgresql.conf:<span class="hljs-operator">&lt;</span><span class="hljs-operator">/</span>lineannotation<span class="hljs-operator">&gt;</span>
+oauth_validator_libraries <span class="hljs-operator">=</span> <span class="hljs-string">&#x27;example_org, my_validator&#x27;</span>
+
+<span class="hljs-operator">&lt;</span>lineannotation<span class="hljs-operator">&gt;</span><span class="hljs-keyword">in</span> pg_hba.conf:<span class="hljs-operator">&lt;</span><span class="hljs-operator">/</span>lineannotation<span class="hljs-operator">&gt;</span>
+# TYPE   DATABASE   <span class="hljs-keyword">USER</span>   ADDRESS    <span class="hljs-keyword">METHOD</span>
+hostssl  postgres   admin  <span class="hljs-number">0.0</span><span class="hljs-number">.0</span><span class="hljs-number">.0</span><span class="hljs-operator">/</span><span class="hljs-number">0</span>  oauth issuer<span class="hljs-operator">=</span>https:<span class="hljs-operator">/</span><span class="hljs-operator">/</span>admin.example.com \
+                                            <span class="hljs-keyword">scope</span><span class="hljs-operator">=</span>&quot;pg-admin openid email&quot; \
+                                            map<span class="hljs-operator">=</span>oauth<span class="hljs-operator">-</span>email \
+                                            validator<span class="hljs-operator">=</span>my_validator \
+                                            validator.foo<span class="hljs-operator">=</span>&quot;admin access&quot; \
+                                            validator.bar<span class="hljs-operator">=</span>https:<span class="hljs-operator">/</span><span class="hljs-operator">/</span>magic.example.com
+
+hostssl  postgres   <span class="hljs-keyword">all</span>    <span class="hljs-number">0.0</span><span class="hljs-number">.0</span><span class="hljs-number">.0</span><span class="hljs-operator">/</span><span class="hljs-number">0</span>  oauth issuer<span class="hljs-operator">=</span>https:<span class="hljs-operator">/</span><span class="hljs-operator">/</span>www.example.org \
+                                            <span class="hljs-keyword">scope</span><span class="hljs-operator">=</span>&quot;pg-user openid profile&quot; \
+                                            validator<span class="hljs-operator">=</span>example_org \
+                                            delegate_ident_mapping<span class="hljs-operator">=</span><span class="hljs-number">1</span> \
+                                            validator.magic<span class="hljs-operator">=</span><span class="hljs-keyword">on</span> \
+                                            validator.more_magic<span class="hljs-operator">=</span>off</code></pre></div></figure>
+<p>[^1]: That is, &quot;trusted&quot; in the sense that the OAuth client and the PostgreSQL server are controlled by the same entity. Notably, the Device Authorization client flow supported by libpq does not usually meet this bar, since it&#39;s designed for use by public/untrusted clients.</p>
+<p>[^2]: If a module finds an invalid option value during <code>validate_cb</code>, it&#39;s recommended to <a href="#oauth-validator-callback-validate">signal an internal error</a> by setting result-&gt;error_detail to a description of the problem and returning <code>false</code>.</p>
