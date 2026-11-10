@@ -1,0 +1,588 @@
+<p>This document explains the Django template system from a technical perspective -- how it works and how to extend it. If you&#39;re looking for reference on the language syntax, see [/ref/templates/language](ref/templates/language.rst).</p>
+<p>It assumes an understanding of templates, contexts, variables, tags, and rendering. Start with the introduction to the Django template language if you aren&#39;t familiar with these concepts.</p>
+<h2 id="overview">Overview</h2>
+<p>Using the template system in Python is a three-step process:</p>
+<ol>
+<li>You configure an [Engine].</li>
+<li>You compile template code into a [Template].</li>
+<li>You render the template with a [Context].</li>
+</ol>
+<p>Django projects generally rely on the high level, backend agnostic APIs</p>
+<p>:   for each of these steps instead of the template system&#39;s</p>
+<p>lower level APIs:</p>
+<ol>
+<li>For each [~django.template.backends.django.DjangoTemplates] backend in the [TEMPLATES] setting, Django instantiates an [Engine]. [~django.template.backends.django.DjangoTemplates] wraps [Engine] and adapts it to the common template backend API.</li>
+<li>The [django.template.loader] module provides functions such as [~django.template.loader.get_template] for loading templates. They return a <code>django.template.backends.django.Template</code> which wraps the actual [django.template.Template].</li>
+<li>The <code>Template</code> obtained in the previous step has a [~django.template.backends.base.Template.render] method which marshals a context and possibly a request into a [Context] and delegates the rendering to the underlying [Template].</li>
+</ol>
+<h2 id="configuring-an-engine">Configuring an engine</h2>
+<p>If you are using the [~django.template.backends.django.DjangoTemplates] backend, this probably isn&#39;t the documentation you&#39;re looking for. An instance of the <code>Engine</code> class described below is accessible using the <code>engine</code> attribute of that backend and any attribute defaults mentioned below are overridden by what&#39;s passed by [~django.template.backends.django.DjangoTemplates].</p>
+<p><strong><code>Engine(dirs=None, app_dirs=False, context_processors=None, debug=False, loaders=None, string_if_invalid=&#39;&#39;, file_charset=&#39;utf-8&#39;, libraries=None, builtins=None, autoescape=True)</code></strong></p>
+<p>When instantiating an <code>Engine</code> all arguments must be passed as keyword arguments:</p>
+<ul>
+<li><p><code>dirs</code> is a list of directories where the engine should look for template source files. It is used to configure [filesystem.Loader ].</p>
+<p>It defaults to an empty list.</p>
+</li>
+<li><p><code>app_dirs</code> only affects the default value of <code>loaders</code>. See below.</p>
+<p>It defaults to <code>False</code>.</p>
+</li>
+<li><p><code>autoescape</code> controls whether HTML autoescaping is enabled.</p>
+<p>It defaults to <code>True</code>.</p>
+</li>
+</ul>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">Only set it to ``False`` if you&#x27;re rendering non-HTML templates!</code></pre></div></figure>
+<ul>
+<li><p><code>context_processors</code> is a list of dotted Python paths to callables that are used to populate the context when a template is rendered with a request. These callables take a request object as their argument and return a [dict] of items to be merged into the context.</p>
+<p>It defaults to an empty list.</p>
+<p>See [~django.template.RequestContext] for more information.</p>
+</li>
+<li><p><code>debug</code> is a boolean that turns on/off template debug mode. If it is <code>True</code>, the template engine will store additional debug information which can be used to display a detailed report for any exception raised during template rendering.</p>
+<p>It defaults to <code>False</code>.</p>
+</li>
+<li><p><code>loaders</code> is a list of template loader classes, specified as strings. Each <code>Loader</code> class knows how to import templates from a particular source. Optionally, a tuple can be used instead of a string. The first item in the tuple should be the <code>Loader</code> class name, subsequent items are passed to the <code>Loader</code> during initialization.</p>
+<p>It defaults to a list containing:</p>
+<ul>
+<li><code>&#39;django.template.loaders.filesystem.Loader&#39;</code></li>
+<li><code>&#39;django.template.loaders.app_directories.Loader&#39;</code> if and only if <code>app_dirs</code> is <code>True</code>.</li>
+</ul>
+<p>These loaders are then wrapped in [django.template.loaders.cached.Loader].</p>
+<p>See template-loaders for details.</p>
+</li>
+<li><p><code>string_if_invalid</code> is the output, as a string, that the template system should use for invalid (e.g. misspelled) variables.</p>
+<p>It defaults to the empty string.</p>
+<p>See invalid-template-variables for details.</p>
+</li>
+<li><p><code>file_charset</code> is the charset used to read template files on disk.</p>
+<p>It defaults to <code>&#39;utf-8&#39;</code>.</p>
+</li>
+<li><p><code>&#39;libraries&#39;</code>: A dictionary of labels and dotted Python paths of template tag modules to register with the template engine. This is used to add new libraries or provide alternate labels for existing ones. For example:</p>
+</li>
+</ul>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">    Engine(
+        libraries={
+            &quot;myapp_tags&quot;: &quot;path.to.myapp.tags&quot;,
+            &quot;admin.urls&quot;: &quot;django.contrib.admin.templatetags.admin_urls&quot;,
+        },
+    )
+
+Libraries can be loaded by passing the corresponding dictionary key to
+the :ttag:`{% load %}&lt;load&gt;` tag.</code></pre></div></figure>
+<ul>
+<li><code>&#39;builtins&#39;</code>: A list of dotted Python paths of template tag modules to add to [built-ins ](ref/templates/builtins.rst). For example:</li>
+</ul>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">    Engine(
+        builtins=[&quot;myapp.builtins&quot;],
+    )
+
+Tags and filters from built-in libraries can be used without first
+calling the :ttag:`{% load %}&lt;load&gt;` tag.</code></pre></div></figure>
+<p><strong><code>Engine.get_default()</code></strong></p>
+<p>Returns the underlying [Engine] from the first configured [~django.template.backends.django.DjangoTemplates] engine. Raises [~django.core.exceptions.ImproperlyConfigured] if no engines are configured.</p>
+<p>It&#39;s required for preserving APIs that rely on a globally available, implicitly configured engine. Any other use is strongly discouraged.</p>
+<p><strong><code>Engine.from_string(template_code)</code></strong></p>
+<p>Compiles the given template code and returns a [Template] object.</p>
+<p><strong><code>Engine.get_template(template_name)</code></strong></p>
+<p>Loads a template with the given name, compiles it and returns a [Template] object.</p>
+<p><strong><code>Engine.select_template(template_name_list)</code></strong></p>
+<p>Like [~Engine.get_template], except it takes a list of names and returns the first template that was found.</p>
+<h2 id="loading-a-template">Loading a template</h2>
+<p>The recommended way to create a [Template] is by calling the factory methods of the `Engine`: [~Engine.get_template], [~Engine.select_template] and [~Engine.from_string].</p>
+<p>In a Django project where the [TEMPLATES] setting defines a [~django.template.backends.django.DjangoTemplates] engine, it&#39;s possible to instantiate a [Template] directly. If more than one [~django.template.backends.django.DjangoTemplates] engine is defined, the first one will be used.</p>
+<p><strong><code>Template</code></strong></p>
+<p>This class lives at <code>django.template.Template</code>. The constructor takes one argument --- the raw template code:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">from django.template import Template
+
+template = Template(&quot;My name is {{ my_name }}.&quot;)</code></pre></div></figure>
+<h2 id="rendering-a-context">Rendering a context</h2>
+<p>Once you have a compiled [Template] object, you can render a context with it. You can reuse the same template to render it several times with different contexts.</p>
+<p><strong><code>Context(dict_=None, autoescape=True, use_l10n=None, use_tz=None)</code></strong></p>
+<p>The constructor of <code>django.template.Context</code> takes an optional argument --- a dictionary mapping variable names to variable values.</p>
+<p>Three optional keyword arguments can also be specified:</p>
+<ul>
+<li><p><code>autoescape</code> controls whether HTML autoescaping is enabled.</p>
+<p>It defaults to <code>True</code>.</p>
+</li>
+</ul>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">Only set it to ``False`` if you&#x27;re rendering non-HTML templates!</code></pre></div></figure>
+<ul>
+<li><p><code>use_l10n</code> overrides whether values will be localized by default. If set to <code>True</code> numbers and dates will be formatted based on locale.</p>
+<p>It defaults to <code>None</code>.</p>
+<p>See topic-l10n-templates for details.</p>
+</li>
+<li><p><code>use_tz</code> overrides whether dates are converted to the local time when rendered in a template. If set to <code>True</code> all dates will be rendered using the local timezone. This takes precedence over [USE_TZ].</p>
+<p>It defaults to <code>None</code>.</p>
+<p>See time-zones-in-templates for details.</p>
+</li>
+</ul>
+<p>For example usage, see playing-with-context below.</p>
+<p><strong><code>Template.render(context)</code></strong></p>
+<p>Call the [Template] object&#39;s <code>render()</code> method with a [Context] to &quot;fill&quot; the template:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Python</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-python">
+<span class="hljs-meta">&gt;&gt;&gt; </span><span class="hljs-keyword">from</span> django.template <span class="hljs-keyword">import</span> Context, Template
+<span class="hljs-meta">&gt;&gt;&gt; </span>template = Template(<span class="hljs-string">&quot;My name is {{ my_name }}.&quot;</span>)
+
+<span class="hljs-meta">&gt;&gt;&gt; </span>context = Context({<span class="hljs-string">&quot;my_name&quot;</span>: <span class="hljs-string">&quot;Adrian&quot;</span>})
+<span class="hljs-meta">&gt;&gt;&gt; </span>template.render(context)
+<span class="hljs-string">&quot;My name is Adrian.&quot;</span>
+
+<span class="hljs-meta">&gt;&gt;&gt; </span>context = Context({<span class="hljs-string">&quot;my_name&quot;</span>: <span class="hljs-string">&quot;Dolores&quot;</span>})
+<span class="hljs-meta">&gt;&gt;&gt; </span>template.render(context)
+<span class="hljs-string">&quot;My name is Dolores.&quot;</span></code></pre></div></figure>
+<h3 id="variables-and-lookups">Variables and lookups</h3>
+<p>Variable names must consist of any letter (A-Z), any digit (0-9), an underscore (but they must not start with an underscore) or a dot.</p>
+<p>Dots have a special meaning in template rendering. A dot in a variable name signifies a <strong>lookup</strong>. Specifically, when the template system encounters a dot in a variable name, it tries the following lookups, in this order:</p>
+<ul>
+<li>Dictionary lookup. Example: <code>foo[&quot;bar&quot;]</code></li>
+<li>Attribute lookup. Example: <code>foo.bar</code></li>
+<li>List-index lookup. Example: <code>foo[bar]</code></li>
+</ul>
+<p>Note that &quot;bar&quot; in a template expression like <code>{{ foo.bar }}</code> will be interpreted as a literal string and not using the value of the variable &quot;bar&quot;, if one exists in the template context.</p>
+<p>The template system uses the first lookup type that works. It&#39;s short-circuit logic. Here are a few examples:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Python</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-python">
+<span class="hljs-meta">&gt;&gt;&gt; </span><span class="hljs-keyword">from</span> django.template <span class="hljs-keyword">import</span> Context, Template
+<span class="hljs-meta">&gt;&gt;&gt; </span>t = Template(<span class="hljs-string">&quot;My name is {{ person.first_name }}.&quot;</span>)
+<span class="hljs-meta">&gt;&gt;&gt; </span>d = {<span class="hljs-string">&quot;person&quot;</span>: {<span class="hljs-string">&quot;first_name&quot;</span>: <span class="hljs-string">&quot;Joe&quot;</span>, <span class="hljs-string">&quot;last_name&quot;</span>: <span class="hljs-string">&quot;Johnson&quot;</span>}}
+<span class="hljs-meta">&gt;&gt;&gt; </span>t.render(Context(d))
+<span class="hljs-string">&quot;My name is Joe.&quot;</span>
+
+<span class="hljs-meta">&gt;&gt;&gt; </span><span class="hljs-keyword">class</span> <span class="hljs-title class_">PersonClass</span>:
+<span class="hljs-meta">... </span>    <span class="hljs-keyword">pass</span>
+...
+<span class="hljs-meta">&gt;&gt;&gt; </span>p = PersonClass()
+<span class="hljs-meta">&gt;&gt;&gt; </span>p.first_name = <span class="hljs-string">&quot;Ron&quot;</span>
+<span class="hljs-meta">&gt;&gt;&gt; </span>p.last_name = <span class="hljs-string">&quot;Nasty&quot;</span>
+<span class="hljs-meta">&gt;&gt;&gt; </span>t.render(Context({<span class="hljs-string">&quot;person&quot;</span>: p}))
+<span class="hljs-string">&quot;My name is Ron.&quot;</span>
+
+<span class="hljs-meta">&gt;&gt;&gt; </span>t = Template(<span class="hljs-string">&quot;The first stooge in the list is {{ stooges.0 }}.&quot;</span>)
+<span class="hljs-meta">&gt;&gt;&gt; </span>c = Context({<span class="hljs-string">&quot;stooges&quot;</span>: [<span class="hljs-string">&quot;Larry&quot;</span>, <span class="hljs-string">&quot;Curly&quot;</span>, <span class="hljs-string">&quot;Moe&quot;</span>]})
+<span class="hljs-meta">&gt;&gt;&gt; </span>t.render(c)
+<span class="hljs-string">&quot;The first stooge in the list is Larry.&quot;</span></code></pre></div></figure>
+<p>If any part of the variable is callable, the template system will try calling it. Example:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Python</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-python">
+<span class="hljs-meta">&gt;&gt;&gt; </span><span class="hljs-keyword">class</span> <span class="hljs-title class_">PersonClass2</span>:
+<span class="hljs-meta">... </span>    <span class="hljs-keyword">def</span> <span class="hljs-title function_">name</span>(<span class="hljs-params">self</span>):
+<span class="hljs-meta">... </span>        <span class="hljs-keyword">return</span> <span class="hljs-string">&quot;Samantha&quot;</span>
+...
+<span class="hljs-meta">&gt;&gt;&gt; </span>t = Template(<span class="hljs-string">&quot;My name is {{ person.name }}.&quot;</span>)
+<span class="hljs-meta">&gt;&gt;&gt; </span>t.render(Context({<span class="hljs-string">&quot;person&quot;</span>: PersonClass2}))
+<span class="hljs-string">&quot;My name is Samantha.&quot;</span></code></pre></div></figure>
+<p>Callable variables are slightly more complex than variables which only require straight lookups. Here are some things to keep in mind:</p>
+<ul>
+<li><p>If the variable raises an exception when called, the exception will be propagated, unless the exception has an attribute <code>silent_variable_failure</code> whose value is <code>True</code>. If the exception <em>does</em> have a <code>silent_variable_failure</code> attribute whose value is <code>True</code>, the variable will render as the value of the engine&#39;s <code>string_if_invalid</code> configuration option (an empty string, by default). Example:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Python</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-python"><span class="hljs-meta">&gt;&gt;&gt; </span>t = Template(<span class="hljs-string">&quot;My name is {{ person.first_name }}.&quot;</span>)
+<span class="hljs-meta">&gt;&gt;&gt; </span><span class="hljs-keyword">class</span> <span class="hljs-title class_">PersonClass3</span>:
+<span class="hljs-meta">... </span>    <span class="hljs-keyword">def</span> <span class="hljs-title function_">first_name</span>(<span class="hljs-params">self</span>):
+<span class="hljs-meta">... </span>        <span class="hljs-keyword">raise</span> AssertionError(<span class="hljs-string">&quot;foo&quot;</span>)
+...
+<span class="hljs-meta">&gt;&gt;&gt; </span>p = PersonClass3()
+<span class="hljs-meta">&gt;&gt;&gt; </span>t.render(Context({<span class="hljs-string">&quot;person&quot;</span>: p}))
+Traceback (most recent call last):
+...
+AssertionError: foo
+
+<span class="hljs-meta">&gt;&gt;&gt; </span><span class="hljs-keyword">class</span> <span class="hljs-title class_">SilentAssertionError</span>(<span class="hljs-title class_ inherited__">Exception</span>):
+<span class="hljs-meta">... </span>    silent_variable_failure = <span class="hljs-literal">True</span>
+...
+<span class="hljs-meta">&gt;&gt;&gt; </span><span class="hljs-keyword">class</span> <span class="hljs-title class_">PersonClass4</span>:
+<span class="hljs-meta">... </span>    <span class="hljs-keyword">def</span> <span class="hljs-title function_">first_name</span>(<span class="hljs-params">self</span>):
+<span class="hljs-meta">... </span>        <span class="hljs-keyword">raise</span> SilentAssertionError
+...
+<span class="hljs-meta">&gt;&gt;&gt; </span>p = PersonClass4()
+<span class="hljs-meta">&gt;&gt;&gt; </span>t.render(Context({<span class="hljs-string">&quot;person&quot;</span>: p}))
+<span class="hljs-string">&quot;My name is .&quot;</span></code></pre></div></figure>
+<p>Note that [django.core.exceptions.ObjectDoesNotExist], which is the base class for all Django database API <code>DoesNotExist</code> exceptions, has <code>silent_variable_failure = True</code>. So if you&#39;re using Django templates with Django model objects, any <code>DoesNotExist</code> exception will fail silently.</p>
+</li>
+<li><p>A variable can only be called if it has no required arguments. Otherwise, the system will return the value of the engine&#39;s <code>string_if_invalid</code> option.</p>
+</li>
+</ul>
+<p>::: </p>
+<ul>
+<li><p>There can be side effects when calling some variables, and it&#39;d be either foolish or a security hole to allow the template system to access them.</p>
+<p>A good example is the [~django.db.models.Model.delete] method on each Django model object. The template system shouldn&#39;t be allowed to do something like this:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">I will now delete this valuable data. {{ data.delete }}</code></pre></div></figure>
+<p>To prevent this, set an <code>alters_data</code> attribute on the callable variable. The template system won&#39;t call a variable if it has <code>alters_data=True</code> set, and will instead replace the variable with <code>string_if_invalid</code>, unconditionally. The dynamically-generated [~django.db.models.Model.delete] and [~django.db.models.Model.save] methods on Django model objects get <code>alters_data=True</code> automatically. Example:
+:::</p>
+</li>
+</ul>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">def sensitive_function(self):
+    self.database_record.delete()
+
+
+sensitive_function.alters_data = True</code></pre></div></figure>
+<ul>
+<li>Occasionally you may want to turn off this feature for other reasons, and tell the template system to leave a variable uncalled no matter what. To do so, set a <code>do_not_call_in_templates</code> attribute on the callable with the value <code>True</code>. The template system then will act as if your variable is not callable (allowing you to access attributes of the callable, for example).</li>
+</ul>
+<h3 id="how-invalid-variables-are-handled">How invalid variables are handled</h3>
+<p>Generally, if a variable doesn&#39;t exist, the template system inserts the value of the engine&#39;s <code>string_if_invalid</code> configuration option, which is set to <code>&#39;&#39;</code> (the empty string) by default.</p>
+<p>Filters that are applied to an invalid variable will only be applied if <code>string_if_invalid</code> is set to <code>&#39;&#39;</code> (the empty string). If <code>string_if_invalid</code> is set to any other value, variable filters will be ignored.</p>
+<p>This behavior is slightly different for the <code>if</code>, <code>for</code> and <code>regroup</code> template tags. If an invalid variable is provided to one of these template tags, the variable will be interpreted as <code>None</code>. Filters are always applied to invalid variables within these template tags.</p>
+<p>If <code>string_if_invalid</code> contains a <code>&#39;%s&#39;</code>, the format marker will be replaced with the name of the invalid variable.</p>
+<h3 id="built-in-variables">Built-in variables</h3>
+<p>Every context contains <code>True</code>, <code>False</code> and <code>None</code>. As you would expect, these variables resolve to the corresponding Python objects.</p>
+<h3 id="limitations-with-string-literals">Limitations with string literals</h3>
+<p>Django&#39;s template language has no way to escape the characters used for its own syntax. For example, the [templatetag] tag is required if you need to output character sequences like <code>{%</code> and <code>%}</code>.</p>
+<p>A similar issue exists if you want to include these sequences in template filter or tag arguments. For example, when parsing a block tag, Django&#39;s template parser looks for the first occurrence of <code>%}</code> after a <code>{%</code>. This prevents the use of <code>&quot;%}&quot;</code> as a string literal. For example, a <code>TemplateSyntaxError</code> will be raised for the following expressions:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">
+{% include &quot;template.html&quot; tvar=&quot;Some string literal with %} in it.&quot; %}
+
+{% with tvar=&quot;Some string literal with %} in it.&quot; %}{% endwith %}</code></pre></div></figure>
+<p>The same issue can be triggered by using a reserved sequence in filter arguments:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">
+{{ some.variable|default:&quot;}}&quot; }}</code></pre></div></figure>
+<p>If you need to use strings with these sequences, store them in template variables or use a custom template tag or filter to workaround the limitation.</p>
+<h2 id="playing-with-context-objects">Playing with <code>Context</code> objects</h2>
+<p>Most of the time, you&#39;ll instantiate [Context] objects by passing in a fully-populated dictionary to <code>Context()</code>. But you can add and delete items from a <code>Context</code> object once it&#39;s been instantiated, too, using standard dictionary syntax:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Python</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-python">
+<span class="hljs-meta">&gt;&gt;&gt; </span><span class="hljs-keyword">from</span> django.template <span class="hljs-keyword">import</span> Context
+<span class="hljs-meta">&gt;&gt;&gt; </span>c = Context({<span class="hljs-string">&quot;foo&quot;</span>: <span class="hljs-string">&quot;bar&quot;</span>})
+<span class="hljs-meta">&gt;&gt;&gt; </span>c[<span class="hljs-string">&quot;foo&quot;</span>]
+<span class="hljs-string">&#x27;bar&#x27;</span>
+<span class="hljs-meta">&gt;&gt;&gt; </span><span class="hljs-keyword">del</span> c[<span class="hljs-string">&quot;foo&quot;</span>]
+<span class="hljs-meta">&gt;&gt;&gt; </span>c[<span class="hljs-string">&quot;foo&quot;</span>]
+Traceback (most recent call last):
+...
+KeyError: <span class="hljs-string">&#x27;foo&#x27;</span>
+<span class="hljs-meta">&gt;&gt;&gt; </span>c[<span class="hljs-string">&quot;newvariable&quot;</span>] = <span class="hljs-string">&quot;hello&quot;</span>
+<span class="hljs-meta">&gt;&gt;&gt; </span>c[<span class="hljs-string">&quot;newvariable&quot;</span>]
+<span class="hljs-string">&#x27;hello&#x27;</span></code></pre></div></figure>
+<p><strong><code>Context.get(key, otherwise=None)</code></strong></p>
+<p>Returns the value for <code>key</code> if <code>key</code> is in the context, else returns <code>otherwise</code>.</p>
+<p><strong><code>Context.setdefault(key, default=None)</code></strong></p>
+<p>If <code>key</code> is in the context, returns its value. Otherwise inserts <code>key</code> with a value of <code>default</code> and returns <code>default</code>.</p>
+<p><strong><code>Context.pop()</code></strong></p>
+<p><strong><code>Context.push()</code></strong></p>
+<p><strong><code>ContextPopException</code></strong></p>
+<p>A <code>Context</code> object is a stack. That is, you can <code>push()</code> and <code>pop()</code> it. If you <code>pop()</code> too much, it&#39;ll raise <code>django.template.ContextPopException</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Python</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-python">
+<span class="hljs-meta">&gt;&gt;&gt; </span>c = Context()
+<span class="hljs-meta">&gt;&gt;&gt; </span>c[<span class="hljs-string">&quot;foo&quot;</span>] = <span class="hljs-string">&quot;first level&quot;</span>
+<span class="hljs-meta">&gt;&gt;&gt; </span>c.push()
+{}
+<span class="hljs-meta">&gt;&gt;&gt; </span>c[<span class="hljs-string">&quot;foo&quot;</span>] = <span class="hljs-string">&quot;second level&quot;</span>
+<span class="hljs-meta">&gt;&gt;&gt; </span>c[<span class="hljs-string">&quot;foo&quot;</span>]
+<span class="hljs-string">&#x27;second level&#x27;</span>
+<span class="hljs-meta">&gt;&gt;&gt; </span>c.pop()
+{<span class="hljs-string">&#x27;foo&#x27;</span>: <span class="hljs-string">&#x27;second level&#x27;</span>}
+<span class="hljs-meta">&gt;&gt;&gt; </span>c[<span class="hljs-string">&quot;foo&quot;</span>]
+<span class="hljs-string">&#x27;first level&#x27;</span>
+<span class="hljs-meta">&gt;&gt;&gt; </span>c[<span class="hljs-string">&quot;foo&quot;</span>] = <span class="hljs-string">&quot;overwritten&quot;</span>
+<span class="hljs-meta">&gt;&gt;&gt; </span>c[<span class="hljs-string">&quot;foo&quot;</span>]
+<span class="hljs-string">&#x27;overwritten&#x27;</span>
+<span class="hljs-meta">&gt;&gt;&gt; </span>c.pop()
+Traceback (most recent call last):
+...
+ContextPopException</code></pre></div></figure>
+<p>You can also use <code>push()</code> as a context manager to ensure a matching <code>pop()</code> is called.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Python</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-python">
+<span class="hljs-meta">&gt;&gt;&gt; </span>c = Context()
+<span class="hljs-meta">&gt;&gt;&gt; </span>c[<span class="hljs-string">&quot;foo&quot;</span>] = <span class="hljs-string">&quot;first level&quot;</span>
+<span class="hljs-meta">&gt;&gt;&gt; </span><span class="hljs-keyword">with</span> c.push():
+<span class="hljs-meta">... </span>    c[<span class="hljs-string">&quot;foo&quot;</span>] = <span class="hljs-string">&quot;second level&quot;</span>
+<span class="hljs-meta">... </span>    c[<span class="hljs-string">&quot;foo&quot;</span>]
+...
+<span class="hljs-string">&#x27;second level&#x27;</span>
+<span class="hljs-meta">&gt;&gt;&gt; </span>c[<span class="hljs-string">&quot;foo&quot;</span>]
+<span class="hljs-string">&#x27;first level&#x27;</span></code></pre></div></figure>
+<p>All arguments passed to <code>push()</code> will be passed to the <code>dict</code> constructor used to build the new context level.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Python</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-python">
+<span class="hljs-meta">&gt;&gt;&gt; </span>c = Context()
+<span class="hljs-meta">&gt;&gt;&gt; </span>c[<span class="hljs-string">&quot;foo&quot;</span>] = <span class="hljs-string">&quot;first level&quot;</span>
+<span class="hljs-meta">&gt;&gt;&gt; </span><span class="hljs-keyword">with</span> c.push(foo=<span class="hljs-string">&quot;second level&quot;</span>):
+<span class="hljs-meta">... </span>    c[<span class="hljs-string">&quot;foo&quot;</span>]
+...
+<span class="hljs-string">&#x27;second level&#x27;</span>
+<span class="hljs-meta">&gt;&gt;&gt; </span>c[<span class="hljs-string">&quot;foo&quot;</span>]
+<span class="hljs-string">&#x27;first level&#x27;</span></code></pre></div></figure>
+<p><strong><code>Context.update(other_dict)</code></strong></p>
+<p>In addition to <code>push()</code> and <code>pop()</code>, the <code>Context</code> object also defines an <code>update()</code> method. This works like <code>push()</code> but takes a dictionary as an argument and pushes that dictionary onto the stack instead of an empty one.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Python</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-python">
+<span class="hljs-meta">&gt;&gt;&gt; </span>c = Context()
+<span class="hljs-meta">&gt;&gt;&gt; </span>c[<span class="hljs-string">&quot;foo&quot;</span>] = <span class="hljs-string">&quot;first level&quot;</span>
+<span class="hljs-meta">&gt;&gt;&gt; </span>c.update({<span class="hljs-string">&quot;foo&quot;</span>: <span class="hljs-string">&quot;updated&quot;</span>})
+{<span class="hljs-string">&#x27;foo&#x27;</span>: <span class="hljs-string">&#x27;updated&#x27;</span>}
+<span class="hljs-meta">&gt;&gt;&gt; </span>c[<span class="hljs-string">&quot;foo&quot;</span>]
+<span class="hljs-string">&#x27;updated&#x27;</span>
+<span class="hljs-meta">&gt;&gt;&gt; </span>c.pop()
+{<span class="hljs-string">&#x27;foo&#x27;</span>: <span class="hljs-string">&#x27;updated&#x27;</span>}
+<span class="hljs-meta">&gt;&gt;&gt; </span>c[<span class="hljs-string">&quot;foo&quot;</span>]
+<span class="hljs-string">&#x27;first level&#x27;</span></code></pre></div></figure>
+<p>Like <code>push()</code>, you can use <code>update()</code> as a context manager to ensure a matching <code>pop()</code> is called.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Python</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-python">
+<span class="hljs-meta">&gt;&gt;&gt; </span>c = Context()
+<span class="hljs-meta">&gt;&gt;&gt; </span>c[<span class="hljs-string">&quot;foo&quot;</span>] = <span class="hljs-string">&quot;first level&quot;</span>
+<span class="hljs-meta">&gt;&gt;&gt; </span><span class="hljs-keyword">with</span> c.update({<span class="hljs-string">&quot;foo&quot;</span>: <span class="hljs-string">&quot;second level&quot;</span>}):
+<span class="hljs-meta">... </span>    c[<span class="hljs-string">&quot;foo&quot;</span>]
+...
+<span class="hljs-string">&#x27;second level&#x27;</span>
+<span class="hljs-meta">&gt;&gt;&gt; </span>c[<span class="hljs-string">&quot;foo&quot;</span>]
+<span class="hljs-string">&#x27;first level&#x27;</span></code></pre></div></figure>
+<p>Using a <code>Context</code> as a stack comes in handy in some custom template tags .</p>
+<p><strong><code>Context.flatten()</code></strong></p>
+<p>Using <code>flatten()</code> method you can get whole <code>Context</code> stack as one dictionary including builtin variables.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Python</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-python">
+<span class="hljs-meta">&gt;&gt;&gt; </span>c = Context()
+<span class="hljs-meta">&gt;&gt;&gt; </span>c[<span class="hljs-string">&quot;foo&quot;</span>] = <span class="hljs-string">&quot;first level&quot;</span>
+<span class="hljs-meta">&gt;&gt;&gt; </span>c.update({<span class="hljs-string">&quot;bar&quot;</span>: <span class="hljs-string">&quot;second level&quot;</span>})
+{<span class="hljs-string">&#x27;bar&#x27;</span>: <span class="hljs-string">&#x27;second level&#x27;</span>}
+<span class="hljs-meta">&gt;&gt;&gt; </span>c.flatten()
+{<span class="hljs-string">&#x27;True&#x27;</span>: <span class="hljs-literal">True</span>, <span class="hljs-string">&#x27;None&#x27;</span>: <span class="hljs-literal">None</span>, <span class="hljs-string">&#x27;foo&#x27;</span>: <span class="hljs-string">&#x27;first level&#x27;</span>, <span class="hljs-string">&#x27;False&#x27;</span>: <span class="hljs-literal">False</span>, <span class="hljs-string">&#x27;bar&#x27;</span>: <span class="hljs-string">&#x27;second level&#x27;</span>}</code></pre></div></figure>
+<p>A <code>flatten()</code> method is also internally used to make <code>Context</code> objects comparable.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Python</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-python">
+<span class="hljs-meta">&gt;&gt;&gt; </span>c1 = Context()
+<span class="hljs-meta">&gt;&gt;&gt; </span>c1[<span class="hljs-string">&quot;foo&quot;</span>] = <span class="hljs-string">&quot;first level&quot;</span>
+<span class="hljs-meta">&gt;&gt;&gt; </span>c1[<span class="hljs-string">&quot;bar&quot;</span>] = <span class="hljs-string">&quot;second level&quot;</span>
+<span class="hljs-meta">&gt;&gt;&gt; </span>c2 = Context()
+<span class="hljs-meta">&gt;&gt;&gt; </span>c2.update({<span class="hljs-string">&quot;bar&quot;</span>: <span class="hljs-string">&quot;second level&quot;</span>, <span class="hljs-string">&quot;foo&quot;</span>: <span class="hljs-string">&quot;first level&quot;</span>})
+{<span class="hljs-string">&#x27;foo&#x27;</span>: <span class="hljs-string">&#x27;first level&#x27;</span>, <span class="hljs-string">&#x27;bar&#x27;</span>: <span class="hljs-string">&#x27;second level&#x27;</span>}
+<span class="hljs-meta">&gt;&gt;&gt; </span>c1 == c2
+<span class="hljs-literal">True</span></code></pre></div></figure>
+<p>Result from <code>flatten()</code> can be useful in unit tests to compare <code>Context</code> against <code>dict</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">class ContextTest(unittest.TestCase):
+    def test_against_dictionary(self):
+        c1 = Context()
+        c1[&quot;update&quot;] = &quot;value&quot;
+        self.assertEqual(
+            c1.flatten(),
+            {
+                &quot;True&quot;: True,
+                &quot;None&quot;: None,
+                &quot;False&quot;: False,
+                &quot;update&quot;: &quot;value&quot;,
+            },
+        )</code></pre></div></figure>
+<h3 id="using-requestcontext">Using <code>RequestContext</code></h3>
+<p><strong><code>RequestContext(request, dict_=None, processors=None, use_l10n=None, use_tz=None, autoescape=True)</code></strong></p>
+<p>Django comes with a special [~django.template.Context] class, <code>django.template.RequestContext</code>, that acts slightly differently from the normal <code>django.template.Context</code>. The first difference is that it takes an [~django.http.HttpRequest] as its first argument. For example:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">c = RequestContext(
+    request,
+    {
+        &quot;foo&quot;: &quot;bar&quot;,
+    },
+)</code></pre></div></figure>
+<p>The second difference is that it automatically populates the context with a few variables, according to the engine&#39;s <code>context_processors</code> configuration option.</p>
+<p>The <code>context_processors</code> option is a list of callables -- called <strong>context processors</strong> -- that take a request object as their argument and return a dictionary of items to be merged into the context. In the default generated settings file, the default template engine contains the following context processors:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">[
+    &quot;django.template.context_processors.request&quot;,
+    &quot;django.contrib.auth.context_processors.auth&quot;,
+    &quot;django.contrib.messages.context_processors.messages&quot;,
+]</code></pre></div></figure>
+<p>In addition to these, [RequestContext] always enables <code>&#39;django.template.context_processors.csrf&#39;</code>. This is a security related context processor required by the admin and other contrib apps, and, in case of accidental misconfiguration, it is deliberately hardcoded in and cannot be turned off in the <code>context_processors</code> option.</p>
+<p>Each processor is applied in order. That means, if one processor adds a variable to the context and a second processor adds a variable with the same name, the second will override the first. The default processors are explained below.</p>
+<p>Also, you can give [RequestContext] a list of additional processors, using the optional, third positional argument, <code>processors</code>. In this example, the [RequestContext] instance gets an <code>ip_address</code> variable:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">from django.http import HttpResponse
+from django.template import RequestContext, Template
+
+
+def ip_address_processor(request):
+    return {&quot;ip_address&quot;: request.META[&quot;REMOTE_ADDR&quot;]}
+
+
+def client_ip_view(request):
+    template = Template(&quot;{{ title }}: {{ ip_address }}&quot;)
+    context = RequestContext(
+        request,
+        {
+            &quot;title&quot;: &quot;Your IP Address&quot;,
+        },
+        [ip_address_processor],
+    )
+    return HttpResponse(template.render(context))</code></pre></div></figure>
+<h3 id="built-in-template-context-processors">Built-in template context processors</h3>
+<p>Here&#39;s what each of the built-in processors does:</p>
+<h4 id="djangocontribauthcontextprocessorsauth"><code>django.contrib.auth.context_processors.auth</code></h4>
+<p><strong><code>auth(request)</code></strong></p>
+<p>If this processor is enabled, every <code>RequestContext</code> will contain these variables:</p>
+<ul>
+<li><code>user</code> -- An <code>auth.User</code> instance representing the currently logged-in user (or an <code>AnonymousUser</code> instance, if the client isn&#39;t logged in).</li>
+<li><code>perms</code> -- An instance of <code>django.contrib.auth.context_processors.PermWrapper</code>, representing the permissions that the currently logged-in user has.</li>
+</ul>
+<h4 id="djangotemplatecontextprocessorsdebug"><code>django.template.context_processors.debug</code></h4>
+<p><strong><code>debug(request)</code></strong></p>
+<p>If this processor is enabled, every <code>RequestContext</code> will contain these two variables -- but only if your [DEBUG] setting is set to <code>True</code> and the request&#39;s IP address (<code>request.META[&#39;REMOTE_ADDR&#39;]</code>) is in the [INTERNAL_IPS] setting:</p>
+<ul>
+<li><code>debug</code> -- <code>True</code>. You can use this in templates to test whether you&#39;re in [DEBUG] mode.</li>
+<li><code>sql_queries</code> -- A list of <code>{&#39;sql&#39;: ..., &#39;time&#39;: ...}</code> dictionaries, representing every SQL query that has happened so far during the request and how long it took. The list is in order by database alias and then by query. It&#39;s lazily generated on access.</li>
+</ul>
+<h4 id="djangotemplatecontextprocessorsi18n"><code>django.template.context_processors.i18n</code></h4>
+<p><strong><code>i18n(request)</code></strong></p>
+<p>If this processor is enabled, every <code>RequestContext</code> will contain these variables:</p>
+<ul>
+<li><code>LANGUAGES</code> -- The value of the [LANGUAGES] setting.</li>
+<li><code>LANGUAGE_BIDI</code> -- <code>True</code> if the current language is a right-to-left language, e.g. Hebrew, Arabic. <code>False</code> if it&#39;s a left-to-right language, e.g. English, French, German.</li>
+<li><code>LANGUAGE_CODE</code> -- <code>request.LANGUAGE_CODE</code>, if it exists. Otherwise, the value of the [LANGUAGE_CODE] setting.</li>
+</ul>
+<p>See i18n template tags for template tags that generate the same values.</p>
+<h4 id="djangotemplatecontextprocessorsmedia"><code>django.template.context_processors.media</code></h4>
+<p>If this processor is enabled, every <code>RequestContext</code> will contain a variable <code>MEDIA_URL</code>, providing the value of the [MEDIA_URL] setting.</p>
+<h4 id="djangotemplatecontextprocessorsstatic"><code>django.template.context_processors.static</code></h4>
+<p><strong><code>static(request)</code></strong></p>
+<p>If this processor is enabled, every <code>RequestContext</code> will contain a variable <code>STATIC_URL</code>, providing the value of the [STATIC_URL] setting.</p>
+<h4 id="djangotemplatecontextprocessorscsrf"><code>django.template.context_processors.csrf</code></h4>
+<p>This processor adds a token that is needed by the [csrf_token] template tag for protection against [Cross Site Request Forgeries ](ref/csrf.rst).</p>
+<p>This is always enabled by [~django.template.RequestContext] and cannot be disabled. You do not need to include it within <code>context_processors</code>.</p>
+<h4 id="djangotemplatecontextprocessorscsp"><code>django.template.context_processors.csp</code></h4>
+<p><strong><code>csp(request)</code></strong></p>
+<p>If this processor is enabled, every <code>RequestContext</code> will contain a variable <code>csp_nonce</code>, providing a securely generated, request-specific nonce suitable for use under a Content Security Policy. See CSP nonce usage for details.</p>
+<h4 id="djangotemplatecontextprocessorsrequest"><code>django.template.context_processors.request</code></h4>
+<p>If this processor is enabled, every <code>RequestContext</code> will contain a variable <code>request</code>, which is the current [~django.http.HttpRequest].</p>
+<h4 id="djangotemplatecontextprocessorstz"><code>django.template.context_processors.tz</code></h4>
+<p><strong><code>tz(request)</code></strong></p>
+<p>If this processor is enabled, every <code>RequestContext</code> will contain a variable <code>TIME_ZONE</code>, providing the name of the currently active time zone.</p>
+<h4 id="djangocontribmessagescontextprocessorsmessages"><code>django.contrib.messages.context_processors.messages</code></h4>
+<p>If this processor is enabled, every <code>RequestContext</code> will contain these two variables:</p>
+<ul>
+<li><code>messages</code> -- A list of messages (as strings) that have been set via the [messages framework ](ref/contrib/messages.rst).</li>
+<li><code>DEFAULT_MESSAGE_LEVELS</code> -- A mapping of the message level names to their numeric value .</li>
+</ul>
+<h3 id="writing-your-own-context-processors">Writing your own context processors</h3>
+<p>A context processor has a simple interface: It&#39;s a Python function that takes one argument, an [~django.http.HttpRequest] object, and returns a dictionary that gets added to the template context.</p>
+<p>For example, to add the [DEFAULT_FROM_EMAIL] setting to every context:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">from django.conf import settings
+
+
+def from_email(request):
+    return {
+        &quot;DEFAULT_FROM_EMAIL&quot;: settings.DEFAULT_FROM_EMAIL,
+    }</code></pre></div></figure>
+<p>Custom context processors can live anywhere in your code base. All Django cares about is that your custom context processors are pointed to by the <code>&#39;context_processors&#39;</code> option in your [TEMPLATES] setting --- or the <code>context_processors</code> argument of [~django.template.Engine] if you&#39;re using it directly.</p>
+<h2 id="loading-templates">Loading templates</h2>
+<p>Generally, you&#39;ll store templates in files on your filesystem rather than using the low-level [~django.template.Template] API yourself. Save templates in a directory specified as a <strong>template directory</strong>.</p>
+<p>Django searches for template directories in a number of places, depending on your template loading settings (see &quot;Loader types&quot; below), but the most basic way of specifying template directories is by using the [DIRS ] option.</p>
+<h3 id="the-dirs-option">The [DIRS ] option</h3>
+<p>Tell Django what your template directories are by using the [DIRS ] option in the [TEMPLATES] setting in your settings file --- or the <code>dirs</code> argument of [~django.template.Engine]. This should be set to a list of strings that contain full paths to your template directories:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">TEMPLATES = [
+    {
+        &quot;BACKEND&quot;: &quot;django.template.backends.django.DjangoTemplates&quot;,
+        &quot;DIRS&quot;: [
+            &quot;/home/html/templates/lawrence.com&quot;,
+            &quot;/home/html/templates/default&quot;,
+        ],
+    },
+]</code></pre></div></figure>
+<p>Your templates can go anywhere you want, as long as the directories and templates are readable by the web server. They can have any extension you want, such as <code>.html</code> or <code>.txt</code>, or they can have no extension at all.</p>
+<p>Note that these paths should use Unix-style forward slashes, even on Windows.</p>
+<h3 id="loader-types">Loader types</h3>
+<p>By default, Django uses a filesystem-based template loader, but Django comes with a few other template loaders, which know how to load templates from other sources.</p>
+<p>Some of these other loaders are disabled by default, but you can activate them by adding a <code>&#39;loaders&#39;</code> option to your <code>DjangoTemplates</code> backend in the [TEMPLATES] setting or passing a <code>loaders</code> argument to [~django.template.Engine]. <code>loaders</code> should be a list of strings or tuples, where each represents a template loader class. Here are the template loaders that come with Django:</p>
+<p><code>django.template.loaders.filesystem.Loader</code></p>
+<p><strong><code>filesystem.Loader</code></strong></p>
+<p>Loads templates from the filesystem, according to [DIRS ].</p>
+<p>This loader is enabled by default. However it won&#39;t find any templates until you set [DIRS ] to a non-empty list:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">TEMPLATES = [
+    {
+        &quot;BACKEND&quot;: &quot;django.template.backends.django.DjangoTemplates&quot;,
+        &quot;DIRS&quot;: [BASE_DIR / &quot;templates&quot;],
+    }
+]</code></pre></div></figure>
+<p>You can also override <code>&#39;DIRS&#39;</code> and specify specific directories for a particular filesystem loader:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">TEMPLATES = [
+    {
+        &quot;BACKEND&quot;: &quot;django.template.backends.django.DjangoTemplates&quot;,
+        &quot;OPTIONS&quot;: {
+            &quot;loaders&quot;: [
+                (
+                    &quot;django.template.loaders.filesystem.Loader&quot;,
+                    [BASE_DIR / &quot;templates&quot;],
+                ),
+            ],
+        },
+    }
+]</code></pre></div></figure>
+<p><code>django.template.loaders.app_directories.Loader</code></p>
+<p><strong><code>app_directories.Loader</code></strong></p>
+<p>Loads templates from Django apps on the filesystem. For each app in [INSTALLED_APPS], the loader looks for a <code>templates</code> subdirectory. If the directory exists, Django looks for templates in there.</p>
+<p>This means you can store templates with your individual apps. This also helps to distribute Django apps with default templates.</p>
+<p>For example, for this setting:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">INSTALLED_APPS = [&quot;myproject.polls&quot;, &quot;myproject.music&quot;]</code></pre></div></figure>
+<p>...then <code>get_template(&#39;foo.html&#39;)</code> will look for <code>foo.html</code> in these directories, in this order:</p>
+<ul>
+<li><code>/path/to/myproject/polls/templates/</code></li>
+<li><code>/path/to/myproject/music/templates/</code></li>
+</ul>
+<p>... and will use the one it finds first.</p>
+<p>The order of [INSTALLED_APPS] is significant! For example, if you want to customize the Django admin, you might choose to override the standard <code>admin/base_site.html</code> template, from <code>django.contrib.admin</code>, with your own <code>admin/base_site.html</code> in <code>myproject.polls</code>. You must then make sure that your <code>myproject.polls</code> comes <em>before</em> <code>django.contrib.admin</code> in [INSTALLED_APPS], otherwise <code>django.contrib.admin</code>&#39;s will be loaded first and yours will be ignored.</p>
+<p>Note that the loader performs an optimization when it first runs: it caches a list of which [INSTALLED_APPS] packages have a <code>templates</code> subdirectory.</p>
+<p>You can enable this loader by setting [APP_DIRS ] to <code>True</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">TEMPLATES = [
+    {
+        &quot;BACKEND&quot;: &quot;django.template.backends.django.DjangoTemplates&quot;,
+        &quot;APP_DIRS&quot;: True,
+    }
+]</code></pre></div></figure>
+<p><code>django.template.loaders.cached.Loader</code></p>
+<p><strong><code>cached.Loader</code></strong></p>
+<p>While the Django template system is quite fast, if it needs to read and compile your templates every time they&#39;re rendered, the overhead from that can add up.</p>
+<p>You configure the cached template loader with a list of other loaders that it should wrap. The wrapped loaders are used to locate unknown templates when they&#39;re first encountered. The cached loader then stores the compiled <code>Template</code> in memory. The cached <code>Template</code> instance is returned for subsequent requests to load the same template.</p>
+<p>This loader is automatically enabled if [OPTIONS[&#39;loaders&#39;] ] isn&#39;t specified.</p>
+<p>You can manually specify template caching with some custom template loaders using settings like this:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">TEMPLATES = [
+    {
+        &quot;BACKEND&quot;: &quot;django.template.backends.django.DjangoTemplates&quot;,
+        &quot;DIRS&quot;: [BASE_DIR / &quot;templates&quot;],
+        &quot;OPTIONS&quot;: {
+            &quot;loaders&quot;: [
+                (
+                    &quot;django.template.loaders.cached.Loader&quot;,
+                    [
+                        &quot;django.template.loaders.filesystem.Loader&quot;,
+                        &quot;django.template.loaders.app_directories.Loader&quot;,
+                        &quot;path.to.custom.Loader&quot;,
+                    ],
+                ),
+            ],
+        },
+    }
+]</code></pre></div></figure>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>All of the built-in Django template tags are safe to use with the cached loader, but if you&#39;re using custom template tags that come from third party packages, or that you wrote yourself, you should ensure that the <code>Node</code> implementation for each tag is thread-safe. For more information, see template tag thread safety considerations .</p>
+</div></aside>
+<p><code>django.template.loaders.locmem.Loader</code></p>
+<p><strong><code>locmem.Loader</code></strong></p>
+<p>Loads templates from a Python dictionary. This is useful for testing.</p>
+<p>This loader takes a dictionary of templates as its first argument:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">TEMPLATES = [
+    {
+        &quot;BACKEND&quot;: &quot;django.template.backends.django.DjangoTemplates&quot;,
+        &quot;OPTIONS&quot;: {
+            &quot;loaders&quot;: [
+                (
+                    &quot;django.template.loaders.locmem.Loader&quot;,
+                    {
+                        &quot;index.html&quot;: &quot;content here&quot;,
+                    },
+                ),
+            ],
+        },
+    }
+]</code></pre></div></figure>
+<p>This loader is disabled by default.</p>
+<p>Django uses the template loaders in order according to the <code>&#39;loaders&#39;</code> option. It uses each loader until a loader finds a match.</p>
+<h2 id="custom-loaders">Custom loaders</h2>
+<p>It&#39;s possible to load templates from additional sources using custom template loaders. Custom <code>Loader</code> classes should inherit from <code>django.template.loaders.base.Loader</code> and define the <code>get_contents()</code> and <code>get_template_sources()</code> methods.</p>
+<h3 id="loader-methods">Loader methods</h3>
+<p><strong><code>Loader</code></strong></p>
+<p>Loads templates from a given source, such as the filesystem or a database.</p>
+<p><strong><code>get_template_sources(template_name)</code></strong></p>
+<p>A method that takes a <code>template_name</code> and yields [~django.template.base.Origin] instances for each possible source.</p>
+<p>For example, the filesystem loader may receive <code>&#39;index.html&#39;</code> as a <code>template_name</code> argument. This method would yield origins for the full path of <code>index.html</code> as it appears in each template directory the loader looks at.</p>
+<p>The method doesn&#39;t need to verify that the template exists at a given path, but it should ensure the path is valid. For instance, the filesystem loader makes sure the path lies under a valid template directory.</p>
+<p><strong><code>get_contents(origin)</code></strong></p>
+<p>Returns the contents for a template given a [~django.template.base.Origin] instance.</p>
+<p>This is where a filesystem loader would read contents from the filesystem, or a database loader would read from the database. If a matching template doesn&#39;t exist, this should raise a [~django.template.TemplateDoesNotExist] error.</p>
+<p><strong><code>get_template(template_name, skip=None)</code></strong></p>
+<p>Returns a <code>Template</code> object for a given <code>template_name</code> by looping through results from [get_template_sources] and calling [get_contents]. This returns the first matching template. If no template is found, [~django.template.TemplateDoesNotExist] is raised.</p>
+<p>The optional <code>skip</code> argument is a list of origins to ignore when extending templates. This allow templates to extend other templates of the same name. It also used to avoid recursion errors.</p>
+<p>In general, it is enough to define [get_template_sources] and [get_contents] for custom template loaders. <code>get_template()</code> will usually not need to be overridden.</p>
+<h2 id="template-origin">Template origin</h2>
+<p>Templates have an <code>origin</code> containing attributes depending on the source they are loaded from.</p>
+<p><strong><code>Origin(name, template_name=None, loader=None)</code></strong></p>
+<p><strong><code>name</code></strong></p>
+<p>The path to the template as returned by the template loader. For loaders that read from the file system, this is the full path to the template.</p>
+<p>If the template is instantiated directly rather than through a template loader, this is a string value of <code>&lt;unknown_source&gt;</code>.</p>
+<p><strong><code>template_name</code></strong></p>
+<p>The relative path to the template as passed into the template loader.</p>
+<p>If the template is instantiated directly rather than through a template loader, this is <code>None</code>.</p>
+<p><strong><code>loader</code></strong></p>
+<p>The template loader instance that constructed this <code>Origin</code>.</p>
+<p>If the template is instantiated directly rather than through a template loader, this is <code>None</code>.</p>
+<p>[django.template.loaders.cached.Loader] requires all of its wrapped loaders to set this attribute, typically by instantiating the <code>Origin</code> with <code>loader=self</code>.</p>
