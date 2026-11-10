@@ -1,0 +1,82 @@
+<p>::: 
+{{ header }}
+:::</p>
+<p>In this part of the tutorial, we will investigate how to speed up certain functions operating on pandas [DataFrame] using Cython, Numba and [pandas.eval]. Generally, using Cython and Numba can offer a larger speedup than using [pandas.eval] but will require a lot more code.</p>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>In addition to following the steps in this tutorial, users interested in enhancing performance are highly encouraged to install the recommended dependencies for pandas. These dependencies are often not installed by default, but will offer speed improvements if present.</p>
+</div></aside>
+<h2 id="cython-writing-c-extensions-for-pandas">Cython (writing C extensions for pandas)</h2>
+<p>For many use cases writing pandas in pure Python and NumPy is sufficient. In some computationally heavy applications however, it can be possible to achieve sizable speed-ups by offloading work to <a target="_blank" rel="noopener" href="https://cython.org/">cython</a>.</p>
+<p>This tutorial assumes you have refactored as much as possible in Python, for example by trying to remove for-loops and making use of NumPy vectorization. It&#39;s always worth optimising in Python first.</p>
+<p>This tutorial walks through a &quot;typical&quot; process of cythonizing a slow computation. We use an <a target="_blank" rel="noopener" href="https://docs.cython.org/en/latest/src/quickstart/cythonize.html">example from the Cython documentation</a> but in the context of pandas. Our final cythonized solution is around 100 times faster than the pure Python solution.</p>
+<h3 id="pure-python">Pure Python</h3>
+<p>We have a [DataFrame] to which we want to apply a function row-wise.</p>
+<p>Here&#39;s the function in pure Python:</p>
+<p>We achieve our result by using [DataFrame.apply] (row-wise):</p>
+<p>Let&#39;s take a look and see where the time is spent during this operation using the <a target="_blank" rel="noopener" href="https://ipython.readthedocs.io/en/stable/interactive/magics.html#magic-prun">prun ipython magic function</a>:</p>
+<p>By far the majority of time is spend inside either <code>integrate_f</code> or <code>f</code>, hence we&#39;ll concentrate our efforts cythonizing these two functions.</p>
+<h3 id="plain-cython">Plain Cython</h3>
+<p>First we&#39;re going to need to import the Cython magic function to IPython:</p>
+<p>Now, let&#39;s simply copy our functions over to Cython:</p>
+<p>This has improved the performance compared to the pure Python approach by one-third.</p>
+<h3 id="declaring-c-types">Declaring C types</h3>
+<p>We can annotate the function variables and return types as well as use <code>cdef</code> and <code>cpdef</code> to improve performance:</p>
+<p>Annotating the functions with C types yields an over ten times performance improvement compared to the original Python implementation.</p>
+<h3 id="using-ndarray">Using ndarray</h3>
+<p>When re-profiling, time is spent creating a [Series] from each row, and calling <code>__getitem__</code> from both the index and the series (three times for each row). These Python function calls are expensive and can be improved by passing an <code>np.ndarray</code>.</p>
+<p>This implementation creates an array of zeros and inserts the result of <code>integrate_f_typed</code> applied over each row. Looping over an <code>ndarray</code> is faster in Cython than looping over a [Series] object.</p>
+<p>Since <code>apply_integrate_f</code> is typed to accept an <code>np.ndarray</code>, [Series.to_numpy] calls are needed to utilize this function.</p>
+<p>Performance has improved from the prior implementation by almost ten times.</p>
+<h3 id="disabling-compiler-directives">Disabling compiler directives</h3>
+<p>The majority of the time is now spent in <code>apply_integrate_f</code>. Disabling Cython&#39;s <code>boundscheck</code> and <code>wraparound</code> checks can yield more performance.</p>
+<p>However, a loop indexer <code>i</code> accessing an invalid location in an array would cause a segfault because memory access isn&#39;t checked. For more about <code>boundscheck</code> and <code>wraparound</code>, see the Cython docs on <a target="_blank" rel="noopener" href="https://cython.readthedocs.io/en/latest/src/userguide/source_files_and_compilation.html#compiler-directives">compiler directives</a>.</p>
+<h2 id="numba-jit-compilation">Numba (JIT compilation)</h2>
+<p>An alternative to statically compiling Cython code is to use a dynamic just-in-time (JIT) compiler with <a target="_blank" rel="noopener" href="https://numba.pydata.org/">Numba</a>.</p>
+<p>Numba allows you to write a pure Python function which can be JIT compiled to native machine instructions, similar in performance to C, C++ and Fortran, by decorating your function with <code>@jit</code>.</p>
+<p>Numba works by generating optimized machine code using the LLVM compiler infrastructure at import time, runtime, or statically (using the included pycc tool). Numba supports compilation of Python to run on either CPU or GPU hardware and is designed to integrate with the Python scientific software stack.</p>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>The <code>@jit</code> compilation will add overhead to the runtime of the function, so performance benefits may not be realized especially when using small data sets. Consider <a target="_blank" rel="noopener" href="https://numba.readthedocs.io/en/stable/developer/caching.html">caching</a> your function to avoid compilation overhead each time your function is run.</p>
+</div></aside>
+<p>Numba can be used in 2 ways with pandas:</p>
+<ol>
+<li>Specify the <code>engine=&quot;numba&quot;</code> keyword in select pandas methods</li>
+<li>Define your own Python function decorated with <code>@jit</code> and pass the underlying NumPy array of [Series] or [DataFrame] (using [Series.to_numpy]) into the function</li>
+</ol>
+<h3 id="pandas-numba-engine">pandas Numba Engine</h3>
+<p>If Numba is installed, one can specify <code>engine=&quot;numba&quot;</code> in select pandas methods to execute the method using Numba. Methods that support <code>engine=&quot;numba&quot;</code> will also have an <code>engine_kwargs</code> keyword that accepts a dictionary that allows one to specify <code>&quot;nogil&quot;</code> and <code>&quot;parallel&quot;</code> keys with boolean values to pass into the <code>@jit</code> decorator. If <code>engine_kwargs</code> is not specified, it defaults to <code>{&quot;nogil&quot;: False, &quot;parallel&quot;: False}</code> unless otherwise specified.</p>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>In terms of performance, <strong>the first time a function is run using the Numba engine will be slow</strong> as Numba will have some function compilation overhead. However, the JIT compiled functions are cached, and subsequent calls will be fast. In general, the Numba engine is performant with a larger amount of data points (e.g. 1+ million).</p>
+<p><figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">
+In [1]: data = pd.Series(range(1_000_000))  # noqa: E225
+
+In [2]: roll = data.rolling(10)
+
+In [3]: def f(x):
+   ...:     return np.sum(x) + 5
+# Run the first time, compilation time will affect performance
+In [4]: %timeit -r 1 -n 1 roll.apply(f, engine=&#x27;numba&#x27;, raw=True)
+1.23 s ± 0 ns per loop (mean ± std. dev. of 1 run, 1 loop each)
+# Function is cached and performance will improve
+In [5]: %timeit roll.apply(f, engine=&#x27;numba&#x27;, raw=True)
+188 ms ± 1.93 ms per loop (mean ± std. dev. of 7 runs, 10 loops each)
+
+In [6]: %timeit roll.apply(f, engine=&#x27;cython&#x27;, raw=True)
+3.92 s ± 59 ms per loop (mean ± std. dev. of 7 runs, 1 loop each)</code></pre></div></figure></p>
+</div></aside>
+<p>If your compute hardware contains multiple CPUs, the largest performance gain can be realized by setting <code>parallel</code> to <code>True</code> to leverage more than 1 CPU. Internally, pandas leverages numba to parallelize computations over the columns of a [DataFrame]; therefore, this performance benefit is only beneficial for a [DataFrame] with a large number of columns.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">
+In [1]: import numba
+
+In [2]: numba.set_num_threads(1)
+
+In [3]: df = pd.DataFrame(np.random.randn(10_000, 100))
+
+In [4]: roll = df.rolling(100)
+
+In [5]: %timeit roll.mean(engine=&quot;numba&quot;, engine_kwargs={&quot;parallel&quot;: True})
+347 ms ± 26 ms per loop (mean ± std. dev. of 7 runs, 1 loop each)
+
+In [6]: numba.set_num_threads(2)
+
+In [7]: %timeit roll.mean(engine=&quot;numba&quot;, engine_kwargs={&quot;parallel&quot;: True})
+201 ms ± 2.97 ms per loop (mean ± std. dev. of 7 runs, 1 loop each)</code></pre></div></figure>
+<h3 id="custom-function-examples">Custom Function Examples</h3>
+<p>A custom Python function decorated with <code>@jit</code> can be used with pandas objects by passing their NumPy array representations with [Series.to_numpy].</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Python</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-python"></code></pre></div></figure>
