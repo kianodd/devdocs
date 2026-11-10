@@ -1,0 +1,535 @@
+<p>The signal processing toolbox currently contains some filtering functions, a limited set of filter design tools, and a few B-spline interpolation algorithms for 1- and 2-D data. While the B-spline algorithms could technically be placed under the interpolation category, they are included here because they only work with equally-spaced data and make heavy use of filter-theory and transfer-function formalism to provide a fast B-spline transform. To understand this section, you will need to understand that a signal in SciPy is an array of real or complex numbers.</p>
+<h2 id="b-splines">B-splines</h2>
+<p>A B-spline is an approximation of a continuous function over a finite-domain in terms of B-spline coefficients and knot points. If the knot-points are equally spaced with spacing [Delta x], then the B-spline approximation to a 1-D function is the finite-basis expansion.</p>
+<p>yleft(xright)approxsum_{j}c_{j}beta^{o}left(frac{x}{Delta x}-jright).</p>
+<p>In two dimensions with knot-spacing [Delta x] and [Delta y], the function representation is</p>
+<p>zleft(x,yright)approxsum_{j}sum_{k}c_{jk}beta^{o}left(frac{x}{Delta x}-jright)beta^{o}left(frac{y}{Delta y}-kright).</p>
+<p>In these expressions, [beta^{o}left(cdotright)] is the space-limited B-spline basis function of order [o]. The requirement of equally-spaced knot-points and equally-spaced data points, allows the development of fast (inverse-filtering) algorithms for determining the coefficients, [c_{j}], from sample-values, [y_{n}]. Unlike the general spline interpolation algorithms, these algorithms can quickly find the spline coefficients for large images.</p>
+<p>The advantage of representing a set of samples via B-spline basis functions is that continuous-domain operators (derivatives, re-sampling, integral, etc.), which assume that the data samples are drawn from an underlying continuous function, can be computed with relative ease from the spline coefficients. For example, the second derivative of a spline is</p>
+<p>y{}^{primeprime}left(xright)=frac{1}{Delta x^{2}}sum_{j}c_{j}beta^{oprimeprime}left(frac{x}{Delta x}-jright).</p>
+<p>Using the property of B-splines that</p>
+<p>frac{d^{2}beta^{o}left(wright)}{dw^{2}}=beta^{o-2}left(w+1right)-2beta^{o-2}left(wright)+beta^{o-2}left(w-1right),</p>
+<p>it can be seen that</p>
+<p>y^{primeprime}left(xright)=frac{1}{Delta x^{2}}sum_{j}c_{j}left[beta^{o-2}left(frac{x}{Delta x}-j+1right)-2beta^{o-2}left(frac{x}{Delta x}-jright)+beta^{o-2}left(frac{x}{Delta x}-j-1right)right].</p>
+<p>If [o=3], then at the sample points:</p>
+<p>begin{eqnarray*} Delta x^{2}left.y^{prime}left(xright)right|_{x=nDelta x} &amp; = &amp; sum_{j}c_{j}delta_{n-j+1}-[2c](){j}delta_{n-j}+c_{j}delta_{n-j-1},\ &amp; = &amp; [c](){n+1}-[2c](){n}+c_{n-1}.end{eqnarray*}</p>
+<p>Thus, the second-derivative signal can be easily calculated from the spline fit. If desired, smoothing splines can be found to make the second derivative less sensitive to random errors.</p>
+<p>The savvy reader will have already noticed that the data samples are related to the knot coefficients via a convolution operator, so that simple convolution with the sampled B-spline function recovers the original data from the spline coefficients. The output of convolutions can change depending on how the boundaries are handled (this becomes increasingly more important as the number of dimensions in the dataset increases). The algorithms relating to B-splines in the signal-processing subpackage assume mirror-symmetric boundary conditions. Thus, spline coefficients are computed based on that assumption, and data-samples can be recovered exactly from the spline coefficients by assuming them to be mirror-symmetric also.</p>
+<p>Currently the package provides functions for determining second- and third-order cubic spline coefficients from equally-spaced samples in one and two dimensions ([qspline1d], [qspline2d], [cspline1d], [cspline2d]). For large [o], the B-spline basis function can be approximated well by a zero-mean Gaussian function with standard-deviation equal to [sigma_{o}=left(o+1right)/12] :</p>
+<p>beta^{o}left(xright)approxfrac{1}{sqrt{2pisigma_{o}^{2}}}expleft(-frac{x^{2}}{2sigma_{o}}right).</p>
+<p>A function to compute this Gaussian for arbitrary [x] and [o] is also available ( [gauss_spline] ). The following code and figure use spline-filtering to compute an edge-image (the second derivative of a smoothed spline) of a raccoon&#39;s face, which is an array returned by the command [scipy.datasets.face]. The command [sepfir2d] was used to apply a separable 2-D FIR filter with mirror-symmetric boundary conditions to the spline coefficients. This function is ideally-suited for reconstructing samples from spline coefficients and is faster than [convolve2d], which convolves arbitrary 2-D filters and allows for choosing mirror-symmetric boundary conditions.</p>
+<h2 id="filtering">Filtering</h2>
+<p>Filtering is a generic name for any system that modifies an input signal in some way. In SciPy, a signal can be thought of as a NumPy array. There are different kinds of filters for different kinds of operations. There are two broad kinds of filtering operations: linear and non-linear. Linear filters can always be reduced to multiplication of the flattened NumPy array by an appropriate matrix resulting in another flattened NumPy array. Of course, this is not usually the best way to compute the filter, as the matrices and vectors involved may be huge. For example, filtering a [512 times 512] image with this method would require multiplication of a [512^2 times 512^2] matrix with a [512^2] vector. Just trying to store the [512^2 times 512^2] matrix using a standard NumPy array would require [68,719,476,736] elements. At 4 bytes per element this would require [256textrm{GB}] of memory. In most applications, most of the elements of this matrix are zero and a different method for computing the output of the filter is employed.</p>
+<h3 id="convolutioncorrelation">Convolution/Correlation</h3>
+<p>Many linear filters also have the property of shift-invariance. This means that the filtering operation is the same at different locations in the signal and it implies that the filtering matrix can be constructed from knowledge of one row (or column) of the matrix alone. In this case, the matrix multiplication can be accomplished using Fourier transforms.</p>
+<p>Let [xleft[nright]] define a 1-D signal indexed by the integer [n.] Full convolution of two 1-D signals can be expressed as</p>
+<p>yleft[nright]=sum_{k=-infty}^{infty}xleft[kright]hleft[n-kright].</p>
+<p>This equation can only be implemented directly if we limit the sequences to finite-support sequences that can be stored in a computer, choose [n=0] to be the starting point of both sequences, let [K+1] be that value for which [xleft[nright]=0] for all [ngeq K+1] and [M+1] be that value for which [hleft[nright]=0] for all [ngeq M+1], then the discrete convolution expression is</p>
+<p>yleft[nright]=sum_{k=maxleft(n-M,0right)}^{minleft(n,Kright)}xleft[kright]hleft[n-kright].</p>
+<p>For convenience, assume [Kgeq M.] Then, more explicitly, the output of this operation is</p>
+<p>begin{eqnarray*} yleft[0right] &amp; = &amp; xleft[0right]hleft[0right]\ yleft[1right] &amp; = &amp; xleft[0right]hleft[1right]+xleft[1right]hleft[0right]\ yleft[2right] &amp; = &amp; xleft[0right]hleft[2right]+xleft[1right]hleft[1right]+xleft[2right]hleft[0right]\ vdots &amp; vdots &amp; vdots\ yleft[Mright] &amp; = &amp; xleft[0right]hleft[Mright]+xleft[1right]hleft[M-1right]+cdots+xleft[Mright]hleft[0right]\ yleft[M+1right] &amp; = &amp; xleft[1right]hleft[Mright]+xleft[2right]hleft[M-1right]+cdots+xleft[M+1right]hleft[0right]\ vdots &amp; vdots &amp; vdots\ yleft[Kright] &amp; = &amp; xleft[K-Mright]hleft[Mright]+cdots+xleft[Kright]hleft[0right]\ yleft[K+1right] &amp; = &amp; xleft[K+1-Mright]hleft[Mright]+cdots+xleft[Kright]hleft[1right]\ vdots &amp; vdots &amp; vdots\ yleft[K+M-1right] &amp; = &amp; xleft[K-1right]hleft[Mright]+xleft[Kright]hleft[M-1right]\ yleft[K+Mright] &amp; = &amp; xleft[Kright]hleft[Mright].end{eqnarray*}</p>
+<p>Thus, the full discrete convolution of two finite sequences of lengths [K+1] and [M+1], respectively, results in a finite sequence of length [K+M+1=left(K+1right)+left(M+1right)-1.]</p>
+<p>1-D convolution is implemented in SciPy with the function [convolve]. This function takes as inputs the signals [x,] [h], and two optional flags &#39;mode&#39; and &#39;method&#39;, and returns the signal [y.]</p>
+<p>The first optional flag, &#39;mode&#39;, allows for the specification of which part of the output signal to return. The default value of &#39;full&#39; returns the entire signal. If the flag has a value of &#39;same&#39;, then only the middle [K] values are returned, starting at [yleft[leftlfloor frac{M-1}{2}rightrfloor right]], so that the output has the same length as the first input. If the flag has a value of &#39;valid&#39;, then only the middle [K-M+1=left(K+1right)-left(M+1right)+1] output values are returned, where [z] depends on all of the values of the smallest input from [hleft[0right]] to [hleft[Mright].] In other words, only the values [yleft[Mright]] to [yleft[Kright]] inclusive are returned.</p>
+<p>The second optional flag, &#39;method&#39;, determines how the convolution is computed, either through the Fourier transform approach with [fftconvolve] or through the direct method. By default, it selects the expected faster method. The Fourier transform method has order [O(Nlog N)], while the direct method has order [O(N^2)]. Depending on the big O constant and the value of [N], one of these two methods may be faster. The default value, &#39;auto&#39;, performs a rough calculation and chooses the expected faster method, while the values &#39;direct&#39; and &#39;fft&#39; force computation with the other two methods.</p>
+<p>The code below shows a simple example for convolution of 2 sequences:</p>
+<p>&gt;&gt;&gt; x = np.array([1.0, 2.0, 3.0]) &gt;&gt;&gt; h = np.array([0.0, 1.0, 0.0, 0.0, 0.0]) &gt;&gt;&gt; signal.convolve(x, h) array([ 0., 1., 2., 3., 0., 0., 0.]) &gt;&gt;&gt; signal.convolve(x, h, &#39;same&#39;) array([ 2., 3., 0.])</p>
+<p>This same function [convolve] can actually take N-D arrays as inputs and will return the N-D convolution of the two arrays, as is shown in the code example below. The same input flags are available for that case as well.</p>
+<p>&gt;&gt;&gt; x = np.array([[1., 1., 0., 0.], [1., 1., 0., 0.], [0., 0., 0., 0.], [0., 0., 0., 0.]]) &gt;&gt;&gt; h = np.array([[1., 0., 0., 0.], [0., 0., 0., 0.], [0., 0., 1., 0.], [0., 0., 0., 0.]]) &gt;&gt;&gt; signal.convolve(x, h) array([[ 1., 1., 0., 0., 0., 0., 0.], [ 1., 1., 0., 0., 0., 0., 0.], [ 0., 0., 1., 1., 0., 0., 0.], [ 0., 0., 1., 1., 0., 0., 0.], [ 0., 0., 0., 0., 0., 0., 0.], [ 0., 0., 0., 0., 0., 0., 0.], [ 0., 0., 0., 0., 0., 0., 0.]])</p>
+<p>Correlation is very similar to convolution except that the minus sign becomes a plus sign. Thus,</p>
+<p>wleft[nright]=sum_{k=-infty}^{infty}yleft[kright]xleft[n+kright],</p>
+<p>is the (cross) correlation of the signals [y] and [x.] For finite-length signals with [yleft[nright]=0] outside of the range [left[0,Kright]] and [xleft[nright]=0] outside of the range [left[0,Mright],] the summation can simplify to</p>
+<p>wleft[nright]=sum_{k=maxleft(0,-nright)}^{minleft(K,M-nright)}yleft[kright]xleft[n+kright].</p>
+<p>Assuming again that [Kgeq M], this is</p>
+<p>begin{eqnarray*} wleft[-Kright] &amp; = &amp; yleft[Kright]xleft[0right]\ wleft[-K+1right] &amp; = &amp; yleft[K-1right]xleft[0right]+yleft[Kright]xleft[1right]\ vdots &amp; vdots &amp; vdots\ wleft[M-Kright] &amp; = &amp; yleft[K-Mright]xleft[0right]+yleft[K-M+1right]xleft[1right]+cdots+yleft[Kright]xleft[Mright]\ wleft[M-K+1right] &amp; = &amp; yleft[K-M-1right]xleft[0right]+cdots+yleft[K-1right]xleft[Mright]\ vdots &amp; vdots &amp; vdots\ wleft[-1right] &amp; = &amp; yleft[1right]xleft[0right]+yleft[2right]xleft[1right]+cdots+yleft[M+1right]xleft[Mright]\ wleft[0right] &amp; = &amp; yleft[0right]xleft[0right]+yleft[1right]xleft[1right]+cdots+yleft[Mright]xleft[Mright]\ wleft[1right] &amp; = &amp; yleft[0right]xleft[1right]+yleft[1right]xleft[2right]+cdots+yleft[M-1right]xleft[Mright]\ wleft[2right] &amp; = &amp; yleft[0right]xleft[2right]+yleft[1right]xleft[3right]+cdots+yleft[M-2right]xleft[Mright]\ vdots &amp; vdots &amp; vdots\ wleft[M-1right] &amp; = &amp; yleft[0right]xleft[M-1right]+yleft[1right]xleft[Mright]\ wleft[Mright] &amp; = &amp; yleft[0right]xleft[Mright].end{eqnarray*}</p>
+<p>The SciPy function [correlate] implements this operation. Equivalent flags are available for this operation to return the full [K+M+1] length sequence (&#39;full&#39;) or a sequence with the same size as the largest sequence starting at [wleft[-K+leftlfloor frac{M-1}{2}rightrfloor right]] (&#39;same&#39;) or a sequence where the values depend on all the values of the smallest sequence (&#39;valid&#39;). This final option returns the [K-M+1] values [wleft[M-Kright]] to [wleft[0right]] inclusive.</p>
+<p>The function [correlate] can also take arbitrary N-D arrays as input and return the N-D convolution of the two arrays on output.</p>
+<p>When [N=2,] [correlate] and/or [convolve] can be used to construct arbitrary image filters to perform actions such as blurring, enhancing, and edge-detection for an image.</p>
+<p>Calculating the convolution in the time domain as above is mainly used for filtering when one of the signals is much smaller than the other ( [Kgg M] ), otherwise linear filtering is more efficiently calculated in the frequency domain provided by the function [fftconvolve]. By default, [convolve] estimates the fastest method using [choose_conv_method].</p>
+<p>If the filter function [w[n,m]] can be factored according to</p>
+<p>h[n, m] = h_1[n] h_2[m],</p>
+<p>convolution can be calculated by means of the function [sepfir2d]. As an example, we consider a Gaussian filter [~scipy.signal.windows.gaussian]</p>
+<p>h[n, m] propto e^{-x^2-y^2} = e^{-x^2} e^{-y^2},</p>
+<p>which is often used for blurring.</p>
+<h3 id="difference-equation-filtering">Difference-equation filtering</h3>
+<p>A general class of linear 1-D filters (that includes convolution filters) are filters described by the difference equation</p>
+<p>sum_{k=0}^{N}a_{k}yleft[n-kright]=sum_{k=0}^{M}b_{k}xleft[n-kright],</p>
+<p>where [xleft[nright]] is the input sequence and [yleft[nright]] is the output sequence. If we assume initial rest so that [yleft[nright]=0] for $n&lt;0$, then this kind of filter can be implemented using convolution. However, the convolution filter sequence [hleft[nright]] could be infinite if [a_{k}neq0] for [kgeq1.] In addition, this general class of linear filter allows initial conditions to be placed on [yleft[nright]] for $n&lt;0$ resulting in a filter that cannot be expressed using convolution.</p>
+<p>The difference equation filter can be thought of as finding [yleft[nright]] recursively in terms of its previous values</p>
+<p>[a](){0}yleft[nright]=-[a](){1}yleft[n-1right]-cdots-[a](){N}yleft[n-Nright]+cdots+b_{0}xleft[nright]+cdots+b_{M}xleft[n-Mright].</p>
+<p>Often, [a_{0}=1] is chosen for normalization. The implementation in SciPy of this general difference equation filter is a little more complicated than would be implied by the previous equation. It is implemented so that only one signal needs to be delayed. The actual implementation equations are (assuming [a_{0}=1] ):</p>
+<p>begin{eqnarray*} yleft[nright] &amp; = &amp; [b](){0}xleft[nright]+z_{0}left[n-1right]\ [z](){0}left[nright] &amp; = &amp; [b](){1}xleft[nright]+z_{1}left[n-1right]-[a](){1}yleft[nright]\ [z](){1}left[nright] &amp; = &amp; [b](){2}xleft[nright]+z_{2}left[n-1right]-[a](){2}yleft[nright]\ vdots &amp; vdots &amp; vdots\ [z](){K-2}left[nright] &amp; = &amp; [b](){K-1}xleft[nright]+z_{K-1}left[n-1right]-[a](){K-1}yleft[nright]\ [z](){K-1}left[nright] &amp; = &amp; [b](){K}xleft[nright]-[a](){K}yleft[nright],end{eqnarray*}</p>
+<p>where [K=maxleft(N,Mright).] Note that [b_{K}=0] if [K&gt;M] and [a_{K}=0] if [K&gt;N.] In this way, the output at time [n] depends only on the input at time [n] and the value of [z_{0}] at the previous time. This can always be calculated as long as the [K] values [z_{0}left[n-1right], ldots, z_{K-1}left[n-1right]] are computed and stored at each time step.</p>
+<p>The difference-equation filter is called using the command [lfilter] in SciPy. This command takes as inputs the vector [b,] the vector, [a,] a signal [x] and returns the vector [y] (the same length as [x] ) computed using the equation given above. If [x] is N-D, then the filter is computed along the axis provided. If desired, initial conditions providing the values of [z_{0}left[-1right]] to [z_{K-1}left[-1right]] can be provided or else it will be assumed that they are all zero. If initial conditions are provided, then the final conditions on the intermediate variables are also returned. These could be used, for example, to restart the calculation in the same state.</p>
+<p>Sometimes, it is more convenient to express the initial conditions in terms of the signals [xleft[nright]] and [yleft[nright].] In other words, perhaps you have the values of [xleft[-Mright]] to [xleft[-1right]] and the values of [yleft[-Nright]] to [yleft[-1right]] and would like to determine what values of [z_{m}left[-1right]] should be delivered as initial conditions to the difference-equation filter. It is not difficult to show that, for $0\leq
+m&lt;K,$</p>
+<p>[z](){m}left[nright]=sum_{p=0}^{K-m-1}left([b](){m+p+1}xleft[n-pright]-[a](){m+p+1}yleft[n-pright]right).</p>
+<p>Using this formula, we can find the initial-condition vector [z_{0}left[-1right]] to [z_{K-1}left[-1right]] given initial conditions on [y] (and [x] ). The command [lfiltic] performs this function.</p>
+<p>As an example, consider the following system:</p>
+<p>y[n] = frac{1}{2} x[n] + frac{1}{4} x[n-1] + frac{1}{3} y[n-1]</p>
+<p>The code calculates the signal [y[n]] for a given signal [x[n]]; first for initial conditions [y[-1] = 0] (default case), then for [y[-1] = 2] by means of [lfiltic].</p>
+<p>&gt;&gt;&gt; import numpy as np &gt;&gt;&gt; from scipy import signal</p>
+<p>&gt;&gt;&gt; x = np.array([1., 0., 0., 0.]) &gt;&gt;&gt; b = np.array([1.0/2, 1.0/4]) &gt;&gt;&gt; a = np.array([1.0, -1.0/3]) &gt;&gt;&gt; signal.lfilter(b, a, x) array([0.5, 0.41666667, 0.13888889, 0.0462963]) &gt;&gt;&gt; zi = signal.lfiltic(b, a, y=[2.]) &gt;&gt;&gt; signal.lfilter(b, a, x, zi=zi) (array([ 1.16666667, 0.63888889, 0.21296296, 0.07098765]), array([0.02366]))</p>
+<p>Note that the output signal [y[n]] has the same length as the length as the input signal [x[n]].</p>
+<h4 id="analysis-of-linear-systems">Analysis of Linear Systems</h4>
+<p>Linear system described a linear-difference equation can be fully described by the coefficient vectors [a] and [b] as was done above; an alternative representation is to provide a factor [k], [N_z] zeros [z_k] and [N_p] poles [p_k], respectively, to describe the system by means of its transfer function [H(z)], according to</p>
+<p>H(z) = k frac{ (z-z_1)(z-z_2)...([z-z](){N_z})}{ (z-p_1)(z-p_2)...([z-p](){N_p})}.</p>
+<p>This alternative representation can be obtained with the scipy function [tf2zpk]; the inverse is provided by [zpk2tf].</p>
+<p>For the above example we have</p>
+<p>&gt;&gt;&gt; b = np.array([1.0/2, 1.0/4]) &gt;&gt;&gt; a = np.array([1.0, -1.0/3]) &gt;&gt;&gt; signal.tf2zpk(b, a) (array([-0.5]), array([ 0.33333333]), 0.5)</p>
+<p>i.e., the system has a zero at [z=-1/2] and a pole at [z=1/3].</p>
+<p>The scipy function [freqz] allows calculation of the frequency response of a system described by the coefficients [a_k] and [b_k]. See the help of the [freqz] function for a comprehensive example.</p>
+<h3 id="filter-design">Filter Design</h3>
+<p>Time-discrete filters can be classified into finite response (FIR) filters and infinite response (IIR) filters. FIR filters can provide a linear phase response, whereas IIR filters cannot. SciPy provides functions for designing both types of filters.</p>
+<h4 id="fir-filter">FIR Filter</h4>
+<p>The function [firwin] designs filters according to the window method. Depending on the provided arguments, the function returns different filter types (e.g., low-pass, band-pass...). The following example designs a low-pass and a band-stop filter and plots their frequency responses. The low-pass corner frequency of 0.5 Hz and the stop band interval of 0.3 Hz to 0.8 Hz are denoted by vertical dashed lines. Since the sampling frequency is set to 2 Hz, only the frequency range between 0 Hz and the Nyquist frequency of 1 Hz is plotted.</p>
+<p>The function [firwin2] allows design of almost arbitrary frequency responses by specifying an array of corner frequencies and corresponding gains, respectively. The example below designs a filter with such an arbitrary amplitude response and plots the its frequency response on a linear magnitude scale. The four specified gains corner are denoted by gray dots connected by a dashed line, whereas the response of the filter is depicted by a continuous blue line.</p>
+<p>The deviations between the desired gains and the calculated response can be reduced by increasing the number of taps.</p>
+<p>Note that the functions [firwin], [firwin2] and [freqz] use different default sampling frequencies.</p>
+<h4 id="iir-filter">IIR Filter</h4>
+<p>SciPy provides two functions to directly design IIR [iirdesign] and [iirfilter], where the filter type (e.g., elliptic) is passed as an argument and several more filter design functions for specific filter types, e.g., [ellip].</p>
+<p>The example below designs an elliptic low-pass filter with defined pass-band and stop-band ripple, respectively. Note the much lower filter order (order 4) compared with the FIR filters from the examples above in order to reach the same stop-band attenuation of [approx 60] dB.</p>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>It is important to note that the cutoffs for [firwin] and [iirfilter] are defined differently. For [firwin], the cutoff-frequency is at half-amplitude (i.e. -6dB). For [iirfilter], the cutoff is at half-power (i.e. -3dB).</p>
+</div></aside>
+<h4 id="filter-coefficients">Filter Coefficients</h4>
+<p>Filter coefficients can be stored in several different formats:</p>
+<ul>
+<li>&#39;ba&#39; or &#39;tf&#39; = transfer function coefficients</li>
+<li>&#39;zpk&#39; = zeros, poles, and overall gain</li>
+<li>&#39;ss&#39; = state-space system representation</li>
+<li>&#39;sos&#39; = transfer function coefficients of second-order sections</li>
+</ul>
+<p>Functions, such as [tf2zpk] and [zpk2ss], can convert between them.</p>
+<h5 id="transfer-function-representation">Transfer function representation</h5>
+<p>The <code>ba</code> or <code>tf</code> format is a 2-tuple <code>(b, a)</code> representing a transfer function, where [b] is a length <code>M+1</code> array of coefficients of the [M]-order numerator polynomial, and [a] is a length <code>N+1</code> array of coefficients of the [N]-order denominator, as positive, descending powers of the transfer function variable. So the tuple of [b = [b_0, b_1, ..., b_M]] and [a =[a_0, a_1, ..., a_N]] can represent an analog filter of the form:</p>
+<p>H(s) = frac {b_0 s^M + b_1 s^{(M-1)} + cdots + b_M} {a_0 s^N + a_1 s^{(N-1)} + cdots + a_N} = frac {sum_{i=0}^M b_i s^{(M-i)}} {sum_{i=0}^N a_i s^{(N-i)}}</p>
+<p>or a discrete-time filter of the form:</p>
+<p>H(z) = frac {b_0 z^M + b_1 z^{(M-1)} + cdots + b_M} {a_0 z^N + a_1 z^{(N-1)} + cdots + a_N} = frac {sum_{i=0}^M b_i z^{(M-i)}} {sum_{i=0}^N a_i z^{(N-i)}}.</p>
+<p>This &quot;positive powers&quot; form is found more commonly in controls engineering. If [M] and [N] are equal (which is true for all filters generated by the bilinear transform), then this happens to be equivalent to the &quot;negative powers&quot; discrete-time form preferred in DSP:</p>
+<p>H(z) = frac {b_0 + b_1 z^{-1} + cdots + b_M z^{-M}} {a_0 + a_1 z^{-1} + cdots + a_N z^{-N}} = frac {sum_{i=0}^M b_i z^{-i}} {sum_{i=0}^N a_i z^{-i}}.</p>
+<p>Although this is true for common filters, remember that this is not true in the general case. If [M] and [N] are not equal, the discrete-time transfer function coefficients must first be converted to the &quot;positive powers&quot; form before finding the poles and zeros.</p>
+<p>This representation suffers from numerical error at higher orders, so other formats are preferred when possible.</p>
+<h5 id="zeros-and-poles-representation">Zeros and poles representation</h5>
+<p>The <code>zpk</code> format is a 3-tuple <code>(z, p, k)</code>, where [z] is an [M]-length array of the complex zeros of the transfer function [z = [z_0, z_1, ..., z_{M-1}]], [p] is an [N]-length array of the complex poles of the transfer function [p = [p_0, p_1, ..., p_{N-1}]], and [k] is a scalar gain. These represent the digital transfer function:</p>
+<p>H(z) = k cdot frac {(z - z_0) (z - z_1) cdots (z - [z](){(M-1)})} {(z - p_0) (z - p_1) cdots (z - [p](){(N-1)})} = k frac {prod_{i=0}^{M-1} (z - z_i)} {prod_{i=0}^{N-1} (z - p_i)}</p>
+<p>or the analog transfer function:</p>
+<p>H(s) = k cdot frac {(s - z_0) (s - z_1) cdots (s - [z](){(M-1)})} {(s - p_0) (s - p_1) cdots (s - [p](){(N-1)})} = k frac {prod_{i=0}^{M-1} (s - z_i)} {prod_{i=0}^{N-1} (s - p_i)}.</p>
+<p>Although the sets of roots are stored as ordered NumPy arrays, their ordering does not matter: <code>([-1, -2], [-3, -4], 1)</code> is the same filter as <code>([-2, -1], [-4, -3], 1)</code>.</p>
+<h5 id="state-space-system-representation">State-space system representation</h5>
+<p>The <code>ss</code> format is a 4-tuple of arrays <code>(A, B, C, D)</code> representing the state-space of an [N]-order digital/discrete-time system of the form:</p>
+<p>mathbf{x}[k+1] = A mathbf{x}[k] + B mathbf{u}[k]\ mathbf{y}[k] = C mathbf{x}[k] + D mathbf{u}[k]</p>
+<p>or a continuous/analog system of the form:</p>
+<p>dot{mathbf{x}}(t) = A mathbf{x}(t) + B mathbf{u}(t)\ mathbf{y}(t) = C mathbf{x}(t) + D mathbf{u}(t),</p>
+<p>with [P] inputs, [Q] outputs and [N] state variables, where:</p>
+<ul>
+<li><input checked="" disabled="" type="checkbox"> is the state vector</li>
+<li>[y] is the output vector of length [Q]</li>
+<li>[u] is the input vector of length [P]</li>
+<li>[A] is the state matrix, with shape <code>(N, N)</code></li>
+<li>[B] is the input matrix with shape <code>(N, P)</code></li>
+<li>[C] is the output matrix with shape <code>(Q, N)</code></li>
+<li>[D] is the feedthrough or feedforward matrix with shape <code>(Q, P)</code>. (In cases where the system does not have a direct feedthrough, all values in [D] are zero.)</li>
+</ul>
+<p>State-space is the most general representation and the only one that allows for multiple-input, multiple-output (MIMO) systems. There are multiple state-space representations for a given transfer function. Specifically, the &quot;controllable canonical form&quot; and &quot;observable canonical form&quot; have the same coefficients as the <code>tf</code> representation, and, therefore, suffer from the same numerical errors.</p>
+<h5 id="second-order-sections-representation">Second-order sections representation</h5>
+<p>The <code>sos</code> format is a single 2-D array of shape <code>(n_sections, 6)</code>, representing a sequence of second-order transfer functions which, when cascaded in series, realize a higher-order filter with minimal numerical error. Each row corresponds to a second-order <code>tf</code> representation, with the first three columns providing the numerator coefficients and the last three providing the denominator coefficients:</p>
+<p>[b_0, b_1, b_2, a_0, a_1, a_2]</p>
+<p>The coefficients are typically normalized, such that [a_0] is always 1. The section order is usually not important with floating-point computation; the filter output will be the same, regardless of the order.</p>
+<h4 id="filter-transformations">Filter transformations</h4>
+<p>The IIR filter design functions first generate a prototype analog low-pass filter with a normalized cutoff frequency of 1 rad/sec. This is then transformed into other frequencies and band types using the following substitutions:</p>
+<p>  Type                         Transformation</p>
+<hr>
+<p>  [lp2lp] `s ri   ghtarrow frac{s}{omega_0}`
+  [lp2hp] `s ri   ghtarrow frac{omega_0}{s}`
+  [lp2bp] `s ri   ghtarrow frac{s^2 + {omega_0}^2}{s cdot mathrm{BW}}`
+  [lp2bs] `s ri   ghtarrow frac{s cdot mathrm{BW}}{s^2 + {omega_0}^2}`</p>
+<p>Here, [omega_0] is the new cutoff or center frequency, and [mathrm{BW}] is the bandwidth. These preserve symmetry on a logarithmic frequency axis.</p>
+<p>To convert the transformed analog filter into a digital filter, the [bilinear] transform is used, which makes the following substitution:</p>
+<p>s rightarrow frac{2}{T} frac{z - 1}{z + 1},</p>
+<p>where T is the sampling time (the inverse of the sampling frequency).</p>
+<h3 id="other-filters">Other filters</h3>
+<p>The signal processing package provides many more filters as well.</p>
+<h4 id="median-filter">Median Filter</h4>
+<p>A median filter is commonly applied when noise is markedly non-Gaussian or when it is desired to preserve edges. The median filter works by sorting all of the array pixel values in a rectangular region surrounding the point of interest. The sample median of this list of neighborhood pixel values is used as the value for the output array. The sample median is the middle-array value in a sorted list of neighborhood values. If there are an even number of elements in the neighborhood, then the average of the middle two values is used as the median. A general purpose median filter that works on N-D arrays is [medfilt]. A specialized version that works only for 2-D arrays is available as [medfilt2d].</p>
+<h4 id="order-filter">Order Filter</h4>
+<p>A median filter is a specific example of a more general class of filters called order filters. To compute the output at a particular pixel, all order filters use the array values in a region surrounding that pixel. These array values are sorted and then one of them is selected as the output value. For the median filter, the sample median of the list of array values is used as the output. A general-order filter allows the user to select which of the sorted values will be used as the output. So, for example, one could choose to pick the maximum in the list or the minimum. The order filter takes an additional argument besides the input array and the region mask that specifies which of the elements in the sorted list of neighbor array values should be used as the output. The command to perform an order filter is [order_filter].</p>
+<h4 id="wiener-filter">Wiener filter</h4>
+<p>The Wiener filter is a simple deblurring filter for denoising images. This is not the Wiener filter commonly described in image-reconstruction problems but, instead, it is a simple, local-mean filter. Let [x] be the input signal, then the output is</p>
+<p>y=left{ begin{array}{cc} frac{sigma^{2}}{sigma_{x}^{2}}m_{x}+left(1-frac{sigma^{2}}{sigma_{x}^{2}}right)x &amp; sigma_{x}^{2}geqsigma^{2},\ [m](){x} &amp; sigma_{x}^{2}&lt;sigma^{2},end{array}right.</p>
+<p>where [m_{x}] is the local estimate of the mean and [sigma_{x}^{2}] is the local estimate of the variance. The window for these estimates is an optional input parameter (default is [3times3] ). The parameter [sigma^{2}] is a threshold noise parameter. If [sigma] is not given, then it is estimated as the average of the local variances.</p>
+<h4 id="hilbert-filter">Hilbert filter</h4>
+<p>The Hilbert transform constructs the complex-valued analytic signal from a real signal. For example, if [x=cosomega n], then [y=textrm{hilbert}left(xright)] would return (except near the edges) [y=expleft(jomega nright).] In the frequency domain, the hilbert transform performs</p>
+<p>Y=Xcdot H,</p>
+<p>where [H] is [2] for positive frequencies, [0] for negative frequencies, and [1] for zero-frequencies.</p>
+<h3 id="analog-filter-design">Analog Filter Design</h3>
+<p>The functions [iirdesign], [iirfilter], and the filter design functions for specific filter types (e.g., [ellip]) all have a flag [analog], which allows the design of analog filters as well.</p>
+<p>The example below designs an analog (IIR) filter, obtains via [tf2zpk] the poles and zeros and plots them in the complex s-plane. The zeros at [omega approx 150] and [omega approx 300] can be clearly seen in the amplitude response.</p>
+<p>% LaTeX Macros to make the LaTeX formulas more readable: newcommand{IC}{{mathbb{C}}} % set of complex numbers newcommand{IN}{{mathbb{N}}} % set of natural numbers newcommand{IR}{{mathbb{R}}} % set of real numbers newcommand{IZ}{{mathbb{Z}}} % set of integers newcommand{jj}{{mathbb{j}}} % imaginary unit newcommand{e}{operatorname{e}} % Euler&#39;s number newcommand{dd}{operatorname{d}} % infinitesimal operator newcommand{abs}[1]{left[|#1\right|](##SUBST##<a href="##SUBST##%7C#1%5Cright%7C">|#1\right|</a>)} % absolute value newcommand{conj}[1]{overline} % complex conjugate newcommand{conjT}[1]{overline{#1^T}} % transposed complex conjugate newcommand{inv}[1]{left(#1right)^{!-1}} % inverse % Since the physics package is not loaded, we define the macros ourselves: newcommand{vb}[1]{mathbf} % vectors and matrices are bold % new macros: newcommand{rect}{operatorname{rect}} % rect or boxcar function newcommand{sinc}{operatorname{sinc}} % sinc(t) := sin(pi*t) / (pi*t)</p>
+<h2 id="spectral-analysis">Spectral Analysis</h2>
+<p>Spectral analysis refers to investigating the Fourier transform[^1] of a signal. Depending on the context, various names, like spectrum, spectral density or periodogram exist for the various spectral representations of the Fourier transform. [^2] This section illustrates the most common representations by the example of a continuous-time sine wave signal of fixed duration. Then the use of the discrete Fourier transform[^3] on a sampled version of that sine wave is discussed.</p>
+<p>Separate subsections are devoted to the spectrum&#39;s phase, estimating the power spectral density without ([~scipy.signal.periodogram]) and with averaging ([~scipy.signal.welch]) as well for non-equally spaced signals ([~scipy.signal.lombscargle]).</p>
+<p>Note that the concept of Fourier series is closely related but differs in a crucial point: Fourier series have a spectrum made up of discrete-frequency harmonics, while in this section the spectra are continuous in frequency.</p>
+<h3 id="continuous-time-sine-signal">Continuous-time Sine Signal</h3>
+<p>Consider a sine signal with amplitude [a], frequency [f_x] and duration [tau], i.e.,</p>
+<p>x(t) = a sin(2 pi f_x t), rect(frac{t}{tau}-frac{1}{2})</p>
+<p>:</p>
+<blockquote>
+<p>= left(frac{a}{2jj}</p>
+<p>: e^{jj 2 pi f_x t} - frac{a}{2jj} e^{-jj 2 pi f_x t} right) rect(frac{t}{tau}-frac{1}{2}).</p>
+</blockquote>
+<p>Since the [rect(t)] function is one for $|t|&lt;1/2$ and zero for [|t|&gt;1/2], it limits [x(t)] to the interval [[0, tau]]. Expressing the sine by complex exponentials shows its two periodic components with frequencies [pm f_x]. We assume [x(t)] to be a voltage signal, so it has the unit [text{V}].</p>
+<p>In signal processing the integral of the absolute square [|x(t)|^2] is utilized to define energy and power of a signal, i.e.,</p>
+<p>E_x := int_0^tau [|x(t)|](##SUBST##<a href="##SUBST##%7Cx(t)%7C">|x(t)|</a>)^2 dd t= frac{1}{2}[|a|](##SUBST##<a href="##SUBST##%7Ca%7C">|a|</a>)^2tau, qquad P_x := frac{1}{tau}E_x = frac{1}{2}[|a|](##SUBST##<a href="##SUBST##%7Ca%7C">|a|</a>)^2.</p>
+<p>The power [P_x] can be interpreted as the energy [E_x] per unit time interval. Unit-wise, integrating over [t] results in multiplication with seconds. Hence, [E_x] has unit [text{V}^2text{s}] and [P_x] has the unit [text{V}^2].</p>
+<p>Applying the Fourier transform to [x(t)], i.e.,</p>
+<p>X(f) = int_{IR} x(t), e^{-2jjpi f t}, dd t</p>
+<p>:</p>
+<blockquote>
+<p>= frac{a tau}{2jj} Big(</p>
+<p>: sinc!big(tau (f-f_x)big) - sinc!big(tau (f+f_x)big) Big)e^{-jjpitau f},</p>
+</blockquote>
+<p>results in two [sinc(f) := sin(pi f) /(pi f)] functions centered at [pm f_x]. The magnitude (absolute value) [|X(f)|] has two maxima located at [pm f_x] with value [|a|tau/2]. It can be seen in the plot below that [X(f)] is not concentrated around the main lobes at [pm f_x], but contains side lobes with heights decreasing proportional to [1/(tau f)]. This so-called &quot;spectral leakage&quot;[^4] is caused by confining the sine to a finite interval. Note that the shorter the signal duration [tau] is, the higher the leakage. To be independent of the signal duration, the so-called &quot;amplitude spectrum&quot; [X(f)/tau] can be used instead of the spectrum [X(f)]. Its value at [f] corresponds to the amplitude of the complex exponential [exp(jj2pi f t)].</p>
+<p>Due to Parseval&#39;s theorem, the energy can be calculated from its Fourier transform [X(f)] by</p>
+<p>E_X := int_IR abs{X(f)}^2 dd f = E_x</p>
+<p>as well. E.g., it can be shown by direct calculation that the energy of [X(f)] of Eq. :math`eq_SpectA_FT_Energy` is [|a|^2tau/2]. Hence, the signal&#39;s power in a frequency band [[f_a, f_b]] can be determined with</p>
+<p>P_X^{a,b} = frac{1}{tau} int_{f_a}^{f_b} abs{X(f)}^2 dd f.</p>
+<p>Thus the function [|X(f)|^2] can be defined as the so-called &quot;energy spectral density and [S_{xx}(f) := |X(f)|^2 / tau] as &quot;power spectral density&quot; (PSD) of [x(t)]. Instead of the PSD, the so-called &quot;amplitude spectral density&quot; [X(f) / sqrt{tau}] is also used, which still contains the phase information. Its absolute square is the PSD and thus it is closely related to the concept of the root-mean-square (RMS) value [sqrt{P_x}] of a signal.</p>
+<p>In summary, this subsection presented five ways to represent a spectrum:</p>
+<p>&gt; of Eq. :math`eq_SpectA_sine` with unit `text{V}`:</p>
+<p>header-rows : 1</p>
+<ul>
+<li><ul>
+<li>Spectrum</li>
+<li>Amplitude Spectrum</li>
+<li>Energy Spectral Density</li>
+<li>Power Spectral Density (PSD)</li>
+<li>Amplitude Spectral Density</li>
+</ul>
+</li>
+<li>Definition:<ul>
+<li>[X(f)]</li>
+<li>[X(f) / tau]</li>
+<li>[|X(f)|^2]</li>
+<li>[|X(f)|^2 / tau]</li>
+<li>[X(f) / sqrt{tau}]</li>
+</ul>
+</li>
+<li>Magnitude at `pm f_x`:<ul>
+<li>[frac{1}{2}|a|tau]</li>
+<li>[frac{1}{2}|a|]</li>
+<li>[frac{1}{4}|a|^2tau^2]</li>
+<li>[frac{1}{4}|a|^2tau]</li>
+<li>[frac{1}{2}|a|sqrt{tau}]</li>
+</ul>
+</li>
+<li>Unit:<ul>
+<li>[text{V} / text{Hz}]</li>
+<li>[text{V}]</li>
+<li>[text{V}^2text{s} / text{Hz}]</li>
+<li>[text{V}^2 / text{Hz}]</li>
+<li>[text{V} / sqrt{text{Hz}}]</li>
+</ul>
+</li>
+</ul>
+<p>Note that the units presented in the table above are not unambiguous, e.g., [text{V}^2text{s} / text{Hz} = text{V}^2text{s}^2 = text{V}^2/ text{Hz}^2]. When using the absolute value of [|X(f) / tau|] of the amplitude spectrum, it is called a magnitude spectrum. Furthermore, note that the naming scheme of the representations is not consistent and varies in literature.</p>
+<p>For real-valued signals the so-called &quot;onesided&quot; spectral representation is often utilized. It only uses the non-negative frequencies (due to [X(-f)= conj{X}(f)] if [x(t)inIR]). Sometimes the values of the negative frequencies are added to their positive counterparts. Then the amplitude spectrum allows to read off the full (not half) amplitude sine of [x(t)] at [f_x] and the area of an interval in the PSD represents its full (not half) power. Note that for amplitude spectral densities the positive values are not doubled but multiplied by [sqrt{2}], since it is the square root of the PSD. Furthermore, there is no canonical way for naming a doubled spectrum.</p>
+<p>The following plot shows three different spectral representations of four sine signals [x(t)] of Eq. :math`eq_SpectA_sine` with different amplitudes [a] and durations [tau]. For less clutter, the spectra are centered at [f_x] and being are plotted next to each other:</p>
+<p>Note that depending on the representation, the height of the peaks vary. Only the interpretation of the magnitude spectrum is straightforward: The peak at [f_x] in the second plot represents half the magnitude [|a|] of the sine signal. For all other representations the duration [tau] needs to be taken into account to extract information about the signal&#39;s amplitude.</p>
+<h3 id="sampled-sine-signal">Sampled Sine Signal</h3>
+<p>In practice sampled signals are widely used. I.e., the signal is represented by [n] samples [x_k := x(kT)], [k=0, ldots, n-1], where [T] is the sampling interval, [tau:=nT] the signal&#39;s duration and [f_S := 1/T] the sampling frequency. Note that the continuous signal needs to be band-limited to [[-f_S/2, f_S/2]] to avoid aliasing, with [f_S/2] being called Nyquist frequency. [^5] Replacing the integral by a sum to calculate the signal&#39;s energy and power, i.e.,</p>
+<p>E_x = Tsum_{k=0}^{n-1} abs{x_k}^2 = frac{1}{2}[|a|](##SUBST##<a href="##SUBST##%7Ca%7C">|a|</a>)^2tau, qquad P_x = frac{1}{tau}E_x = frac{1}{2}[|a|](##SUBST##<a href="##SUBST##%7Ca%7C">|a|</a>)^2,</p>
+<p>delivers the identical result as in the continuous time case of Eq. :math`eq_SpectA_ContEnergy`. The discrete Fourier transform (DFT) and its inverse (as implemented using efficient FFT calculations in the [scipy.fft] module) is given by</p>
+<p>X_l := sum_{k=0}^{n-1} x_k e^{-2jjpi k l / n},qquad x_k = frac{1}{n} sum_{l=0}^{n-1} X_l e^{2jjpi k l / n}.</p>
+<p>The DFT and can be interpreted as an unscaled sampled version of the continuous Fourier transform of Eq. :math`eq_SpectA_FT_sine`, i.e.,</p>
+<p>X(lDelta f) = T X_l, quad Delta f := 1/tau = 1/(nT).</p>
+<p>The following plot shows the magnitude spectrum of two sine signals with unit amplitude and frequencies of 20 Hz and 20.5 Hz. The signal is made up of [n=100] samples with a sampling interval of [T=10] ms resulting in a duration of [tau=1] s and a sampling frequency of [f_S=100] Hz.</p>
+<p>The interpretation of the 20 Hz signal seems straightforward: All values are zero except at 20 Hz. There it is 0.5, which corresponds to half the amplitude of the input signal in accordance with Eq. :math`eq_SpectA_sine`. The peak of the 20.5 Hz signal on the other hand is dispersed along the frequency axis. Eq. :math`eq_SpectA_FT_sine` shows that this difference is caused by the reason that 20 Hz is a multiple of the bin width of 1 Hz whereas 20.5 Hz is not. The following plot illustrates this by overlaying continuous spectrum over the sampled one:</p>
+<p>That a slight variation in frequency produces significantly different looking magnitude spectra is obviously undesirable behavior for many practical applications. The following two common techniques can be utilized to improve a spectrum:</p>
+<p>The so-called &quot;zero-padding&quot; decreases [Delta f] by appending zeros to the end of the signal. To oversample the frequency [q] times, pass the parameter <code>n=q*n_x</code> to the [~scipy.fft.fft] / [~scipy.fft.rfft] function with <code>n_x</code> being the length of the input signal.</p>
+<p>The second technique is called windowing, i.e., multiplying the input signal with a suited function such that typically the secondary lobes are suppressed at the cost of widening the main lobe. The windowed DFT can be expressed as</p>
+<p>X^w_l := sum_{k=0}^{n-1} x_k w_ke^{-2jjpi k l / n},</p>
+<p>where [w_k], [k=0,ldots,n-1] is the sampled window function. To calculate the sampled versions of the spectral representations given in the previous subsection, the following normalization constants</p>
+<p>c^text{amp}:= abs{sum_{k=0}^{n-1} w_k},qquad c^text{den} := sqrt{sum_{k=0}^{n-1} abs{w_k}^2}</p>
+<p>need to be utilized. The first one ensures that a peak in the spectrum is consistent with the signal&#39;s amplitude at that frequency. E.g., the magnitude spectrum can be expressed by [|X^w_l / c^text{amp}|]. The second constant guarantees that the power of a frequency interval as defined in Eq. :math`eq_SpectA_FT_PowerI` is consistent. The absolute values are needed since complex-valued windows are not forbidden.</p>
+<p>The following plot shows the result of applying a [~scipy.signal.windows.hann] window and three times over-sampling to `x(t)`:</p>
+<p>Now both lobes look almost identical and the side lobes are well suppressed. The maximum of the 20.5 Hz spectrum is also very close to the expected height of one half.</p>
+<p>Spectral energy and spectral power can be calculated analogously to Eq. :math`eq_SpectA_FT_Energy`, yielding in identical results, i.e.,</p>
+<p>E^w_X = Tsum_{k=0}^{n-1} abs{frac{X^w_k}{c^text{den}}}^2</p>
+<p>: = E_x,qquad</p>
+<p>P^w_X = frac{1}{tau} E^w_X</p>
+<p>: = frac{1}{n} sum_{k=0}^{n-1} abs{frac{X^w_k}{c^text{den}}}^2 = P_x.</p>
+<p>This formulation is not to be confused with the special case of a rectangular window (or no window), i.e., [w_k = 1], [X^w_l=X_l], [c^text{den}=sqrt{n}], which results in</p>
+<p>E_X = frac{T}{n}sum_{k=0}^{n-1} abs{X_k}^2,qquad P_X = frac{1}{n^2} sum_{k=0}^{n-1} abs{X_k}^2.</p>
+<p>The windowed frequency-discrete power spectral density</p>
+<p>S^w_{xx} := frac{1}{f_S}abs{frac{X^w_l}{c^text{den}}}^2</p>
+<p>: = T abs{frac{X^w_l}{c^text{den}}}^2</p>
+<p>is defined over the frequency range [[0, f_S)] and can be interpreted as power per frequency interval [Delta f]. Integrating over a frequency band [[l_aDelta f, l_bDelta f)], like in Eq. :math`eq_SpectA_FT_PowerI`, becomes the sum</p>
+<p>P_X^{a,b} = Delta fsum_{k=l_a}^{l_b-1} S^w_{xx}</p>
+<p>: = frac{1}{nT}sum_{k=l_a}^{l_b-1} S^w_{xx}.</p>
+<p>The windowed frequency-discrete energy spectral density [tau S^w_{xx}] can be defined analogously.</p>
+<p>The discussion above shows that sampled versions of the spectral representations as in the continuous-time case can be defined. The following tables summarizes these:</p>
+<p>&gt; sampled signal with unit `text{V}`:</p>
+<p>header-rows : 1</p>
+<ul>
+<li><ul>
+<li>Spectrum</li>
+<li>Amplitude Spectrum</li>
+<li>Energy Spectral Density</li>
+<li>Power Spectral Density (PSD)</li>
+<li>Amplitude Spectral Density</li>
+</ul>
+</li>
+<li>Definition:<ul>
+<li>[tau X^w_l / c^text{amp}]</li>
+<li>[X^w_l / c^text{amp}]</li>
+<li>[tau T |X^w_l / c^text{den}|^2]</li>
+<li>[T |X^w_l / c^text{den}|^2]</li>
+<li>[sqrt{T} X^w_l / c^text{den}]</li>
+</ul>
+</li>
+<li>Unit:<ul>
+<li>[text{V} / text{Hz}]</li>
+<li>[text{V}]</li>
+<li>[text{V}^2text{s} / text{Hz}]</li>
+<li>[text{V}^2 / text{Hz}]</li>
+<li>[text{V} / sqrt{text{Hz}}]</li>
+</ul>
+</li>
+</ul>
+<p>Note that for the densities, the magnitude values at [pm f_x] differ to the continuous time case due the change from integration to summation for determining spectral energy/power.</p>
+<p>Though the hann window is the most common window function used in spectral analysis, other windows exist. The following plot shows the magnitude spectrum of various window functions of the [~scipy.signal.windows] submodule. It may be interpreted as the lobe shape of a single frequency input signal. Note that only the right half is shown and the [y]-axis is in decibel, i.e., it is logarithmically scaled.</p>
+<p>This plot shows that the choice of window function is typically a trade-off between width of the main lobes and the height of the side lobes. Note that the [~scipy.signal.windows.boxcar] window corresponds to a [rect] function, i.e., to no windowing. Furthermore, many of the depicted windows are more frequently used in filter design than in spectral analysis.</p>
+<h3 id="phase-of-spectrum">Phase of Spectrum</h3>
+<p>The phase (i.e., [~numpy.angle()]) of the Fourier transform is typically utilized for investigating the time delay of the spectral components of a signal passing through a system like a filter. In the following example the standard test signal, an impulse with unit power, is passed through a simple filter, which delays the input by three samples. The input consists of [n=50] samples with sampling interval [T = 1] s. The plot shows magnitude and phase over frequency of the input and the output signal:</p>
+<p>The input has a unit magnitude and zero-phase Fourier transform, which is the reason for the use as a test signal. The output has also unit magnitude but a linearly falling phase with a slope of [-6pi]. This is expected, since delaying a signal [x(t)] by [Delta t] produces an additional linear phase term in its Fourier transform, i.e.,</p>
+<p>int_IR x(t-Delta t) e^{-jj2pi f t}dd t = X(f), e^{-jj2pi Delta t f}.</p>
+<p>Note that in the plot the phase is not limited to the interval [(+pi, pi]] (output of [~numpy.angle]) and hence does not have any discontinuities. This is achieved by utilizing the [numpy.unwrap] function. If the transfer function of the filter is known, [~scipy.signal.freqz] can be used to determine the spectral response of a filter directly.</p>
+<h3 id="spectra-with-averaging">Spectra with Averaging</h3>
+<p>The [~scipy.signal.periodogram] function calculates a power spectral density (<code>scaling=&#39;density&#39;</code>) or a squared magnitude spectrum (<code>scaling=&#39;spectrum&#39;</code>). To obtain a smoothed periodogram, the [~scipy.signal.welch] function can be used. It does the smoothing by dividing the input signal into overlapping segments, to then calculate the windowed DFT of each segment. The result is to the average of those DFTs.</p>
+<p>The example below shows the squared magnitude spectrum and the power spectral density of a signal made up of a [1.27,text{kHz}] sine signal with amplitude [sqrt{2},text{V}] and additive gaussian noise having a spectral power density with mean of [10^{-3},text{V}^2/text{Hz}].</p>
+<p>The plots shows that the [~scipy.signal.welch] function produces a much smoother noise floor at the expense of the frequency resolution. Due to the smoothing the height of sine&#39;s lobe is wider and not as high as in the periodogram. The left plot can be used to read the height of the lobe, i.e., half sine&#39;s squared magnitude of [1,text{V}^2]. The right plot can be used to determine the noise floor of [10^{-3},text{V}^2/text{Hz}]. Note that the lobe height of the averaged squared magnitude spectrum is not exactly one due to limited frequency resolution. Either zero-padding (e.g., passing <code>nfft=4*len(x)</code> to [~scipy.signal.welch]) or reducing the number of segments by increasing the segment length (setting parameter <code>nperseg</code>) could be utilized to increase the number of frequency bins.</p>
+<h3 id="lomb-scargle-periodograms-lombscargle">Lomb-Scargle Periodograms ([lombscargle])</h3>
+<p>Least-squares spectral analysis (LSSA)[^6][^7] is a method of estimating a frequency spectrum, based on a least-squares fit of sinusoids to data samples, similar to Fourier analysis. Fourier analysis, the most used spectral method in science, generally boosts long-periodic noise in long-gapped records; LSSA mitigates such problems.</p>
+<p>The Lomb-Scargle method performs spectral analysis on unevenly-sampled data and is known to be a powerful way to find, and test the significance of, weak periodic signals.</p>
+<p>For a time series comprising [N_{t}] measurements [X_{j}equiv X(t_{j})] sampled at times [t_{j}], where [(j = 1, ldots, N_{t})], assumed to have been scaled and shifted, such that its mean is zero and its variance is unity, the normalized Lomb-Scargle periodogram at frequency [f] is</p>
+<p>[P](){n}(f) = frac{1}{2}left{frac{left[sum_{j}^{[N](){t}}X_{j}cosomega([t](){j}-tau)right]^{2}}{sum_{j}^{[N](){t}}cos^{2}omega([t](){j}-tau)}+frac{left[sum_{j}^{[N](){t}}X_{j}sinomega([t](){j}-tau)right]^{2}}{sum_{j}^{[N](){t}}sin^{2}omega([t](){j}-tau)}right}.</p>
+<p>Here, [omega equiv 2pi f] is the angular frequency. The frequency-dependent time offset [tau] is given by</p>
+<p>tan 2omegatau = frac{sum_{j}^{[N](){t}}sin 2omega [t](){j}}{sum_{j}^{[N](){t}}cos 2omega [t](){j}}.</p>
+<p>The [lombscargle] function calculates the periodogram using a slightly modified algorithm created by Zechmeister and Kürster[^8], which allows for the weighting of individual samples and calculating an unknown offset (also called a &quot;floating-mean&quot;) for each frequency independently.</p>
+<h2 id="short-time-fourier-transform">Short-Time Fourier Transform</h2>
+<p>This section gives some background information on using the [ShortTimeFFT ] class: The short-time Fourier transform (STFT) can be utilized to analyze the spectral properties of signals over time. It divides a signal into overlapping chunks by utilizing a sliding window and calculates the Fourier transform of each chunk. For a continuous-time complex-valued signal [x(t)] the STFT is defined[^9] as</p>
+<p>S(f, t) := int_IR x(xi), conj{w(xi-t)},e^{-jj2pi f xi}ddxi,</p>
+<p>where [w(t)] is a complex-valued window function with its complex conjugate being [conj{w(t)}]. It can be interpreted as determining the scalar product of [x] with the window [w] which is translated by the time [t] and then modulated (i.e., frequency-shifted) by the frequency [f]. For working with sampled signals [x[k] := x(kT)], [kinIZ], with sampling interval [T] (being the inverse of the sampling frequency [fs]), the discrete version, i.e., only evaluating the STFT at discrete grid points [S[q, p] := S(q Delta f, pDelta t)], [q,pinIZ], needs to be used. It can be formulated as</p>
+<p>S[q,p] = sum_{k=0}^{N-1} x[k],conj{w[k-p h]}, e^{-jj2pi q k / N},</p>
+<p>: quad q,pinIZ,</p>
+<p>with [p] representing the time index of [S] with time interval [Delta t := h T], [hinIN] (see [delta_t]), which can be expressed as the [hop] size of [h] samples. [q] represents the frequency index of [S] with step size [Delta f := 1 / (N T)] (see [delta_f]), which makes it FFT compatible. [w[m] := w(mT)], [minIZ] is the sampled window function.</p>
+<p>To be more aligned to the implementation of [ShortTimeFFT ], it makes sense to reformulate Eq. :math`eq_dSTFT` as a two-step process:</p>
+<ol>
+<li>Extract the [p]-th slice by windowing with the window [w[m]] made up of [M] samples (see [m_num]) centered at [t[p] := p Delta t = h T] (see [delta_t]), i.e.,</li>
+</ol>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">    :label: eq_STFT_windowing
+
+    x_p[m] = x\!\big[m - \lfloor M/2\rfloor + h p\big]\, \conj{w[m]}\ ,
+             \quad m = 0, \ldots, M-1\ ,
+
+where the integer :math:`\lfloor M/2\rfloor` represents ``M//2``, i.e., it is
+the mid point of the window (`m_num_mid`). For notational convenience,
+:math:`x[k]:=0` for :math:`k\not\in\{0, 1, \ldots, N-1\}` is assumed. In the
+subsection :ref:`tutorial_stft_sliding_win` the indexing of the slices is
+discussed in more detail.</code></pre></div></figure>
+<ol>
+<li>Then perform a discrete Fourier transform (i.e., an FFT ) of [x_p[m]].</li>
+</ol>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">     :label: eq_STFT_DFT
+
+     S[q, p] = \sum_{m=0}^{M-1} x_p[m] \exp\!\big\{%
+                                      -2\jj\pi (q + \phi_m)\, m / M\big\}\ .
+
+Note that a linear phase :math:`\phi_m` (see `phase_shift`) can be
+specified, which corresponds to shifting the input by :math:`\phi_m`
+samples. The default is :math:`\phi_m = \lfloor M/2\rfloor` (corresponds per
+definition to ``phase_shift = 0``), which suppresses linear phase components
+for unshifted signals.
+Furthermore, the FFT may be oversampled by padding :math:`w[m]` with zeros.
+This can be achieved by specifying `mfft` to be larger than the window
+length `m_num`---this sets :math:`M` to `mfft` (implying that also
+:math:`w[m]:=0` for :math:`m\not\in\{0, 1, \ldots, M-1\}` holds).</code></pre></div></figure>
+<p>The inverse short-time Fourier transform ([istft]) is implemented by reversing these two steps:</p>
+<ol>
+<li>Perform the inverse discrete Fourier transform, i.e.,</li>
+</ol>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">x_p[m] = \frac{1}{M}\sum_{q=0}^M S[q, p]\, \exp\!\big\{
+                                    2\jj\pi (q + \phi_m)\, m / M\big\}\ .</code></pre></div></figure>
+<ol>
+<li>Sum the shifted slices weighted by [w_d[m]] to reconstruct the original signal, i.e.,</li>
+</ol>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">     x[k] = \sum_p x_p\!\big[\mu_p(k)\big]\, w_d\!\big[\mu_p(k)\big]\ ,\quad
+            \mu_p(k) = k + \lfloor M/2\rfloor - h p
+
+for :math:`k \in [0, \ldots, n-1]`. :math:`w_d[m]` is the so-called
+dual window of :math:`w[m]` and is also made up of :math:`M` samples.</code></pre></div></figure>
+<p>Note that an inverse STFT does not necessarily exist for all windows and hop sizes. For a given window [w[m]] the hop size [h] must be small enough to ensure that every sample of [x[k]] is touched by a non-zero value of at least one window slice. This is sometimes referred as the &quot;non-zero overlap condition&quot; (see [~scipy.signal.check_NOLA]). Some more details are given in the subsection tutorial_stft_dual_win.</p>
+<h3 id="sliding-windows">Sliding Windows</h3>
+<p>This subsection discusses how the sliding window is indexed in the [ShortTimeFFT ] by means of an example: Consider a window of length 6 with a [hop] interval of two and a sampling interval [T] of one, e.g., <code>ShortTimeFFT (np.ones(6), 2, fs=1)</code>. The following image schematically depicts the first four window positions also named time slices:</p>
+<p>![:align: center](../_static/tutorial_stft_sliding_win_start.svg)</p>
+<p>The x-axis denotes the time [t], which corresponds to the sample index [k] indicated by the bottom row of blue boxes. The y-axis denotes the time slice index [p]. The signal [x[k]] starts at index [k=0] and is marked by a light blue background. Per definition the zeroth slice ([p=0]) is centered at [t=0]. The center of each slice ([m_num_mid]), here being the sample <code>6//2=3</code>, is marked by the text &quot;mid&quot;. By default the [stft] calculates all slices which have some overlap with the signal. Hence the first slice is at [p_min] = -1 with the lowest sample index being [k_min] = -5. The first slice index not sticking out to the left of the signal is [p_{lb} = 2] and the first sample index unaffected by border effects is [k_{lb} = 5]. The property [lower_border_end] returns the tuple [(k_{lb}, p_{lb})].</p>
+<p>The behavior at the end of the signal is depicted for a signal with [n=50] samples below, as indicated by the blue background:</p>
+<p>![:align: center](../_static/tutorial_stft_sliding_win_stop.svg)</p>
+<p>Here the last slice has index [p=26]. Hence, following Python convention of the end index being outside the range, [p_max] = 27 indicates the first slice not touching the signal. The corresponding sample index is [k_max] = 55. The first slice, which sticks out to the right is [p_{ub} = 24] with its first sample at [k_{ub}=45]. The function [upper_border_begin] returns the tuple [(k_{ub}, p_{ub})].</p>
+<h3 id="inverse-stft-and-dual-windows">Inverse STFT and Dual Windows</h3>
+<p>The term dual window stems from frame theory[^10] where a frame is a series expansion which can represent any function in a given Hilbert space. There the expansions [{g_k}] and [{h_k}] are dual frames if for all functions [f] in the given Hilbert space [mathcal{H}]</p>
+<p>f = sum_{kinIN} langle f, g_krangle h_k</p>
+<p>: = sum_{kinIN} langle f, h_krangle g_k, quad f in mathcal{H},</p>
+<p>holds, where [langle ., .rangle] denotes the scalar product of [mathcal{H}]. All frames have dual frames[^11].</p>
+<p>An STFT evaluated only at discrete grid points [S(q Delta f, pDelta t)] is called a &quot;Gabor frame&quot; in literature[^12][^13]. Since the support of the window [w[m]] is limited to a finite interval, the [ShortTimeFFT ] falls into the class of the so-called &quot;painless non-orthogonal expansions&quot;[^14]. In this case the dual windows always have the same support and can be calculated by means of inverting a diagonal matrix. A rough derivation only requiring some understanding of manipulating matrices will be sketched out in the following:</p>
+<p>Since the STFT given in Eq. :math`eq_dSTFT` is a linear mapping in [x[k]], it can be expressed in vector-matrix notation. This allows us to express the inverse via the formal solution of the linear least squares method (as in [~scipy.linalg.lstsq]), which leads to a beautiful and simple result.</p>
+<p>We begin by reformulating the windowing of Eq. :math`eq_STFT_windowing`</p>
+<p>vb{x}_p = vb{W}_{!p},vb{x} = begin{bmatrix} cdots &amp; 0 &amp; w[0] &amp; 0 &amp; cdots&amp;&amp;&amp;\ &amp; cdots &amp; 0 &amp; w[1] &amp; 0 &amp; cdots&amp;&amp;\ &amp; &amp; &amp; &amp; ddots&amp;&amp;&amp;\ &amp;&amp;cdots &amp; 0 &amp; 0 &amp; w[M-1] &amp; 0 &amp; cdots end{bmatrix}begin{bmatrix} x[0]\ x[1]\ vdots\ x[N-1] end{bmatrix} ,</p>
+<p>where the [Mtimes N] matrix [vb{W}_{!p}] has only non-zeros entries on the [(ph)]-th minor diagonal, i.e.,</p>
+<p>&gt; W_p[m,k] = w[m], delta_{m+ph,k},quad</p>
+<p>delta_{k,l} &amp;= begin{cases} 1 &amp; text{ for } k=l,\</p>
+<p>: 0 &amp; text{ elsewhere ,} end{cases}</p>
+<p>with [delta_{k,l}] being the Kronecker Delta. Eq. :math`eq_STFT_DFT` can be expressed as</p>
+<p>vb{s}_p = vb{F},vb{x}_p quadtext{with}quad F[q,m] = frac{1}{sqrt{M}}exp!big{-2jjpi (q + phi_m), m / Mbig},</p>
+<p>which allows the STFT of the [p]-th slice to be written as</p>
+<p>vb{s}_p = vb{F}vb{W}_{!p},vb{x} =: vb{G}_p,vb{x} quadtext{with}quad s_p[q] = S[p,q].</p>
+<p>Due to the scaling factor of [M^{-1/2}], [vb{F}] is unitary, i.e., the inverse equals its conjugate transpose meaning [conjT{vb{F}}vb{F} = vb{I}]. Other scalings, e.g., like in Eq. :math`eq_SpectA_FFT`, are allowed as well, but would in this section make the notation slightly more complicated.</p>
+<p>To obtain a single vector-matrix equation for the STFT, the slices are stacked into one vector, i.e.,</p>
+<p>vb{s} := begin{bmatrix}</p>
+<p>vb{s}_0\ vb{s}_1\ vdots\ vb{s}_{P-1} end{bmatrix} = begin{bmatrix} vb{G}_0\ vb{G}_1\ vdots\ vb{G}_{P-1} end{bmatrix}, vb{x} =
+:   vb{G}, vb{x},</p>
+<p>where [P] is the number of columns of the resulting STFT. To invert this equation the Moore-Penrose inverse [vb{G}^dagger] can be utilized</p>
+<p>vb{x} = inv{conjT{vb{G}}vb{G}}, conjT{vb{G}} vb{s}</p>
+<p>=
+:   vb{G}^dagger vb{s},</p>
+<p>which exists if</p>
+<p>vb{D} := conjT{vb{G}}vb{G} =</p>
+<p>:</p>
+<blockquote>
+<p>begin{bmatrix}</p>
+<p>: conjT{vb{G}_0}&amp; conjT{vb{G}_1}&amp; cdots &amp; conjT{vb{G}_{P-1}}</p>
+<p>end{bmatrix}^T begin{bmatrix}</p>
+<p>: vb{G}_0\ vb{G}_1\ vdots\ vb{G}_{P-1}</p>
+<p>end{bmatrix} = sum_{p=0}^{P-1} conjT{vb{G}_p}vb{G}_p .</p>
+</blockquote>
+<p>is invertible. Then [vb{x} = vb{G}^daggervb{G},vb{x} = inv{conjT{vb{G}}vb{G}},conjT{vb{G}}vb{G},vb{x}] obviously holds. [vb{D}] is always a diagonal matrix with non-negative diagonal entries. This becomes clear, when simplifying [vb{D}] further to</p>
+<p>vb{D} = sum_{p=0}^{P-1} conjT{vb{G}_p}vb{G}_p</p>
+<p>:</p>
+<blockquote>
+<p>= sum_{p=0}^{P-1} conjT{(vb{F},vb{W}_{!p})},</p>
+<p>: vb{F},vb{W}_{!p}</p>
+<p>= sum_{p=0}^{P-1} conjT{vb{W}_{!p}}vb{W}_{!p} =: sum_{p=0}^{P-1} vb{D}_p</p>
+</blockquote>
+<p>due to [vb{F}] being unitary. Furthermore</p>
+<p>D_p[r,s] &amp;= sum_{m=0}^{M-1} conj{W_p^T[r,m]},W_p[m,s]</p>
+<p>:</p>
+<blockquote>
+<p>= sum_{m=0}^{M-1} left(conj{w[m]}, delta_{m+ph,r}right)</p>
+<p>: left(w[m], delta_{m+ph,s}right)\</p>
+<p>&amp;= sum_{m=0}^{M-1} big[|w[m]\big|](##SUBST##<a href="##SUBST##%7Cw%5Bm%5D%5Cbig%7C">|w[m]\big|</a>)^2,</p>
+<p>: delta_{r,s}, delta_{r,m+ph}.</p>
+</blockquote>
+<p>shows that [vb{D}_p] is a diagonal matrix with non-negative entries. Hence, summing [vb{D}_p] preserves that property. This allows to simplify Eq. :math`eq_STFT_MoorePenrose` further, i.e.,</p>
+<p>vb{x} &amp;= vb{D}^{-1} conjT{vb{G}}vb{s}</p>
+<p>:</p>
+<blockquote>
+<p>= sum_{p=0}^{P-1} vb{D}^{-1}conjT{vb{W}_{!p}},</p>
+<p>: conjT{vb{F}}vb{s}_p</p>
+<p>= sum_{p=0}^{P-1} (conj{vb{W}_{!p}vb{D}^{-1}})^T,</p>
+<p>: conjT{vb{F}}vb{s}_p\</p>
+<p>&amp;=: sum_{p=0}^{P-1}conjT{vb{U}_p},conjT{vb{F}}vb{s}_p.</p>
+</blockquote>
+<p>Utilizing Eq. :math`eq_STFT_WinMatrix1`, :math`eq_STFT_DiagM2`, :math`eq_STFT_DiagM3`, [vb{U}_p=vb{W}_{!p}vb{D}^{-1}] can be expressed as</p>
+<p>U_p[m, k] &amp;= W[m,k], D^{-1}[k,k]</p>
+<p>:</p>
+<blockquote>
+<p>= left(w[m] delta_{m+ph,k}right)</p>
+<p>: inv{sum_{eta=0}^{P-1} vb{D}_eta[k,k]} delta_{m+ph,k}\</p>
+<p>&amp;= w[m] inv{sum_{eta=0}^{P-1}sum_{mu=0}^{M-1}</p>
+<p>: big[|w[\mu]\big|](##SUBST##<a href="##SUBST##%7Cw%5B%5Cmu%5D%5Cbig%7C">|w[\mu]\big|</a>)^2,delta_{m+ph, mu+eta h}} delta_{m+ph,k}\ &amp;= w[m] inv{sum_{eta=0}^{P-1} big[|w[m+(p-\eta)h]\big|](##SUBST##<a href="##SUBST##%7Cw%5Bm+(p-%5Ceta)h%5D%5Cbig%7C">|w[m+(p-\eta)h]\big|</a>)^2} delta_{m+ph,k} .</p>
+</blockquote>
+<p>This shows [vb{U}_p] has the identical structure as [vb{W}_p] in Eq. :math`eq_STFT_WinMatrix1`, i.e., having only non-zero entries on the [(ph)]-th minor diagonal. The sum term in the inverse can be interpreted as sliding [|w[mu]|^2] over [w[m]] (with an incorporated inversion), so only components overlapping with [w[m]] have an effect. Hence, all [U_p[m, k]] far enough from the border are identical windows. To circumvent border effects, [x[k]] is padded with zeros, enlarging [vb{U}] so all slices which touch [x[k]] contain the identical dual window</p>
+<p>w_d[m] &amp;= w[m] inv{sum_{etainIZ} big[|w[m + \eta\, h]\big|](##SUBST##[|w[m + \eta\, h]\big|](##SUBST##|w[m + \eta, h]\big|))^2}\</p>
+<p>:</p>
+<blockquote>
+<p>&amp;=w[m] inv{sum_{l=0}^{M-1} big[|w[l]\big|](##SUBST##<a href="##SUBST##%7Cw%5Bl%5D%5Cbig%7C">|w[l]\big|</a>)^2 delta_{l+m,eta h}},</p>
+<p>: quad etain IZ.</p>
+</blockquote>
+<p>Since [w[m] = 0] holds for [m notin{0, ldots, M-1}], it is only required to sum over the indexes [eta] fulfilling $|\eta| &lt; M/h$. The second expression is an alternate form by summing from index [l=0] to [M] in index increments of [h]. [delta_{l+m,eta h}] is Kronecker delta notation for <code>(l+m) % h == 0</code>. The name dual window can be justified by inserting Eq. :math`eq_STFT_Slice_p` into Eq. :math`eq_STFT_istftM`, i.e.,</p>
+<p>vb{x} = sum_{p=0}^{P-1} conjT{vb{U}_p},conjT{vb{F}},</p>
+<p>: vb{F},vb{W}_{!p},vb{x} = left(sum_{p=0}^{P-1} conjT{vb{U}_p},vb{W}_{!p}right)vb{x},</p>
+<p>showing that [vb{U}_p] and [vb{W}_{!p}] are interchangeable. Due [vb{U}_p] and [vb{W}_{!p}] having the same structure given in Eq. :math`eq_STFT_WinMatrix`, Eq. :math`eq_STFT_WindDualCond0` contains a general condition for all possible dual windows, i.e.,</p>
+<p>sum_{p=0}^{P-1} conjT{vb{W}_{!p}},vb{U}_p = vb{I} quadLeftrightarrowquad sum_{p=0}^{P-1} sum_{m=0}^{M-1} conj{w[m]} u[m], delta_{m+ph,i}, delta_{m+ph,j} = delta_{i,j}</p>
+<p>which can be reformulated into</p>
+<p>conjT{vb{V}},vb{u} = vb{1}, qquad V[i,j] := w[i], delta_{i, j+ph}, qquad vb{V}in IC^{Mtimes h}, pinIZ,</p>
+<p>where [vb{1}inIR^h] is a vector of ones. The reason that [vb{V}] has only [h] columns is that the [i]-th and [(i+m)]-th row, [iinIN], in Eq. :math`eq_STFT_WindDualCond0` are identical. Hence there are only [h] distinct equations.</p>
+<p>Of practical interest is finding the valid dual window [vb{u}_d] closest to a given vector [vb{d}inIC^M]. By utilizing an [h]-dimensional vector [vb{lambda}] of Lagrange multipliers, we obtain the convex quadratic programming problem</p>
+<p>vb{u}_d = min_{vb{u}}{ frac{1}{2}lVertvb{d} - vb{u}rVert^2 } quadtext{w.r.t.}quad conjT{vb{V}}vb{u} = vb{1} qquadLeftrightarrowqquad begin{bmatrix} vb{I} &amp; vb{V}\ conjT{vb{V}} &amp; vb{0} end{bmatrix} begin{bmatrix} vb{u}_d \ vb{lambda} end{bmatrix} = begin{bmatrix} vb{d}\ vb{1} end{bmatrix}.</p>
+<p>A closed form solution can be calculated by inverting the [2times2] block matrix symbolically, which gives</p>
+<p>vb{u}_d &amp;= underbrace{vb{V}inv{conjT{vb{V}}vb{V}}}_{%</p>
+<p>: =:vb{Q}inIC^{Mtimes h}} vb{1} + big(vb{I} - vb{Q}conjT{vb{V}}big)vb{d} = vb{w}_d + vb{d} - vb{q}_d,\</p>
+<p>vb{w}_d &amp;= vb{Q}vb{1},qquad vb{q}_d = vb{Q}conjT{vb{V}}vb{d},\ Q[i,j] &amp;= frac{ w[i] delta_{i-j, eta h} }{% sum_{k=0}^M [|w[k]|](##SUBST##<a href="##SUBST##%7Cw%5Bk%5D%7C">|w[k]|</a>)^2,delta_{i-k, xi h} } ,qquad w_d[i] = frac{w[i] }{ sum_{l=0}^M conj{w[l]} w[l] delta_{i-l, xi h} },\ q_d[i] &amp;= w[i] frac{sum_{j=1}^h delta_{i-j, eta h} sum_{l=1}^M conj{w[l]} d[l] delta_{j-l, xi h} }{% sum_{l=0}^M conj{w[l]} w[l] delta_{i-l, zeta h} } = w_d[i] sum_{l=1}^M conj{w[l]} d[l] delta_{i-l, eta h},</p>
+<p>with [eta,xi,zetainIZ]. Note that the first term [vb{w}_d] is equal to the solution given in Eq. :math`eq_STFT_CanonDualWin` and that the inverse of [conjT{vb{V}}vb{V}] must exist or else the STFT is not invertible. When [vb{d}=vb{0}], the solution [vb{w}_d] is obtained. Hence, [vb{w}_d] minimizes the [L^2]-norm [lVertvb{u}rVert], which is the justification for its name &quot;canonical dual window&quot;. Sometimes it is more desirable to find the closest vector in regard to direction and ignoring the vector length. This can be achieved by introducing a scaling factor [alphainIC] to minimize [lVertalphavb{d} - vb{u}rVert^2]. Since Eq. :math`eq_STFT_ClosestDual` already provides a general solution, we can write</p>
+<h6>&gt;</h6>
+<p>&gt; alpha_{min} &amp;= min_{alpha}{ &gt; &gt; : frac{1}{2}biglVertalphavb{d} - vb{u}_d(alpha)bigrVert^2 },qquad</p>
+<p>vb{u}_d(alpha) = vb{w}_d + alphavb{d} - alphavb{q}_d qquadLeftrightarrow\ alpha_{min} &amp;= conjT{vb{q}_d}vb{w}_d big/, conjT{vb{q}_d}vb{q}_d .</p>
+<p>The case where the window [w[m]] and the dual window [u[m]] are equal can be easily derived from Eq. :math`eq_STFT_AllDualWinsCond0` resulting in [h] conditions of the form</p>
+<p>sum_{p=0}^{lfloor M / h rfloor} big[|w[m+ph]\big|](##SUBST##<a href="##SUBST##%7Cw%5Bm+ph%5D%5Cbig%7C">|w[m+ph]\big|</a>)^2 = 1,</p>
+<p>: qquad m in {0, ldots, h-1}.</p>
+<p>Note that each window sample [w[m]] appears only once in the [h] equations. To find a closest window [vb{w}] for given window [vb{d}] is straightforward: Partition [vb{d}] according to Eq. :math`eq_STFT_EqualWindDualCond` and normalize the length of each partition to unity. In this case [w[m]] is also a canonical dual window, which can be seen by recognizing that setting [u[m]=w[m]] in Eq. :math`eq_STFT_AllDualWinsCond` is equivalent of the denominator in Eq. :math`eq_STFT_CanonDualWin` being unity.</p>
+<p>Furthermore, if Eq. :math`eq_STFT_EqualWindDualCond` holds, the matrix [vb{D}] of Eq. :math`eq_STFT_MoorePenrose_DD` is the identity matrix making the STFT [vb{G}] a unitary mapping, i.e., [conjT{vb{G}}vb{G}=vb{I}]. Note that this holds only when a unitary DFT of Eq. :math`eq_STFT_unitaryDFT` is utilized. The [ShortTimeFFT ] implementation uses the standard DFT of Eq. :math`eq_SpectA_FFT`. Hence, there the scalar product in the STFT space needs to be scaled by [1/M] to ensure that the key property of unitary mappings, the equality of the scalar products, holds. I.e.,</p>
+<p>langle x, yrangle = sum_k x[k], conj{y[k]} stackrel{stackrel{text{unitary}}{downarrow}}{=} frac{1}{M}sum_{q,p} S_x[q,p], conj{S_y[q,p]},</p>
+<p>with [S_{x,y}] being the STFT of [x,y]. Alternatively, the window can be scaled by [1/sqrt{M}] and the dual by [sqrt{M}] to obtain a unitary mapping, which is implemented in [~scipy.signal.ShortTimeFFT.from_win_equals_dual].</p>
+<h3 id="comparison-with-legacy-implementation">Comparison with Legacy Implementation</h3>
+<p>The functions [stft &lt;scipy.signal.stft&gt;], [istft &lt;scipy.signal.istft&gt;], and the [spectrogram &lt;scipy.signal.spectrogram&gt;] predate the [ShortTimeFFT ] implementation. This section discusses the key differences between the older &quot;legacy&quot; and the newer [ShortTimeFFT ] implementations. The main motivation for a rewrite was the insight that integrating dual windows could not be done in a sane way without breaking compatibility. This opened the opportunity for rethinking the code structure and the parametrization, thus making some implicit behavior more explicit.</p>
+<p>The following example compares the two STFTs of a complex valued chirp signal with a negative slope:</p>
+<p>That the [ShortTimeFFT ] produces 3 more time slices than the legacy version is the main difference. As laid out in the tutorial_stft_sliding_win section, all slices which touch the signal are incorporated in the new version. This has the advantage that the STFT can be sliced and reassembled as shown in the [ShortTimeFFT ] code example. Furthermore, using all touching slices makes the ISTFT more robust in the case of windows that are zero somewhere.</p>
+<p>Note that the slices with identical time stamps produce equal results (up to numerical accuracy), i.e.:</p>
+<blockquote>
+<p>&gt;&gt;&gt; np.allclose(Sz0, Sz1[:, 2:-1]) True</p>
+</blockquote>
+<p>Generally, those additional slices contain non-zero values. Due to the large overlap in our example, they are quite small. E.g.:</p>
+<blockquote>
+<p>&gt;&gt;&gt; abs(Sz1[:, 1]).min(), abs(Sz1[:, 1]).max() (6.925060911593139e-07, 8.00271269218721e-07)</p>
+</blockquote>
+<p>The ISTFT can be utilized to reconstruct the original signal:</p>
+<blockquote>
+<p>&gt;&gt;&gt; t0_r, z0_r = istft(Sz0_u, fs, win, nperseg, noverlap, ... input_onesided=False, scaling=&#39;spectrum&#39;) &gt;&gt;&gt; z1_r = SFT.istft(Sz1, k1=N) ... &gt;&gt;&gt; len(z0_r), len(z) (1010, 1001) &gt;&gt;&gt; np.allclose(z0_r[:N], z) True &gt;&gt;&gt; np.allclose(z1_r, z) True</p>
+</blockquote>
+<p>Note that the legacy implementation returns a signal which is longer than the original. On the other hand, the new [istft] allows to explicitly specify the start index [k0] and the end index [k1] of the reconstructed signal. The length discrepancy in the old implementation is caused by the fact that the signal length is not a multiple of the slices.</p>
+<p>Further differences between the new and legacy versions in this example are:</p>
+<ul>
+<li>The parameter <code>fft_mode=&#39;centered&#39;</code> ensures that the zero frequency is vertically centered for two-sided FFTs in the plot. With the legacy implementation, [fftshift &lt;scipy.fft.fftshift&gt;] needs to be utilized. <code>fft_mode=&#39;twosided&#39;</code> produces the same behavior as the old version.</li>
+<li>The parameter <code>phase_shift=None</code> ensures identical phases of the two versions. [ShortTimeFFT ]&#39;s default value of <code>0</code> produces STFT slices with an additional linear phase term.</li>
+</ul>
+<p>A spectrogram is defined as the absolute square of the STFT[^15]. The [spectrogram] provided by the [ShortTimeFFT ] sticks to that definition, i.e.:</p>
+<blockquote>
+<p>&gt;&gt;&gt; np.allclose(SFT.spectrogram(z), abs(Sz1)**2) True</p>
+</blockquote>
+<p>On the other hand, the legacy [spectrogram &lt;scipy.signal.spectrogram&gt;] provides another STFT implementation with the key difference being the different handling of the signal borders. The following example shows how to use the [ShortTimeFFT ] to obtain an identical SFT as produced with the legacy [spectrogram &lt;scipy.signal.spectrogram&gt;]:</p>
+<blockquote>
+<p>&gt;&gt;&gt; # Legacy spectrogram (detrending for complex signals not useful): &gt;&gt;&gt; f2_u, t2, Sz2_u = spectrogram(z, fs, win, nperseg, noverlap, ... detrend=None, return_onesided=False, ... scaling=&#39;spectrum&#39;, mode=&#39;complex&#39;) &gt;&gt;&gt; f2, Sz2 = fftshift(f2_u), fftshift(Sz2_u, axes=0) ... &gt;&gt;&gt; # New STFT: ... SFT = ShortTimeFFT.from_window(win, fs, nperseg, noverlap, ... fft_mode=&#39;centered&#39;, ... scale_to=&#39;magnitude&#39;, phase_shift=None) &gt;&gt;&gt; Sz3 = SFT.stft(z, p0=0, p1=(N-noverlap)//SFT.hop, k_offset=nperseg//2) &gt;&gt;&gt; t3 = SFT.t(N, p0=0, p1=(N-noverlap)//SFT.hop, k_offset=nperseg//2) ... &gt;&gt;&gt; np.allclose(t2, t3) True &gt;&gt;&gt; np.allclose(f2, SFT.f) True &gt;&gt;&gt; np.allclose(Sz2, Sz3) True</p>
+</blockquote>
+<p>The difference from the other STFTs is that the time slices do not start at 0 but at <code>nperseg//2</code>, i.e.:</p>
+<blockquote>
+<p>&gt;&gt;&gt; t2 array([0.125, 0.175, 0.225, 0.275, 0.325, 0.375, 0.425, 0.475, 0.525, ... 4.625, 4.675, 4.725, 4.775, 4.825, 4.875])</p>
+</blockquote>
+<p>Furthermore, only slices which do not stick out to the right are returned, centering the last slice at 4.875 s, which makes it shorter than with the default [stft] parametrization.</p>
+<p>Using the <code>mode</code> parameter, the legacy [spectrogram &lt;scipy.signal.spectrogram&gt;] can also return the &#39;angle&#39;, &#39;phase&#39;, &#39;psd&#39; or the &#39;magnitude&#39;. The [scaling] behavior of the legacy [spectrogram &lt;scipy.signal.spectrogram&gt;] is not straightforward, since it depends on the parameters <code>mode</code>, <code>scaling</code> and <code>return_onesided</code>. There is no direct correspondence for all combinations in the [ShortTimeFFT ], since it provides only &#39;magnitude&#39;, &#39;psd&#39; or no [scaling] of the window at all. The following table shows those correspondences:</p>
+<p>When using <code>onesided</code> output on complex-valued input signals, the old [spectrogram &lt;scipy.signal.spectrogram&gt;] switches to <code>two-sided</code> mode. The [ShortTimeFFT ] raises a [TypeError], since the utilized [~scipy.fft.rfft] function only accepts real-valued inputs. Consult the tutorial_SpectralAnalysis section above for a discussion on the various spectral representations which are induced by the various parameterizations.</p>
+<p>Some further reading and related software:</p>
+<p>[^1]: &quot;Fourier transform&quot;, Wikipedia, <a target="_blank" rel="noopener" href="https://en.wikipedia.org/wiki/Fourier_transform">https://en.wikipedia.org/wiki/Fourier_transform</a></p>
+<p>[^2]: &quot;Spectral density&quot;, Wikipedia, <a target="_blank" rel="noopener" href="https://en.wikipedia.org/wiki/Spectral_density">https://en.wikipedia.org/wiki/Spectral_density</a></p>
+<p>[^3]: &quot;Discrete Fourier transform&quot;, Wikipedia, <a target="_blank" rel="noopener" href="https://en.wikipedia.org/wiki/Discrete_Fourier_transform">https://en.wikipedia.org/wiki/Discrete_Fourier_transform</a></p>
+<p>[^4]: &quot;Spectral Leakage&quot;, Wikipedia, <a target="_blank" rel="noopener" href="https://en.wikipedia.org/wiki/Spectral_leakage">https://en.wikipedia.org/wiki/Spectral_leakage</a></p>
+<p>[^5]: &quot;Nyquist--Shannon sampling theorem&quot;, Wikipedia, <a target="_blank" rel="noopener" href="https://en.wikipedia.org/wiki/Nyquist-Shannon_sampling_theorem">https://en.wikipedia.org/wiki/Nyquist-Shannon_sampling_theorem</a></p>
+<p>[^6]: N.R. Lomb &quot;Least-squares frequency analysis of unequally spaced data&quot;, Astrophysics and Space Science, vol 39, pp. 447-462, 1976</p>
+<p>[^7]: J.D. Scargle &quot;Studies in astronomical time series analysis. II -Statistical aspects of spectral analysis of unevenly spaced data&quot;, The Astrophysical Journal, vol 263, pp. 835-853, 1982</p>
+<p>[^8]: M. Zechmeister and M. Kürster, &quot;The generalised Lomb-Scargle periodogram. A new formalism for the floating-mean and Keplerian periodograms,&quot; Astronomy and Astrophysics, vol. 496, pp. 577-584, 2009</p>
+<p>[^9]: Karlheinz Gröchenig: &quot;Foundations of Time-Frequency Analysis&quot;, Birkhäuser Boston 2001, [10.1007/978-1-4612-0003-1]</p>
+<p>[^10]: Ole Christensen: &quot;An Introduction to Frames and Riesz Bases&quot;, Birkhäuser Boston 2016, [10.1007/978-3-319-25613-9]</p>
+<p>[^11]: Ole Christensen: &quot;An Introduction to Frames and Riesz Bases&quot;, Birkhäuser Boston 2016, [10.1007/978-3-319-25613-9]</p>
+<p>[^12]: Karlheinz Gröchenig: &quot;Foundations of Time-Frequency Analysis&quot;, Birkhäuser Boston 2001, [10.1007/978-1-4612-0003-1]</p>
+<p>[^13]: Ole Christensen: &quot;An Introduction to Frames and Riesz Bases&quot;, Birkhäuser Boston 2016, [10.1007/978-3-319-25613-9]</p>
+<p>[^14]: Karlheinz Gröchenig: &quot;Foundations of Time-Frequency Analysis&quot;, Birkhäuser Boston 2001, [10.1007/978-1-4612-0003-1]</p>
+<p>[^15]: Karlheinz Gröchenig: &quot;Foundations of Time-Frequency Analysis&quot;, Birkhäuser Boston 2001, [10.1007/978-1-4612-0003-1]</p>
