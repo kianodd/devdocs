@@ -1,0 +1,218 @@
+<p>orphan</p>
+<p>:   </p>
+<p>On this page</p>
+<p>backlinks : none</p>
+<p>depth : 1</p>
+<p>class : twocols</p>
+<p>MongoDB allows multiple clients to read and write the same data. To ensure consistency, MongoDB uses locking and concurrency control to prevent clients from modifying the same data simultaneously. Writes to a single document occur either in full or not at all, and clients always see consistent data.</p>
+<h2 id="what-type-of-locking-does-mongodb-use">What type of locking does MongoDB use?[]</h2>
+<p>In addition to a shared (S) locking mode for reads and an exclusive (X) locking mode for write operations, intent shared (IS) and intent exclusive (IX) modes indicate an intent to read or write a resource using a finer granularity lock. When locking at a certain granularity, all higher levels are locked using an intent lock.</p>
+<p>For example, when locking a collection for writing (using mode X), both the corresponding database lock and the global lock must be locked in intent exclusive (IX) mode. A single database can simultaneously be locked in IS and IX mode, but an exclusive (X) lock cannot coexist with any other modes, and a shared (S) lock can only coexist with intent shared (IS) locks.</p>
+<p>Locks are fair, with lock requests for reads and writes queued in order. However, to optimize throughput, when one lock request is granted, all other compatible lock requests are granted at the same time, potentially releasing the locks before a conflicting lock request is performed. For example, consider a situation where an X lock was just released and the conflict queue contains these locks:</p>
+<p>IS → IS → X → X → S → IS</p>
+<p>In strict first-in, first-out (FIFO) ordering, only the first two IS modes would be granted. Instead MongoDB will actually grant all IS and S modes, and once they all drain, it will grant X, even if new IS or S requests have been queued in the meantime. As a grant will always move all other requests ahead in the queue, no starvation of any request is possible.</p>
+<p>In [db.serverStatus()] and [db.currentOp()] output, the lock modes are represented as follows:</p>
+<p>header-rows : 1</p>
+<ul>
+<li>Lock Mode<ul>
+<li>Description</li>
+</ul>
+</li>
+<li>[R]<ul>
+<li>Represents Shared (S) lock.</li>
+</ul>
+</li>
+<li>[W]<ul>
+<li>Represents Exclusive (X) lock.</li>
+</ul>
+</li>
+<li>[r]<ul>
+<li>Represents Intent Shared (IS) lock.</li>
+</ul>
+</li>
+<li>[w]<ul>
+<li>Represents Intent Exclusive (IX) lock.</li>
+</ul>
+</li>
+</ul>
+<h2 id="how-granular-are-locks-in-mongodb">How granular are locks in MongoDB?</h2>
+<p>For most read and write operations, WiredTiger uses optimistic concurrency control. WiredTiger uses only intent locks at the global, database and collection levels. When the storage engine detects conflicts between two operations, one will incur a write conflict causing MongoDB to transparently retry that operation.</p>
+<p>Some global operations, typically short lived operations involving multiple databases, still require a global &quot;instance-wide&quot; lock. Some other operations, such as [renameCollection], still require an exclusive database lock in certain circumstances.</p>
+<h2 id="how-do-i-see-the-status-of-locks-on-my-binmongod-instances">How do I see the status of locks on my [~bin.mongod] instances?</h2>
+<p>To view lock utilization, use any of these methods:</p>
+<ul>
+<li>[db.serverStatus()]</li>
+<li>[db.currentOp()]</li>
+<li>[~bin.mongotop]</li>
+<li>[~bin.mongostat]</li>
+<li><a href="##SUBST##%7Cmms-home%7C">|mms-home|</a> or [Ops Manager, an on-premises solution available in MongoDB Enterprise Advanced ]</li>
+</ul>
+<p>Specifically, the [locks] document in the output of serverStatus , or the [~currentOp.locks] field in the [current operation reporting ] provides insight into the type of locks and amount of lock contention in your [~bin.mongod] instance.</p>
+<p>To terminate an operation, use [db.killOp()].</p>
+<h2 id="does-a-read-or-write-operation-ever-yield-the-lock">Does a read or write operation ever yield the lock?</h2>
+<p>In some situations, read and write operations can yield their locks.</p>
+<p>Long running read and write operations, such as queries, updates, and deletes, yield locks under many conditions. MongoDB operations can also yield locks between individual document modifications in write operations that affect multiple documents.</p>
+<p>For storage engines supporting document level concurrency control, such as WiredTiger , yielding is not necessary when accessing storage as the intent locks , held at the global, database and collection level, do not block other readers and writers. However, operations will periodically yield, such as:</p>
+<ul>
+<li>to avoid long-lived storage transactions because these can potentially require holding a large amount of data in memory;</li>
+<li>to serve as interruption points so that you can kill long running operations;</li>
+<li>to allow operations that require exclusive access to a collection such as index/collection drops and creations.</li>
+</ul>
+<h2 id="what-locks-are-taken-by-some-common-client-operations">What locks are taken by some common client operations?</h2>
+<p>The following table lists some operations and the types of locks they use for document level locking storage engines:</p>
+<ul>
+<li>Operation<ul>
+<li>Database</li>
+<li>Collection</li>
+</ul>
+</li>
+<li>Issue a query<ul>
+<li>[r] (Intent Shared)</li>
+<li>[r] (Intent Shared)</li>
+</ul>
+</li>
+<li>Insert data<ul>
+<li>[w] (Intent Exclusive)</li>
+<li>[w] (Intent Exclusive)</li>
+</ul>
+</li>
+<li>Remove data<ul>
+<li>[w] (Intent Exclusive)</li>
+<li>[w] (Intent Exclusive)</li>
+</ul>
+</li>
+<li>Update data<ul>
+<li>[w] (Intent Exclusive)</li>
+<li>[w] (Intent Exclusive)</li>
+</ul>
+</li>
+<li>Perform Aggregation<ul>
+<li>[r] (Intent Shared)</li>
+<li>[r] (Intent Shared)</li>
+</ul>
+</li>
+<li>Create an index<ul>
+<li><ul>
+<li>[W] (Exclusive)</li>
+</ul>
+</li>
+</ul>
+</li>
+<li>List collections<ul>
+<li>[r] (Intent Shared)</li>
+<li><ul>
+<li>Map-reduce</li>
+</ul>
+</li>
+<li>[W] (Exclusive) and [R] (Shared)</li>
+<li>[w] (Intent Exclusive) and [r] (Intent Shared)</li>
+</ul>
+</li>
+</ul>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>Creating an index requires an exclusive (W) lock on a collection. However, the lock is not retained for the full duration of the index build process.</p>
+<p>For more information, see index-operations.</p>
+</div></aside>
+<h2 id="which-administrative-commands-lock-a-database">Which administrative commands lock a database?</h2>
+<p>Some administrative commands can exclusively lock a database for extended time periods. For large clusters, consider taking the [~bin.mongod] instance offline so that clients are not affected. For example, if a [~bin.mongod] is part of a replica set, take the [~bin.mongod] offline and let other members of the replica set process requests while maintenance is performed.</p>
+<h3 id="administrative-commands-taking-extended-locks">Administrative Commands Taking Extended Locks</h3>
+<p>These administrative operations require an exclusive lock at the database level for extended periods:</p>
+<ul>
+<li>[cloneCollectionAsCapped] command</li>
+<li>[convertToCapped] command</li>
+</ul>
+<p>In addition, the [renameCollection] command and corresponding [db.collection.renameCollection()] shell method take the following locks:</p>
+<ul>
+<li>Command<ul>
+<li>Lock behavior</li>
+</ul>
+</li>
+<li>[renameCollection] database command<ul>
+<li><p>If renaming a collection within the same database, the [renameCollection] command takes an exclusive (W) lock on the source and target collections.</p>
+<p>If the target namespace is in a different database as the source collection, The [renameCollection] command takes an exclusive (W) lock on the target database when renaming a collection across databases and blocks other operations on that database until it finishes.</p>
+</li>
+</ul>
+</li>
+<li>[~db.collection.renameCollection()] shell helper method<ul>
+<li>The [~db.collection.renameCollection()] method takes an exclusive (W) lock on the source and target collections, and cannot move a collection between databases.</li>
+</ul>
+</li>
+</ul>
+<h2 id="which-administrative-commands-lock-a-collection">Which administrative commands lock a collection?</h2>
+<p>These administrative operations require an exclusive lock at the collection level:</p>
+<ul>
+<li><p>The [create] command and corresponding [db.createCollection()] and [db.createView()] shell methods.</p>
+</li>
+<li><p>The [createIndexes] command and corresponding [db.collection.createIndex()] and [db.collection.createIndexes()] shell methods. The build process only holds an exclusive lock on the collection at the beginning and end of the index build.</p>
+</li>
+<li><p>The [drop] command and corresponding [db.collection.drop()] shell methods.</p>
+</li>
+<li><p>The [dropIndexes] command and corresponding [db.collection.dropIndex()] and [db.collection.dropIndexes()] shell methods.</p>
+</li>
+<li><p>The [renameCollection] command and corresponding [db.collection.renameCollection()] shell method take the following locks, depending on version:</p>
+<ul>
+<li>For [renameCollection] and `db.collection.renameCollection()`: If renaming a collection within the same database, the operation takes an exclusive (W) lock on the source and target collections.</li>
+<li>For [renameCollection] <em>only</em>: If the target namespace is in a different database as the source collection, the operation takes an exclusive (W) lock on the target database when renaming a collection across databases and blocks other operations on that database until it finishes.</li>
+</ul>
+</li>
+<li><p>The [reIndex] command and corresponding [db.collection.reIndex()] shell method obtain an exclusive</p>
+<p>(W) lock on the collection and block other operations on the collection until finished.</p>
+</li>
+<li><p>The [replSetResizeOplog] command takes an exclusive</p>
+<p>(W) lock on the [oplog ] collection and blocks other operations on the collection until it finishes.</p>
+</li>
+</ul>
+<h2 id="does-a-mongodb-operation-ever-lock-more-than-one-database">Does a MongoDB operation ever lock more than one database?</h2>
+<p>These MongoDB operations may obtain and hold a lock on more than one database:</p>
+<p>widths : 40 60</p>
+<ul>
+<li><p>Operation</p>
+<ul>
+<li>Behavior</li>
+</ul>
+</li>
+<li><p>| [reIndex] | [db.collection.reIndex()]</p>
+<ul>
+<li>These operations only obtain an exclusive (W) collection lock instead of a global exclusive lock.</li>
+</ul>
+</li>
+<li><p>[renameCollection]</p>
+<ul>
+<li><p>This operation obtains an exclusive (W) lock on the target database, an intent shared (r) lock on the source database, and a shared (S) lock on the source collection when renaming a collection across databases.</p>
+<p>When renaming a collection in the same database, the operation only requires exclusive (W) locks on the source and target collections.</p>
+</li>
+</ul>
+</li>
+<li><p>| [replSetResizeOplog]</p>
+<ul>
+<li>This operation only obtains an exclusive (W) lock on the [oplog ] collection instead of a global exclusive lock.</li>
+</ul>
+</li>
+</ul>
+<h2 id="how-does-sharding-affect-concurrency">How does sharding affect concurrency?</h2>
+<p>Sharding improves concurrency by distributing collections over multiple [~bin.mongod] instances, allowing shard servers (specifically, [~bin.mongos] processes) to run concurrently with the downstream [~bin.mongod] instances.</p>
+<h2 id="how-does-concurrency-affect-a-replica-set-primary">How does concurrency affect a replica set primary?</h2>
+<p>With replica sets, when MongoDB writes to a collection on the primary, MongoDB also writes to the primary&#39;s oplog, which is a special collection in the <code>local</code> database. Therefore, MongoDB must lock both the collection&#39;s database and the <code>local</code> database. The [~bin.mongod] must lock both databases at the same time to keep the database consistent and ensure that write operations, even with replication, are all or nothing operations.</p>
+<h2 id="how-does-concurrency-affect-secondaries">How does concurrency affect secondaries?</h2>
+<p>In replication, MongoDB does not apply writes serially to secondaries . Secondaries collect oplog entries in batches and then apply those batches in parallel. Writes are applied in the order that they appear in the oplog.</p>
+<p>Reads that target secondaries read from a WiredTiger snapshot of the data if the secondary is undergoing replication. This allows the read to occur simultaneously with replication, while still guaranteeing a consistent view of the data.</p>
+<h2 id="what-isolation-guarantees-does-mongodb-provide">What isolation guarantees does MongoDB provide?</h2>
+<p>Depending on the read concern, clients can see the results of writes before the writes are durable. To control whether the data read may be rolled back or not, clients can use the <code>readConcern</code> option.</p>
+<h2 id="what-are-lock-free-read-operations">What are lock-free read operations?</h2>
+<p>A lock-free read operation runs immediately: it is not blocked when another operation has an exclusive (X) write lock on the collection.</p>
+<p>Starting in MongoDB 5.0, the following read operations are not blocked when another operation holds an exclusive (X) write lock on the collection:</p>
+<ul>
+<li>[find]</li>
+<li>[count]</li>
+<li>[distinct]</li>
+<li>[aggregate]</li>
+<li>[mapReduce]</li>
+<li>[listCollections]</li>
+<li>[listIndexes]</li>
+</ul>
+<p>When writing to a collection, [mapReduce] and [aggregate] hold an intent exclusive (IX) lock. Therefore, if an exclusive X lock is already held on a collection, [mapReduce] and [aggregate] write operations are blocked.</p>
+<p>For information, see:</p>
+<ul>
+<li>[/core/read-isolation-consistency-recency](core/read-isolation-consistency-recency.rst)</li>
+<li>[/core/write-operations-atomicity](core/write-operations-atomicity.rst)</li>
+<li>[/reference/read-concern](reference/read-concern.rst)</li>
+</ul>

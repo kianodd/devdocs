@@ -1,0 +1,87 @@
+<p>On this page</p>
+<p>backlinks : none</p>
+<p>depth : 2</p>
+<p>class : singlecol</p>
+<p>Internally, MongoDB optimizes time series data by grouping documents in a time series collection based on common <code>metaField</code> values. Selecting a useful one provides significant optimizations to storage density and query performance. For more information, see timeseries-collections-metafield.</p>
+<h2 id="properties-of-time-series-data">Properties of Time Series Data</h2>
+<p>Time series data has several properties that differentiate it from other data formats:</p>
+<ul>
+<li>Documents arrive in order, requiring frequent insert operations to append them.</li>
+<li>Update operations are rare, since each document represents a single point in time.</li>
+<li>Delete operations are rare if your application benefits from having an extensive historical record.</li>
+<li>Data is indexed by time and an identifier, such as a stock ticker, that identifies the unique time series it belongs to.</li>
+<li>Data is high volume, since each individual time series requires a large, constantly growing number of documents.</li>
+<li></li>
+</ul>
+<p>To account for these factors, MongoDB uses a specialized columnar format that groups documents from each time series together. This has the following benefits:</p>
+<ul>
+<li>Reduced storage and index sizes</li>
+<li>Improved query efficiency</li>
+<li>Reduced I/O for read operations</li>
+<li>Increased usage of the WiredTiger in-memory cache, further improving query speed</li>
+<li>Reduced complexity for working with time series data</li>
+</ul>
+<h3 id="comparing-time-series-collections-to-regular-collections">Comparing Time Series Collections to Regular Collections</h3>
+<p>In a regular collection, data is stored sequentially as blocks on disk, optimizing write speed. However, it requires one index for each data point, which quickly grows very large. It also requires a second index that contains the time series identifier and timestamps themselves, so that users can query for a single series. To read this data, MongoDB has to process all of the database and disk blocks that contain it, even if a block only contains a single relevant document.</p>
+<p>This model is optimized for CRUD operations and frequent updates. A bank account balance only needs to reflect the current state, so each account holder&#39;s document is updated as that information changes.</p>
+<p>Compare this to a time series collection. Time series collections write data in order, meaning recent transactions can be kept in memory for much faster retrieval. Since they are written in sequence, documents are stored together, so there&#39;s no need to read every disk block after a document is no longer in memory. Data is indexed by the <code>metaField</code>, leading to much smaller indexes.</p>
+<h2 id="how-bucketing-works">How Bucketing Works</h2>
+<p>When you create a time series collection, MongoDB automatically creates groups, or buckets, of documents. MongoDB groups documents that have both:</p>
+<ul>
+<li>An identical <code>metaField</code> value, which should uniquely identify a time series. If a <code>metaField</code> is an object or array, MongoDB groups only if all object fields or array elements match.</li>
+<li><code>timeField</code> values that are close together. The time series collection&#39;s <code>granularity</code>, <code>bucketMaxSpanSeconds</code>, and <code>bucketRoundingSeconds</code> parameters control the time span covered by each bucket. For more information, see timeseries-granularity.</li>
+</ul>
+<p>For example, with a granularity of <code>seconds</code>, MongoDB buckets documents within the same hour. If a bucket contains a document with a <code>metaField</code> value of <code>sensorA</code> and a <code>timeField</code> value of <code>2024-08-01T18:23:21Z</code>, an incoming document with a <code>metaField</code> of <code>sensorB</code> goes into a separate bucket regardless of time. An incoming document from <code>sensorA</code> goes into the same bucket only if its <code>timeField</code> is between <code>2024-08-01T18:00:00Z</code> and <code>2024-08-01T18:59:59Z</code>.</p>
+<p>If a document with a time of <code>2023-03-27T16:24:35Z</code> does not fit an existing bucket, MongoDB creates a new bucket with a minimum time of <code>2023-03-27T16:00:00Z</code> and a maximum time of <code>2023-03-27T16:59:59Z</code>.</p>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>You can modify a time series collection&#39;s granularity, but only to change from finer to coarser measurements, such as extending bucket coverage from minutes to hours. This doesn&#39;t change how data is stored across existing buckets.</p>
+</div></aside>
+<h3 id="how-the-metafield-affects-bucketing">How the metaField Affects Bucketing</h3>
+<p>Because <code>metaField</code> values must match exactly to group documents, the number of buckets in a time series collection depends on the number of unique <code>metaField</code> values. Collections with fine-grained or changing <code>metaField</code> values generate many sparsely packed, short-lived buckets. This leads to decreased storage and query efficiency.</p>
+<p>For example, in the following document, <code>metadata</code> is a good choice of <code>metaField</code> since it makes it easy to query data from a given weather sensor. Using these fields, MongoDB buckets readings from a single sensor together.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JavaScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript">
+{
+   <span class="hljs-attr">timestamp</span>: <span class="hljs-title class_">ISODate</span>(<span class="hljs-string">&quot;2021-05-18T00:00:00.000Z&quot;</span>),
+   <span class="hljs-attr">metadata</span>: { <span class="hljs-attr">sensorId</span>: <span class="hljs-number">5578</span>, <span class="hljs-attr">type</span>: <span class="hljs-string">&#x27;temperature&#x27;</span> },
+   <span class="hljs-attr">temp</span>: <span class="hljs-number">12</span>,
+   <span class="hljs-attr">_id</span>: <span class="hljs-title class_">ObjectId</span>(<span class="hljs-string">&quot;62f11bbf1e52f124b84479ad&quot;</span>)
+}</code></pre></div></figure>
+<h2 id="the-bucket-catalog">The Bucket Catalog[]</h2>
+<p>The bucket catalog is a specialized in-memory cache in WiredTiger . It tracks buckets to minimize latency and coordinate concurrent writes.</p>
+<p>For each open bucket, the catalog maintains information such as the <code>metaField</code>, active writers, covered time span, number of documents, size, and recent operations. Because MongoDB creates separate buckets for documents with a different <code>metaField</code>, multiple buckets are typically open at the same time.</p>
+<p>To avoid inconsistencies caused by race conditions, buckets may be closed and removed from the bucket catalog when a conflicting operation is executed. Restarting [~bin.mongod] closes all buckets and resets the bucket catalog.</p>
+<h3 id="creation">Creation</h3>
+<ul>
+<li><p>MongoDB creates a new bucket if there isn&#39;t a suitable one for an incoming document. This occurs when any of the following are true:</p>
+<ul>
+<li>The document <code>metaField</code> doesn&#39;t match any active buckets.</li>
+<li>The document timestamp is outside of the range of all active buckets.</li>
+<li>The document exceeds the remaining size or document limit of all active buckets.</li>
+</ul>
+<p>The starting timestamp of a new bucket is rounded down based on the collection&#39;s granularity . This handles cases where documents with out-of-order timestamps arrive in close succession.</p>
+</li>
+</ul>
+<h3 id="closure">Closure</h3>
+<p>A closed bucket is no longer able to accept new documents. The data remains available for queries. MongoDB closes a bucket under any of the following circumstances:</p>
+<ul>
+<li>Time has moved forward or backward past the covered time span, as indicated by an incoming document timestamp that falls outside of the bucket&#39;s bounds. These bounds are determined by the collection&#39;s granularity setting.</li>
+<li>The bucket has hit the document limit (default 1000).</li>
+<li>The bucket has exceeded its storage size limit. This happens when:<ul>
+<li><p>The size exceeds the allowed maximum (default 125KiB).</p>
+</li>
+<li><p>The number of documents is below a minimum number (default 10) and the size is below 12MiB.</p>
+<p>This is a set, internal limit that optimizes performance when data consists of fewer, larger documents.</p>
+</li>
+<li><p>The set of active buckets doesn&#39;t fit within the allowed storage engine cache size. You can review this information using the [collStats] database command.</p>
+</li>
+</ul>
+</li>
+<li>The bucket catalog exceeds its allowed total memory allocation (by default, 2.5% of available system memory)</li>
+<li>A conflicting operation, such as a chunk migration or update, changes a bucket&#39;s on-disk state.</li>
+<li>[~bin.mongod] restarts. This closes all buckets.</li>
+</ul>
+<h3 id="deletion">Deletion</h3>
+<p>MongoDB deletes a bucket when:</p>
+<ul>
+<li>Its maximum allowed timestamp is less than the current time minus the collection&#39;s <code>expireAfterSeconds</code> parameter. This is equivalent to a TTL collection&#39;s time to live.</li>
+<li>A [delete] or [db.collection.deleteMany()] command deletes the last document in the bucket.</li>
+</ul>

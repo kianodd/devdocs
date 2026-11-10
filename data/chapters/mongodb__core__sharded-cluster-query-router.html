@@ -1,0 +1,94 @@
+<p>On this page</p>
+<p>backlinks : none</p>
+<p>depth : 1</p>
+<p>class : singlecol</p>
+<p>MongoDB [~bin.mongos] instances route queries and write operations to shards in a sharded cluster. <code>mongos</code> provides the only interface to a sharded cluster from the perspective of applications. Applications never connect or communicate directly with the shards.</p>
+<p>The <code>mongos</code> tracks what data is on which shard by caching the metadata from the config servers . The <code>mongos</code> uses the metadata to route operations from applications and clients to the [~bin.mongod] instances. A <code>mongos</code> has no <em>persistent</em> state and consumes minimal system resources.</p>
+<p>The most common practice is to run <code>mongos</code> instances on the same systems as your application servers, but you can maintain <code>mongos</code> instances on the shards or on other dedicated resources. See also sharded-cluster-components-distribution.</p>
+<h2 id="routing-and-results-process">Routing And Results Process</h2>
+<p>A [~bin.mongos] instance routes a query to a cluster by:</p>
+<ol>
+<li>Determining the list of shards that must receive the query.</li>
+<li>Establishing a cursor on all targeted shards.</li>
+</ol>
+<p>The <code>mongos</code> then merges the data from each of the targeted shards and returns the result document. Certain query modifiers, such as sorting, are performed on each shard before <code>mongos</code> retrieves the results.</p>
+<p>Aggregation operations running on multiple shards may route results back to the [~bin.mongos] to merge results if they don&#39;t need to run on the database&#39;s primary shard.</p>
+<p>There are two cases in which a pipeline is ineligible to run on [~bin.mongos].</p>
+<p>The first case occurs when the merge part of the split pipeline contains a stage which <em>must</em> run on a specific shard. For instance, if <code>$lookup</code> requires access to an unsharded collection in the same database as the sharded collection on which the aggregation is running, the merge runs on the shard that hosts the unsharded collection.</p>
+<p>The second case occurs when the merge part of the split pipeline contains a stage which may write temporary data to disk, such as <code>$group</code>, and the client has specified <code>allowDiskUse:true</code>. In this case, assuming that there are no other stages in the merge pipeline which require the primary shard, the merge runs on a randomly-selected shard in the set of shards targeted by the aggregation.</p>
+<p>For more information on how the work of aggregation is split among components of a sharded cluster query, use <code>explain:true</code> as a parameter to the [~db.collection.aggregate()] call. The return includes three JSON objects:</p>
+<ul>
+<li><code>mergeType</code> shows where the stage of the merge happens (&quot;anyShard&quot;, &quot;specificShard&quot;, or &quot;router&quot;). When <code>mergeType</code> is <code>specificShard</code>, the aggregate output includes a <code>mergeShard</code> property that contains the shard ID of the merging shard.</li>
+<li><code>splitPipeline</code> shows which operations in your pipeline have run on individual shards.</li>
+<li><code>shards</code> shows the work each shard has done.</li>
+</ul>
+<p>In some cases, when the shard key or a prefix of the shard key is a part of the query, the [~bin.mongos] performs a targeted operation, routing queries to a subset of shards in the cluster.</p>
+<p><code>mongos</code> performs a broadcast operation for queries that do <em>not</em> include the shard key, routing queries to <em>all</em> shards in the cluster. Some queries that do include the shard key may still result in a broadcast operation depending on the distribution of data in the cluster and the selectivity of the query.</p>
+<p>See sharding-query-isolation for more on targeted and broadcast operations.</p>
+<h2 id="how-mongos-handles-query-modifiers">How <code>mongos</code> Handles Query Modifiers</h2>
+<h3 id="sorting">Sorting</h3>
+<p>If the result of the query is not sorted, the [~bin.mongos] instance opens a result cursor that &quot;round robins&quot; results from all cursors on the shards.</p>
+<h3 id="limits">Limits</h3>
+<p>If the query limits the size of the result set using the [~cursor.limit()] cursor method, the [~bin.mongos] instance passes that limit to the shards and then re-applies the limit to the result before returning the result to the client.</p>
+<h3 id="skips">Skips</h3>
+<p>If the query specifies a number of records to <em>skip</em> using the [~cursor.skip()] cursor method, the [~bin.mongos] <em>cannot</em> pass the skip to the shards, but rather retrieves unskipped results from the shards and skips the appropriate number of documents when assembling the complete result.</p>
+<p>When used in conjunction with a [~cursor.limit()], the [~bin.mongos] passes the <em>limit</em> plus the value of the [~cursor.skip()] to the shards to improve the efficiency of these operations.</p>
+<h2 id="read-preference-and-shards">Read Preference and Shards</h2>
+<p>For sharded clusters, [~bin.mongos] applies the [read preference ](core/read-preference.rst) when reading from the shards. The member selected is governed by both the [read preference ](core/read-preference.rst) and [replication.localPingThresholdMs] settings, and is re-evaluated for each operation.</p>
+<p>For details on read preference and sharded clusters, see read-preference-mechanics-sharded-cluster.</p>
+<h2 id="confirm-connection-to-mongos-instances">Confirm Connection to <code>mongos</code> Instances</h2>
+<p>To detect if the MongoDB instance that your client is connected to is [~bin.mongos], use the [hello] command. When a client connects to a [~bin.mongos], [hello] returns a document with a <code>msg</code> field that holds the string <code>isdbgrid</code>. For example:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JavaScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript">
+{
+   <span class="hljs-string">&quot;isWritablePrimary&quot;</span> : <span class="hljs-literal">true</span>,
+   <span class="hljs-string">&quot;msg&quot;</span> : <span class="hljs-string">&quot;isdbgrid&quot;</span>,
+   <span class="hljs-string">&quot;maxBsonObjectSize&quot;</span> : <span class="hljs-number">16777216</span>,
+   <span class="hljs-string">&quot;ok&quot;</span> : <span class="hljs-number">1</span>,
+   ...
+}</code></pre></div></figure>
+<p>If the application is instead connected to a [~bin.mongod], the returned document does not include the <code>isdbgrid</code> string.</p>
+<h2 id="targeted-operations-vs-broadcast-operations">Targeted Operations vs. Broadcast Operations[][]</h2>
+<p>Generally, the fastest queries in a sharded environment are those that [~bin.mongos] route to a single shard, using the shard key and the cluster meta data from the config server . These targeted operations use the shard key value to locate the shard or subset of shards that satisfy the query document.</p>
+<p>For queries that don&#39;t include the shard key, [~bin.mongos] must query all shards, wait for their responses and then return the result to the application. These &quot;scatter/gather&quot; queries can be long running operations.</p>
+<h3 id="broadcast-operations">Broadcast Operations</h3>
+<p>[~bin.mongos] instances broadcast queries to all shards for the collection <strong>unless</strong> the [~bin.mongos] can determine which shard or subset of shards stores this data.</p>
+<p>![:figwidth: 400px](/images/sharded-cluster-scatter-gather-query.bakedsvg.svg)</p>
+<p>After the [~bin.mongos] receives responses from all shards, it merges the data and returns the result document. The performance of a broadcast operation depends on the overall load of the cluster, as well as variables like network latency, individual shard load, and number of documents returned per shard. Whenever possible, favor operations that result in targeted operation over those that result in a broadcast operation.</p>
+<p>Multi-update operations are always broadcast operations.</p>
+<p>The [~db.collection.updateMany()] and [~db.collection.deleteMany()] methods are broadcast operations, unless the query document specifies the shard key in full.</p>
+<h3 id="targeted-operations">Targeted Operations</h3>
+<p>[~bin.mongos] can route queries that include the shard key or the prefix of a compound shard key a specific shard or set of shards. [~bin.mongos] uses the shard key value to locate the chunk whose range includes the shard key value and directs the query at the shard containing that chunk.</p>
+<p>![:figwidth: 400px](/images/sharded-cluster-targeted-query.bakedsvg.svg)</p>
+<p>For example, if the shard key is:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JavaScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript">
+{ <span class="hljs-attr">a</span>: <span class="hljs-number">1</span>, <span class="hljs-attr">b</span>: <span class="hljs-number">1</span>, <span class="hljs-attr">c</span>: <span class="hljs-number">1</span> }</code></pre></div></figure>
+<p>The [~bin.mongos] program <em>can</em> route queries that include the full shard key or either of the following shard key prefixes at a specific shard or set of shards:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JavaScript</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-javascript">
+{ <span class="hljs-attr">a</span>: <span class="hljs-number">1</span> }
+{ <span class="hljs-attr">a</span>: <span class="hljs-number">1</span>, <span class="hljs-attr">b</span>: <span class="hljs-number">1</span> }</code></pre></div></figure>
+<p>All [~db.collection.insertOne()] operations target to one shard. Each document in the [~db.collection.insertMany()] array targets to a single shard, but there is no guarantee all documents in the array insert into a single shard.</p>
+<p>All [~db.collection.updateOne()], [~db.collection.replaceOne()] and [~db.collection.deleteOne()] operations <em>must</em> include the shard key or <code>_id</code> in the query document. MongoDB returns an error if these methods are used without the shard key or <code>_id</code>.</p>
+<p>Depending on the distribution of data in the cluster and the selectivity of the query, [~bin.mongos] may still perform a broadcast operation to fulfill these queries.</p>
+<h3 id="index-use">Index Use</h3>
+<p>When a shard receives a query, it uses the most efficient index available to fulfill that query. The index used may be either the shard key index or another eligible index present on the shard.</p>
+<h2 id="sharded-cluster-security">Sharded Cluster Security</h2>
+<p>Use [/core/security-internal-authentication](core/security-internal-authentication.rst) to enforce intra-cluster security and prevent unauthorized cluster components from accessing the cluster. You must start each [~bin.mongod] or [~bin.mongos] in the cluster with the appropriate security settings in order to enforce internal authentication.</p>
+<p>Starting in MongoDB 5.3, SCRAM-SHA-1 cannot be used for intra-cluster authentication. Only SCRAM-SHA-256 is supported.</p>
+<p>In previous MongoDB versions, SCRAM-SHA-1 and SCRAM-SHA-256 can both be used for intra-cluster authentication, even if SCRAM is not explicitly enabled.</p>
+<p>See [/tutorial/deploy-sharded-cluster-with-keyfile-access-control](tutorial/deploy-sharded-cluster-with-keyfile-access-control.rst) for a tutorial on deploying a secured sharded cluster.</p>
+<h3 id="cluster-users">Cluster Users</h3>
+<p>Sharded clusters support [/core/authorization](core/authorization.rst) <em>(RBAC)</em> for restricting unauthorized access to cluster data and operations. You must start each [~bin.mongod] in the cluster, including the config servers , with the [--auth ] option in order to enforce RBAC. Alternatively, enforcing [/core/security-internal-authentication](core/security-internal-authentication.rst) for inter-cluster security also enables user access controls via RBAC.</p>
+<p>With RBAC enforced, clients must specify a [--username ], [--password ], and [--authenticationDatabase ] when connecting to the [~bin.mongos] in order to access cluster resources.</p>
+<p>Each cluster has its own cluster users. These users cannot be used to access individual shards.</p>
+<p>See [/tutorial/enable-authentication](tutorial/enable-authentication.rst) for a tutorial on enabling adding users to an RBAC-enabled MongoDB deployment.</p>
+<h2 id="metadata-operations">Metadata Operations</h2>
+<h2 id="additional-information">Additional Information</h2>
+<h3 id="fcv-compatibility">FCV Compatibility</h3>
+<p>The [~bin.mongos] binary cannot connect to [~bin.mongod] instances whose feature compatibility version (FCV) is greater than that of the [~bin.mongos]. For example, you cannot connect a MongoDB [|oldversion|](##SUBST##4.0) version [~bin.mongos] to a [|newversion|](##SUBST##4.2) sharded cluster with FCV set to [|newversion|](##SUBST##4.2). You can, however, connect a MongoDB [|oldversion|](##SUBST##4.0) version [~bin.mongos] to a [|newversion|](##SUBST##4.2) sharded cluster with FCV set to [|oldversion|](##SUBST##4.0).</p>
+<h3 id="full-time-diagnostic-data-capture-requirements">Full Time Diagnostic Data Capture Requirements</h3>
+<p>[~bin.mongod] includes a Full Time Diagnostic Data Capture</p>
+<p>: mechanism to assist MongoDB engineers with troubleshooting</p>
+<p>deployments. If this thread fails, it terminates the originating process. To avoid the most common failures, confirm that the user running the process has permissions to create the FTDC [diagnostic.data] directory. For [mongod] the directory is within [storage.dbPath]. For [mongos] it is parallel to [systemLog.path].</p>
+<h3 id="connection-pools">Connection Pools</h3>
+<h3 id="using-aggregation-pipelines-with-clusters">Using Aggregation Pipelines with Clusters</h3>
+<p>For more information on how sharding works with aggregations , read the sharding chapter in the <a target="_blank" rel="noopener" href="https://www.practical-mongodb-aggregations.com/guides/sharding.html">Practical MongoDB Aggregations</a> e-book.</p>

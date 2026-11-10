@@ -1,0 +1,127 @@
+<p>On this page</p>
+<p>backlinks : none</p>
+<p>depth : 1</p>
+<p>class : singlecol</p>
+<p>The MongoDB balancer is a background process that monitors the amount of data on each shard for each sharded collection. When the amount of data for a sharded collection on a given shard reaches specific migration thresholds , the balancer attempts to automatically migrate data between shards and reach an even amount of data per shard while respecting the zones . By default, the balancer process is always enabled.</p>
+<p>The balancing procedure for sharded clusters is entirely transparent to the user and application layer, though there may be some performance impact while the procedure takes place.</p>
+<p>![:figwidth: 700px](/images/sharding-migrating.bakedsvg.svg)</p>
+<p>The balancer runs on the primary of the config server replica set (CSRS).</p>
+<p>To configure collection balancing for a single collection, see [configureCollectionBalancing].</p>
+<p>To manage the sharded cluster balancer, see sharded-cluster-balancer.</p>
+<h2 id="balancer-internals">Balancer Internals[]</h2>
+<p>Range migrations carry some overhead in terms of bandwidth and workload, both of which can impact database performance. The balancer attempts to minimize the impact by:</p>
+<ul>
+<li><p>Restricting a shard to at most one migration at any given time. Specifically, a shard cannot participate in multiple data migrations at the same time. The balancer migrates ranges one at a time.</p>
+<p>MongoDB can perform parallel data migrations, but a shard can participate in at most one migration at a time. For a sharded cluster with <em>n</em> shards, MongoDB can perform at most <em>n/2</em> (rounded down) simultaneous migrations.</p>
+<p>See also range-migration-queuing.</p>
+</li>
+<li><p>Starting a balancing round only when the <strong>difference in the amount of data</strong> between the shard with the most data for a sharded collection and the shard with the least data for that collection reaches the migration threshold .</p>
+</li>
+</ul>
+<p>You can disable the balancer temporarily for maintenance, but leaving the balancer disabled for extended periods of time can degrade cluster performance. For more information, see sharding-balancing-disable-temporally.</p>
+<p>You can also limit the window during which the balancer runs to prevent it from impacting production traffic. See Schedule the Balancing Window for details.</p>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>The specification of the balancing window is relative to the local time zone of the primary of the config server replica set.</p>
+</div></aside>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p><code>&lt;sharded-cluster-balancer&gt;</code></p>
+</div></aside>
+<h3 id="adding-and-removing-shards-from-the-cluster">Adding and Removing Shards from the Cluster</h3>
+<p>Adding a shard to a cluster creates an imbalance, since the new shard has no data. While MongoDB begins migrating data to the new shard immediately, it can take some time before the cluster balances. See the Add Shards to a Cluster tutorial for instructions on adding a shard to a cluster.</p>
+<aside class="callout callout-tip"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M9.5 18h5M10.5 21h3M12 3a6 6 0 0 0-3.6 10.8c.7.6 1.1 1.3 1.3 2.2h4.6c.2-.9.6-1.6 1.3-2.2A6 6 0 0 0 12 3Z" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round"/></svg></span><div class="callout-body"><p class="callout-title">Tip</p><p>Starting in MongoDB 8.0, you can reshard to the same key to move data. If your application meets the resharding requirements , you can use the [reshardCollection] command to redistribute data across the cluster to include the new shards. For more information, see reshard-to-same-key. This process is much faster than the alternative range-migration-procedure.</p>
+</div></aside>
+<p>Removing a shard from a cluster creates a similar imbalance, since data residing on that shard must be redistributed throughout the cluster. While MongoDB begins draining a removed shard immediately, it can take some time before the cluster balances. <em>Do not</em> shutdown the servers associated to the removed shard during this process.</p>
+<p>When you remove a shard in a cluster with an uneven chunk distribution, the balancer first removes the chunks from the draining shard and then balances the remaining uneven chunk distribution.</p>
+<p>See the Remove Shards from a Cluster</p>
+<p>:   tutorial for instructions on</p>
+<p>safely removing a shard from a cluster.</p>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>[sh.balancerCollectionStatus()]</p>
+</div></aside>
+<h2 id="range-migration-procedure">Range Migration Procedure[]</h2>
+<p>All range migrations use the following procedure:</p>
+<ol>
+<li>The balancer process sends the [moveRange] command to the source shard.</li>
+<li>The source starts the move when it receives an internal [moveRange] command. During the migration process, operations to the range are sent to the source shard. The source shard is responsible for incoming write operations for the range.</li>
+<li>The destination shard builds any indexes required by the source that do not exist on the destination.</li>
+<li>The destination shard begins requesting documents in the range and starts receiving copies of the data. See also range-migration-replication.</li>
+<li>After receiving the final document in the range, the destination shard starts a synchronization process to ensure that it has the changes to the migrated documents that occurred during the migration.</li>
+<li>When fully synchronized, the source shard connects to the config database and updates the cluster metadata with the new location for the range.</li>
+<li>After the source shard completes the update of the metadata, and once there are no open cursors on the range, the source shard deletes its copy of the documents.</li>
+</ol>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">If the balancer needs to perform additional chunk migrations from
+the source shard, the balancer can start the next chunk migration
+without waiting for the current migration process to finish this
+deletion step. See :ref:`chunk-migration-queuing`.</code></pre></div></figure>
+<aside class="callout callout-warning"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 4 2.8 20h18.4L12 4z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M12 10v4.4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="17" r="1.3" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Starting in MongoDB version 8.2, long-running secondary reads in a sharded cluster may automatically terminate before orphaned document deletion following a chunk migration.</p><p>The [terminateSecondaryReadsOnOrphanCleanup] parameter controls this behavior. To learn more about handling long-running secondary reads, see long-running-secondary-reads. ::</p>
+<p>:::note
+[shardingStatistics.countDonorMoveChunkLockTimeout]</p>
+</div></aside>
+<h3 id="migration-thresholds">Migration Thresholds</h3>
+<p>To minimize the impact of balancing on the cluster, the balancer only begins balancing after the distribution of data for a sharded collection has reached certain thresholds.</p>
+<p>A collection is considered balanced if the difference in data between shards (for that collection) is less than three times the configured range size for the collection. For the default range size of <code>128MB</code>, two shards must have a data size difference for a given collection of at least <code>384MB</code> for a migration to occur.</p>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>[sh.balancerCollectionStatus()]</p>
+</div></aside>
+<h3 id="asynchronous-range-migration-cleanup">Asynchronous Range Migration Cleanup[][]</h3>
+<p>To migrate data from a shard, the balancer migrates the data one range at a time. However, the balancer does not wait for the current migration&#39;s delete phase to complete before starting the next range migration. See sharding-range-migration for the range migration process and the delete phase.</p>
+<p>This queuing behavior allows shards to unload data more quickly in cases of heavily imbalanced cluster, such as when performing initial data loads without pre-splitting and when adding new shards.</p>
+<p>This behavior also affects the [moveRange] command, and migration scripts that use the [moveRange] command may proceed more quickly.</p>
+<p>In some cases, the delete phases may persist longer. Range migrations are enhanced to be more resilient in the event of a failover during the delete phase. Orphaned documents are cleaned up even if a replica set&#39;s primary crashes or restarts during this phase.</p>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>When the [_waitForDelete] field is set to [true], MongoDB does not wait on the [orphanCleanupDelaySecs] delay before performing the range deletion. If you use the [_waitForDelete] parameter and have any read operations occurring on secondaries, the read might terminate due to the migration&#39;s delete phase. To learn more, see [terminateSecondaryReadsOnOrphanCleanup].</p>
+</div></aside>
+<p>For more information, see wait-for-delete-setting.</p>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>Range deletion is a resource intensive operation that can result in significant cache and I/O stress as the cluster deletes the documents.</p>
+<p>In cases where you plan to move a large amount of data, such as when adding shards to a cluster or during the initial distribution of a sharded collection across multiple shards, consider resharding the collection instead. Resharding operations don&#39;t require range cleanup, which makes them much less stressful on the cluster.</p>
+<p>For more information, see sharding-resharding.</p>
+</div></aside>
+<h3 id="range-migration-and-replication">Range Migration and Replication[]</h3>
+<p>During range migration, the <code>_secondaryThrottle</code> value determines when the migration proceeds with next document in the range.</p>
+<p>In the [config.settings] collection:</p>
+<ul>
+<li>If the <code>_secondaryThrottle</code> setting for the balancer is set to a write concern, each document moved during range migration must receive the requested acknowledgment before proceeding with the next document.</li>
+<li>If the <code>_secondaryThrottle</code> setting is unset, the migration process does not wait for replication to a secondary and instead continues with the next document.</li>
+</ul>
+<p>To update the <code>_secondaryThrottle</code> parameter for the balancer, see sharded-cluster-config-secondary-throttle for an example.</p>
+<p>Independent of any <code>_secondaryThrottle</code> setting, certain phases of the range migration have the following replication policy:</p>
+<ul>
+<li>MongoDB briefly pauses all application reads and writes to the collection being migrated to on the source shard before updating the config servers with the range location. MongoDB resumes application reads and writes after the update. The range move requires all writes to be acknowledged by majority of the members of the replica set both before and after committing the range move to config servers.</li>
+<li>When an outgoing migration finishes and cleanup occurs, all writes must be replicated to a majority of servers before further cleanup (from other outgoing migrations) or new incoming migrations can proceed.</li>
+</ul>
+<p>To update the <code>_secondaryThrottle</code> setting in the [config.settings] collection, see sharded-cluster-config-secondary-throttle for an example.</p>
+<h3 id="maximum-number-of-documents-per-range-to-migrate">Maximum Number of Documents Per Range to Migrate[]</h3>
+<p>By default, MongoDB cannot move a range if the number of documents in the range is greater than 2 times the result of dividing the configured range size by the average document size. If MongoDB can move a sub-range of a chunk and reduce the size to less than that, the balancer does so by migrating a range. [db.collection.stats()] includes the [avgObjSize] field, which represents the average document size in the collection.</p>
+<p>For chunks that are too large to migrate :</p>
+<ul>
+<li><p>The balancer setting [attemptToBalanceJumboChunks] allows the balancer to migrate chunks too large to move as long as the chunks are not labeled jumbo . See balance-chunks-that-exceed-size-limit for details.</p>
+<p>When issuing [moveRange] and [moveChunk] commands, it&#39;s possible to specify the forceJumbo option to allow for the migration of ranges that are too large to move. The ranges may or may not be labeled jumbo .</p>
+</li>
+</ul>
+<h3 id="range-deletion-performance-tuning">Range Deletion Performance Tuning</h3>
+<p>You can tune the performance impact of range deletions with [rangeDeleterBatchSize] and [rangeDeleterBatchDelayMS].</p>
+<p>For example:</p>
+<ul>
+<li>To limit the number of documents deleted per batch, you can set [rangeDeleterBatchSize] to a small value such as <code>32</code>.</li>
+<li>To add an additional delay between batch deletions, you can set [rangeDeleterBatchDelayMS] above the current default of <code>20</code> milliseconds.</li>
+</ul>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>If there are ongoing read operations or open cursors on the collection targeted for deletes, range deletion processes may not proceed.</p>
+</div></aside>
+<h3 id="change-streams-and-orphan-documents">Change Streams and Orphan Documents</h3>
+<p>Starting in MongoDB 5.3, during range migration , change stream events are not generated for updates to orphaned documents .</p>
+<h2 id="shard-size">Shard Size</h2>
+<p>By default, MongoDB attempts to fill all available disk space with data on every shard as the data set grows. To ensure that the cluster always has the capacity to handle data growth, monitor disk usage as well as other performance metrics.</p>
+<h2 id="chunk-size-and-balancing">Chunk Size and Balancing</h2>
+<p>For an introduction to [chunkSize], see tutorial-modifying-chunk-size.</p>
+<p>When the collection data shared between two shards differs by three or more times the configured [chunkSize] setting, the balancer migrates chunks between the shards.</p>
+<p>For example, if [chunkSize] is 128 MB and the collection data differs by 384 MB or more, the balancer migrates chunks between the shards.</p>
+<p>When chunks are moved, split, or merged, the shard metadata is updated after the chunk operation is committed by a config server . Shards not involved in the chunk operation are also updated with new metadata.</p>
+<p>The time for the shard metadata update is proportional to the size of the routing table. CRUD operations on the collection are temporarily blocked while the shard metadata is updated, and a smaller routing table means shorter CRUD operation delays.</p>
+<p>Defragmenting a collection reduces the number of chunks and the time to update the chunk metadata.</p>
+<p>To reduce the system workload, configure the balancer to run only at a specific time using a shard balancing window . Defragmentation runs during the balancing window time period.</p>
+<p>You can use the [chunkDefragmentationThrottlingMS] parameter to limit the rate of split and merge commands run by the balancer.</p>
+<p>You can start and stop defragmentation at any time.</p>
+<p>You can also set a shard zone . A shard zone is based on the shard key, and you can associate each zone with one or more shards in a cluster.</p>
+<p>A sharded cluster only splits chunks when chunks must be migrated. This means the chunk size may exceed [chunkSize]. Larger chunks reduce the number of chunks on a shard and improve performance because the time to update the shard metadata is reduced. For example, you might see a 1 TB chunk on a shard even though you have set [chunkSize] to 256 MB.</p>
+<p>[chunkSize] affects the following:</p>
+<ul>
+<li>Maximum amount of data the balancer attempts to migrate between two shards in a single chunk migration operation.</li>
+<li>Amount of data migrated during defragmentation.</li>
+</ul>
+<p>For details about defragmenting sharded collections, see defragment-sharded-collections.</p>
+<h2 id="reshard-to-balance">Reshard to Balance</h2>

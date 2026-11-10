@@ -1,0 +1,110 @@
+<p>On this page</p>
+<p>backlinks : none</p>
+<p>depth : 3</p>
+<p>class : singlecol</p>
+<p>The ideal shard key allows MongoDB to distribute documents evenly throughout the cluster while facilitating common query patterns. A suboptimal shard key can lead to performance or scaling issues due to uneven data distribution. You can change the shard key for a collection to change the distribution of your data across a cluster.</p>
+<p>Starting in MongoDB 8.0, you can reshard a collection on the same shard key, allowing you to redistribute data to include new shards or to different zones without changing your shard key. To reshard to the same shard key, set forceRedistribution to <code>true</code>.</p>
+<p>Starting in MongoDB 8.0.10, you can reshard a time series collection. All shards in the time series collection must run version 8.0.10 or later to reshard.</p>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>Before resharding your collection, read shardkey-troubleshoot-shard-keys for information on common performance and scaling issues and advice on how to fix them.</p>
+</div></aside>
+<h2 id="about-this-task">About this Task</h2>
+<ul>
+<li><p>Only one collection can be resharded at a time.</p>
+</li>
+<li><p>[writeConcernMajorityJournalDefault] must be [true].</p>
+</li>
+<li><p>To reshard a collection that has a uniqueness</p>
+<p>: constraint, the new shard key must satisfy</p>
+<p>the unique index requirements for any existing unique indexes.</p>
+</li>
+<li><p>The following commands and corresponding shell methods are not supported on the collection that is being resharded while the resharding operation is in progress:</p>
+<ul>
+<li>[collMod]</li>
+<li>[convertToCapped]</li>
+<li>[createIndexes]</li>
+<li>[~db.collection.createIndex()]</li>
+<li>[drop]</li>
+<li>[~db.collection.drop()]</li>
+<li>[dropIndexes]</li>
+<li>[~db.collection.dropIndex()]</li>
+<li>[renameCollection]</li>
+<li>[~db.collection.renameCollection()]</li>
+</ul>
+</li>
+<li><p>If you run one of the following operations, the operation waits until resharding completes before executing:</p>
+<ul>
+<li>[addShard]</li>
+<li>[removeShard]</li>
+<li>[dropDatabase] on the database hosting the collection undergoing resharding</li>
+</ul>
+</li>
+<li><p>If the collection you&#39;re resharding uses [{+fts+} ], the search index becomes unavailable when the resharding operation completes. You need to manually rebuild the search index once the resharding operation completes.</p>
+</li>
+<li><p>If the collection you&#39;re resharding is archived in Atlas Online Archives , the online archive files are marked as [Orphaned] once the resharding operation completes. You can [create ] another online archive for the same database, collection, and fields as the orphaned archive as long as there is no other archive for that same combination in the [Active] state.</p>
+</li>
+</ul>
+<h2 id="before-you-begin">Before you Begin</h2>
+<p>Before you begin [|operation|](##SUBST##resharding) your collection, ensure that you meet the following requirements:</p>
+<ul>
+<li></li>
+<li><p>Your database meets these resource requirements:</p>
+<h3 id="-">-</h3>
+</li>
+<li><p>You do not need to create an index on the new shard key before resharding. The resharding operation builds the required indexes automatically during the index phase.</p>
+</li>
+<li><p>No index builds are in progress. To check for running index builds, use `$currentOp`:</p>
+<p><code>` javascript db.getSiblingDB(&quot;admin&quot;).aggregate( [    { $currentOp : { idleConnections: true } },    { $match: {          $or: [              { &quot;op&quot;: &quot;command&quot;, &quot;command.createIndexes&quot;: { $exists: true } },              { &quot;op&quot;: &quot;none&quot;, &quot;msg&quot;: /^Index Build/ }          ]       }    } ] )</code>`</p>
+<p>In the result document, if the [inprog] field value is an empty array, there are no index builds in progress:</p>
+<p><code>`  {    inprog: [],    ok: 1,    &#39;$clusterTime&#39;: { ... },    operationTime: &lt;timestamp&gt; }</code>`</p>
+</li>
+</ul>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">A \[\|operation\|\](##SUBST##resharding) operation is a write-intensive process which can generate increased rates of oplog. You may wish to:</p><ul>
+<li>set a fixed oplog size to prevent unbounded oplog growth.</li>
+<li>increase the oplog size to minimize the chance that one or more secondary nodes becomes stale.</li>
+</ul>
+<p>See the replica-set-oplog documentation for more details. ::</p>
+<h4 id="two-phase-write-protocol">Two-Phase Write Protocol</h4>
+<p>Queries that don&#39;t include the full shard key in the query filter may require a two-phase write protocol. This protocol broadcasts the query to multiple shards and can significantly reduce performance.</p>
+<ul>
+<li>Queries that provide the old shard key instead of the new shard key use the two-phase write protocol.</li>
+<li>The [~db.collection.deleteOne] method uses the two phase write protocol when the query filter doesn&#39;t use the full shard key or the <code>_id</code> field.</li>
+<li>The [~db.collection.replaceOne] and [~db.collection.updateOne] methods:<ul>
+<li>When the query provides the full shard key, the two phase protocol is never used.</li>
+<li>When the query doesn&#39;t provide the full shard key but provides the <code>_id</code> field, the use of the two phase write protocol depends on the value of <code>upsert</code>. If <code>upsert</code> is set to <code>true</code>, the two phase write protocol is used. If <code>upsert</code> is <code>false</code>, the two phase write protocol is not used.</li>
+<li>When the query provides neither the full shard key nor the <code>_id</code> field, the two phase write protocol is always used.</li>
+</ul>
+</li>
+<li>The following methods use the two-phase write protocol when the query filter doesn&#39;t use the full shard key:<ul>
+<li>[~db.collection.findAndModify]</li>
+<li>[~db.collection.findOneAndDelete]</li>
+<li>[~db.collection.findOneAndReplace]</li>
+<li>[~db.collection.findOneAndUpdate]</li>
+</ul>
+</li>
+</ul>
+<p>For optimal performance, update your application after the resharding operation completes to use the new shard key in query filters for these operations.</p>
+<h2 id="steps">Steps</h2>
+<p>:::note
+We strongly recommend that you check the resharding-limitations and read the resharding_process section in full before resharding your collection.</p>
+</div></aside>
+<p>In a collection resharding operation, a shard can be a:</p>
+<ul>
+<li><strong>donor</strong>, which currently stores chunks for the sharded collection.</li>
+<li><strong>recipient</strong>, which stores new chunks for the sharded collection based on the shard keys and zones .</li>
+</ul>
+<p>A shard can be donor and a recipient at the same time.</p>
+<p>The config server primary is always the resharding coordinator and starts each phase of the resharding operation.</p>
+<h2 id="behavior">Behavior</h2>
+<h4 id="minimum-duration-of-a-resharding-operation">Minimum Duration of a Resharding Operation</h4>
+<p>The minimum duration of a resharding operation is always 5 minutes.</p>
+<h4 id="retryable-writes">Retryable Writes</h4>
+<p>Retryable writes initiated before or during resharding can be retried during and after the collection has been resharded for up to 5 minutes. After 5 minutes you may be unable to find the definitive result of the write and subsequent attempts to retry the write fail with an <code>IncompleteTransactionHistory</code> error.</p>
+<h4 id="reshard-limitations">Reshard Limitations</h4>
+<ul>
+<li></li>
+<li>If the collection uses Atlas Search , the search index becomes unavailable after the operation completes. To restore it, manually rebuild the search index.</li>
+<li>Collections that use queryable encryption are not supported.</li>
+</ul>
+<h2 id="error-case">Error Case</h2>
+<h4 id="duplicate-id-values">Duplicate <code>_id</code> Values</h4>
+<p>The resharding operation fails if <code>_id</code> values are not globally unique to avoid corrupting collection data. Duplicate <code>_id</code> values can also prevent successful chunk migration. If you have documents with duplicate <code>_id</code> values, copy the data from each into a new document, and then delete the duplicate documents.</p>
