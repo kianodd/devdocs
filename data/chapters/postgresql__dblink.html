@@ -1,0 +1,716 @@
+<p>dblink</p>
+<p><code>dblink</code> is a module that supports connections to other PostgreSQL databases from within a database session.</p>
+<p><code>dblink</code> can report the following wait events under the wait event type <code>Extension</code>.</p>
+<p><code>DblinkConnect</code></p>
+<p>:   Waiting to establish a connection to a remote server.</p>
+<p><code>DblinkGetConnect</code></p>
+<p>:   Waiting to establish a connection to a remote server when it could not be found in the list of already-opened connections.</p>
+<p><code>DblinkGetResult</code></p>
+<p>:   Waiting to receive the results of a query from a remote server.</p>
+<p>See also <a href="#postgres-fdw">???</a>, which provides roughly the same functionality using a more modern and standards-compliant infrastructure.</p>
+<p>dblink_connect</p>
+<p>dblink_connect</p>
+<p>3</p>
+<p>dblink_connect</p>
+<p>opens a persistent connection to a remote database</p>
+<p>dblink_connect(text connstr) returns text dblink_connect(text connname, text connstr) returns text</p>
+<h1>Description</h1>
+<p><code>dblink_connect()</code> establishes a connection to a remote PostgreSQL database. The server and database to be contacted are identified through a standard libpq connection string. Optionally, a name can be assigned to the connection. Multiple named connections can be open at once, but only one unnamed connection is permitted at a time. The connection will persist until closed or until the database session is ended.</p>
+<p>The connection string may also be the name of an existing foreign server. It is recommended to use the foreign-data wrapper <code>dblink_fdw</code> when defining the foreign server. See the example below, as well as <a href="#sql-createserver">???</a> and <a href="#sql-createusermapping">???</a>.</p>
+<h1>Arguments</h1>
+<p><code>connname</code></p>
+<p>:   The name to use for this connection; if omitted, an unnamed connection is opened, replacing any existing unnamed connection.</p>
+<p><code>connstr</code></p>
+<p>:   libpq-style connection info string, for example <code>hostaddr=127.0.0.1 port=5432 dbname=mydb user=postgres password=mypasswd options=-csearch_path=</code>. For details see <a href="#libpq-connstring">???</a>. Alternatively, the name of a foreign server.</p>
+<h1>Return Value</h1>
+<p>Returns status, which is always <code>OK</code> (since any error causes the function to throw an error instead of returning).</p>
+<h1>Notes</h1>
+<p>If untrusted users have access to a database that has not adopted a <a href="#ddl-schemas-patterns">secure schema usage pattern</a>, begin each session by removing publicly-writable schemas from <code>search_path</code>. One could, for example, add <code>options=-csearch_path=</code> to <code>connstr</code>. This consideration is not specific to <code>dblink</code>; it applies to every interface for executing arbitrary SQL commands.</p>
+<p>The foreign-data wrapper <code>dblink_fdw</code> has an additional Boolean option <code>use_scram_passthrough</code> that controls whether <code>dblink</code> will use the SCRAM pass-through authentication to connect to the remote database. It can be specified for a foreign server or a user mapping. A user mapping setting overrides the foreign server setting. With SCRAM pass-through authentication, <code>dblink</code> uses SCRAM-hashed secrets instead of plain-text user passwords to connect to the remote server. This avoids storing plain-text user passwords in PostgreSQL system catalogs. See the documentation of the equivalent <a href="#postgres-fdw-option-use-scram-passthrough"><code>use_scram_passthrough</code></a> option of postgres_fdw for further details and restrictions.</p>
+<p>Only superusers may use <code>dblink_connect</code> to create connections that use neither password authentication, SCRAM pass-through, nor GSSAPI-authentication. If non-superusers need this capability, use <code>dblink_connect_u</code> instead.</p>
+<p>It is unwise to choose connection names that contain equal signs, as this opens a risk of confusion with connection info strings in other <code>dblink</code> functions.</p>
+<h1>Examples</h1>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>SQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-sql"><span class="hljs-keyword">SELECT</span> dblink_connect(<span class="hljs-string">&#x27;dbname=postgres options=-csearch_path=&#x27;</span>);
+ dblink_connect
+<span class="hljs-comment">----------------</span>
+ OK
+(<span class="hljs-number">1</span> <span class="hljs-type">row</span>)
+
+<span class="hljs-keyword">SELECT</span> dblink_connect(<span class="hljs-string">&#x27;myconn&#x27;</span>, <span class="hljs-string">&#x27;dbname=postgres options=-csearch_path=&#x27;</span>);
+ dblink_connect
+<span class="hljs-comment">----------------</span>
+ OK
+(<span class="hljs-number">1</span> <span class="hljs-type">row</span>)
+
+<span class="hljs-comment">-- FOREIGN DATA WRAPPER functionality</span>
+<span class="hljs-comment">-- <span class="hljs-doctag">Note:</span> local connections that don&#x27;t use SCRAM pass-through require password</span>
+<span class="hljs-comment">--       authentication for this to work properly. Otherwise, you will receive</span>
+<span class="hljs-comment">--       the following error from dblink_connect():</span>
+<span class="hljs-comment">--       ERROR:  password is required</span>
+<span class="hljs-comment">--       DETAIL:  Non-superuser cannot connect if the server does not request a password.</span>
+<span class="hljs-comment">--       HINT:  Target server&#x27;s authentication method must be changed.</span>
+
+<span class="hljs-keyword">CREATE</span> SERVER fdtest <span class="hljs-keyword">FOREIGN</span> DATA WRAPPER dblink_fdw OPTIONS (hostaddr <span class="hljs-string">&#x27;127.0.0.1&#x27;</span>, dbname <span class="hljs-string">&#x27;contrib_regression&#x27;</span>);
+
+<span class="hljs-keyword">CREATE</span> <span class="hljs-keyword">USER</span> regress_dblink_user <span class="hljs-keyword">WITH</span> PASSWORD <span class="hljs-string">&#x27;secret&#x27;</span>;
+<span class="hljs-keyword">CREATE</span> <span class="hljs-keyword">USER</span> MAPPING <span class="hljs-keyword">FOR</span> regress_dblink_user SERVER fdtest OPTIONS (<span class="hljs-keyword">user</span> <span class="hljs-string">&#x27;regress_dblink_user&#x27;</span>, password <span class="hljs-string">&#x27;secret&#x27;</span>);
+<span class="hljs-keyword">GRANT</span> USAGE <span class="hljs-keyword">ON</span> <span class="hljs-keyword">FOREIGN</span> SERVER fdtest <span class="hljs-keyword">TO</span> regress_dblink_user;
+<span class="hljs-keyword">GRANT</span> <span class="hljs-keyword">SELECT</span> <span class="hljs-keyword">ON</span> <span class="hljs-keyword">TABLE</span> foo <span class="hljs-keyword">TO</span> regress_dblink_user;
+
+\<span class="hljs-keyword">set</span> ORIGINAL_USER :<span class="hljs-keyword">USER</span>
+\c <span class="hljs-operator">-</span> regress_dblink_user
+<span class="hljs-keyword">SELECT</span> dblink_connect(<span class="hljs-string">&#x27;myconn&#x27;</span>, <span class="hljs-string">&#x27;fdtest&#x27;</span>);
+ dblink_connect
+<span class="hljs-comment">----------------</span>
+ OK
+(<span class="hljs-number">1</span> <span class="hljs-type">row</span>)
+
+<span class="hljs-keyword">SELECT</span> <span class="hljs-operator">*</span> <span class="hljs-keyword">FROM</span> dblink(<span class="hljs-string">&#x27;myconn&#x27;</span>, <span class="hljs-string">&#x27;SELECT * FROM foo&#x27;</span>) <span class="hljs-keyword">AS</span> t(a <span class="hljs-type">int</span>, b text, c text[]);
+ a  <span class="hljs-operator">|</span> b <span class="hljs-operator">|</span>       c
+<span class="hljs-comment">----+---+---------------</span>
+  <span class="hljs-number">0</span> <span class="hljs-operator">|</span> a <span class="hljs-operator">|</span> {a0,b0,c0}
+  <span class="hljs-number">1</span> <span class="hljs-operator">|</span> b <span class="hljs-operator">|</span> {a1,b1,c1}
+  <span class="hljs-number">2</span> <span class="hljs-operator">|</span> c <span class="hljs-operator">|</span> {a2,b2,c2}
+  <span class="hljs-number">3</span> <span class="hljs-operator">|</span> d <span class="hljs-operator">|</span> {a3,b3,c3}
+  <span class="hljs-number">4</span> <span class="hljs-operator">|</span> e <span class="hljs-operator">|</span> {a4,b4,c4}
+  <span class="hljs-number">5</span> <span class="hljs-operator">|</span> f <span class="hljs-operator">|</span> {a5,b5,c5}
+  <span class="hljs-number">6</span> <span class="hljs-operator">|</span> g <span class="hljs-operator">|</span> {a6,b6,c6}
+  <span class="hljs-number">7</span> <span class="hljs-operator">|</span> h <span class="hljs-operator">|</span> {a7,b7,c7}
+  <span class="hljs-number">8</span> <span class="hljs-operator">|</span> i <span class="hljs-operator">|</span> {a8,b8,c8}
+  <span class="hljs-number">9</span> <span class="hljs-operator">|</span> j <span class="hljs-operator">|</span> {a9,b9,c9}
+ <span class="hljs-number">10</span> <span class="hljs-operator">|</span> k <span class="hljs-operator">|</span> {a10,b10,c10}
+(<span class="hljs-number">11</span> <span class="hljs-keyword">rows</span>)
+
+\c <span class="hljs-operator">-</span> :ORIGINAL_USER
+<span class="hljs-keyword">REVOKE</span> USAGE <span class="hljs-keyword">ON</span> <span class="hljs-keyword">FOREIGN</span> SERVER fdtest <span class="hljs-keyword">FROM</span> regress_dblink_user;
+<span class="hljs-keyword">REVOKE</span> <span class="hljs-keyword">SELECT</span> <span class="hljs-keyword">ON</span> <span class="hljs-keyword">TABLE</span> foo <span class="hljs-keyword">FROM</span> regress_dblink_user;
+<span class="hljs-keyword">DROP</span> <span class="hljs-keyword">USER</span> MAPPING <span class="hljs-keyword">FOR</span> regress_dblink_user SERVER fdtest;
+<span class="hljs-keyword">DROP</span> <span class="hljs-keyword">USER</span> regress_dblink_user;
+<span class="hljs-keyword">DROP</span> SERVER fdtest;</code></pre></div></figure>
+<p>dblink_connect_u</p>
+<p>dblink_connect_u</p>
+<p>3</p>
+<p>dblink_connect_u</p>
+<p>opens a persistent connection to a remote database, insecurely</p>
+<p>dblink_connect_u(text connstr) returns text dblink_connect_u(text connname, text connstr) returns text</p>
+<h1>Description</h1>
+<p><code>dblink_connect_u()</code> is identical to <code>dblink_connect()</code>, except that it will allow non-superusers to connect using any authentication method.</p>
+<p>If the remote server selects an authentication method that does not involve a password, then impersonation and subsequent escalation of privileges can occur, because the session will appear to have originated from the user as which the local PostgreSQL server runs. Also, even if the remote server does demand a password, it is possible for the password to be supplied from the server environment, such as a <code>~/.pgpass</code> file belonging to the server&#39;s user. This opens not only a risk of impersonation, but the possibility of exposing a password to an untrustworthy remote server. Therefore, <code>dblink_connect_u()</code> is initially installed with all privileges revoked from <code>PUBLIC</code>, making it un-callable except by superusers. In some situations it may be appropriate to grant <code>EXECUTE</code> permission for <code>dblink_connect_u()</code> to specific users who are considered trustworthy, but this should be done with care. It is also recommended that any <code>~/.pgpass</code> file belonging to the server&#39;s user <em>not</em> contain any records specifying a wildcard host name.</p>
+<p>For further details see <code>dblink_connect()</code>.</p>
+<p>dblink_disconnect</p>
+<p>dblink_disconnect</p>
+<p>3</p>
+<p>dblink_disconnect</p>
+<p>closes a persistent connection to a remote database</p>
+<p>dblink_disconnect() returns text dblink_disconnect(text connname) returns text</p>
+<h1>Description</h1>
+<p><code>dblink_disconnect()</code> closes a connection previously opened by <code>dblink_connect()</code>. The form with no arguments closes an unnamed connection.</p>
+<h1>Arguments</h1>
+<p><code>connname</code></p>
+<p>:   The name of a named connection to be closed.</p>
+<h1>Return Value</h1>
+<p>Returns status, which is always <code>OK</code> (since any error causes the function to throw an error instead of returning).</p>
+<h1>Examples</h1>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>SQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-sql"><span class="hljs-keyword">SELECT</span> dblink_disconnect();
+ dblink_disconnect
+<span class="hljs-comment">-------------------</span>
+ OK
+(<span class="hljs-number">1</span> <span class="hljs-type">row</span>)
+
+<span class="hljs-keyword">SELECT</span> dblink_disconnect(<span class="hljs-string">&#x27;myconn&#x27;</span>);
+ dblink_disconnect
+<span class="hljs-comment">-------------------</span>
+ OK
+(<span class="hljs-number">1</span> <span class="hljs-type">row</span>)</code></pre></div></figure>
+<p>dblink</p>
+<p>dblink</p>
+<p>3</p>
+<p>dblink</p>
+<p>executes a query in a remote database</p>
+<p>dblink(text connname, text sql [, bool fail_on_error]) returns setof record dblink(text connstr, text sql [, bool fail_on_error]) returns setof record dblink(text sql [, bool fail_on_error]) returns setof record</p>
+<h1>Description</h1>
+<p><code>dblink</code> executes a query (usually a <code>SELECT</code>, but it can be any SQL statement that returns rows) in a remote database.</p>
+<p>When two <code>text</code> arguments are given, the first one is first looked up as a persistent connection&#39;s name; if found, the command is executed on that connection. If not found, the first argument is treated as a connection info string as for <code>dblink_connect</code>, and the indicated connection is made just for the duration of this command.</p>
+<h1>Arguments</h1>
+<p><code>connname</code></p>
+<p>:   Name of the connection to use; omit this parameter to use the unnamed connection.</p>
+<p><code>connstr</code></p>
+<p>:   A connection info string, as previously described for <code>dblink_connect</code>.</p>
+<p><code>sql</code></p>
+<p>:   The SQL query that you wish to execute in the remote database, for example <code>SELECT * FROM foo</code>.</p>
+<p><code>fail_on_error</code></p>
+<p>:   If true (the default when omitted) then an error thrown on the remote side of the connection causes an error to also be thrown locally. If false, the remote error is locally reported as a NOTICE, and the function returns no rows.</p>
+<h1>Return Value</h1>
+<p>The function returns the row(s) produced by the query. Since <code>dblink</code> can be used with any query, it is declared to return <code>record</code>, rather than specifying any particular set of columns. This means that you must specify the expected set of columns in the calling query otherwise PostgreSQL would not know what to expect. Here is an example: </p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>SQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-sql"><span class="hljs-keyword">SELECT</span> <span class="hljs-operator">*</span>
+    <span class="hljs-keyword">FROM</span> dblink(<span class="hljs-string">&#x27;dbname=mydb options=-csearch_path=&#x27;</span>,
+                <span class="hljs-string">&#x27;SELECT proname, prosrc FROM pg_proc&#x27;</span>)
+      <span class="hljs-keyword">AS</span> t1(proname name, prosrc text)
+    <span class="hljs-keyword">WHERE</span> proname <span class="hljs-keyword">LIKE</span> <span class="hljs-string">&#x27;bytea%&#x27;</span>;</code></pre></div></figure>
+<p> The &quot;alias&quot; part of the <code>FROM</code> clause must specify the column names and types that the function will return. (Specifying column names in an alias is actually standard SQL syntax, but specifying column types is a PostgreSQL extension.) This allows the system to understand what <code>*</code> should expand to, and what proname in the <code>WHERE</code> clause refers to, in advance of trying to execute the function. At run time, an error will be thrown if the actual query result from the remote database does not have the same number of columns shown in the <code>FROM</code> clause. The column names need not match, however, and <code>dblink</code> does not insist on exact type matches either. It will succeed so long as the returned data strings are valid input for the column type declared in the <code>FROM</code> clause.</p>
+<h1>Notes</h1>
+<p>A convenient way to use <code>dblink</code> with predetermined queries is to create a view. This allows the column type information to be buried in the view, instead of having to spell it out in every query. For example, </p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>SQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-sql"><span class="hljs-keyword">CREATE</span> <span class="hljs-keyword">VIEW</span> myremote_pg_proc <span class="hljs-keyword">AS</span>
+  <span class="hljs-keyword">SELECT</span> <span class="hljs-operator">*</span>
+    <span class="hljs-keyword">FROM</span> dblink(<span class="hljs-string">&#x27;dbname=postgres options=-csearch_path=&#x27;</span>,
+                <span class="hljs-string">&#x27;SELECT proname, prosrc FROM pg_proc&#x27;</span>)
+    <span class="hljs-keyword">AS</span> t1(proname name, prosrc text);
+
+<span class="hljs-keyword">SELECT</span> <span class="hljs-operator">*</span> <span class="hljs-keyword">FROM</span> myremote_pg_proc <span class="hljs-keyword">WHERE</span> proname <span class="hljs-keyword">LIKE</span> <span class="hljs-string">&#x27;bytea%&#x27;</span>;</code></pre></div></figure>
+<h1>Examples</h1>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>SQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-sql"><span class="hljs-keyword">SELECT</span> <span class="hljs-operator">*</span> <span class="hljs-keyword">FROM</span> dblink(<span class="hljs-string">&#x27;dbname=postgres options=-csearch_path=&#x27;</span>,
+                     <span class="hljs-string">&#x27;SELECT proname, prosrc FROM pg_proc&#x27;</span>)
+  <span class="hljs-keyword">AS</span> t1(proname name, prosrc text) <span class="hljs-keyword">WHERE</span> proname <span class="hljs-keyword">LIKE</span> <span class="hljs-string">&#x27;bytea%&#x27;</span>;
+  proname   <span class="hljs-operator">|</span>   prosrc
+<span class="hljs-comment">------------+------------</span>
+ byteacat   <span class="hljs-operator">|</span> byteacat
+ byteaeq    <span class="hljs-operator">|</span> byteaeq
+ bytealt    <span class="hljs-operator">|</span> bytealt
+ byteale    <span class="hljs-operator">|</span> byteale
+ byteagt    <span class="hljs-operator">|</span> byteagt
+ byteage    <span class="hljs-operator">|</span> byteage
+ byteane    <span class="hljs-operator">|</span> byteane
+ byteacmp   <span class="hljs-operator">|</span> byteacmp
+ bytealike  <span class="hljs-operator">|</span> bytealike
+ byteanlike <span class="hljs-operator">|</span> byteanlike
+ byteain    <span class="hljs-operator">|</span> byteain
+ byteaout   <span class="hljs-operator">|</span> byteaout
+(<span class="hljs-number">12</span> <span class="hljs-keyword">rows</span>)
+
+<span class="hljs-keyword">SELECT</span> dblink_connect(<span class="hljs-string">&#x27;dbname=postgres options=-csearch_path=&#x27;</span>);
+ dblink_connect
+<span class="hljs-comment">----------------</span>
+ OK
+(<span class="hljs-number">1</span> <span class="hljs-type">row</span>)
+
+<span class="hljs-keyword">SELECT</span> <span class="hljs-operator">*</span> <span class="hljs-keyword">FROM</span> dblink(<span class="hljs-string">&#x27;SELECT proname, prosrc FROM pg_proc&#x27;</span>)
+  <span class="hljs-keyword">AS</span> t1(proname name, prosrc text) <span class="hljs-keyword">WHERE</span> proname <span class="hljs-keyword">LIKE</span> <span class="hljs-string">&#x27;bytea%&#x27;</span>;
+  proname   <span class="hljs-operator">|</span>   prosrc
+<span class="hljs-comment">------------+------------</span>
+ byteacat   <span class="hljs-operator">|</span> byteacat
+ byteaeq    <span class="hljs-operator">|</span> byteaeq
+ bytealt    <span class="hljs-operator">|</span> bytealt
+ byteale    <span class="hljs-operator">|</span> byteale
+ byteagt    <span class="hljs-operator">|</span> byteagt
+ byteage    <span class="hljs-operator">|</span> byteage
+ byteane    <span class="hljs-operator">|</span> byteane
+ byteacmp   <span class="hljs-operator">|</span> byteacmp
+ bytealike  <span class="hljs-operator">|</span> bytealike
+ byteanlike <span class="hljs-operator">|</span> byteanlike
+ byteain    <span class="hljs-operator">|</span> byteain
+ byteaout   <span class="hljs-operator">|</span> byteaout
+(<span class="hljs-number">12</span> <span class="hljs-keyword">rows</span>)
+
+<span class="hljs-keyword">SELECT</span> dblink_connect(<span class="hljs-string">&#x27;myconn&#x27;</span>, <span class="hljs-string">&#x27;dbname=regression options=-csearch_path=&#x27;</span>);
+ dblink_connect
+<span class="hljs-comment">----------------</span>
+ OK
+(<span class="hljs-number">1</span> <span class="hljs-type">row</span>)
+
+<span class="hljs-keyword">SELECT</span> <span class="hljs-operator">*</span> <span class="hljs-keyword">FROM</span> dblink(<span class="hljs-string">&#x27;myconn&#x27;</span>, <span class="hljs-string">&#x27;SELECT proname, prosrc FROM pg_proc&#x27;</span>)
+  <span class="hljs-keyword">AS</span> t1(proname name, prosrc text) <span class="hljs-keyword">WHERE</span> proname <span class="hljs-keyword">LIKE</span> <span class="hljs-string">&#x27;bytea%&#x27;</span>;
+  proname   <span class="hljs-operator">|</span>   prosrc
+<span class="hljs-comment">------------+------------</span>
+ bytearecv  <span class="hljs-operator">|</span> bytearecv
+ byteasend  <span class="hljs-operator">|</span> byteasend
+ byteale    <span class="hljs-operator">|</span> byteale
+ byteagt    <span class="hljs-operator">|</span> byteagt
+ byteage    <span class="hljs-operator">|</span> byteage
+ byteane    <span class="hljs-operator">|</span> byteane
+ byteacmp   <span class="hljs-operator">|</span> byteacmp
+ bytealike  <span class="hljs-operator">|</span> bytealike
+ byteanlike <span class="hljs-operator">|</span> byteanlike
+ byteacat   <span class="hljs-operator">|</span> byteacat
+ byteaeq    <span class="hljs-operator">|</span> byteaeq
+ bytealt    <span class="hljs-operator">|</span> bytealt
+ byteain    <span class="hljs-operator">|</span> byteain
+ byteaout   <span class="hljs-operator">|</span> byteaout
+(<span class="hljs-number">14</span> <span class="hljs-keyword">rows</span>)</code></pre></div></figure>
+<p>dblink_exec</p>
+<p>dblink_exec</p>
+<p>3</p>
+<p>dblink_exec</p>
+<p>executes a command in a remote database</p>
+<p>dblink_exec(text connname, text sql [, bool fail_on_error]) returns text dblink_exec(text connstr, text sql [, bool fail_on_error]) returns text dblink_exec(text sql [, bool fail_on_error]) returns text</p>
+<h1>Description</h1>
+<p><code>dblink_exec</code> executes a command (that is, any SQL statement that doesn&#39;t return rows) in a remote database.</p>
+<p>When two <code>text</code> arguments are given, the first one is first looked up as a persistent connection&#39;s name; if found, the command is executed on that connection. If not found, the first argument is treated as a connection info string as for <code>dblink_connect</code>, and the indicated connection is made just for the duration of this command.</p>
+<h1>Arguments</h1>
+<p><code>connname</code></p>
+<p>:   Name of the connection to use; omit this parameter to use the unnamed connection.</p>
+<p><code>connstr</code></p>
+<p>:   A connection info string, as previously described for <code>dblink_connect</code>.</p>
+<p><code>sql</code></p>
+<p>:   The SQL command that you wish to execute in the remote database, for example <code>INSERT INTO foo VALUES (0, &#39;a&#39;, &#39;{&quot;a0&quot;,&quot;b0&quot;,&quot;c0&quot;}&#39;)</code>.</p>
+<p><code>fail_on_error</code></p>
+<p>:   If true (the default when omitted) then an error thrown on the remote side of the connection causes an error to also be thrown locally. If false, the remote error is locally reported as a NOTICE, and the function&#39;s return value is set to <code>ERROR</code>.</p>
+<h1>Return Value</h1>
+<p>Returns status, either the command&#39;s status string or <code>ERROR</code>.</p>
+<h1>Examples</h1>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>SQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-sql"><span class="hljs-keyword">SELECT</span> dblink_connect(<span class="hljs-string">&#x27;dbname=dblink_test_standby&#x27;</span>);
+ dblink_connect
+<span class="hljs-comment">----------------</span>
+ OK
+(<span class="hljs-number">1</span> <span class="hljs-type">row</span>)
+
+<span class="hljs-keyword">SELECT</span> dblink_exec(<span class="hljs-string">&#x27;insert into foo values(21, &#x27;&#x27;z&#x27;&#x27;, &#x27;&#x27;{&quot;a0&quot;,&quot;b0&quot;,&quot;c0&quot;}&#x27;&#x27;);&#x27;</span>);
+   dblink_exec
+<span class="hljs-comment">-----------------</span>
+ <span class="hljs-keyword">INSERT</span> <span class="hljs-number">943366</span> <span class="hljs-number">1</span>
+(<span class="hljs-number">1</span> <span class="hljs-type">row</span>)
+
+<span class="hljs-keyword">SELECT</span> dblink_connect(<span class="hljs-string">&#x27;myconn&#x27;</span>, <span class="hljs-string">&#x27;dbname=regression&#x27;</span>);
+ dblink_connect
+<span class="hljs-comment">----------------</span>
+ OK
+(<span class="hljs-number">1</span> <span class="hljs-type">row</span>)
+
+<span class="hljs-keyword">SELECT</span> dblink_exec(<span class="hljs-string">&#x27;myconn&#x27;</span>, <span class="hljs-string">&#x27;insert into foo values(21, &#x27;&#x27;z&#x27;&#x27;, &#x27;&#x27;{&quot;a0&quot;,&quot;b0&quot;,&quot;c0&quot;}&#x27;&#x27;);&#x27;</span>);
+   dblink_exec
+<span class="hljs-comment">------------------</span>
+ <span class="hljs-keyword">INSERT</span> <span class="hljs-number">6432584</span> <span class="hljs-number">1</span>
+(<span class="hljs-number">1</span> <span class="hljs-type">row</span>)
+
+<span class="hljs-keyword">SELECT</span> dblink_exec(<span class="hljs-string">&#x27;myconn&#x27;</span>, <span class="hljs-string">&#x27;insert into pg_class values (&#x27;&#x27;foo&#x27;&#x27;)&#x27;</span>,<span class="hljs-literal">false</span>);
+NOTICE:  <span class="hljs-keyword">sql</span> error
+DETAIL:  ERROR:  <span class="hljs-keyword">null</span> <span class="hljs-keyword">value</span> <span class="hljs-keyword">in</span> <span class="hljs-keyword">column</span> &quot;relnamespace&quot; violates <span class="hljs-keyword">not</span><span class="hljs-operator">-</span><span class="hljs-keyword">null</span> <span class="hljs-keyword">constraint</span>
+
+ dblink_exec
+<span class="hljs-comment">-------------</span>
+ ERROR
+(<span class="hljs-number">1</span> <span class="hljs-type">row</span>)</code></pre></div></figure>
+<p>dblink_open</p>
+<p>dblink_open</p>
+<p>3</p>
+<p>dblink_open</p>
+<p>opens a cursor in a remote database</p>
+<p>dblink_open(text cursorname, text sql [, bool fail_on_error]) returns text dblink_open(text connname, text cursorname, text sql [, bool fail_on_error]) returns text</p>
+<h1>Description</h1>
+<p><code>dblink_open()</code> opens a cursor in a remote database. The cursor can subsequently be manipulated with <code>dblink_fetch()</code> and <code>dblink_close()</code>.</p>
+<h1>Arguments</h1>
+<p><code>connname</code></p>
+<p>:   Name of the connection to use; omit this parameter to use the unnamed connection.</p>
+<p><code>cursorname</code></p>
+<p>:   The name to assign to this cursor.</p>
+<p><code>sql</code></p>
+<p>:   The <code>SELECT</code> statement that you wish to execute in the remote database, for example <code>SELECT * FROM pg_class</code>.</p>
+<p><code>fail_on_error</code></p>
+<p>:   If true (the default when omitted) then an error thrown on the remote side of the connection causes an error to also be thrown locally. If false, the remote error is locally reported as a NOTICE, and the function&#39;s return value is set to <code>ERROR</code>.</p>
+<h1>Return Value</h1>
+<p>Returns status, either <code>OK</code> or <code>ERROR</code>.</p>
+<h1>Notes</h1>
+<p>Since a cursor can only persist within a transaction, <code>dblink_open</code> starts an explicit transaction block (<code>BEGIN</code>) on the remote side, if the remote side was not already within a transaction. This transaction will be closed again when the matching <code>dblink_close</code> is executed. Note that if you use <code>dblink_exec</code> to change data between <code>dblink_open</code> and <code>dblink_close</code>, and then an error occurs or you use <code>dblink_disconnect</code> before <code>dblink_close</code>, your change <em>will be lost</em> because the transaction will be aborted.</p>
+<h1>Examples</h1>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>SQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-sql"><span class="hljs-keyword">SELECT</span> dblink_connect(<span class="hljs-string">&#x27;dbname=postgres options=-csearch_path=&#x27;</span>);
+ dblink_connect
+<span class="hljs-comment">----------------</span>
+ OK
+(<span class="hljs-number">1</span> <span class="hljs-type">row</span>)
+
+<span class="hljs-keyword">SELECT</span> dblink_open(<span class="hljs-string">&#x27;foo&#x27;</span>, <span class="hljs-string">&#x27;SELECT proname, prosrc FROM pg_proc&#x27;</span>);
+ dblink_open
+<span class="hljs-comment">-------------</span>
+ OK
+(<span class="hljs-number">1</span> <span class="hljs-type">row</span>)</code></pre></div></figure>
+<p>dblink_fetch</p>
+<p>dblink_fetch</p>
+<p>3</p>
+<p>dblink_fetch</p>
+<p>returns rows from an open cursor in a remote database</p>
+<p>dblink_fetch(text cursorname, int howmany [, bool fail_on_error]) returns setof record dblink_fetch(text connname, text cursorname, int howmany [, bool fail_on_error]) returns setof record</p>
+<h1>Description</h1>
+<p><code>dblink_fetch</code> fetches rows from a cursor previously established by <code>dblink_open</code>.</p>
+<h1>Arguments</h1>
+<p><code>connname</code></p>
+<p>:   Name of the connection to use; omit this parameter to use the unnamed connection.</p>
+<p><code>cursorname</code></p>
+<p>:   The name of the cursor to fetch from.</p>
+<p><code>howmany</code></p>
+<p>:   The maximum number of rows to retrieve. The next <code>howmany</code> rows are fetched, starting at the current cursor position, moving forward. Once the cursor has reached its end, no more rows are produced.</p>
+<p><code>fail_on_error</code></p>
+<p>:   If true (the default when omitted) then an error thrown on the remote side of the connection causes an error to also be thrown locally. If false, the remote error is locally reported as a NOTICE, and the function returns no rows.</p>
+<h1>Return Value</h1>
+<p>The function returns the row(s) fetched from the cursor. To use this function, you will need to specify the expected set of columns, as previously discussed for <code>dblink</code>.</p>
+<h1>Notes</h1>
+<p>On a mismatch between the number of return columns specified in the <code>FROM</code> clause, and the actual number of columns returned by the remote cursor, an error will be thrown. In this event, the remote cursor is still advanced by as many rows as it would have been if the error had not occurred. The same is true for any other error occurring in the local query after the remote <code>FETCH</code> has been done.</p>
+<h1>Examples</h1>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>SQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-sql"><span class="hljs-keyword">SELECT</span> dblink_connect(<span class="hljs-string">&#x27;dbname=postgres options=-csearch_path=&#x27;</span>);
+ dblink_connect
+<span class="hljs-comment">----------------</span>
+ OK
+(<span class="hljs-number">1</span> <span class="hljs-type">row</span>)
+
+<span class="hljs-keyword">SELECT</span> dblink_open(<span class="hljs-string">&#x27;foo&#x27;</span>, <span class="hljs-string">&#x27;SELECT proname, prosrc FROM pg_proc WHERE proname LIKE &#x27;&#x27;bytea%&#x27;&#x27;&#x27;</span>);
+ dblink_open
+<span class="hljs-comment">-------------</span>
+ OK
+(<span class="hljs-number">1</span> <span class="hljs-type">row</span>)
+
+<span class="hljs-keyword">SELECT</span> <span class="hljs-operator">*</span> <span class="hljs-keyword">FROM</span> dblink_fetch(<span class="hljs-string">&#x27;foo&#x27;</span>, <span class="hljs-number">5</span>) <span class="hljs-keyword">AS</span> (funcname name, source text);
+ funcname <span class="hljs-operator">|</span>  source
+<span class="hljs-comment">----------+----------</span>
+ byteacat <span class="hljs-operator">|</span> byteacat
+ byteacmp <span class="hljs-operator">|</span> byteacmp
+ byteaeq  <span class="hljs-operator">|</span> byteaeq
+ byteage  <span class="hljs-operator">|</span> byteage
+ byteagt  <span class="hljs-operator">|</span> byteagt
+(<span class="hljs-number">5</span> <span class="hljs-keyword">rows</span>)
+
+<span class="hljs-keyword">SELECT</span> <span class="hljs-operator">*</span> <span class="hljs-keyword">FROM</span> dblink_fetch(<span class="hljs-string">&#x27;foo&#x27;</span>, <span class="hljs-number">5</span>) <span class="hljs-keyword">AS</span> (funcname name, source text);
+ funcname  <span class="hljs-operator">|</span>  source
+<span class="hljs-comment">-----------+-----------</span>
+ byteain   <span class="hljs-operator">|</span> byteain
+ byteale   <span class="hljs-operator">|</span> byteale
+ bytealike <span class="hljs-operator">|</span> bytealike
+ bytealt   <span class="hljs-operator">|</span> bytealt
+ byteane   <span class="hljs-operator">|</span> byteane
+(<span class="hljs-number">5</span> <span class="hljs-keyword">rows</span>)
+
+<span class="hljs-keyword">SELECT</span> <span class="hljs-operator">*</span> <span class="hljs-keyword">FROM</span> dblink_fetch(<span class="hljs-string">&#x27;foo&#x27;</span>, <span class="hljs-number">5</span>) <span class="hljs-keyword">AS</span> (funcname name, source text);
+  funcname  <span class="hljs-operator">|</span>   source
+<span class="hljs-comment">------------+------------</span>
+ byteanlike <span class="hljs-operator">|</span> byteanlike
+ byteaout   <span class="hljs-operator">|</span> byteaout
+(<span class="hljs-number">2</span> <span class="hljs-keyword">rows</span>)
+
+<span class="hljs-keyword">SELECT</span> <span class="hljs-operator">*</span> <span class="hljs-keyword">FROM</span> dblink_fetch(<span class="hljs-string">&#x27;foo&#x27;</span>, <span class="hljs-number">5</span>) <span class="hljs-keyword">AS</span> (funcname name, source text);
+ funcname <span class="hljs-operator">|</span> source
+<span class="hljs-comment">----------+--------</span>
+(<span class="hljs-number">0</span> <span class="hljs-keyword">rows</span>)</code></pre></div></figure>
+<p>dblink_close</p>
+<p>dblink_close</p>
+<p>3</p>
+<p>dblink_close</p>
+<p>closes a cursor in a remote database</p>
+<p>dblink_close(text cursorname [, bool fail_on_error]) returns text dblink_close(text connname, text cursorname [, bool fail_on_error]) returns text</p>
+<h1>Description</h1>
+<p><code>dblink_close</code> closes a cursor previously opened with <code>dblink_open</code>.</p>
+<h1>Arguments</h1>
+<p><code>connname</code></p>
+<p>:   Name of the connection to use; omit this parameter to use the unnamed connection.</p>
+<p><code>cursorname</code></p>
+<p>:   The name of the cursor to close.</p>
+<p><code>fail_on_error</code></p>
+<p>:   If true (the default when omitted) then an error thrown on the remote side of the connection causes an error to also be thrown locally. If false, the remote error is locally reported as a NOTICE, and the function&#39;s return value is set to <code>ERROR</code>.</p>
+<h1>Return Value</h1>
+<p>Returns status, either <code>OK</code> or <code>ERROR</code>.</p>
+<h1>Notes</h1>
+<p>If <code>dblink_open</code> started an explicit transaction block, and this is the last remaining open cursor in this connection, <code>dblink_close</code> will issue the matching <code>COMMIT</code>.</p>
+<h1>Examples</h1>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>SQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-sql"><span class="hljs-keyword">SELECT</span> dblink_connect(<span class="hljs-string">&#x27;dbname=postgres options=-csearch_path=&#x27;</span>);
+ dblink_connect
+<span class="hljs-comment">----------------</span>
+ OK
+(<span class="hljs-number">1</span> <span class="hljs-type">row</span>)
+
+<span class="hljs-keyword">SELECT</span> dblink_open(<span class="hljs-string">&#x27;foo&#x27;</span>, <span class="hljs-string">&#x27;SELECT proname, prosrc FROM pg_proc&#x27;</span>);
+ dblink_open
+<span class="hljs-comment">-------------</span>
+ OK
+(<span class="hljs-number">1</span> <span class="hljs-type">row</span>)
+
+<span class="hljs-keyword">SELECT</span> dblink_close(<span class="hljs-string">&#x27;foo&#x27;</span>);
+ dblink_close
+<span class="hljs-comment">--------------</span>
+ OK
+(<span class="hljs-number">1</span> <span class="hljs-type">row</span>)</code></pre></div></figure>
+<p>dblink_get_connections</p>
+<p>dblink_get_connections</p>
+<p>3</p>
+<p>dblink_get_connections</p>
+<p>returns the names of all open named dblink connections</p>
+<p>dblink_get_connections() returns text[]</p>
+<h1>Description</h1>
+<p><code>dblink_get_connections</code> returns an array of the names of all open named <code>dblink</code> connections.</p>
+<h1>Return Value</h1>
+<p>Returns a text array of connection names, or NULL if none.</p>
+<h1>Examples</h1>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>SQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-sql"><span class="hljs-keyword">SELECT</span> dblink_get_connections();</code></pre></div></figure>
+<p>dblink_error_message</p>
+<p>dblink_error_message</p>
+<p>3</p>
+<p>dblink_error_message</p>
+<p>gets last error message on the named connection</p>
+<p>dblink_error_message(text connname) returns text</p>
+<h1>Description</h1>
+<p><code>dblink_error_message</code> fetches the most recent remote error message for a given connection.</p>
+<h1>Arguments</h1>
+<p><code>connname</code></p>
+<p>:   Name of the connection to use.</p>
+<h1>Return Value</h1>
+<p>Returns last error message, or <code>OK</code> if there has been no error in this connection.</p>
+<h1>Notes</h1>
+<p>When asynchronous queries are initiated by <code>dblink_send_query</code>, the error message associated with the connection might not get updated until the server&#39;s response message is consumed. This typically means that <code>dblink_is_busy</code> or <code>dblink_get_result</code> should be called prior to <code>dblink_error_message</code>, so that any error generated by the asynchronous query will be visible.</p>
+<h1>Examples</h1>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>SQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-sql"><span class="hljs-keyword">SELECT</span> dblink_error_message(<span class="hljs-string">&#x27;dtest1&#x27;</span>);</code></pre></div></figure>
+<p>dblink_send_query</p>
+<p>dblink_send_query</p>
+<p>3</p>
+<p>dblink_send_query</p>
+<p>sends an async query to a remote database</p>
+<p>dblink_send_query(text connname, text sql) returns int</p>
+<h1>Description</h1>
+<p><code>dblink_send_query</code> sends a query to be executed asynchronously, that is, without immediately waiting for the result. There must not be an async query already in progress on the connection.</p>
+<p>After successfully dispatching an async query, completion status can be checked with <code>dblink_is_busy</code>, and the results are ultimately collected with <code>dblink_get_result</code>. It is also possible to attempt to cancel an active async query using <code>dblink_cancel_query</code>.</p>
+<h1>Arguments</h1>
+<p><code>connname</code></p>
+<p>:   Name of the connection to use.</p>
+<p><code>sql</code></p>
+<p>:   The SQL statement that you wish to execute in the remote database, for example <code>SELECT * FROM pg_class</code>.</p>
+<h1>Return Value</h1>
+<p>Returns 1 if the query was successfully dispatched, 0 otherwise.</p>
+<h1>Examples</h1>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>SQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-sql"><span class="hljs-keyword">SELECT</span> dblink_send_query(<span class="hljs-string">&#x27;dtest1&#x27;</span>, <span class="hljs-string">&#x27;SELECT * FROM foo WHERE f1 &lt; 3&#x27;</span>);</code></pre></div></figure>
+<p>dblink_is_busy</p>
+<p>dblink_is_busy</p>
+<p>3</p>
+<p>dblink_is_busy</p>
+<p>checks if connection is busy with an async query</p>
+<p>dblink_is_busy(text connname) returns int</p>
+<h1>Description</h1>
+<p><code>dblink_is_busy</code> tests whether an async query is in progress.</p>
+<h1>Arguments</h1>
+<p><code>connname</code></p>
+<p>:   Name of the connection to check.</p>
+<h1>Return Value</h1>
+<p>Returns 1 if connection is busy, 0 if it is not busy. If this function returns 0, it is guaranteed that <code>dblink_get_result</code> will not block.</p>
+<h1>Examples</h1>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>SQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-sql"><span class="hljs-keyword">SELECT</span> dblink_is_busy(<span class="hljs-string">&#x27;dtest1&#x27;</span>);</code></pre></div></figure>
+<p>dblink_get_notify</p>
+<p>dblink_get_notify</p>
+<p>3</p>
+<p>dblink_get_notify</p>
+<p>retrieve async notifications on a connection</p>
+<p>dblink_get_notify() returns setof (notify_name text, be_pid int, extra text) dblink_get_notify(text connname) returns setof (notify_name text, be_pid int, extra text)</p>
+<h1>Description</h1>
+<p><code>dblink_get_notify</code> retrieves notifications on either the unnamed connection, or on a named connection if specified. To receive notifications via dblink, <code>LISTEN</code> must first be issued, using <code>dblink_exec</code>. For details see <a href="#sql-listen">???</a> and <a href="#sql-notify">???</a>.</p>
+<h1>Arguments</h1>
+<p><code>connname</code></p>
+<p>:   The name of a named connection to get notifications on.</p>
+<h1>Return Value</h1>
+<p>Returns <code>setof (notify_name text, be_pid int, extra text)</code>, or an empty set if none.</p>
+<h1>Examples</h1>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>SQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-sql"><span class="hljs-keyword">SELECT</span> dblink_exec(<span class="hljs-string">&#x27;LISTEN virtual&#x27;</span>);
+ dblink_exec
+<span class="hljs-comment">-------------</span>
+ LISTEN
+(<span class="hljs-number">1</span> <span class="hljs-type">row</span>)
+
+<span class="hljs-keyword">SELECT</span> <span class="hljs-operator">*</span> <span class="hljs-keyword">FROM</span> dblink_get_notify();
+ notify_name <span class="hljs-operator">|</span> be_pid <span class="hljs-operator">|</span> extra
+<span class="hljs-comment">-------------+--------+-------</span>
+(<span class="hljs-number">0</span> <span class="hljs-keyword">rows</span>)
+
+NOTIFY virtual;
+NOTIFY
+
+<span class="hljs-keyword">SELECT</span> <span class="hljs-operator">*</span> <span class="hljs-keyword">FROM</span> dblink_get_notify();
+ notify_name <span class="hljs-operator">|</span> be_pid <span class="hljs-operator">|</span> extra
+<span class="hljs-comment">-------------+--------+-------</span>
+ virtual     <span class="hljs-operator">|</span>   <span class="hljs-number">1229</span> <span class="hljs-operator">|</span>
+(<span class="hljs-number">1</span> <span class="hljs-type">row</span>)</code></pre></div></figure>
+<p>dblink_get_result</p>
+<p>dblink_get_result</p>
+<p>3</p>
+<p>dblink_get_result</p>
+<p>gets an async query result</p>
+<p>dblink_get_result(text connname [, bool fail_on_error]) returns setof record</p>
+<h1>Description</h1>
+<p><code>dblink_get_result</code> collects the results of an asynchronous query previously sent with <code>dblink_send_query</code>. If the query is not already completed, <code>dblink_get_result</code> will wait until it is.</p>
+<h1>Arguments</h1>
+<p><code>connname</code></p>
+<p>:   Name of the connection to use.</p>
+<p><code>fail_on_error</code></p>
+<p>:   If true (the default when omitted) then an error thrown on the remote side of the connection causes an error to also be thrown locally. If false, the remote error is locally reported as a NOTICE, and the function returns no rows.</p>
+<h1>Return Value</h1>
+<p>For an async query (that is, an SQL statement returning rows), the function returns the row(s) produced by the query. To use this function, you will need to specify the expected set of columns, as previously discussed for <code>dblink</code>.</p>
+<p>For an async command (that is, an SQL statement not returning rows), the function returns a single row with a single text column containing the command&#39;s status string. It is still necessary to specify that the result will have a single text column in the calling <code>FROM</code> clause.</p>
+<h1>Notes</h1>
+<p>This function <em>must</em> be called if <code>dblink_send_query</code> returned 1. It must be called once for each query sent, and one additional time to obtain an empty set result, before the connection can be used again.</p>
+<p>When using <code>dblink_send_query</code> and <code>dblink_get_result</code>, dblink fetches the entire remote query result before returning any of it to the local query processor. If the query returns a large number of rows, this can result in transient memory bloat in the local session. It may be better to open such a query as a cursor with <code>dblink_open</code> and then fetch a manageable number of rows at a time. Alternatively, use plain <code>dblink()</code>, which avoids memory bloat by spooling large result sets to disk.</p>
+<h1>Examples</h1>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>SQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-sql">contrib_regression<span class="hljs-operator">=</span># <span class="hljs-keyword">SELECT</span> dblink_connect(<span class="hljs-string">&#x27;dtest1&#x27;</span>, <span class="hljs-string">&#x27;dbname=contrib_regression&#x27;</span>);
+ dblink_connect
+<span class="hljs-comment">----------------</span>
+ OK
+(<span class="hljs-number">1</span> <span class="hljs-type">row</span>)
+
+contrib_regression<span class="hljs-operator">=</span># <span class="hljs-keyword">SELECT</span> <span class="hljs-operator">*</span> <span class="hljs-keyword">FROM</span>
+contrib_regression<span class="hljs-operator">-</span># dblink_send_query(<span class="hljs-string">&#x27;dtest1&#x27;</span>, <span class="hljs-string">&#x27;SELECT * FROM foo WHERE f1 &lt; 3&#x27;</span>) <span class="hljs-keyword">AS</span> t1;
+ t1
+<span class="hljs-comment">----</span>
+  <span class="hljs-number">1</span>
+(<span class="hljs-number">1</span> <span class="hljs-type">row</span>)
+
+contrib_regression<span class="hljs-operator">=</span># <span class="hljs-keyword">SELECT</span> <span class="hljs-operator">*</span> <span class="hljs-keyword">FROM</span> dblink_get_result(<span class="hljs-string">&#x27;dtest1&#x27;</span>) <span class="hljs-keyword">AS</span> t1(f1 <span class="hljs-type">int</span>, f2 text, f3 text[]);
+ f1 <span class="hljs-operator">|</span> f2 <span class="hljs-operator">|</span>     f3
+<span class="hljs-comment">----+----+------------</span>
+  <span class="hljs-number">0</span> <span class="hljs-operator">|</span> a  <span class="hljs-operator">|</span> {a0,b0,c0}
+  <span class="hljs-number">1</span> <span class="hljs-operator">|</span> b  <span class="hljs-operator">|</span> {a1,b1,c1}
+  <span class="hljs-number">2</span> <span class="hljs-operator">|</span> c  <span class="hljs-operator">|</span> {a2,b2,c2}
+(<span class="hljs-number">3</span> <span class="hljs-keyword">rows</span>)
+
+contrib_regression<span class="hljs-operator">=</span># <span class="hljs-keyword">SELECT</span> <span class="hljs-operator">*</span> <span class="hljs-keyword">FROM</span> dblink_get_result(<span class="hljs-string">&#x27;dtest1&#x27;</span>) <span class="hljs-keyword">AS</span> t1(f1 <span class="hljs-type">int</span>, f2 text, f3 text[]);
+ f1 <span class="hljs-operator">|</span> f2 <span class="hljs-operator">|</span> f3
+<span class="hljs-comment">----+----+----</span>
+(<span class="hljs-number">0</span> <span class="hljs-keyword">rows</span>)
+
+contrib_regression<span class="hljs-operator">=</span># <span class="hljs-keyword">SELECT</span> <span class="hljs-operator">*</span> <span class="hljs-keyword">FROM</span>
+contrib_regression<span class="hljs-operator">-</span># dblink_send_query(<span class="hljs-string">&#x27;dtest1&#x27;</span>, <span class="hljs-string">&#x27;SELECT * FROM foo WHERE f1 &lt; 3; SELECT * FROM foo WHERE f1 &gt; 6&#x27;</span>) <span class="hljs-keyword">AS</span> t1;
+ t1
+<span class="hljs-comment">----</span>
+  <span class="hljs-number">1</span>
+(<span class="hljs-number">1</span> <span class="hljs-type">row</span>)
+
+contrib_regression<span class="hljs-operator">=</span># <span class="hljs-keyword">SELECT</span> <span class="hljs-operator">*</span> <span class="hljs-keyword">FROM</span> dblink_get_result(<span class="hljs-string">&#x27;dtest1&#x27;</span>) <span class="hljs-keyword">AS</span> t1(f1 <span class="hljs-type">int</span>, f2 text, f3 text[]);
+ f1 <span class="hljs-operator">|</span> f2 <span class="hljs-operator">|</span>     f3
+<span class="hljs-comment">----+----+------------</span>
+  <span class="hljs-number">0</span> <span class="hljs-operator">|</span> a  <span class="hljs-operator">|</span> {a0,b0,c0}
+  <span class="hljs-number">1</span> <span class="hljs-operator">|</span> b  <span class="hljs-operator">|</span> {a1,b1,c1}
+  <span class="hljs-number">2</span> <span class="hljs-operator">|</span> c  <span class="hljs-operator">|</span> {a2,b2,c2}
+(<span class="hljs-number">3</span> <span class="hljs-keyword">rows</span>)
+
+contrib_regression<span class="hljs-operator">=</span># <span class="hljs-keyword">SELECT</span> <span class="hljs-operator">*</span> <span class="hljs-keyword">FROM</span> dblink_get_result(<span class="hljs-string">&#x27;dtest1&#x27;</span>) <span class="hljs-keyword">AS</span> t1(f1 <span class="hljs-type">int</span>, f2 text, f3 text[]);
+ f1 <span class="hljs-operator">|</span> f2 <span class="hljs-operator">|</span>      f3
+<span class="hljs-comment">----+----+---------------</span>
+  <span class="hljs-number">7</span> <span class="hljs-operator">|</span> h  <span class="hljs-operator">|</span> {a7,b7,c7}
+  <span class="hljs-number">8</span> <span class="hljs-operator">|</span> i  <span class="hljs-operator">|</span> {a8,b8,c8}
+  <span class="hljs-number">9</span> <span class="hljs-operator">|</span> j  <span class="hljs-operator">|</span> {a9,b9,c9}
+ <span class="hljs-number">10</span> <span class="hljs-operator">|</span> k  <span class="hljs-operator">|</span> {a10,b10,c10}
+(<span class="hljs-number">4</span> <span class="hljs-keyword">rows</span>)
+
+contrib_regression<span class="hljs-operator">=</span># <span class="hljs-keyword">SELECT</span> <span class="hljs-operator">*</span> <span class="hljs-keyword">FROM</span> dblink_get_result(<span class="hljs-string">&#x27;dtest1&#x27;</span>) <span class="hljs-keyword">AS</span> t1(f1 <span class="hljs-type">int</span>, f2 text, f3 text[]);
+ f1 <span class="hljs-operator">|</span> f2 <span class="hljs-operator">|</span> f3
+<span class="hljs-comment">----+----+----</span>
+(<span class="hljs-number">0</span> <span class="hljs-keyword">rows</span>)</code></pre></div></figure>
+<p>dblink_cancel_query</p>
+<p>dblink_cancel_query</p>
+<p>3</p>
+<p>dblink_cancel_query</p>
+<p>cancels any active query on the named connection</p>
+<p>dblink_cancel_query(text connname) returns text</p>
+<h1>Description</h1>
+<p><code>dblink_cancel_query</code> attempts to cancel any query that is in progress on the named connection. Note that this is not certain to succeed (since, for example, the remote query might already have finished). A cancel request simply improves the odds that the query will fail soon. You must still complete the normal query protocol, for example by calling <code>dblink_get_result</code>.</p>
+<h1>Arguments</h1>
+<p><code>connname</code></p>
+<p>:   Name of the connection to use.</p>
+<h1>Return Value</h1>
+<p>Returns <code>OK</code> if the cancel request has been sent, or the text of an error message on failure.</p>
+<h1>Examples</h1>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>SQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-sql"><span class="hljs-keyword">SELECT</span> dblink_cancel_query(<span class="hljs-string">&#x27;dtest1&#x27;</span>);</code></pre></div></figure>
+<p>dblink_get_pkey</p>
+<p>dblink_get_pkey</p>
+<p>3</p>
+<p>dblink_get_pkey</p>
+<p>returns the positions and field names of a relation&#39;s primary key fields</p>
+<p>dblink_get_pkey(text relname) returns setof dblink_pkey_results</p>
+<h1>Description</h1>
+<p><code>dblink_get_pkey</code> provides information about the primary key of a relation in the local database. This is sometimes useful in generating queries to be sent to remote databases.</p>
+<h1>Arguments</h1>
+<p><code>relname</code></p>
+<p>:   Name of a local relation, for example <code>foo</code> or <code>myschema.mytab</code>. Include double quotes if the name is mixed-case or contains special characters, for example <code>&quot;FooBar&quot;</code>; without quotes, the string will be folded to lower case.</p>
+<h1>Return Value</h1>
+<p>Returns one row for each primary key field, or no rows if the relation has no primary key. The result row type is defined as </p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>SQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-sql"><span class="hljs-keyword">CREATE</span> TYPE dblink_pkey_results <span class="hljs-keyword">AS</span> (position <span class="hljs-type">int</span>, colname text);</code></pre></div></figure>
+<p> The <code>position</code> column simply runs from 1 to &lt;N&gt;; it is the number of the field within the primary key, not the number within the table&#39;s columns.</p>
+<h1>Examples</h1>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>SQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-sql"><span class="hljs-keyword">CREATE TABLE</span> foobar (
+    f1 <span class="hljs-type">int</span>,
+    f2 <span class="hljs-type">int</span>,
+    f3 <span class="hljs-type">int</span>,
+    <span class="hljs-keyword">PRIMARY KEY</span> (f1, f2, f3)
+);
+<span class="hljs-keyword">CREATE TABLE</span>
+
+<span class="hljs-keyword">SELECT</span> <span class="hljs-operator">*</span> <span class="hljs-keyword">FROM</span> dblink_get_pkey(<span class="hljs-string">&#x27;foobar&#x27;</span>);
+ position <span class="hljs-operator">|</span> colname
+<span class="hljs-comment">----------+---------</span>
+        <span class="hljs-number">1</span> <span class="hljs-operator">|</span> f1
+        <span class="hljs-number">2</span> <span class="hljs-operator">|</span> f2
+        <span class="hljs-number">3</span> <span class="hljs-operator">|</span> f3
+(<span class="hljs-number">3</span> <span class="hljs-keyword">rows</span>)</code></pre></div></figure>
+<p>dblink_build_sql_insert</p>
+<p>dblink_build_sql_insert</p>
+<p>3</p>
+<p>dblink_build_sql_insert</p>
+<p>builds an INSERT statement using a local tuple, replacing the primary key field values with alternative supplied values</p>
+<p>dblink_build_sql_insert(text relname, int2vector primary_key_attnums, integer num_primary_key_atts, text[] src_pk_att_vals_array, text[] tgt_pk_att_vals_array) returns text</p>
+<h1>Description</h1>
+<p><code>dblink_build_sql_insert</code> can be useful in doing selective replication of a local table to a remote database. It selects a row from the local table based on primary key, and then builds an SQL <code>INSERT</code> command that will duplicate that row, but with the primary key values replaced by the values in the last argument. (To make an exact copy of the row, just specify the same values for the last two arguments.)</p>
+<h1>Arguments</h1>
+<p><code>relname</code></p>
+<p>:   Name of a local relation, for example <code>foo</code> or <code>myschema.mytab</code>. Include double quotes if the name is mixed-case or contains special characters, for example <code>&quot;FooBar&quot;</code>; without quotes, the string will be folded to lower case.</p>
+<p><code>primary_key_attnums</code></p>
+<p>:   Attribute numbers (1-based) of the primary key fields, for example <code>1 2</code>.</p>
+<p><code>num_primary_key_atts</code></p>
+<p>:   The number of primary key fields.</p>
+<p><code>src_pk_att_vals_array</code></p>
+<p>:   Values of the primary key fields to be used to look up the local tuple. Each field is represented in text form. An error is thrown if there is no local row with these primary key values.</p>
+<p><code>tgt_pk_att_vals_array</code></p>
+<p>:   Values of the primary key fields to be placed in the resulting <code>INSERT</code> command. Each field is represented in text form.</p>
+<h1>Return Value</h1>
+<p>Returns the requested SQL statement as text.</p>
+<h1>Notes</h1>
+<p>As of PostgreSQL 9.0, the attribute numbers in <code>primary_key_attnums</code> are interpreted as logical column numbers, corresponding to the column&#39;s position in <code>SELECT * FROM relname</code>. Previous versions interpreted the numbers as physical column positions. There is a difference if any column(s) to the left of the indicated column have been dropped during the lifetime of the table.</p>
+<h1>Examples</h1>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>SQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-sql"><span class="hljs-keyword">SELECT</span> dblink_build_sql_insert(<span class="hljs-string">&#x27;foo&#x27;</span>, <span class="hljs-string">&#x27;1 2&#x27;</span>, <span class="hljs-number">2</span>, <span class="hljs-string">&#x27;{&quot;1&quot;, &quot;a&quot;}&#x27;</span>, <span class="hljs-string">&#x27;{&quot;1&quot;, &quot;b&#x27;&#x27;a&quot;}&#x27;</span>);
+             dblink_build_sql_insert
+<span class="hljs-comment">--------------------------------------------------</span>
+ <span class="hljs-keyword">INSERT INTO</span> foo(f1,f2,f3) <span class="hljs-keyword">VALUES</span>(<span class="hljs-string">&#x27;1&#x27;</span>,<span class="hljs-string">&#x27;b&#x27;&#x27;a&#x27;</span>,<span class="hljs-string">&#x27;1&#x27;</span>)
+(<span class="hljs-number">1</span> <span class="hljs-type">row</span>)</code></pre></div></figure>
+<p>dblink_build_sql_delete</p>
+<p>dblink_build_sql_delete</p>
+<p>3</p>
+<p>dblink_build_sql_delete</p>
+<p>builds a DELETE statement using supplied values for primary key field values</p>
+<p>dblink_build_sql_delete(text relname, int2vector primary_key_attnums, integer num_primary_key_atts, text[] tgt_pk_att_vals_array) returns text</p>
+<h1>Description</h1>
+<p><code>dblink_build_sql_delete</code> can be useful in doing selective replication of a local table to a remote database. It builds an SQL <code>DELETE</code> command that will delete the row with the given primary key values.</p>
+<h1>Arguments</h1>
+<p><code>relname</code></p>
+<p>:   Name of a local relation, for example <code>foo</code> or <code>myschema.mytab</code>. Include double quotes if the name is mixed-case or contains special characters, for example <code>&quot;FooBar&quot;</code>; without quotes, the string will be folded to lower case.</p>
+<p><code>primary_key_attnums</code></p>
+<p>:   Attribute numbers (1-based) of the primary key fields, for example <code>1 2</code>.</p>
+<p><code>num_primary_key_atts</code></p>
+<p>:   The number of primary key fields.</p>
+<p><code>tgt_pk_att_vals_array</code></p>
+<p>:   Values of the primary key fields to be used in the resulting <code>DELETE</code> command. Each field is represented in text form.</p>
+<h1>Return Value</h1>
+<p>Returns the requested SQL statement as text.</p>
+<h1>Notes</h1>
+<p>As of PostgreSQL 9.0, the attribute numbers in <code>primary_key_attnums</code> are interpreted as logical column numbers, corresponding to the column&#39;s position in <code>SELECT * FROM relname</code>. Previous versions interpreted the numbers as physical column positions. There is a difference if any column(s) to the left of the indicated column have been dropped during the lifetime of the table.</p>
+<h1>Examples</h1>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>SQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-sql"><span class="hljs-keyword">SELECT</span> dblink_build_sql_delete(<span class="hljs-string">&#x27;&quot;MyFoo&quot;&#x27;</span>, <span class="hljs-string">&#x27;1 2&#x27;</span>, <span class="hljs-number">2</span>, <span class="hljs-string">&#x27;{&quot;1&quot;, &quot;b&quot;}&#x27;</span>);
+           dblink_build_sql_delete
+<span class="hljs-comment">---------------------------------------------</span>
+ <span class="hljs-keyword">DELETE</span> <span class="hljs-keyword">FROM</span> &quot;MyFoo&quot; <span class="hljs-keyword">WHERE</span> f1<span class="hljs-operator">=</span><span class="hljs-string">&#x27;1&#x27;</span> <span class="hljs-keyword">AND</span> f2<span class="hljs-operator">=</span><span class="hljs-string">&#x27;b&#x27;</span>
+(<span class="hljs-number">1</span> <span class="hljs-type">row</span>)</code></pre></div></figure>
+<p>dblink_build_sql_update</p>
+<p>dblink_build_sql_update</p>
+<p>3</p>
+<p>dblink_build_sql_update</p>
+<p>builds an UPDATE statement using a local tuple, replacing the primary key field values with alternative supplied values</p>
+<p>dblink_build_sql_update(text relname, int2vector primary_key_attnums, integer num_primary_key_atts, text[] src_pk_att_vals_array, text[] tgt_pk_att_vals_array) returns text</p>
+<h1>Description</h1>
+<p><code>dblink_build_sql_update</code> can be useful in doing selective replication of a local table to a remote database. It selects a row from the local table based on primary key, and then builds an SQL <code>UPDATE</code> command that will duplicate that row, but with the primary key values replaced by the values in the last argument. (To make an exact copy of the row, just specify the same values for the last two arguments.) The <code>UPDATE</code> command always assigns all fields of the row the main difference between this and <code>dblink_build_sql_insert</code> is that it&#39;s assumed that the target row already exists in the remote table.</p>
+<h1>Arguments</h1>
+<p><code>relname</code></p>
+<p>:   Name of a local relation, for example <code>foo</code> or <code>myschema.mytab</code>. Include double quotes if the name is mixed-case or contains special characters, for example <code>&quot;FooBar&quot;</code>; without quotes, the string will be folded to lower case.</p>
+<p><code>primary_key_attnums</code></p>
+<p>:   Attribute numbers (1-based) of the primary key fields, for example <code>1 2</code>.</p>
+<p><code>num_primary_key_atts</code></p>
+<p>:   The number of primary key fields.</p>
+<p><code>src_pk_att_vals_array</code></p>
+<p>:   Values of the primary key fields to be used to look up the local tuple. Each field is represented in text form. An error is thrown if there is no local row with these primary key values.</p>
+<p><code>tgt_pk_att_vals_array</code></p>
+<p>:   Values of the primary key fields to be placed in the resulting <code>UPDATE</code> command. Each field is represented in text form.</p>
+<h1>Return Value</h1>
+<p>Returns the requested SQL statement as text.</p>
+<h1>Notes</h1>
+<p>As of PostgreSQL 9.0, the attribute numbers in <code>primary_key_attnums</code> are interpreted as logical column numbers, corresponding to the column&#39;s position in <code>SELECT * FROM relname</code>. Previous versions interpreted the numbers as physical column positions. There is a difference if any column(s) to the left of the indicated column have been dropped during the lifetime of the table.</p>
+<h1>Examples</h1>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>SQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-sql"><span class="hljs-keyword">SELECT</span> dblink_build_sql_update(<span class="hljs-string">&#x27;foo&#x27;</span>, <span class="hljs-string">&#x27;1 2&#x27;</span>, <span class="hljs-number">2</span>, <span class="hljs-string">&#x27;{&quot;1&quot;, &quot;a&quot;}&#x27;</span>, <span class="hljs-string">&#x27;{&quot;1&quot;, &quot;b&quot;}&#x27;</span>);
+                   dblink_build_sql_update
+<span class="hljs-comment">-------------------------------------------------------------</span>
+ <span class="hljs-keyword">UPDATE</span> foo <span class="hljs-keyword">SET</span> f1<span class="hljs-operator">=</span><span class="hljs-string">&#x27;1&#x27;</span>,f2<span class="hljs-operator">=</span><span class="hljs-string">&#x27;b&#x27;</span>,f3<span class="hljs-operator">=</span><span class="hljs-string">&#x27;1&#x27;</span> <span class="hljs-keyword">WHERE</span> f1<span class="hljs-operator">=</span><span class="hljs-string">&#x27;1&#x27;</span> <span class="hljs-keyword">AND</span> f2<span class="hljs-operator">=</span><span class="hljs-string">&#x27;b&#x27;</span>
+(<span class="hljs-number">1</span> <span class="hljs-type">row</span>)</code></pre></div></figure>

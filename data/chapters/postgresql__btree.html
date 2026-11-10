@@ -1,0 +1,153 @@
+<p>index</p>
+<p>B-Tree</p>
+<h2 id="introduction">Introduction</h2>
+<p>PostgreSQL includes an implementation of the standard btree (multi-way balanced tree) index data structure. Any data type that can be sorted into a well-defined linear order can be indexed by a btree index. The only limitation is that an index entry cannot exceed approximately one-third of a page (after TOAST compression, if applicable).</p>
+<p>Because each btree operator class imposes a sort order on its data type, btree operator classes (or, really, operator families) have come to be used as PostgreSQL&#39;s general representation and understanding of sorting semantics. Therefore, they&#39;ve acquired some features that go beyond what would be needed just to support btree indexes, and parts of the system that are quite distant from the btree AM make use of them.</p>
+<h2 id="behavior-of-b-tree-operator-classes">Behavior of B-Tree Operator Classes</h2>
+<p>As shown in <a href="#xindex-btree-strat-table">???</a>, a btree operator class must provide five comparison operators, <code>&lt;</code>, <code>&lt;=</code>, <code>=</code>, <code>&gt;=</code> and <code>&gt;</code>. One might expect that <code>&lt;&gt;</code> should also be part of the operator class, but it is not, because it would almost never be useful to use a <code>&lt;&gt;</code> WHERE clause in an index search. (For some purposes, the planner treats <code>&lt;&gt;</code> as associated with a btree operator class; but it finds that operator via the <code>=</code> operator&#39;s negator link, rather than from pg_amop.)</p>
+<p>When several data types share near-identical sorting semantics, their operator classes can be grouped into an operator family. Doing so is advantageous because it allows the planner to make deductions about cross-type comparisons. Each operator class within the family should contain the single-type operators (and associated support functions) for its input data type, while cross-type comparison operators and support functions are &quot;loose&quot; in the family. It is recommendable that a complete set of cross-type operators be included in the family, thus ensuring that the planner can represent any comparison conditions that it deduces from transitivity.</p>
+<p>There are some basic assumptions that a btree operator family must satisfy:</p>
+<ul>
+<li><p>An <code>=</code> operator must be an equivalence relation; that is, for all non-null values &lt;A&gt;, &lt;B&gt;, &lt;C&gt; of the data type:</p>
+<ul>
+<li><p>&lt;A&gt; <code>=</code> &lt;A&gt; is true (reflexive law)</p>
+</li>
+<li><p>if &lt;A&gt; <code>=</code> &lt;B&gt;, then &lt;B&gt; <code>=</code> &lt;A&gt; (symmetric law)</p>
+</li>
+<li><p>if &lt;A&gt; <code>=</code> &lt;B&gt; and &lt;B&gt; <code>=</code> &lt;C&gt;, then &lt;A&gt; <code>=</code> &lt;C&gt; (transitive law)</p>
+</li>
+</ul>
+</li>
+<li><p>A <code>&lt;</code> operator must be a strong ordering relation; that is, for all non-null values &lt;A&gt;, &lt;B&gt;, &lt;C&gt;:</p>
+<ul>
+<li><p>&lt;A&gt; <code>&lt;</code> &lt;A&gt; is false (irreflexive law)</p>
+</li>
+<li><p>if &lt;A&gt; <code>&lt;</code> &lt;B&gt; and &lt;B&gt; <code>&lt;</code> &lt;C&gt;, then &lt;A&gt; <code>&lt;</code> &lt;C&gt; (transitive law)</p>
+</li>
+</ul>
+</li>
+<li><p>Furthermore, the ordering is total; that is, for all non-null values &lt;A&gt;, &lt;B&gt;:</p>
+<ul>
+<li>exactly one of &lt;A&gt; <code>&lt;</code> &lt;B&gt;, &lt;A&gt; <code>=</code> &lt;B&gt;, and &lt;B&gt; <code>&lt;</code> &lt;A&gt; is true (trichotomy law)</li>
+</ul>
+<p>(The trichotomy law justifies the definition of the comparison support function, of course.)</p>
+</li>
+</ul>
+<p>The other three operators are defined in terms of <code>=</code> and <code>&lt;</code> in the obvious way, and must act consistently with them.</p>
+<p>For an operator family supporting multiple data types, the above laws must hold when &lt;A&gt;, &lt;B&gt;, &lt;C&gt; are taken from any data types in the family. The transitive laws are the trickiest to ensure, as in cross-type situations they represent statements that the behaviors of two or three different operators are consistent. As an example, it would not work to put <code>float8</code> and <code>numeric</code> into the same operator family, at least not with the current semantics that <code>numeric</code> values are converted to <code>float8</code> for comparison to a <code>float8</code>. Because of the limited accuracy of <code>float8</code>, this means there are distinct <code>numeric</code> values that will compare equal to the same <code>float8</code> value, and thus the transitive law would fail.</p>
+<p>Another requirement for a multiple-data-type family is that any implicit or binary-coercion casts that are defined between data types included in the operator family must not change the associated sort ordering.</p>
+<p>It should be fairly clear why a btree index requires these laws to hold within a single data type: without them there is no ordering to arrange the keys with. Also, index searches using a comparison key of a different data type require comparisons to behave sanely across two data types. The extensions to three or more data types within a family are not strictly required by the btree index mechanism itself, but the planner relies on them for optimization purposes.</p>
+<h2 id="b-tree-support-functions">B-Tree Support Functions</h2>
+<p>As shown in <a href="#xindex-btree-support-table">???</a>, btree defines one required and five optional support functions. The six user-defined methods are:</p>
+<p><code>order</code></p>
+<p>:   For each combination of data types that a btree operator family provides comparison operators for, it must provide a comparison support function, registered in pg_amproc with support function number 1 and amproclefttype/amprocrighttype equal to the left and right data types for the comparison (i.e., the same data types that the matching operators are registered with in pg_amop). The comparison function must take two non-null values &lt;A&gt; and &lt;B&gt; and return an <code>int32</code> value that is <code>&lt;</code> <code>0</code>, <code>0</code>, or <code>&gt;</code> <code>0</code> when &lt;A&gt; <code>&lt;</code> &lt;B&gt;, &lt;A&gt; <code>=</code> &lt;B&gt;, or &lt;A&gt; <code>&gt;</code> &lt;B&gt;, respectively. A null result is disallowed: all values of the data type must be comparable. See <code>src/backend/access/nbtree/nbtcompare.c</code> for examples.</p>
+<pre><code>If the compared values are of a collatable data type, the appropriate collation OID will be passed to the comparison support function, using the standard `PG_GET_COLLATION()` mechanism.
+</code></pre>
+<p><code>sortsupport</code></p>
+<p>:   Optionally, a btree operator family may provide sort support function(s), registered under support function number 2. These functions allow implementing comparisons for sorting purposes in a more efficient way than naively calling the comparison support function. The APIs involved in this are defined in <code>src/include/utils/sortsupport.h</code>.</p>
+<p><code>in_range</code>
+:   in_range support functions
+    support functions
+    in_range
+    Optionally, a btree operator family may provide in_range support function(s), registered under support function number 3. These are not used during btree index operations; rather, they extend the semantics of the operator family so that it can support window clauses containing the <code>RANGE</code> &lt;offset&gt; <code>PRECEDING</code> and <code>RANGE</code> &lt;offset&gt; <code>FOLLOWING</code> frame bound types (see <a href="#syntax-window-functions">???</a>). Fundamentally, the extra information provided is how to add or subtract an &lt;offset&gt; value in a way that is compatible with the family&#39;s data ordering.</p>
+<pre><code>An `in_range` function must have the signature in_range(\&lt;val\&gt; type1, \&lt;base\&gt; type1, \&lt;offset\&gt; type2, \&lt;sub\&gt; bool, \&lt;less\&gt; bool) returns bool \&lt;val\&gt; and \&lt;base\&gt; must be of the same type, which is one of the types supported by the operator family (i.e., a type for which it provides an ordering). However, \&lt;offset\&gt; could be of a different type, which might be one otherwise unsupported by the family. An example is that the built-in `time_ops` family provides an `in_range` function that has \&lt;offset\&gt; of type `interval`. A family can provide `in_range` functions for any of its supported types and one or more \&lt;offset\&gt; types. Each `in_range` function should be entered in pg_amproc with amproclefttype equal to `type1` and amprocrighttype equal to `type2`.
+
+The essential semantics of an `in_range` function depend on the two Boolean flag parameters. It should add or subtract \&lt;base\&gt; and \&lt;offset\&gt;, then compare \&lt;val\&gt; to the result, as follows:
+
+- if `!`\&lt;sub\&gt; and `!`\&lt;less\&gt;, return \&lt;val\&gt; `&gt;=` (\&lt;base\&gt; `+` \&lt;offset\&gt;)
+
+- if `!`\&lt;sub\&gt; and \&lt;less\&gt;, return \&lt;val\&gt; `&lt;=` (\&lt;base\&gt; `+` \&lt;offset\&gt;)
+
+- if \&lt;sub\&gt; and `!`\&lt;less\&gt;, return \&lt;val\&gt; `&gt;=` (\&lt;base\&gt; `-` \&lt;offset\&gt;)
+
+- if \&lt;sub\&gt; and \&lt;less\&gt;, return \&lt;val\&gt; `&lt;=` (\&lt;base\&gt; `-` \&lt;offset\&gt;)
+
+Before doing so, the function should check the sign of \&lt;offset\&gt;: if it is less than zero, raise error `ERRCODE_INVALID_PRECEDING_OR_FOLLOWING_SIZE` (22013) with error text like &quot;invalid preceding or following size in window function&quot;. (This is required by the SQL standard, although nonstandard operator families might perhaps choose to ignore this restriction, since there seems to be little semantic necessity for it.) This requirement is delegated to the `in_range` function so that the core code needn\&#39;t understand what &quot;less than zero&quot; means for a particular data type.
+
+An additional expectation is that `in_range` functions should, if practical, avoid throwing an error if \&lt;base\&gt; `+` \&lt;offset\&gt; or \&lt;base\&gt; `-` \&lt;offset\&gt; would overflow. The correct comparison result can be determined even if that value would be out of the data type\&#39;s range. Note that if the data type includes concepts such as &quot;infinity&quot; or &quot;NaN&quot;, extra care may be needed to ensure that `in_range`\&#39;s results agree with the normal sort order of the operator family.
+
+The results of the `in_range` function must be consistent with the sort ordering imposed by the operator family. To be precise, given any fixed values of \&lt;offset\&gt; and \&lt;sub\&gt;, then:
+
+- If `in_range` with \&lt;less\&gt; = true is true for some \&lt;val1\&gt; and \&lt;base\&gt;, it must be true for every \&lt;val2\&gt; `&lt;=` \&lt;val1\&gt; with the same \&lt;base\&gt;.
+
+- If `in_range` with \&lt;less\&gt; = true is false for some \&lt;val1\&gt; and \&lt;base\&gt;, it must be false for every \&lt;val2\&gt; `&gt;=` \&lt;val1\&gt; with the same \&lt;base\&gt;.
+
+- If `in_range` with \&lt;less\&gt; = true is true for some \&lt;val\&gt; and \&lt;base1\&gt;, it must be true for every \&lt;base2\&gt; `&gt;=` \&lt;base1\&gt; with the same \&lt;val\&gt;.
+
+- If `in_range` with \&lt;less\&gt; = true is false for some \&lt;val\&gt; and \&lt;base1\&gt;, it must be false for every \&lt;base2\&gt; `&lt;=` \&lt;base1\&gt; with the same \&lt;val\&gt;.
+
+Analogous statements with inverted conditions hold when \&lt;less\&gt; = false.
+
+If the type being ordered (`type1`) is collatable, the appropriate collation OID will be passed to the `in_range` function, using the standard PG_GET_COLLATION() mechanism.
+
+`in_range` functions need not handle NULL inputs, and typically will be marked strict.
+</code></pre>
+<p><code>equalimage</code></p>
+<p>:   Optionally, a btree operator family may provide <code>equalimage</code> (&quot;equality implies image equality&quot;) support functions, registered under support function number 4. These functions allow the core code to determine when it is safe to apply the btree deduplication optimization. Currently, <code>equalimage</code> functions are only called when building or rebuilding an index.</p>
+<pre><code>An `equalimage` function must have the signature equalimage(\&lt;opcintype\&gt; `oid`) returns bool The return value is static information about an operator class and collation. Returning `true` indicates that the `order` function for the operator class is guaranteed to only return `0` (&quot;arguments are equal&quot;) when its \&lt;A\&gt; and \&lt;B\&gt; arguments are also interchangeable without any loss of semantic information. Not registering an `equalimage` function or returning `false` indicates that this condition cannot be assumed to hold.
+
+The \&lt;opcintype\&gt; argument is the `pg_type.oid` of the data type that the operator class indexes. This is a convenience that allows reuse of the same underlying `equalimage` function across operator classes. If \&lt;opcintype\&gt; is a collatable data type, the appropriate collation OID will be passed to the `equalimage` function, using the standard `PG_GET_COLLATION()` mechanism.
+
+As far as the operator class is concerned, returning `true` indicates that deduplication is safe (or safe for the collation whose OID was passed to its `equalimage` function). However, the core code will only deem deduplication safe for an index when *every* indexed column uses an operator class that registers an `equalimage` function, and each function actually returns `true` when called.
+
+Image equality is *almost* the same condition as simple bitwise equality. There is one subtle difference: When indexing a varlena data type, the on-disk representation of two image equal datums may not be bitwise equal due to inconsistent application of TOAST compression on input. Formally, when an operator class\&#39;s `equalimage` function returns `true`, it is safe to assume that the `datum_image_eq()` C function will always agree with the operator class\&#39;s `order` function (provided that the same collation OID is passed to both the `equalimage` and `order` functions).
+
+The core code is fundamentally unable to deduce anything about the &quot;equality implies image equality&quot; status of an operator class within a multiple-data-type family based on details from other operator classes in the same family. Also, it is not sensible for an operator family to register a cross-type `equalimage` function, and attempting to do so will result in an error. This is because &quot;equality implies image equality&quot; status does not just depend on sorting/equality semantics, which are more or less defined at the operator family level. In general, the semantics that one particular data type implements must be considered separately.
+
+The convention followed by the operator classes included with the core PostgreSQL distribution is to register a stock, generic `equalimage` function. Most operator classes register `btequalimage()`, which indicates that deduplication is safe unconditionally. Operator classes for collatable data types such as `text` register `btvarstrequalimage()`, which indicates that deduplication is safe with deterministic collations. Best practice for third-party extensions is to register their own custom function to retain control.
+</code></pre>
+<p><code>options</code></p>
+<p>:   Optionally, a B-tree operator family may provide <code>options</code> (&quot;operator class specific options&quot;) support functions, registered under support function number 5. These functions define a set of user-visible parameters that control operator class behavior.</p>
+<pre><code>An `options` support function must have the signature options(\&lt;relopts\&gt; `local_relopts *`) returns void The function is passed a pointer to a local_relopts struct, which needs to be filled with a set of operator class specific options. The options can be accessed from other support functions using the `PG_HAS_OPCLASS_OPTIONS()` and `PG_GET_OPCLASS_OPTIONS()` macros.
+
+Currently, no B-Tree operator class has an `options` support function. B-tree doesn\&#39;t allow flexible representation of keys like GiST, SP-GiST, GIN and BRIN do. So, `options` probably doesn\&#39;t have much application in the current B-tree index access method. Nevertheless, this support function was added to B-tree for uniformity, and will probably find uses during further evolution of B-tree in PostgreSQL.
+</code></pre>
+<p><code>skipsupport</code></p>
+<p>:   Optionally, a btree operator family may provide a skip support function, registered under support function number 6. These functions give the B-tree code a way to iterate through every possible value that can be represented by an operator class&#39;s underlying input type, in key space order. This is used by the core code when it applies the skip scan optimization. The APIs involved in this are defined in <code>src/include/utils/skipsupport.h</code>.</p>
+<pre><code>Operator classes that do not provide a skip support function are still eligible to use skip scan. The core code can still use its fallback strategy, though that might be suboptimal for some discrete types. It usually doesn\&#39;t make sense (and may not even be feasible) for operator classes on continuous types to provide a skip support function.
+
+It is not sensible for an operator family to register a cross-type `skipsupport` function, and attempting to do so will result in an error. This is because determining the next indexable value must happen by incrementing a value copied from an index tuple. The values generated must all be of the same underlying data type (the &quot;skipped&quot; index column\&#39;s opclass input type).
+</code></pre>
+<h2 id="implementation">Implementation</h2>
+<p>This section covers B-Tree index implementation details that may be of use to advanced users. See <code>src/backend/access/nbtree/README</code> in the source distribution for a much more detailed, internals-focused description of the B-Tree implementation.</p>
+<h3 id="b-tree-structure">B-Tree Structure</h3>
+<p>PostgreSQL B-Tree indexes are multi-level tree structures, where each level of the tree can be used as a doubly-linked list of pages. A single metapage is stored in a fixed position at the start of the first segment file of the index. All other pages are either leaf pages or internal pages. Leaf pages are the pages on the lowest level of the tree. All other levels consist of internal pages. Each leaf page contains tuples that point to table rows. Each internal page contains tuples that point to the next level down in the tree. Typically, over 99% of all pages are leaf pages. Both internal pages and leaf pages use the standard page format described in <a href="#storage-page-layout">???</a>.</p>
+<p>New leaf pages are added to a B-Tree index when an existing leaf page cannot fit an incoming tuple. A page split operation makes room for items that originally belonged on the overflowing page by moving a portion of the items to a new page. Page splits must also insert a new downlink to the new page in the parent page, which may cause the parent to split in turn. Page splits &quot;cascade upwards&quot; in a recursive fashion. When the root page finally cannot fit a new downlink, a root page split operation takes place. This adds a new level to the tree structure by creating a new root page that is one level above the original root page.</p>
+<h3 id="bottom-up-index-deletion">Bottom-up Index Deletion</h3>
+<p>B-Tree indexes are not directly aware that under MVCC, there might be multiple extant versions of the same logical table row; to an index, each tuple is an independent object that needs its own index entry. &quot;Version churn&quot; tuples may sometimes accumulate and adversely affect query latency and throughput. This typically occurs with <code>UPDATE</code>-heavy workloads where most individual updates cannot apply the <a href="#storage-hot">HOT optimization.</a> Changing the value of only one column covered by one index during an <code>UPDATE</code> <em>always</em> necessitates a new set of index tuples one for <em>each and every</em> index on the table. Note in particular that this includes indexes that were not &quot;logically modified&quot; by the <code>UPDATE</code>. All indexes will need a successor physical index tuple that points to the latest version in the table. Each new tuple within each index will generally need to coexist with the original &quot;updated&quot; tuple for a short period of time (typically until shortly after the <code>UPDATE</code> transaction commits).</p>
+<p>B-Tree indexes incrementally delete version churn index tuples by performing bottom-up index deletion passes. Each deletion pass is triggered in reaction to an anticipated &quot;version churn page split&quot;. This only happens with indexes that are not logically modified by <code>UPDATE</code> statements, where concentrated build up of obsolete versions in particular pages would occur otherwise. A page split will usually be avoided, though it&#39;s possible that certain implementation-level heuristics will fail to identify and delete even one garbage index tuple (in which case a page split or deduplication pass resolves the issue of an incoming new tuple not fitting on a leaf page). The worst-case number of versions that any index scan must traverse (for any single logical row) is an important contributor to overall system responsiveness and throughput. A bottom-up index deletion pass targets suspected garbage tuples in a single leaf page based on <em>qualitative</em> distinctions involving logical rows and versions. This contrasts with the &quot;top-down&quot; index cleanup performed by autovacuum workers, which is triggered when certain <em>quantitative</em> table-level thresholds are exceeded (see <a href="#autovacuum">???</a>).</p>
+<p>Not all deletion operations that are performed within B-Tree indexes are bottom-up deletion operations. There is a distinct category of index tuple deletion: simple index tuple deletion. This is a deferred maintenance operation that deletes index tuples that are known to be safe to delete (those whose item identifier&#39;s <code>LP_DEAD</code> bit is already set). Like bottom-up index deletion, simple index deletion takes place at the point that a page split is anticipated as a way of avoiding the split.</p>
+<p>Simple deletion is opportunistic in the sense that it can only take place when recent index scans set the <code>LP_DEAD</code> bits of affected items in passing. Prior to PostgreSQL 14, the only category of B-Tree deletion was simple deletion. The main differences between it and bottom-up deletion are that only the former is opportunistically driven by the activity of passing index scans, while only the latter specifically targets version churn from <code>UPDATE</code>s that do not logically modify indexed columns.</p>
+<p>Bottom-up index deletion performs the vast majority of all garbage index tuple cleanup for particular indexes with certain workloads. This is expected with any B-Tree index that is subject to significant version churn from <code>UPDATE</code>s that rarely or never logically modify the columns that the index covers. The average and worst-case number of versions per logical row can be kept low purely through targeted incremental deletion passes. It&#39;s quite possible that the on-disk size of certain indexes will never increase by even one single page/block despite <em>constant</em> version churn from <code>UPDATE</code>s. Even then, an exhaustive &quot;clean sweep&quot; by a <code>VACUUM</code> operation (typically run in an autovacuum worker process) will eventually be required as a part of <em>collective</em> cleanup of the table and each of its indexes.</p>
+<p>Unlike <code>VACUUM</code>, bottom-up index deletion does not provide any strong guarantees about how old the oldest garbage index tuple may be. No index can be permitted to retain &quot;floating garbage&quot; index tuples that became dead prior to a conservative cutoff point shared by the table and all of its indexes collectively. This fundamental table-level invariant makes it safe to recycle table TIDs. This is how it is possible for distinct logical rows to reuse the same table TID over time (though this can never happen with two logical rows whose lifetimes span the same <code>VACUUM</code> cycle).</p>
+<h3 id="deduplication">Deduplication</h3>
+<p>A duplicate is a leaf page tuple (a tuple that points to a table row) where <em>all</em> indexed key columns have values that match corresponding column values from at least one other leaf page tuple in the same index. Duplicate tuples are quite common in practice. B-Tree indexes can use a special, space-efficient representation for duplicates when an optional technique is enabled: deduplication.</p>
+<p>Deduplication works by periodically merging groups of duplicate tuples together, forming a single posting list tuple for each group. The column key value(s) only appear once in this representation. This is followed by a sorted array of TIDs that point to rows in the table. This significantly reduces the storage size of indexes where each value (or each distinct combination of column values) appears several times on average. The latency of queries can be reduced significantly. Overall query throughput may increase significantly. The overhead of routine index vacuuming may also be reduced significantly.</p>
+<p>B-Tree deduplication is just as effective with &quot;duplicates&quot; that contain a NULL value, even though NULL values are never equal to each other according to the <code>=</code> member of any B-Tree operator class. As far as any part of the implementation that understands the on-disk B-Tree structure is concerned, NULL is just another value from the domain of indexed values.</p>
+<p>The deduplication process occurs lazily, when a new item is inserted that cannot fit on an existing leaf page, though only when index tuple deletion could not free sufficient space for the new item (typically deletion is briefly considered and then skipped over). Unlike GIN posting list tuples, B-Tree posting list tuples do not need to expand every time a new duplicate is inserted; they are merely an alternative physical representation of the original logical contents of the leaf page. This design prioritizes consistent performance with mixed read-write workloads. Most client applications will at least see a moderate performance benefit from using deduplication. Deduplication is enabled by default.</p>
+<p><code>CREATE INDEX</code> and <code>REINDEX</code> apply deduplication to create posting list tuples, though the strategy they use is slightly different. Each group of duplicate ordinary tuples encountered in the sorted input taken from the table is merged into a posting list tuple <em>before</em> being added to the current pending leaf page. Individual posting list tuples are packed with as many TIDs as possible. Leaf pages are written out in the usual way, without any separate deduplication pass. This strategy is well-suited to <code>CREATE INDEX</code> and <code>REINDEX</code> because they are once-off batch operations.</p>
+<p>Write-heavy workloads that don&#39;t benefit from deduplication due to having few or no duplicate values in indexes will incur a small, fixed performance penalty (unless deduplication is explicitly disabled). The <code>deduplicate_items</code> storage parameter can be used to disable deduplication within individual indexes. There is never any performance penalty with read-only workloads, since reading posting list tuples is at least as efficient as reading the standard tuple representation. Disabling deduplication isn&#39;t usually helpful.</p>
+<p>It is sometimes possible for unique indexes (as well as unique constraints) to use deduplication. This allows leaf pages to temporarily &quot;absorb&quot; extra version churn duplicates. Deduplication in unique indexes augments bottom-up index deletion, especially in cases where a long-running transaction holds a snapshot that blocks garbage collection. The goal is to buy time for the bottom-up index deletion strategy to become effective again. Delaying page splits until a single long-running transaction naturally goes away can allow a bottom-up deletion pass to succeed where an earlier deletion pass failed.</p>
+<p>A special heuristic is applied to determine whether a deduplication pass in a unique index should take place. It can often skip straight to splitting a leaf page, avoiding a performance penalty from wasting cycles on unhelpful deduplication passes. If you&#39;re concerned about the overhead of deduplication, consider setting <code>deduplicate_items = off</code> selectively. Leaving deduplication enabled in unique indexes has little downside.</p>
+<p>Deduplication cannot be used in all cases due to implementation-level restrictions. Deduplication safety is determined when <code>CREATE INDEX</code> or <code>REINDEX</code> is run.</p>
+<p>Note that deduplication is deemed unsafe and cannot be used in the following cases involving semantically significant differences among equal datums:</p>
+<ul>
+<li><p><code>text</code> and <code>varchar</code> cannot use deduplication when a <em>nondeterministic</em> collation is used. Case and accent differences must be preserved among equal datums.</p>
+</li>
+<li><p><code>character</code> (and its aliases <code>char</code> and <code>bpchar</code>) cannot use deduplication. Trailing spaces are disregarded when comparing two values, but must be preserved among equal datums.</p>
+</li>
+<li><p><code>numeric</code> cannot use deduplication. Numeric display scale must be preserved among equal datums.</p>
+</li>
+<li><p><code>jsonb</code> cannot use deduplication, since the <code>jsonb</code> B-Tree operator class uses <code>numeric</code> internally.</p>
+</li>
+<li><p><code>float4</code> and <code>float8</code> cannot use deduplication. These types have distinct representations for <code>-0</code> and <code>0</code>, which are nevertheless considered equal. This difference must be preserved.</p>
+</li>
+</ul>
+<p>There is one further implementation-level restriction that may be lifted in a future version of PostgreSQL:</p>
+<ul>
+<li>Container types (such as composite types, arrays, or range types) cannot use deduplication.</li>
+</ul>
+<p>There is one further implementation-level restriction that applies regardless of the operator class or collation used:</p>
+<ul>
+<li><code>INCLUDE</code> indexes can never use deduplication.</li>
+</ul>

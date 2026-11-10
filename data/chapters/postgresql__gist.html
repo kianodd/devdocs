@@ -1,0 +1,774 @@
+<p>index</p>
+<p>GiST</p>
+<h2 id="introduction">Introduction</h2>
+<p>GiST stands for Generalized Search Tree. It is a balanced, tree-structured access method, that acts as a base template in which to implement arbitrary indexing schemes. B-trees, R-trees and many other indexing schemes can be implemented in GiST.</p>
+<p>One advantage of GiST is that it allows the development of custom data types with the appropriate access methods, by an expert in the domain of the data type, rather than a database expert.</p>
+<p>Some of the information here is derived from the University of California at Berkeley&#39;s GiST Indexing Project <a target="_blank" rel="noopener" href="http://gist.cs.berkeley.edu/">web site</a> and Marcel Kornacker&#39;s thesis, <a target="_blank" rel="noopener" href="http://www.sai.msu.su/~megera/postgres/gist/papers/concurrency/access-methods-for-next-generation.pdf.gz">Access Methods for Next-Generation Database Systems</a>. The GiST implementation in PostgreSQL is primarily maintained by Teodor Sigaev and Oleg Bartunov, and there is more information on their <a target="_blank" rel="noopener" href="http://www.sai.msu.su/~megera/postgres/gist/">web site</a>.</p>
+<h2 id="built-in-operator-classes">Built-in Operator Classes</h2>
+<p>The core PostgreSQL distribution includes the GiST operator classes shown in <a href="#gist-builtin-opclasses-table">Built-in Operator Classes</a>. (Some of the optional modules described in <a href="#contrib">???</a> provide additional GiST operator classes.)</p>
+<p>+-------------------+--------------------------------------+------------------------+
+| Name              | Indexable Operators                  | Ordering Operators     |
++===================+======================================+========================+
+| <code>box_ops</code>         | <code>&lt;&lt; (box, box)</code>                      | <code>&lt;-&gt; (box, point)</code>     |
+|                   +--------------------------------------+                        |
+|                   | <code>&amp;&lt; (box, box)</code>                      |                        |
+|                   +--------------------------------------+                        |
+|                   | <code>&amp;&amp; (box, box)</code>                      |                        |
+|                   +--------------------------------------+                        |
+|                   | <code>&amp;&gt; (box, box)</code>                      |                        |
+|                   +--------------------------------------+                        |
+|                   | <code>&gt;&gt; (box, box)</code>                      |                        |
+|                   +--------------------------------------+                        |
+|                   | <code>~= (box, box)</code>                      |                        |
+|                   +--------------------------------------+                        |
+|                   | <code>@&gt; (box, box)</code>                      |                        |
+|                   +--------------------------------------+                        |
+|                   | <code>&lt;@ (box, box)</code>                      |                        |
+|                   +--------------------------------------+                        |
+|                   | <code>&amp;&lt;| (box, box)</code>                     |                        |
+|                   +--------------------------------------+                        |
+|                   | <code>&lt;&lt;| (box, box)</code>                     |                        |
+|                   +--------------------------------------+                        |
+|                   | <code>|&gt;&gt; (box, box)</code>                     |                        |
+|                   +--------------------------------------+                        |
+|                   | <code>|&amp;&gt; (box, box)</code>                     |                        |
++-------------------+--------------------------------------+------------------------+
+| <code>circle_ops</code>      | <code>&lt;&lt; (circle, circle)</code>                | <code>&lt;-&gt; (circle, point)</code>  |
+|                   +--------------------------------------+                        |
+|                   | <code>&amp;&lt; (circle, circle)</code>                |                        |
+|                   +--------------------------------------+                        |
+|                   | <code>&amp;&gt; (circle, circle)</code>                |                        |
+|                   +--------------------------------------+                        |
+|                   | <code>&gt;&gt; (circle, circle)</code>                |                        |
+|                   +--------------------------------------+                        |
+|                   | <code>&lt;@ (circle, circle)</code>                |                        |
+|                   +--------------------------------------+                        |
+|                   | <code>@&gt; (circle, circle)</code>                |                        |
+|                   +--------------------------------------+                        |
+|                   | <code>~= (circle, circle)</code>                |                        |
+|                   +--------------------------------------+                        |
+|                   | <code>&amp;&amp; (circle, circle)</code>                |                        |
+|                   +--------------------------------------+                        |
+|                   | <code>|&gt;&gt; (circle, circle)</code>               |                        |
+|                   +--------------------------------------+                        |
+|                   | <code>&lt;&lt;| (circle, circle)</code>               |                        |
+|                   +--------------------------------------+                        |
+|                   | <code>&amp;&lt;| (circle, circle)</code>               |                        |
+|                   +--------------------------------------+                        |
+|                   | <code>|&amp;&gt; (circle, circle)</code>               |                        |
++-------------------+--------------------------------------+------------------------+
+| <code>inet_ops</code>        | <code>&lt;&lt; (inet, inet)</code>                    |                        |
+|                   +--------------------------------------+                        |
+|                   | <code>&lt;&lt;= (inet, inet)</code>                   |                        |
+|                   +--------------------------------------+                        |
+|                   | <code>&gt;&gt; (inet, inet)</code>                    |                        |
+|                   +--------------------------------------+                        |
+|                   | <code>&gt;&gt;= (inet, inet)</code>                   |                        |
+|                   +--------------------------------------+                        |
+|                   | <code>= (inet, inet)</code>                     |                        |
+|                   +--------------------------------------+                        |
+|                   | <code>&lt;&gt; (inet, inet)</code>                    |                        |
+|                   +--------------------------------------+                        |
+|                   | <code>&lt; (inet, inet)</code>                     |                        |
+|                   +--------------------------------------+                        |
+|                   | <code>&lt;= (inet, inet)</code>                    |                        |
+|                   +--------------------------------------+                        |
+|                   | <code>&gt; (inet, inet)</code>                     |                        |
+|                   +--------------------------------------+                        |
+|                   | <code>&gt;= (inet, inet)</code>                    |                        |
+|                   +--------------------------------------+                        |
+|                   | <code>&amp;&amp; (inet, inet)</code>                    |                        |
++-------------------+--------------------------------------+------------------------+
+| <code>multirange_ops</code>  | <code>= (anymultirange, anymultirange)</code>   |                        |
+|                   +--------------------------------------+                        |
+|                   | <code>&amp;&amp; (anymultirange, anymultirange)</code>  |                        |
+|                   +--------------------------------------+                        |
+|                   | <code>&amp;&amp; (anymultirange, anyrange)</code>       |                        |
+|                   +--------------------------------------+                        |
+|                   | <code>@&gt; (anymultirange, anyelement)</code>     |                        |
+|                   +--------------------------------------+                        |
+|                   | <code>@&gt; (anymultirange, anymultirange)</code>  |                        |
+|                   +--------------------------------------+                        |
+|                   | <code>@&gt; (anymultirange, anyrange)</code>       |                        |
+|                   +--------------------------------------+                        |
+|                   | <code>&lt;@ (anymultirange, anymultirange)</code>  |                        |
+|                   +--------------------------------------+                        |
+|                   | <code>&lt;@ (anymultirange, anyrange)</code>       |                        |
+|                   +--------------------------------------+                        |
+|                   | <code>&lt;&lt; (anymultirange, anymultirange)</code>  |                        |
+|                   +--------------------------------------+                        |
+|                   | <code>&lt;&lt; (anymultirange, anyrange)</code>       |                        |
+|                   +--------------------------------------+                        |
+|                   | <code>&gt;&gt; (anymultirange, anymultirange)</code>  |                        |
+|                   +--------------------------------------+                        |
+|                   | <code>&gt;&gt; (anymultirange, anyrange)</code>       |                        |
+|                   +--------------------------------------+                        |
+|                   | <code>&amp;&lt; (anymultirange, anymultirange)</code>  |                        |
+|                   +--------------------------------------+                        |
+|                   | <code>&amp;&lt; (anymultirange, anyrange)</code>       |                        |
+|                   +--------------------------------------+                        |
+|                   | <code>&amp;&gt; (anymultirange, anymultirange)</code>  |                        |
+|                   +--------------------------------------+                        |
+|                   | <code>&amp;&gt; (anymultirange, anyrange)</code>       |                        |
+|                   +--------------------------------------+                        |
+|                   | <code>-|- (anymultirange, anymultirange)</code> |                        |
+|                   +--------------------------------------+                        |
+|                   | <code>-|- (anymultirange, anyrange)</code>      |                        |
++-------------------+--------------------------------------+------------------------+
+| <code>point_ops</code>       | <code>|&gt;&gt; (point, point)</code>                 | <code>&lt;-&gt; (point, point)</code>   |
+|                   +--------------------------------------+                        |
+|                   | <code>&lt;&lt; (point, point)</code>                  |                        |
+|                   +--------------------------------------+                        |
+|                   | <code>&gt;&gt; (point, point)</code>                  |                        |
+|                   +--------------------------------------+                        |
+|                   | <code>&lt;&lt;| (point, point)</code>                 |                        |
+|                   +--------------------------------------+                        |
+|                   | <code>~= (point, point)</code>                  |                        |
+|                   +--------------------------------------+                        |
+|                   | <code>&lt;@ (point, box)</code>                    |                        |
+|                   +--------------------------------------+                        |
+|                   | <code>&lt;@ (point, polygon)</code>                |                        |
+|                   +--------------------------------------+                        |
+|                   | <code>&lt;@ (point, circle)</code>                 |                        |
++-------------------+--------------------------------------+------------------------+
+| <code>poly_ops</code>        | <code>&lt;&lt; (polygon, polygon)</code>              | <code>&lt;-&gt; (polygon, point)</code> |
+|                   +--------------------------------------+                        |
+|                   | <code>&amp;&lt; (polygon, polygon)</code>              |                        |
+|                   +--------------------------------------+                        |
+|                   | <code>&amp;&gt; (polygon, polygon)</code>              |                        |
+|                   +--------------------------------------+                        |
+|                   | <code>&gt;&gt; (polygon, polygon)</code>              |                        |
+|                   +--------------------------------------+                        |
+|                   | <code>&lt;@ (polygon, polygon)</code>              |                        |
+|                   +--------------------------------------+                        |
+|                   | <code>@&gt; (polygon, polygon)</code>              |                        |
+|                   +--------------------------------------+                        |
+|                   | <code>~= (polygon, polygon)</code>              |                        |
+|                   +--------------------------------------+                        |
+|                   | <code>&amp;&amp; (polygon, polygon)</code>              |                        |
+|                   +--------------------------------------+                        |
+|                   | <code>&lt;&lt;| (polygon, polygon)</code>             |                        |
+|                   +--------------------------------------+                        |
+|                   | <code>&amp;&lt;| (polygon, polygon)</code>             |                        |
+|                   +--------------------------------------+                        |
+|                   | <code>|&amp;&gt; (polygon, polygon)</code>             |                        |
+|                   +--------------------------------------+                        |
+|                   | <code>|&gt;&gt; (polygon, polygon)</code>             |                        |
++-------------------+--------------------------------------+------------------------+
+| <code>range_ops</code>       | <code>= (anyrange, anyrange)</code>             |                        |
+|                   +--------------------------------------+                        |
+|                   | <code>&amp;&amp; (anyrange, anyrange)</code>            |                        |
+|                   +--------------------------------------+                        |
+|                   | <code>&amp;&amp; (anyrange, anymultirange)</code>       |                        |
+|                   +--------------------------------------+                        |
+|                   | <code>@&gt; (anyrange, anyelement)</code>          |                        |
+|                   +--------------------------------------+                        |
+|                   | <code>@&gt; (anyrange, anyrange)</code>            |                        |
+|                   +--------------------------------------+                        |
+|                   | <code>@&gt; (anyrange, anymultirange)</code>       |                        |
+|                   +--------------------------------------+                        |
+|                   | <code>&lt;@ (anyrange, anyrange)</code>            |                        |
+|                   +--------------------------------------+                        |
+|                   | <code>&lt;@ (anyrange, anymultirange)</code>       |                        |
+|                   +--------------------------------------+                        |
+|                   | <code>&lt;&lt; (anyrange, anyrange)</code>            |                        |
+|                   +--------------------------------------+                        |
+|                   | <code>&lt;&lt; (anyrange, anymultirange)</code>       |                        |
+|                   +--------------------------------------+                        |
+|                   | <code>&gt;&gt; (anyrange, anyrange)</code>            |                        |
+|                   +--------------------------------------+                        |
+|                   | <code>&gt;&gt; (anyrange, anymultirange)</code>       |                        |
+|                   +--------------------------------------+                        |
+|                   | <code>&amp;&lt; (anyrange, anyrange)</code>            |                        |
+|                   +--------------------------------------+                        |
+|                   | <code>&amp;&lt; (anyrange, anymultirange)</code>       |                        |
+|                   +--------------------------------------+                        |
+|                   | <code>&amp;&gt; (anyrange, anyrange)</code>            |                        |
+|                   +--------------------------------------+                        |
+|                   | <code>&amp;&gt; (anyrange, anymultirange)</code>       |                        |
+|                   +--------------------------------------+                        |
+|                   | <code>-|- (anyrange, anyrange)</code>           |                        |
+|                   +--------------------------------------+                        |
+|                   | <code>-|- (anyrange, anymultirange)</code>      |                        |
++-------------------+--------------------------------------+------------------------+
+| <code>tsquery_ops</code>     | <code>&lt;@ (tsquery, tsquery)</code>              |                        |
+|                   +--------------------------------------+                        |
+|                   | <code>@&gt; (tsquery, tsquery)</code>              |                        |
++-------------------+--------------------------------------+------------------------+
+| <code>tsvector_ops</code>    | <code>@@ (tsvector, tsquery)</code>             |                        |
++-------------------+--------------------------------------+------------------------+</p>
+<p>: Built-in GiST Operator Classes </p>
+<p>For historical reasons, the <code>inet_ops</code> operator class is not the default class for types <code>inet</code> and <code>cidr</code>. To use it, mention the class name in <code>CREATE INDEX</code>, for example </p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>SQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-sql"><span class="hljs-keyword">CREATE</span> INDEX <span class="hljs-keyword">ON</span> my_table <span class="hljs-keyword">USING</span> GIST (my_inet_column inet_ops);</code></pre></div></figure>
+<h2 id="extensibility">Extensibility</h2>
+<p>Traditionally, implementing a new index access method meant a lot of difficult work. It was necessary to understand the inner workings of the database, such as the lock manager and Write-Ahead Log. The GiST interface has a high level of abstraction, requiring the access method implementer only to implement the semantics of the data type being accessed. The GiST layer itself takes care of concurrency, logging and searching the tree structure.</p>
+<p>This extensibility should not be confused with the extensibility of the other standard search trees in terms of the data they can handle. For example, PostgreSQL supports extensible B-trees and hash indexes. That means that you can use PostgreSQL to build a B-tree or hash over any data type you want. But B-trees only support range predicates (<code>&lt;</code>, <code>=</code>, <code>&gt;</code>), and hash indexes only support equality queries.</p>
+<p>So if you index, say, an image collection with a PostgreSQL B-tree, you can only issue queries such as &quot;is imagex equal to imagey&quot;, &quot;is imagex less than imagey&quot; and &quot;is imagex greater than imagey&quot;. Depending on how you define &quot;equals&quot;, &quot;less than&quot; and &quot;greater than&quot; in this context, this could be useful. However, by using a GiST based index, you could create ways to ask domain-specific questions, perhaps &quot;find all images of horses&quot; or &quot;find all over-exposed images&quot;.</p>
+<p>All it takes to get a GiST access method up and running is to implement several user-defined methods, which define the behavior of keys in the tree. Of course these methods have to be pretty fancy to support fancy queries, but for all the standard queries (B-trees, R-trees, etc.) they&#39;re relatively straightforward. In short, GiST combines extensibility along with generality, code reuse, and a clean interface.</p>
+<p>There are five methods that an index operator class for GiST must provide, and seven that are optional. Correctness of the index is ensured by proper implementation of the <code>same</code>, <code>consistent</code> and <code>union</code> methods, while efficiency (size and speed) of the index will depend on the <code>penalty</code> and <code>picksplit</code> methods. Two optional methods are <code>compress</code> and <code>decompress</code>, which allow an index to store keys that are of a different type than the data it indexes, or are a compressed representation of that type. The optional eighth method <code>distance</code> is needed if the operator class wishes to support ordered scans (nearest-neighbor searches). The optional ninth method <code>fetch</code> is needed if the operator class wishes to support index-only scans, except when the <code>compress</code> method is omitted. The optional tenth method <code>options</code> is needed if the operator class has user-specified parameters. The optional eleventh method <code>sortsupport</code> is used to speed up building a GiST index. The optional twelfth method <code>stratnum</code> is used to translate compare types (from <code>src/include/access/cmptype.h</code>) into strategy numbers used by the operator class. This lets the core code look up operators for temporal constraint indexes. All these methods are described in more detail below.</p>
+<p><code>consistent</code></p>
+<p>:   Given an index entry <code>p</code> and a query value <code>q</code>, this function determines whether the index entry is &quot;consistent&quot; with the query; that is, could the predicate &quot;&lt;indexed_column&gt; &lt;indexable_operator&gt; <code>q</code>&quot; be true for any row represented by the index entry? For a leaf index entry this is equivalent to testing the indexable condition, while for an internal tree node this determines whether it is necessary to scan the subtree of the index represented by the tree node. When the result is <code>true</code>, a <code>recheck</code> flag must also be returned. This indicates whether the predicate is certainly true or only possibly true. If <code>recheck</code> = <code>false</code> then the index has tested the predicate condition exactly, whereas if <code>recheck</code> = <code>true</code> the row is only a candidate match. In that case the system will automatically evaluate the &lt;indexable_operator&gt; against the actual row value to see if it is really a match. This convention allows GiST to support both lossless and lossy index structures.</p>
+<pre><code>The SQL declaration of the function must look like this: 
+</code></pre>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>SQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-sql"><span class="hljs-keyword">CREATE</span> <span class="hljs-keyword">OR</span> REPLACE <span class="hljs-keyword">FUNCTION</span> my_consistent(internal, data_type, <span class="hljs-type">smallint</span>, oid, internal)
+<span class="hljs-keyword">RETURNS</span> bool
+<span class="hljs-keyword">AS</span> <span class="hljs-string">&#x27;MODULE_PATHNAME&#x27;</span>
+<span class="hljs-keyword">LANGUAGE</span> C STRICT;</code></pre></div></figure>
+<p> And the matching code in the C module could then follow this skeleton: </p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>SQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-sql">PG_FUNCTION_INFO_V1(my_consistent);
+
+Datum
+my_consistent(PG_FUNCTION_ARGS)
+{
+    GISTENTRY  <span class="hljs-operator">*</span>entry <span class="hljs-operator">=</span> (GISTENTRY <span class="hljs-operator">*</span>) PG_GETARG_POINTER(<span class="hljs-number">0</span>);
+    data_type  <span class="hljs-operator">*</span>query <span class="hljs-operator">=</span> PG_GETARG_DATA_TYPE_P(<span class="hljs-number">1</span>);
+    StrategyNumber strategy <span class="hljs-operator">=</span> (StrategyNumber) PG_GETARG_UINT16(<span class="hljs-number">2</span>);
+#ifdef NOT_USED
+    Oid         subtype <span class="hljs-operator">=</span> PG_GETARG_OID(<span class="hljs-number">3</span>);
+#endif
+    bool       <span class="hljs-operator">*</span>recheck <span class="hljs-operator">=</span> (bool <span class="hljs-operator">*</span>) PG_GETARG_POINTER(<span class="hljs-number">4</span>);
+    data_type  <span class="hljs-operator">*</span>key <span class="hljs-operator">=</span> DatumGetDataType(entry<span class="hljs-operator">-</span><span class="hljs-operator">&gt;</span>key);
+    bool        retval;
+
+    <span class="hljs-comment">/*
+     * determine return value as a function of strategy, key and query.
+     *
+     * Use GIST_LEAF(entry) to know where you&#x27;re called in the index tree,
+     * which comes handy when supporting the = operator for example (you could
+     * check for non empty union() in non-leaf nodes and equality in leaf
+     * nodes).
+     */</span>
+
+    <span class="hljs-operator">*</span>recheck <span class="hljs-operator">=</span> <span class="hljs-literal">true</span>;        <span class="hljs-comment">/* or false if check is exact */</span>
+
+    PG_RETURN_BOOL(retval);
+}</code></pre></div></figure>
+<p> Here, <code>key</code> is an element in the index and <code>query</code> the value being looked up in the index. The <code>StrategyNumber</code> parameter indicates which operator of your operator class is being applied it matches one of the operator numbers in the <code>CREATE OPERATOR CLASS</code> command.</p>
+<pre><code>Depending on which operators you have included in the class, the data type of `query` could vary with the operator, since it will be whatever type is on the right-hand side of the operator, which might be different from the indexed data type appearing on the left-hand side. (The above code skeleton assumes that only one type is possible; if not, fetching the `query` argument value would have to depend on the operator.) It is recommended that the SQL declaration of the `consistent` function use the opclass\&#39;s indexed data type for the `query` argument, even though the actual type might be something else depending on the operator.
+</code></pre>
+<p><code>union</code></p>
+<p>:   This method consolidates information in the tree. Given a set of entries, this function generates a new index entry that represents all the given entries.</p>
+<pre><code>The SQL declaration of the function must look like this: 
+</code></pre>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>SQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-sql"><span class="hljs-keyword">CREATE</span> <span class="hljs-keyword">OR</span> REPLACE <span class="hljs-keyword">FUNCTION</span> my_union(internal, internal)
+<span class="hljs-keyword">RETURNS</span> storage_type
+<span class="hljs-keyword">AS</span> <span class="hljs-string">&#x27;MODULE_PATHNAME&#x27;</span>
+<span class="hljs-keyword">LANGUAGE</span> C STRICT;</code></pre></div></figure>
+<p> And the matching code in the C module could then follow this skeleton: </p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>SQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-sql">PG_FUNCTION_INFO_V1(my_union);
+
+Datum
+my_union(PG_FUNCTION_ARGS)
+{
+    GistEntryVector <span class="hljs-operator">*</span>entryvec <span class="hljs-operator">=</span> (GistEntryVector <span class="hljs-operator">*</span>) PG_GETARG_POINTER(<span class="hljs-number">0</span>);
+    GISTENTRY  <span class="hljs-operator">*</span>ent <span class="hljs-operator">=</span> entryvec<span class="hljs-operator">-</span><span class="hljs-operator">&gt;</span>vector;
+    data_type  <span class="hljs-operator">*</span><span class="hljs-keyword">out</span>,
+               <span class="hljs-operator">*</span>tmp,
+               <span class="hljs-operator">*</span><span class="hljs-keyword">old</span>;
+    <span class="hljs-type">int</span>         numranges,
+                i <span class="hljs-operator">=</span> <span class="hljs-number">0</span>;
+
+    numranges <span class="hljs-operator">=</span> entryvec<span class="hljs-operator">-</span><span class="hljs-operator">&gt;</span>n;
+    tmp <span class="hljs-operator">=</span> DatumGetDataType(ent[<span class="hljs-number">0</span>].key);
+    <span class="hljs-keyword">out</span> <span class="hljs-operator">=</span> tmp;
+
+    if (numranges <span class="hljs-operator">=</span><span class="hljs-operator">=</span> <span class="hljs-number">1</span>)
+    {
+        <span class="hljs-keyword">out</span> <span class="hljs-operator">=</span> data_type_deep_copy(tmp);
+
+        PG_RETURN_DATA_TYPE_P(<span class="hljs-keyword">out</span>);
+    }
+
+    <span class="hljs-keyword">for</span> (i <span class="hljs-operator">=</span> <span class="hljs-number">1</span>; i <span class="hljs-operator">&lt;</span> numranges; i<span class="hljs-operator">+</span><span class="hljs-operator">+</span>)
+    {
+        <span class="hljs-keyword">old</span> <span class="hljs-operator">=</span> <span class="hljs-keyword">out</span>;
+        tmp <span class="hljs-operator">=</span> DatumGetDataType(ent[i].key);
+        <span class="hljs-keyword">out</span> <span class="hljs-operator">=</span> my_union_implementation(<span class="hljs-keyword">out</span>, tmp);
+    }
+
+    PG_RETURN_DATA_TYPE_P(<span class="hljs-keyword">out</span>);
+}</code></pre></div></figure>
+<pre><code>As you can see, in this skeleton we\&#39;re dealing with a data type where `union(X, Y, Z) = union(union(X, Y), Z)`. It\&#39;s easy enough to support data types where this is not the case, by implementing the proper union algorithm in this GiST support method.
+
+The result of the `union` function must be a value of the index\&#39;s storage type, whatever that is (it might or might not be different from the indexed column\&#39;s type). The `union` function should return a pointer to newly `palloc()`ed memory. You can\&#39;t just return the input value as-is, even if there is no type change.
+
+As shown above, the `union` function\&#39;s first `internal` argument is actually a GistEntryVector pointer. The second argument is a pointer to an integer variable, which can be ignored. (It used to be required that the `union` function store the size of its result value into that variable, but this is no longer necessary.)
+</code></pre>
+<p><code>compress</code></p>
+<p>:   Converts a data item into a format suitable for physical storage in an index page. If the <code>compress</code> method is omitted, data items are stored in the index without modification.</p>
+<pre><code>Use the `STORAGE` option of the `CREATE OPERATOR CLASS` command to define the data type that is stored in the index, if it is different from the data type being indexed. Be aware however that the `STORAGE` data type is only used to define the physical properties of the index entries (their \&lt;typlen\&gt;, \&lt;typbyval\&gt;, and \&lt;typalign\&gt; attributes). What is actually in the index datums is under the control of the `compress` and `decompress` methods, so long as the stored datums match those properties. It is allowed for `compress` to produce different representations for leaf keys than for keys on higher-level index pages, so long as both representations match the `STORAGE` data type.
+
+The SQL declaration of the function must look like this: 
+</code></pre>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>SQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-sql"><span class="hljs-keyword">CREATE</span> <span class="hljs-keyword">OR</span> REPLACE <span class="hljs-keyword">FUNCTION</span> my_compress(internal)
+<span class="hljs-keyword">RETURNS</span> internal
+<span class="hljs-keyword">AS</span> <span class="hljs-string">&#x27;MODULE_PATHNAME&#x27;</span>
+<span class="hljs-keyword">LANGUAGE</span> C STRICT;</code></pre></div></figure>
+<p> And the matching code in the C module could then follow this skeleton: </p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>SQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-sql">PG_FUNCTION_INFO_V1(my_compress);
+
+Datum
+my_compress(PG_FUNCTION_ARGS)
+{
+    GISTENTRY  <span class="hljs-operator">*</span>entry <span class="hljs-operator">=</span> (GISTENTRY <span class="hljs-operator">*</span>) PG_GETARG_POINTER(<span class="hljs-number">0</span>);
+    GISTENTRY  <span class="hljs-operator">*</span>retval;
+
+    if (entry<span class="hljs-operator">-</span><span class="hljs-operator">&gt;</span>leafkey)
+    {
+        <span class="hljs-comment">/* replace entry-&gt;key with a compressed version */</span>
+        compressed_data_type <span class="hljs-operator">*</span>compressed_data <span class="hljs-operator">=</span> palloc_object(compressed_data_type);
+
+        <span class="hljs-comment">/* fill *compressed_data from entry-&gt;key ... */</span>
+
+        retval <span class="hljs-operator">=</span> palloc_object(GISTENTRY);
+        gistentryinit(<span class="hljs-operator">*</span>retval, PointerGetDatum(compressed_data),
+                      entry<span class="hljs-operator">-</span><span class="hljs-operator">&gt;</span>rel, entry<span class="hljs-operator">-</span><span class="hljs-operator">&gt;</span>page, entry<span class="hljs-operator">-</span><span class="hljs-operator">&gt;</span><span class="hljs-keyword">offset</span>, <span class="hljs-literal">FALSE</span>);
+    }
+    <span class="hljs-keyword">else</span>
+    {
+        <span class="hljs-comment">/* typically we needn&#x27;t do anything with non-leaf entries */</span>
+        retval <span class="hljs-operator">=</span> entry;
+    }
+
+    PG_RETURN_POINTER(retval);
+}</code></pre></div></figure>
+<pre><code>You have to adapt \&lt;compressed_data_type\&gt; to the specific type you\&#39;re converting to in order to compress your leaf nodes, of course.
+</code></pre>
+<p><code>decompress</code></p>
+<p>:   Converts the stored representation of a data item into a format that can be manipulated by the other GiST methods in the operator class. If the <code>decompress</code> method is omitted, it is assumed that the other GiST methods can work directly on the stored data format. (<code>decompress</code> is not necessarily the reverse of the <code>compress</code> method; in particular, if <code>compress</code> is lossy then it&#39;s impossible for <code>decompress</code> to exactly reconstruct the original data. <code>decompress</code> is not necessarily equivalent to <code>fetch</code>, either, since the other GiST methods might not require full reconstruction of the data.)</p>
+<pre><code>The SQL declaration of the function must look like this: 
+</code></pre>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>SQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-sql"><span class="hljs-keyword">CREATE</span> <span class="hljs-keyword">OR</span> REPLACE <span class="hljs-keyword">FUNCTION</span> my_decompress(internal)
+<span class="hljs-keyword">RETURNS</span> internal
+<span class="hljs-keyword">AS</span> <span class="hljs-string">&#x27;MODULE_PATHNAME&#x27;</span>
+<span class="hljs-keyword">LANGUAGE</span> C STRICT;</code></pre></div></figure>
+<p> And the matching code in the C module could then follow this skeleton: </p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>SQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-sql">PG_FUNCTION_INFO_V1(my_decompress);
+
+Datum
+my_decompress(PG_FUNCTION_ARGS)
+{
+    PG_RETURN_POINTER(PG_GETARG_POINTER(<span class="hljs-number">0</span>));
+}</code></pre></div></figure>
+<p> The above skeleton is suitable for the case where no decompression is needed. (But, of course, omitting the method altogether is even easier, and is recommended in such cases.)</p>
+<p><code>penalty</code></p>
+<p>:   Returns a value indicating the &quot;cost&quot; of inserting the new entry into a particular branch of the tree. Items will be inserted down the path of least <code>penalty</code> in the tree. Values returned by <code>penalty</code> should be non-negative. If a negative value is returned, it will be treated as zero.</p>
+<pre><code>The SQL declaration of the function must look like this: 
+</code></pre>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>SQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-sql"><span class="hljs-keyword">CREATE</span> <span class="hljs-keyword">OR</span> REPLACE <span class="hljs-keyword">FUNCTION</span> my_penalty(internal, internal, internal)
+<span class="hljs-keyword">RETURNS</span> internal
+<span class="hljs-keyword">AS</span> <span class="hljs-string">&#x27;MODULE_PATHNAME&#x27;</span>
+<span class="hljs-keyword">LANGUAGE</span> C STRICT;  <span class="hljs-comment">-- in some cases penalty functions need not be strict</span></code></pre></div></figure>
+<p> And the matching code in the C module could then follow this skeleton: </p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>SQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-sql">PG_FUNCTION_INFO_V1(my_penalty);
+
+Datum
+my_penalty(PG_FUNCTION_ARGS)
+{
+    GISTENTRY  <span class="hljs-operator">*</span>origentry <span class="hljs-operator">=</span> (GISTENTRY <span class="hljs-operator">*</span>) PG_GETARG_POINTER(<span class="hljs-number">0</span>);
+    GISTENTRY  <span class="hljs-operator">*</span>newentry <span class="hljs-operator">=</span> (GISTENTRY <span class="hljs-operator">*</span>) PG_GETARG_POINTER(<span class="hljs-number">1</span>);
+    <span class="hljs-type">float</span>      <span class="hljs-operator">*</span>penalty <span class="hljs-operator">=</span> (<span class="hljs-type">float</span> <span class="hljs-operator">*</span>) PG_GETARG_POINTER(<span class="hljs-number">2</span>);
+    data_type  <span class="hljs-operator">*</span>orig <span class="hljs-operator">=</span> DatumGetDataType(origentry<span class="hljs-operator">-</span><span class="hljs-operator">&gt;</span>key);
+    data_type  <span class="hljs-operator">*</span><span class="hljs-keyword">new</span> <span class="hljs-operator">=</span> DatumGetDataType(newentry<span class="hljs-operator">-</span><span class="hljs-operator">&gt;</span>key);
+
+    <span class="hljs-operator">*</span>penalty <span class="hljs-operator">=</span> my_penalty_implementation(orig, <span class="hljs-keyword">new</span>);
+    PG_RETURN_POINTER(penalty);
+}</code></pre></div></figure>
+<p> For historical reasons, the <code>penalty</code> function doesn&#39;t just return a <code>float</code> result; instead it has to store the value at the location indicated by the third argument. The return value per se is ignored, though it&#39;s conventional to pass back the address of that argument.</p>
+<pre><code>The `penalty` function is crucial to good performance of the index. It\&#39;ll get used at insertion time to determine which branch to follow when choosing where to add the new entry in the tree. At query time, the more balanced the index, the quicker the lookup.
+</code></pre>
+<p><code>picksplit</code></p>
+<p>:   When an index page split is necessary, this function decides which entries on the page are to stay on the old page, and which are to move to the new page.</p>
+<pre><code>The SQL declaration of the function must look like this: 
+</code></pre>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>SQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-sql"><span class="hljs-keyword">CREATE</span> <span class="hljs-keyword">OR</span> REPLACE <span class="hljs-keyword">FUNCTION</span> my_picksplit(internal, internal)
+<span class="hljs-keyword">RETURNS</span> internal
+<span class="hljs-keyword">AS</span> <span class="hljs-string">&#x27;MODULE_PATHNAME&#x27;</span>
+<span class="hljs-keyword">LANGUAGE</span> C STRICT;</code></pre></div></figure>
+<p> And the matching code in the C module could then follow this skeleton: </p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>SQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-sql">PG_FUNCTION_INFO_V1(my_picksplit);
+
+Datum
+my_picksplit(PG_FUNCTION_ARGS)
+{
+    GistEntryVector <span class="hljs-operator">*</span>entryvec <span class="hljs-operator">=</span> (GistEntryVector <span class="hljs-operator">*</span>) PG_GETARG_POINTER(<span class="hljs-number">0</span>);
+    GIST_SPLITVEC <span class="hljs-operator">*</span>v <span class="hljs-operator">=</span> (GIST_SPLITVEC <span class="hljs-operator">*</span>) PG_GETARG_POINTER(<span class="hljs-number">1</span>);
+    OffsetNumber maxoff <span class="hljs-operator">=</span> entryvec<span class="hljs-operator">-</span><span class="hljs-operator">&gt;</span>n <span class="hljs-operator">-</span> <span class="hljs-number">1</span>;
+    GISTENTRY  <span class="hljs-operator">*</span>ent <span class="hljs-operator">=</span> entryvec<span class="hljs-operator">-</span><span class="hljs-operator">&gt;</span>vector;
+    <span class="hljs-type">int</span>         i,
+                nbytes;
+    OffsetNumber <span class="hljs-operator">*</span><span class="hljs-keyword">left</span>,
+               <span class="hljs-operator">*</span><span class="hljs-keyword">right</span>;
+    data_type  <span class="hljs-operator">*</span>tmp_union;
+    data_type  <span class="hljs-operator">*</span>unionL;
+    data_type  <span class="hljs-operator">*</span>unionR;
+    GISTENTRY <span class="hljs-operator">*</span><span class="hljs-operator">*</span>raw_entryvec;
+
+    maxoff <span class="hljs-operator">=</span> entryvec<span class="hljs-operator">-</span><span class="hljs-operator">&gt;</span>n <span class="hljs-operator">-</span> <span class="hljs-number">1</span>;
+    nbytes <span class="hljs-operator">=</span> (maxoff <span class="hljs-operator">+</span> <span class="hljs-number">1</span>) <span class="hljs-operator">*</span> sizeof(OffsetNumber);
+
+    v<span class="hljs-operator">-</span><span class="hljs-operator">&gt;</span>spl_left <span class="hljs-operator">=</span> (OffsetNumber <span class="hljs-operator">*</span>) palloc(nbytes);
+    <span class="hljs-keyword">left</span> <span class="hljs-operator">=</span> v<span class="hljs-operator">-</span><span class="hljs-operator">&gt;</span>spl_left;
+    v<span class="hljs-operator">-</span><span class="hljs-operator">&gt;</span>spl_nleft <span class="hljs-operator">=</span> <span class="hljs-number">0</span>;
+
+    v<span class="hljs-operator">-</span><span class="hljs-operator">&gt;</span>spl_right <span class="hljs-operator">=</span> (OffsetNumber <span class="hljs-operator">*</span>) palloc(nbytes);
+    <span class="hljs-keyword">right</span> <span class="hljs-operator">=</span> v<span class="hljs-operator">-</span><span class="hljs-operator">&gt;</span>spl_right;
+    v<span class="hljs-operator">-</span><span class="hljs-operator">&gt;</span>spl_nright <span class="hljs-operator">=</span> <span class="hljs-number">0</span>;
+
+    unionL <span class="hljs-operator">=</span> <span class="hljs-keyword">NULL</span>;
+    unionR <span class="hljs-operator">=</span> <span class="hljs-keyword">NULL</span>;
+
+    <span class="hljs-comment">/* Initialize the raw entry vector. */</span>
+    raw_entryvec <span class="hljs-operator">=</span> (GISTENTRY <span class="hljs-operator">*</span><span class="hljs-operator">*</span>) malloc(entryvec<span class="hljs-operator">-</span><span class="hljs-operator">&gt;</span>n <span class="hljs-operator">*</span> sizeof(void <span class="hljs-operator">*</span>));
+    <span class="hljs-keyword">for</span> (i <span class="hljs-operator">=</span> FirstOffsetNumber; i <span class="hljs-operator">&lt;=</span> maxoff; i <span class="hljs-operator">=</span> OffsetNumberNext(i))
+        raw_entryvec[i] <span class="hljs-operator">=</span> <span class="hljs-operator">&amp;</span>(entryvec<span class="hljs-operator">-</span><span class="hljs-operator">&gt;</span>vector[i]);
+
+    <span class="hljs-keyword">for</span> (i <span class="hljs-operator">=</span> FirstOffsetNumber; i <span class="hljs-operator">&lt;=</span> maxoff; i <span class="hljs-operator">=</span> OffsetNumberNext(i))
+    {
+        <span class="hljs-type">int</span>         real_index <span class="hljs-operator">=</span> raw_entryvec[i] <span class="hljs-operator">-</span> entryvec<span class="hljs-operator">-</span><span class="hljs-operator">&gt;</span>vector;
+
+        tmp_union <span class="hljs-operator">=</span> DatumGetDataType(entryvec<span class="hljs-operator">-</span><span class="hljs-operator">&gt;</span>vector[real_index].key);
+        Assert(tmp_union <span class="hljs-operator">!=</span> <span class="hljs-keyword">NULL</span>);
+
+        <span class="hljs-comment">/*
+         * Choose where to put the index entries and update unionL and unionR
+         * accordingly. Append the entries to either v-&gt;spl_left or
+         * v-&gt;spl_right, and care about the counters.
+         */</span>
+
+        if (my_choice_is_left(unionL, curl, unionR, curr))
+        {
+            if (unionL <span class="hljs-operator">=</span><span class="hljs-operator">=</span> <span class="hljs-keyword">NULL</span>)
+                unionL <span class="hljs-operator">=</span> tmp_union;
+            <span class="hljs-keyword">else</span>
+                unionL <span class="hljs-operator">=</span> my_union_implementation(unionL, tmp_union);
+
+            <span class="hljs-operator">*</span><span class="hljs-keyword">left</span> <span class="hljs-operator">=</span> real_index;
+            <span class="hljs-operator">+</span><span class="hljs-operator">+</span><span class="hljs-keyword">left</span>;
+            <span class="hljs-operator">+</span><span class="hljs-operator">+</span>(v<span class="hljs-operator">-</span><span class="hljs-operator">&gt;</span>spl_nleft);
+        }
+        <span class="hljs-keyword">else</span>
+        {
+            <span class="hljs-comment">/*
+             * Same on the right
+             */</span>
+        }
+    }
+
+    v<span class="hljs-operator">-</span><span class="hljs-operator">&gt;</span>spl_ldatum <span class="hljs-operator">=</span> DataTypeGetDatum(unionL);
+    v<span class="hljs-operator">-</span><span class="hljs-operator">&gt;</span>spl_rdatum <span class="hljs-operator">=</span> DataTypeGetDatum(unionR);
+    PG_RETURN_POINTER(v);
+}</code></pre></div></figure>
+<p> Notice that the <code>picksplit</code> function&#39;s result is delivered by modifying the passed-in v structure. The return value per se is ignored, though it&#39;s conventional to pass back the address of v.</p>
+<pre><code>Like `penalty`, the `picksplit` function is crucial to good performance of the index. Designing suitable `penalty` and `picksplit` implementations is where the challenge of implementing well-performing GiST indexes lies.
+</code></pre>
+<p><code>same</code></p>
+<p>:   Returns true if two index entries are identical, false otherwise. (An &quot;index entry&quot; is a value of the index&#39;s storage type, not necessarily the original indexed column&#39;s type.)</p>
+<pre><code>The SQL declaration of the function must look like this: 
+</code></pre>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>SQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-sql"><span class="hljs-keyword">CREATE</span> <span class="hljs-keyword">OR</span> REPLACE <span class="hljs-keyword">FUNCTION</span> my_same(storage_type, storage_type, internal)
+<span class="hljs-keyword">RETURNS</span> internal
+<span class="hljs-keyword">AS</span> <span class="hljs-string">&#x27;MODULE_PATHNAME&#x27;</span>
+<span class="hljs-keyword">LANGUAGE</span> C STRICT;</code></pre></div></figure>
+<p> And the matching code in the C module could then follow this skeleton: </p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>SQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-sql">PG_FUNCTION_INFO_V1(my_same);
+
+Datum
+my_same(PG_FUNCTION_ARGS)
+{
+    prefix_range <span class="hljs-operator">*</span>v1 <span class="hljs-operator">=</span> PG_GETARG_PREFIX_RANGE_P(<span class="hljs-number">0</span>);
+    prefix_range <span class="hljs-operator">*</span>v2 <span class="hljs-operator">=</span> PG_GETARG_PREFIX_RANGE_P(<span class="hljs-number">1</span>);
+    bool       <span class="hljs-operator">*</span><span class="hljs-keyword">result</span> <span class="hljs-operator">=</span> (bool <span class="hljs-operator">*</span>) PG_GETARG_POINTER(<span class="hljs-number">2</span>);
+
+    <span class="hljs-operator">*</span><span class="hljs-keyword">result</span> <span class="hljs-operator">=</span> my_eq(v1, v2);
+    PG_RETURN_POINTER(<span class="hljs-keyword">result</span>);
+}</code></pre></div></figure>
+<p> For historical reasons, the <code>same</code> function doesn&#39;t just return a Boolean result; instead it has to store the flag at the location indicated by the third argument. The return value per se is ignored, though it&#39;s conventional to pass back the address of that argument.</p>
+<p><code>distance</code></p>
+<p>:   Given an index entry <code>p</code> and a query value <code>q</code>, this function determines the index entry&#39;s &quot;distance&quot; from the query value. This function must be supplied if the operator class contains any ordering operators. A query using the ordering operator will be implemented by returning index entries with the smallest &quot;distance&quot; values first, so the results must be consistent with the operator&#39;s semantics. For a leaf index entry the result just represents the distance to the index entry; for an internal tree node, the result must be the smallest distance that any child entry could have.</p>
+<pre><code>The SQL declaration of the function must look like this: 
+</code></pre>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>SQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-sql"><span class="hljs-keyword">CREATE</span> <span class="hljs-keyword">OR</span> REPLACE <span class="hljs-keyword">FUNCTION</span> my_distance(internal, data_type, <span class="hljs-type">smallint</span>, oid, internal)
+<span class="hljs-keyword">RETURNS</span> float8
+<span class="hljs-keyword">AS</span> <span class="hljs-string">&#x27;MODULE_PATHNAME&#x27;</span>
+<span class="hljs-keyword">LANGUAGE</span> C STRICT;</code></pre></div></figure>
+<p> And the matching code in the C module could then follow this skeleton: </p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>SQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-sql">PG_FUNCTION_INFO_V1(my_distance);
+
+Datum
+my_distance(PG_FUNCTION_ARGS)
+{
+    GISTENTRY  <span class="hljs-operator">*</span>entry <span class="hljs-operator">=</span> (GISTENTRY <span class="hljs-operator">*</span>) PG_GETARG_POINTER(<span class="hljs-number">0</span>);
+    data_type  <span class="hljs-operator">*</span>query <span class="hljs-operator">=</span> PG_GETARG_DATA_TYPE_P(<span class="hljs-number">1</span>);
+    StrategyNumber strategy <span class="hljs-operator">=</span> (StrategyNumber) PG_GETARG_UINT16(<span class="hljs-number">2</span>);
+#ifdef NOT_USED
+    Oid         subtype <span class="hljs-operator">=</span> PG_GETARG_OID(<span class="hljs-number">3</span>);
+    bool       <span class="hljs-operator">*</span>recheck <span class="hljs-operator">=</span> (bool <span class="hljs-operator">*</span>) PG_GETARG_POINTER(<span class="hljs-number">4</span>);
+#endif
+    data_type  <span class="hljs-operator">*</span>key <span class="hljs-operator">=</span> DatumGetDataType(entry<span class="hljs-operator">-</span><span class="hljs-operator">&gt;</span>key);
+    <span class="hljs-keyword">double</span>      retval;
+
+    <span class="hljs-comment">/*
+     * determine return value as a function of strategy, key and query.
+     */</span>
+
+    PG_RETURN_FLOAT8(retval);
+}</code></pre></div></figure>
+<p> The arguments to the <code>distance</code> function are identical to the arguments of the <code>consistent</code> function.</p>
+<pre><code>Some approximation is allowed when determining the distance, so long as the result is never greater than the entry\&#39;s actual distance. Thus, for example, distance to a bounding box is usually sufficient in geometric applications. For an internal tree node, the distance returned must not be greater than the distance to any of the child nodes. If the returned distance is not exact, the function must set `*recheck` to true. (This is not necessary for internal tree nodes; for them, the calculation is always assumed to be inexact.) In this case the executor will calculate the accurate distance after fetching the tuple from the heap, and reorder the tuples if necessary.
+
+If the distance function returns `*recheck = true` for any leaf node, the original ordering operator\&#39;s return type must be `float8` or `float4`, and the distance function\&#39;s result values must be comparable to those of the original ordering operator, since the executor will sort using both distance function results and recalculated ordering-operator results. Otherwise, the distance function\&#39;s result values can be any finite `float8` values, so long as the relative order of the result values matches the order returned by the ordering operator. (Infinity and minus infinity are used internally to handle cases such as nulls, so it is not recommended that `distance` functions return these values.)
+</code></pre>
+<p><code>fetch</code></p>
+<p>:   Converts the compressed index representation of a data item into the original data type, for index-only scans. The returned data must be an exact, non-lossy copy of the originally indexed value.</p>
+<pre><code>The SQL declaration of the function must look like this: 
+</code></pre>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>SQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-sql"><span class="hljs-keyword">CREATE</span> <span class="hljs-keyword">OR</span> REPLACE <span class="hljs-keyword">FUNCTION</span> my_fetch(internal)
+<span class="hljs-keyword">RETURNS</span> internal
+<span class="hljs-keyword">AS</span> <span class="hljs-string">&#x27;MODULE_PATHNAME&#x27;</span>
+<span class="hljs-keyword">LANGUAGE</span> C STRICT;</code></pre></div></figure>
+<p> The argument is a pointer to a GISTENTRY struct. On entry, its key field contains a non-NULL leaf datum in compressed form. The return value is another GISTENTRY struct, whose key field contains the same datum in its original, uncompressed form. If the opclass&#39;s compress function does nothing for leaf entries, the <code>fetch</code> method can return the argument as-is. Or, if the opclass does not have a compress function, the <code>fetch</code> method can be omitted as well, since it would necessarily be a no-op.</p>
+<pre><code>The matching code in the C module could then follow this skeleton: 
+</code></pre>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>SQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-sql">PG_FUNCTION_INFO_V1(my_fetch);
+
+Datum
+my_fetch(PG_FUNCTION_ARGS)
+{
+    GISTENTRY  <span class="hljs-operator">*</span>entry <span class="hljs-operator">=</span> (GISTENTRY <span class="hljs-operator">*</span>) PG_GETARG_POINTER(<span class="hljs-number">0</span>);
+    input_data_type <span class="hljs-operator">*</span><span class="hljs-keyword">in</span> <span class="hljs-operator">=</span> DatumGetPointer(entry<span class="hljs-operator">-</span><span class="hljs-operator">&gt;</span>key);
+    fetched_data_type <span class="hljs-operator">*</span>fetched_data;
+    GISTENTRY  <span class="hljs-operator">*</span>retval;
+
+    retval <span class="hljs-operator">=</span> palloc_object(GISTENTRY);
+    fetched_data <span class="hljs-operator">=</span> palloc_object(fetched_data_type);
+
+    <span class="hljs-comment">/*
+     * Convert &#x27;fetched_data&#x27; into a Datum of the original datatype.
+     */</span>
+
+    <span class="hljs-comment">/* fill *retval from fetched_data. */</span>
+    gistentryinit(<span class="hljs-operator">*</span>retval, PointerGetDatum(converted_datum),
+                  entry<span class="hljs-operator">-</span><span class="hljs-operator">&gt;</span>rel, entry<span class="hljs-operator">-</span><span class="hljs-operator">&gt;</span>page, entry<span class="hljs-operator">-</span><span class="hljs-operator">&gt;</span><span class="hljs-keyword">offset</span>, <span class="hljs-literal">FALSE</span>);
+
+    PG_RETURN_POINTER(retval);
+}</code></pre></div></figure>
+<pre><code>If the compress method is lossy for leaf entries, the operator class cannot support index-only scans, and must not define a `fetch` function.
+</code></pre>
+<p><code>options</code></p>
+<p>:   Allows definition of user-visible parameters that control operator class behavior.</p>
+<pre><code>The SQL declaration of the function must look like this: 
+</code></pre>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>SQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-sql"><span class="hljs-keyword">CREATE</span> <span class="hljs-keyword">OR</span> REPLACE <span class="hljs-keyword">FUNCTION</span> my_options(internal)
+<span class="hljs-keyword">RETURNS</span> void
+<span class="hljs-keyword">AS</span> <span class="hljs-string">&#x27;MODULE_PATHNAME&#x27;</span>
+<span class="hljs-keyword">LANGUAGE</span> C STRICT;</code></pre></div></figure>
+<pre><code>The function is passed a pointer to a local_relopts struct, which needs to be filled with a set of operator class specific options. The options can be accessed from other support functions using the `PG_HAS_OPCLASS_OPTIONS()` and `PG_GET_OPCLASS_OPTIONS()` macros.
+
+An example implementation of my_options() and parameters use from other support functions are given below: 
+</code></pre>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>SQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-sql">typedef enum MyEnumType
+{
+    MY_ENUM_ON,
+    MY_ENUM_OFF,
+    MY_ENUM_AUTO
+} MyEnumType;
+
+typedef struct
+{
+    int32   vl_len_;    <span class="hljs-comment">/* varlena header (do not touch directly!) */</span>
+    <span class="hljs-type">int</span>     int_param;  <span class="hljs-comment">/* integer parameter */</span>
+    <span class="hljs-keyword">double</span>  real_param; <span class="hljs-comment">/* real parameter */</span>
+    MyEnumType enum_param; <span class="hljs-comment">/* enum parameter */</span>
+    <span class="hljs-type">int</span>     str_param;  <span class="hljs-comment">/* string parameter */</span>
+} MyOptionsStruct;
+
+<span class="hljs-comment">/* String representation of enum values */</span>
+<span class="hljs-keyword">static</span> relopt_enum_elt_def myEnumValues[] <span class="hljs-operator">=</span>
+{
+    {&quot;on&quot;, MY_ENUM_ON},
+    {&quot;off&quot;, MY_ENUM_OFF},
+    {&quot;auto&quot;, MY_ENUM_AUTO},
+    {(const <span class="hljs-type">char</span> <span class="hljs-operator">*</span>) <span class="hljs-keyword">NULL</span>}   <span class="hljs-comment">/* list terminator */</span>
+};
+
+<span class="hljs-keyword">static</span> <span class="hljs-type">char</span> <span class="hljs-operator">*</span>str_param_default <span class="hljs-operator">=</span> &quot;default&quot;;
+
+<span class="hljs-comment">/*
+ * Sample validator: checks that string is not longer than 8 bytes.
+ */</span>
+<span class="hljs-keyword">static</span> void
+validate_my_string_relopt(const <span class="hljs-type">char</span> <span class="hljs-operator">*</span><span class="hljs-keyword">value</span>)
+{
+    if (strlen(<span class="hljs-keyword">value</span>) <span class="hljs-operator">&gt;</span> <span class="hljs-number">8</span>)
+        ereport(ERROR,
+                (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+                 errmsg(&quot;str_param must be at most 8 bytes&quot;)));
+}
+
+<span class="hljs-comment">/*
+ * Sample filler: switches characters to lower case.
+ */</span>
+<span class="hljs-keyword">static</span> Size
+fill_my_string_relopt(const <span class="hljs-type">char</span> <span class="hljs-operator">*</span><span class="hljs-keyword">value</span>, void <span class="hljs-operator">*</span>ptr)
+{
+    <span class="hljs-type">char</span>   <span class="hljs-operator">*</span>tmp <span class="hljs-operator">=</span> str_tolower(<span class="hljs-keyword">value</span>, strlen(<span class="hljs-keyword">value</span>), DEFAULT_COLLATION_OID);
+    <span class="hljs-type">int</span>     len <span class="hljs-operator">=</span> strlen(tmp);
+
+    if (ptr)
+        strcpy(ptr, tmp);
+
+    pfree(tmp);
+    <span class="hljs-keyword">return</span> len <span class="hljs-operator">+</span> <span class="hljs-number">1</span>;
+}
+
+PG_FUNCTION_INFO_V1(my_options);
+
+Datum
+my_options(PG_FUNCTION_ARGS)
+{
+    local_relopts <span class="hljs-operator">*</span>relopts <span class="hljs-operator">=</span> (local_relopts <span class="hljs-operator">*</span>) PG_GETARG_POINTER(<span class="hljs-number">0</span>);
+
+    init_local_reloptions(relopts, sizeof(MyOptionsStruct));
+    add_local_int_reloption(relopts, &quot;int_param&quot;, &quot;integer parameter&quot;,
+                            <span class="hljs-number">100</span>, <span class="hljs-number">0</span>, <span class="hljs-number">1000000</span>,
+                            offsetof(MyOptionsStruct, int_param));
+    add_local_real_reloption(relopts, &quot;real_param&quot;, &quot;real parameter&quot;,
+                             <span class="hljs-number">1.0</span>, <span class="hljs-number">0.0</span>, <span class="hljs-number">1000000.0</span>,
+                             offsetof(MyOptionsStruct, real_param));
+    add_local_enum_reloption(relopts, &quot;enum_param&quot;, &quot;enum parameter&quot;,
+                             myEnumValues, MY_ENUM_ON,
+                             &quot;Valid values are: \&quot;<span class="hljs-keyword">on</span>\&quot;, \&quot;off\&quot; and \&quot;auto\&quot;.&quot;,
+                             offsetof(MyOptionsStruct, enum_param));
+    add_local_string_reloption(relopts, &quot;str_param&quot;, &quot;string parameter&quot;,
+                               str_param_default,
+                               <span class="hljs-operator">&amp;</span>validate_my_string_relopt,
+                               <span class="hljs-operator">&amp;</span>fill_my_string_relopt,
+                               offsetof(MyOptionsStruct, str_param));
+
+    PG_RETURN_VOID();
+}
+
+PG_FUNCTION_INFO_V1(my_compress);
+
+Datum
+my_compress(PG_FUNCTION_ARGS)
+{
+    <span class="hljs-type">int</span>     int_param <span class="hljs-operator">=</span> <span class="hljs-number">100</span>;
+    <span class="hljs-keyword">double</span>  real_param <span class="hljs-operator">=</span> <span class="hljs-number">1.0</span>;
+    MyEnumType enum_param <span class="hljs-operator">=</span> MY_ENUM_ON;
+    <span class="hljs-type">char</span>   <span class="hljs-operator">*</span>str_param <span class="hljs-operator">=</span> str_param_default;
+
+    <span class="hljs-comment">/*
+     * Normally, when opclass contains &#x27;options&#x27; method, then options are always
+     * passed to support functions.  However, if you add &#x27;options&#x27; method to
+     * existing opclass, previously defined indexes have no options, so the
+     * check is required.
+     */</span>
+    if (PG_HAS_OPCLASS_OPTIONS())
+    {
+        MyOptionsStruct <span class="hljs-operator">*</span>options <span class="hljs-operator">=</span> (MyOptionsStruct <span class="hljs-operator">*</span>) PG_GET_OPCLASS_OPTIONS();
+
+        int_param <span class="hljs-operator">=</span> options<span class="hljs-operator">-</span><span class="hljs-operator">&gt;</span>int_param;
+        real_param <span class="hljs-operator">=</span> options<span class="hljs-operator">-</span><span class="hljs-operator">&gt;</span>real_param;
+        enum_param <span class="hljs-operator">=</span> options<span class="hljs-operator">-</span><span class="hljs-operator">&gt;</span>enum_param;
+        str_param <span class="hljs-operator">=</span> GET_STRING_RELOPTION(options, str_param);
+    }
+
+    <span class="hljs-comment">/* the rest implementation of support function */</span>
+}</code></pre></div></figure>
+<pre><code>Since the representation of the key in GiST is flexible, it may depend on user-specified parameters. For instance, the length of key signature may be specified. See `gtsvector_options()` for example.
+</code></pre>
+<p><code>sortsupport</code></p>
+<p>:   Returns a comparator function to sort data in a way that preserves locality. It is used by <code>CREATE INDEX</code> and <code>REINDEX</code> commands. The quality of the created index depends on how well the sort order determined by the comparator function preserves locality of the inputs.</p>
+<pre><code>The `sortsupport` method is optional. If it is not provided, `CREATE INDEX` builds the index by inserting each tuple to the tree using the `penalty` and `picksplit` functions, which is much slower.
+
+The SQL declaration of the function must look like this: 
+</code></pre>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>SQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-sql"><span class="hljs-keyword">CREATE</span> <span class="hljs-keyword">OR</span> REPLACE <span class="hljs-keyword">FUNCTION</span> my_sortsupport(internal)
+<span class="hljs-keyword">RETURNS</span> void
+<span class="hljs-keyword">AS</span> <span class="hljs-string">&#x27;MODULE_PATHNAME&#x27;</span>
+<span class="hljs-keyword">LANGUAGE</span> C STRICT;</code></pre></div></figure>
+<p> The argument is a pointer to a SortSupport struct. At a minimum, the function must fill in its comparator field. The comparator takes three arguments: two Datums to compare, and a pointer to the SortSupport struct. The Datums are the two indexed values in the format that they are stored in the index; that is, in the format returned by the <code>compress</code> method. The full API is defined in <code>src/include/utils/sortsupport.h</code>.</p>
+<pre><code>The matching code in the C module could then follow this skeleton: 
+</code></pre>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>SQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-sql">PG_FUNCTION_INFO_V1(my_sortsupport);
+
+<span class="hljs-keyword">static</span> <span class="hljs-type">int</span>
+my_fastcmp(Datum x, Datum y, SortSupport ssup)
+{
+  <span class="hljs-comment">/* establish order between x and y by computing some sorting value z */</span>
+
+  <span class="hljs-type">int</span> z1 <span class="hljs-operator">=</span> ComputeSpatialCode(x);
+  <span class="hljs-type">int</span> z2 <span class="hljs-operator">=</span> ComputeSpatialCode(y);
+
+  <span class="hljs-keyword">return</span> z1 <span class="hljs-operator">=</span><span class="hljs-operator">=</span> z2 ? <span class="hljs-number">0</span> : z1 <span class="hljs-operator">&gt;</span> z2 ? <span class="hljs-number">1</span> : <span class="hljs-number">-1</span>;
+}
+
+Datum
+my_sortsupport(PG_FUNCTION_ARGS)
+{
+  SortSupport ssup <span class="hljs-operator">=</span> (SortSupport) PG_GETARG_POINTER(<span class="hljs-number">0</span>);
+
+  ssup<span class="hljs-operator">-</span><span class="hljs-operator">&gt;</span>comparator <span class="hljs-operator">=</span> my_fastcmp;
+  PG_RETURN_VOID();
+}</code></pre></div></figure>
+<p><code>translate_cmptype</code></p>
+<p>:   Given a <code>CompareType</code> value from <code>src/include/access/cmptype.h</code>, returns a strategy number used by this operator class for matching functionality. The function should return <code>InvalidStrategy</code> if the operator class has no matching strategy.</p>
+<pre><code>This is used for temporal index constraints (i.e., `PRIMARY KEY` and `UNIQUE`). If the operator class provides this function and it returns results for `COMPARE_EQ`, it can be used in the non-`WITHOUT OVERLAPS` part(s) of an index constraint.
+
+This support function corresponds to the index access method callback function amtranslatecmptype (see [???](#index-functions)). The amtranslatecmptype callback function for GiST indexes merely calls down to the `translate_cmptype` support function of the respective operator family, since the GiST index access method has no fixed strategy numbers itself.
+
+The SQL declaration of the function must look like this: 
+</code></pre>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>SQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-sql"><span class="hljs-keyword">CREATE</span> <span class="hljs-keyword">OR</span> REPLACE <span class="hljs-keyword">FUNCTION</span> my_translate_cmptype(<span class="hljs-type">integer</span>)
+<span class="hljs-keyword">RETURNS</span> <span class="hljs-type">smallint</span>
+<span class="hljs-keyword">AS</span> <span class="hljs-string">&#x27;MODULE_PATHNAME&#x27;</span>
+<span class="hljs-keyword">LANGUAGE</span> C STRICT;</code></pre></div></figure>
+<p> And the operator family registration must look like this: </p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>SQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-sql"><span class="hljs-keyword">ALTER</span> OPERATOR FAMILY my_opfamily <span class="hljs-keyword">USING</span> gist <span class="hljs-keyword">ADD</span>
+    <span class="hljs-keyword">FUNCTION</span> <span class="hljs-number">12</span> (&quot;any&quot;, &quot;any&quot;) my_translate_cmptype(<span class="hljs-type">int</span>);</code></pre></div></figure>
+<pre><code>The matching code in the C module could then follow this skeleton: 
+</code></pre>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>SQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-sql">PG_FUNCTION_INFO_V1(my_translate_cmptype);
+
+Datum
+my_translate_cmptype(PG_FUNCTION_ARGS)
+{
+    CompareType cmptype <span class="hljs-operator">=</span> PG_GETARG_INT32(<span class="hljs-number">0</span>);
+    StrategyNumber ret <span class="hljs-operator">=</span> InvalidStrategy;
+
+    switch (cmptype)
+    {
+        <span class="hljs-keyword">case</span> COMPARE_EQ:
+            ret <span class="hljs-operator">=</span> BTEqualStrategyNumber;
+    }
+
+    PG_RETURN_UINT16(ret);
+}</code></pre></div></figure>
+<pre><code>One translation function is provided by PostgreSQL: `gist_translate_cmptype_common` is for operator classes that use the `RT*StrategyNumber` constants. The `btree_gist` extension defines a second translation function, `gist_translate_cmptype_btree`, for operator classes that use the `BT*StrategyNumber` constants.
+</code></pre>
+<p>All the GiST support methods are normally called in short-lived memory contexts; that is, <code>CurrentMemoryContext</code> will get reset after each tuple is processed. It is therefore not very important to worry about pfree&#39;ing everything you palloc. However, in some cases it&#39;s useful for a support method to cache data across repeated calls. To do that, allocate the longer-lived data in <code>fcinfo-&gt;flinfo-&gt;fn_mcxt</code>, and keep a pointer to it in <code>fcinfo-&gt;flinfo-&gt;fn_extra</code>. Such data will survive for the life of the index operation (e.g., a single GiST index scan, index build, or index tuple insertion). Be careful to pfree the previous value when replacing a <code>fn_extra</code> value, or the leak will accumulate for the duration of the operation.</p>
+<h2 id="implementation">Implementation</h2>
+<h3 id="gist-index-build-methods">GiST Index Build Methods</h3>
+<p>The simplest way to build a GiST index is just to insert all the entries, one by one. This tends to be slow for large indexes, because if the index tuples are scattered across the index and the index is large enough to not fit in cache, a lot of random I/O will be needed. PostgreSQL supports two alternative methods for initial build of a GiST index: sorted and buffered modes.</p>
+<p>The sorted method is only available if each of the opclasses used by the index provides a <code>sortsupport</code> function, as described in <a href="#gist-extensibility">Extensibility</a>. If they do, this method is usually the best, so it is used by default.</p>
+<p>The buffered method works by not inserting tuples directly into the index right away. It can dramatically reduce the amount of random I/O needed for non-ordered data sets. For well-ordered data sets the benefit is smaller or non-existent, because only a small number of pages receive new tuples at a time, and those pages fit in cache even if the index as a whole does not.</p>
+<p>The buffered method needs to call the <code>penalty</code> function more often than the simple method does, which consumes some extra CPU resources. Also, the buffers need temporary disk space, up to the size of the resulting index. Buffering can also influence the quality of the resulting index, in both positive and negative directions. That influence depends on various factors, like the distribution of the input data and the operator class implementation.</p>
+<p>If sorting is not possible, then by default a GiST index build switches to the buffering method when the index size reaches <a href="#guc-effective-cache-size">???</a>. Buffering can be manually forced or prevented by the <code>buffering</code> parameter to the CREATE INDEX command. The default behavior is good for most cases, but turning buffering off might speed up the build somewhat if the input data is ordered.</p>
+<h2 id="examples">Examples</h2>
+<p>The PostgreSQL source distribution includes several examples of index methods implemented using GiST. The core system currently provides text search support (indexing for <code>tsvector</code> and <code>tsquery</code>) as well as R-Tree equivalent functionality for some of the built-in geometric data types (see <code>src/backend/access/gist/gistproc.c</code>). The following <code>contrib</code> modules also contain GiST operator classes:</p>
+<p><code>btree_gist</code></p>
+<p>:   B-tree equivalent functionality for several data types</p>
+<p><code>cube</code></p>
+<p>:   Indexing for multidimensional cubes</p>
+<p><code>hstore</code></p>
+<p>:   Module for storing (key, value) pairs</p>
+<p><code>intarray</code></p>
+<p>:   RD-Tree for one-dimensional array of int4 values</p>
+<p><code>ltree</code></p>
+<p>:   Indexing for tree-like structures</p>
+<p><code>pg_trgm</code></p>
+<p>:   Text similarity using trigram matching</p>
+<p><code>seg</code></p>
+<p>:   Indexing for &quot;float ranges&quot;</p>

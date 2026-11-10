@@ -1,0 +1,203 @@
+<p>PostgreSQL uses an internal heuristic parser for all date/time input support. Dates and times are input as strings, and are broken up into distinct fields with a preliminary determination of what kind of information can be in the field. Each field is interpreted and either assigned a numeric value, ignored, or rejected. The parser contains internal lookup tables for all textual fields, including months, days of the week, and time zones.</p>
+<p>This appendix includes information on the content of these lookup tables and describes the steps used by the parser to decode dates and times.</p>
+<h1>Date/Time Input Interpretation</h1>
+<p>Date/time input strings are decoded using the following procedure.</p>
+<ol>
+<li><p>Break the input string into tokens and categorize each token as a string, time, time zone, or number.</p>
+<ol>
+<li><p>If the numeric token contains a colon (<code>:</code>), this is a time string. Include all subsequent digits and colons.</p>
+</li>
+<li><p>If the numeric token contains a dash (<code>-</code>), slash (<code>/</code>), or two or more dots (<code>.</code>), this is a date string which might have a text month. If a date token has already been seen, it is instead interpreted as a time zone name (e.g., <code>America/New_York</code>).</p>
+</li>
+<li><p>If the token is numeric only, then it is either a single field or an ISO 8601 concatenated date (e.g., <code>19990113</code> for January 13, 1999) or time (e.g., <code>141516</code> for 14:15:16).</p>
+</li>
+<li><p>If the token starts with a plus (<code>+</code>) or minus (<code>-</code>), then it is either a numeric time zone or a special field.</p>
+</li>
+</ol>
+</li>
+<li><p>If the token is an alphabetic string, match up with possible strings:</p>
+<ol>
+<li><p>See if the token matches any known time zone abbreviation. These abbreviations are determined by the configuration settings described in <a href="#datetime-config-files">Date/Time Configuration Files</a>.</p>
+</li>
+<li><p>If not found, search an internal table to match the token as either a special string (e.g., <code>today</code>), day (e.g., <code>Thursday</code>), month (e.g., <code>January</code>), or noise word (e.g., <code>at</code>, <code>on</code>).</p>
+</li>
+<li><p>If still not found, throw an error.</p>
+</li>
+</ol>
+</li>
+<li><p>When the token is a number or number field:</p>
+<ol>
+<li><p>If there are eight or six digits, and if no other date fields have been previously read, then interpret as a &quot;concatenated date&quot; (e.g., <code>19990118</code> or <code>990118</code>). The interpretation is <code>YYYYMMDD</code> or <code>YYMMDD</code>.</p>
+</li>
+<li><p>If the token is three digits and a year has already been read, then interpret as day of year.</p>
+</li>
+<li><p>If four or six digits and a year has already been read, then interpret as a time (<code>HHMM</code> or <code>HHMMSS</code>).</p>
+</li>
+<li><p>If three or more digits and no date fields have yet been found, interpret as a year (this forces yy-mm-dd ordering of the remaining date fields).</p>
+</li>
+<li><p>Otherwise the date field ordering is assumed to follow the <code>DateStyle</code> setting: mm-dd-yy, dd-mm-yy, or yy-mm-dd. Throw an error if a month or day field is found to be out of range.</p>
+</li>
+</ol>
+</li>
+<li><p>If BC has been specified, negate the year and add one for internal storage. (There is no year zero in the Gregorian calendar, so numerically 1 BC becomes year zero.)</p>
+</li>
+<li><p>If BC was not specified, and if the year field was two digits in length, then adjust the year to four digits. If the field is less than 70, then add 2000, otherwise add 1900.</p>
+<p>:::: tip
+::: title
+:::</p>
+<p>Gregorian years AD 199 can be entered by using 4 digits with leading zeros (e.g., <code>0099</code> is AD 99).
+::::</p>
+</li>
+</ol>
+<h1>Handling of Invalid or Ambiguous Timestamps</h1>
+<p>Ordinarily, if a date/time string is syntactically valid but contains out-of-range field values, an error will be thrown. For example, input specifying the 31st of February will be rejected.</p>
+<p>During a daylight-savings-time transition, it is possible for a seemingly valid timestamp string to represent a nonexistent or ambiguous timestamp. Such cases are not rejected; the ambiguity is resolved by determining which UTC offset to apply. For example, supposing that the <a href="#guc-timezone">???</a> parameter is set to <code>America/New_York</code>, consider </p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>SQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-sql"><span class="hljs-operator">=</span><span class="hljs-operator">&gt;</span> <span class="hljs-keyword">SELECT</span> <span class="hljs-string">&#x27;2018-03-11 02:30&#x27;</span>::timestamptz;
+      timestamptz
+<span class="hljs-comment">------------------------</span>
+ <span class="hljs-number">2018</span><span class="hljs-number">-03</span><span class="hljs-number">-11</span> <span class="hljs-number">03</span>:<span class="hljs-number">30</span>:<span class="hljs-number">00</span><span class="hljs-number">-04</span>
+(<span class="hljs-number">1</span> <span class="hljs-type">row</span>)</code></pre></div></figure>
+<p> Because that day was a spring-forward transition date in that time zone, there was no civil time instant 2:30AM; clocks jumped forward from 2AM EST to 3AM EDT. PostgreSQL interprets the given time as if it were standard time (UTC-5), which then renders as 3:30AM EDT (UTC-4).</p>
+<p>Conversely, consider the behavior during a fall-back transition: </p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>SQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-sql"><span class="hljs-operator">=</span><span class="hljs-operator">&gt;</span> <span class="hljs-keyword">SELECT</span> <span class="hljs-string">&#x27;2018-11-04 01:30&#x27;</span>::timestamptz;
+      timestamptz
+<span class="hljs-comment">------------------------</span>
+ <span class="hljs-number">2018</span><span class="hljs-number">-11</span><span class="hljs-number">-04</span> <span class="hljs-number">01</span>:<span class="hljs-number">30</span>:<span class="hljs-number">00</span><span class="hljs-number">-05</span>
+(<span class="hljs-number">1</span> <span class="hljs-type">row</span>)</code></pre></div></figure>
+<p> On that date, there were two possible interpretations of 1:30AM; there was 1:30AM EDT, and then an hour later after clocks jumped back from 2AM EDT to 1AM EST, there was 1:30AM EST. Again, PostgreSQL interprets the given time as if it were standard time (UTC-5). We can force the other interpretation by specifying daylight-savings time: </p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>SQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-sql"><span class="hljs-operator">=</span><span class="hljs-operator">&gt;</span> <span class="hljs-keyword">SELECT</span> <span class="hljs-string">&#x27;2018-11-04 01:30 EDT&#x27;</span>::timestamptz;
+      timestamptz
+<span class="hljs-comment">------------------------</span>
+ <span class="hljs-number">2018</span><span class="hljs-number">-11</span><span class="hljs-number">-04</span> <span class="hljs-number">01</span>:<span class="hljs-number">30</span>:<span class="hljs-number">00</span><span class="hljs-number">-04</span>
+(<span class="hljs-number">1</span> <span class="hljs-type">row</span>)</code></pre></div></figure>
+<p>The precise rule that is applied in such cases is that an invalid timestamp that appears to fall within a jump-forward daylight savings transition is assigned the UTC offset that prevailed in the time zone just before the transition, while an ambiguous timestamp that could fall on either side of a jump-back transition is assigned the UTC offset that prevailed just after the transition. In most time zones this is equivalent to saying that &quot;the standard-time interpretation is preferred when in doubt&quot;.</p>
+<p>In all cases, the UTC offset associated with a timestamp can be specified explicitly, using either a numeric UTC offset or a time zone abbreviation that corresponds to a fixed UTC offset. The rule just given applies only when it is necessary to infer a UTC offset for a time zone in which the offset varies.</p>
+<h1>Date/Time Key Words</h1>
+<p><a href="#datetime-month-table">Month Names</a> shows the tokens that are recognized as names of months.</p>
+<p>  Month       Abbreviations</p>
+<hr>
+<p>  January     Jan
+  February    Feb
+  March       Mar
+  April       Apr
+  May<br>June        Jun
+  July        Jul
+  August      Aug
+  September   Sep, Sept
+  October     Oct
+  November    Nov
+  December    Dec</p>
+<p>  : Month Names </p>
+<p><a href="#datetime-dow-table">Day of the Week Names</a> shows the tokens that are recognized as names of days of the week.</p>
+<p>  Day         Abbreviations</p>
+<hr>
+<p>  Sunday      Sun
+  Monday      Mon
+  Tuesday     Tue, Tues
+  Wednesday   Wed, Weds
+  Thursday    Thu, Thur, Thurs
+  Friday      Fri
+  Saturday    Sat</p>
+<p>  : Day of the Week Names </p>
+<p><a href="#datetime-mod-table">Date/Time Field Modifiers</a> shows the tokens that serve various modifier purposes.</p>
+<p>  Identifier            Description</p>
+<hr>
+<p>  <code>AM</code>                  Time is before 12:00
+  <code>AT</code>                  Ignored
+  <code>JULIAN</code>, <code>JD</code>, <code>J</code>   Next field is Julian Date
+  <code>ON</code>                  Ignored
+  <code>PM</code>                  Time is on or after 12:00
+  <code>T</code>                   Next field is time</p>
+<p>  : Date/Time Field Modifiers </p>
+<h1>Date/Time Configuration Files</h1>
+<p>time zone</p>
+<p>input abbreviations</p>
+<p>Since timezone abbreviations are not well standardized, PostgreSQL provides a means to customize the set of abbreviations accepted in datetime input. There are two sources for these abbreviations:</p>
+<ol>
+<li><p>The <a href="#guc-timezone">???</a> run-time parameter is usually set to the name of an entry in the IANA time zone database. If that zone has widely-used zone abbreviations, they will appear in the IANA data, and PostgreSQL will preferentially recognize those abbreviations with the meanings given in the IANA data. For example, if <code>timezone</code> is set to <code>America/New_York</code> then <code>EST</code> will be understood as UTC-5 and <code>EDT</code> will be understood as UTC-4. (These IANA abbreviations will also be used in datetime output, if <a href="#guc-datestyle">???</a> is set to a style that prefers non-numeric zone abbreviations.)</p>
+</li>
+<li><p>If an abbreviation is not found in the current IANA time zone, it is sought in the list specified by the <a href="#guc-timezone-abbreviations">???</a> run-time parameter. The <code>timezone_abbreviations</code> list is primarily useful for allowing datetime input to recognize abbreviations for time zones other than the current zone. (These abbreviations will not be used in datetime output.)</p>
+</li>
+</ol>
+<p>While the <code>timezone_abbreviations</code> parameter can be altered by any database user, the possible values for it are under the control of the database administrator they are in fact names of configuration files stored in <code>.../share/timezonesets/</code> of the installation directory. By adding or altering files in that directory, the administrator can set local policy for timezone abbreviations.</p>
+<p><code>timezone_abbreviations</code> can be set to any file name found in <code>.../share/timezonesets/</code>, if the file&#39;s name is entirely alphabetic. (The prohibition against non-alphabetic characters in <code>timezone_abbreviations</code> prevents reading files outside the intended directory, as well as reading editor backup files and other extraneous files.)</p>
+<p>A timezone abbreviation file can contain blank lines and comments beginning with <code>#</code>. Non-comment lines must have one of these formats: &lt;zone_abbreviation&gt; &lt;offset&gt; &lt;zone_abbreviation&gt; &lt;offset&gt; D &lt;zone_abbreviation&gt; &lt;time_zone_name&gt; @INCLUDE &lt;file_name&gt; @OVERRIDE</p>
+<p>A &lt;zone_abbreviation&gt; is just the abbreviation being defined. An &lt;offset&gt; is an integer giving the equivalent offset in seconds from UTC, positive being east from Greenwich and negative being west. For example, -18000 would be five hours west of Greenwich, or North American east coast standard time. <code>D</code> indicates that the zone name represents local daylight-savings time rather than standard time.</p>
+<p>Alternatively, a &lt;time_zone_name&gt; can be given, referencing a zone name defined in the IANA timezone database. The zone&#39;s definition is consulted to see whether the abbreviation is or has been in use in that zone, and if so, the appropriate meaning is used that is, the meaning that was currently in use at the timestamp whose value is being determined, or the meaning in use immediately before that if it wasn&#39;t current at that time, or the oldest meaning if it was used only after that time. This behavior is essential for dealing with abbreviations whose meaning has historically varied. It is also allowed to define an abbreviation in terms of a zone name in which that abbreviation does not appear; then using the abbreviation is just equivalent to writing out the zone name.</p>
+<p>Using a simple integer &lt;offset&gt; is preferred when defining an abbreviation whose offset from UTC has never changed, as such abbreviations are much cheaper to process than those that require consulting a time zone definition.</p>
+<p>The <code>@INCLUDE</code> syntax allows inclusion of another file in the <code>.../share/timezonesets/</code> directory. Inclusion can be nested, to a limited depth.</p>
+<p>The <code>@OVERRIDE</code> syntax indicates that subsequent entries in the file can override previous entries (typically, entries obtained from included files). Without this, conflicting definitions of the same timezone abbreviation are considered an error.</p>
+<p>In an unmodified installation, the file <code>Default</code> contains all the non-conflicting time zone abbreviations for most of the world. Additional files <code>Australia</code> and <code>India</code> are provided for those regions: these files first include the <code>Default</code> file and then add or modify abbreviations as needed.</p>
+<p>For reference purposes, a standard installation also contains files <code>Africa.txt</code>, <code>America.txt</code>, etc., containing information about every time zone abbreviation known to be in use according to the IANA timezone database. The zone name definitions found in these files can be copied and pasted into a custom configuration file as needed. Note that these files cannot be directly referenced as <code>timezone_abbreviations</code> settings, because of the dot embedded in their names.</p>
+<p>If an error occurs while reading the time zone abbreviation set, no new value is applied and the old set is kept. If the error occurs while starting the database, startup fails.</p>
+<p>Time zone abbreviations defined in the configuration file override non-timezone meanings built into PostgreSQL. For example, the <code>Australia</code> configuration file defines <code>SAT</code> (for South Australian Standard Time). When this file is active, <code>SAT</code> will not be recognized as an abbreviation for Saturday.</p>
+<p>If you modify files in <code>.../share/timezonesets/</code>, it is up to you to make backups a normal database dump will not include this directory.</p>
+<h1>POSIX Time Zone Specifications</h1>
+<p>time zone</p>
+<p>POSIX</p>
+<p>-style specification</p>
+<p>PostgreSQL can accept time zone specifications that are written according to the POSIX standard&#39;s rules for the <code>TZ</code> environment variable. POSIX time zone specifications are inadequate to deal with the complexity of real-world time zone history, but there are sometimes reasons to use them.</p>
+<p>A POSIX time zone specification has the form &lt;STD&gt; &lt;offset&gt; [&lt;DST&gt; [&lt;dstoffset&gt;] [, &lt;rule&gt;]] (For readability, we show spaces between the fields, but spaces should not be used in practice.) The fields are:</p>
+<ul>
+<li><p>&lt;STD&gt; is the zone abbreviation to be used for standard time.</p>
+</li>
+<li><p>&lt;offset&gt; is the zone&#39;s standard-time offset from UTC.</p>
+</li>
+<li><p>&lt;DST&gt; is the zone abbreviation to be used for daylight-savings time. If this field and the following ones are omitted, the zone uses a fixed UTC offset with no daylight-savings rule.</p>
+</li>
+<li><p>&lt;dstoffset&gt; is the daylight-savings offset from UTC. This field is typically omitted, since it defaults to one hour less than the standard-time &lt;offset&gt;, which is usually the right thing.</p>
+</li>
+<li><p>&lt;rule&gt; defines the rule for when daylight savings is in effect, as described below.</p>
+</li>
+</ul>
+<p>In this syntax, a zone abbreviation can be a string of letters, such as <code>EST</code>, or an arbitrary string surrounded by angle brackets, such as <code>&lt;UTC-05&gt;</code>. Note that the zone abbreviations given here are only used for output, and even then only in some timestamp output formats. The zone abbreviations recognized in timestamp input are determined as explained in <a href="#datetime-config-files">Date/Time Configuration Files</a>.</p>
+<p>The offset fields specify the hours, and optionally minutes and seconds, difference from UTC. They have the format &lt;hh&gt;[<code>:</code>&lt;mm&gt;[<code>:</code>&lt;ss&gt;]] optionally with a leading sign (<code>+</code> or <code>-</code>). The positive sign is used for zones <em>west</em> of Greenwich. (Note that this is the opposite of the ISO-8601 sign convention used elsewhere in PostgreSQL.) &lt;hh&gt; can have one or two digits; &lt;mm&gt; and &lt;ss&gt; (if used) must have two.</p>
+<p>The daylight-savings transition &lt;rule&gt; has the format &lt;dstdate&gt; [<code>/</code> &lt;dsttime&gt;] <code>,</code> &lt;stddate&gt; [<code>/</code> &lt;stdtime&gt;] (As before, spaces should not be included in practice.) The &lt;dstdate&gt; and &lt;dsttime&gt; fields define when daylight-savings time starts, while &lt;stddate&gt; and &lt;stdtime&gt; define when standard time starts. (In some cases, notably in zones south of the equator, the former might be later in the year than the latter.) The date fields have one of these formats:</p>
+<p>&lt;n&gt;</p>
+<p>:   A plain integer denotes a day of the year, counting from zero to 364, or to 365 in leap years.</p>
+<p><code>J</code>&lt;n&gt;</p>
+<p>:   In this form, &lt;n&gt; counts from 1 to 365, and February 29 is not counted even if it is present. (Thus, a transition occurring on February 29 could not be specified this way. However, days after February have the same numbers whether it&#39;s a leap year or not, so that this form is usually more useful than the plain-integer form for transitions on fixed dates.)</p>
+<p><code>M</code>&lt;m&gt;<code>.</code>&lt;n&gt;<code>.</code>&lt;d&gt;</p>
+<p>:   This form specifies a transition that always happens during the same month and on the same day of the week. &lt;m&gt; identifies the month, from 1 to 12. &lt;n&gt; specifies the &lt;n&gt;&#39;th occurrence of the weekday identified by &lt;d&gt;. &lt;n&gt; is a number between 1 and 4, or 5 meaning the last occurrence of that weekday in the month (which could be the fourth or the fifth). &lt;d&gt; is a number between 0 and 6, with 0 indicating Sunday. For example, <code>M3.2.0</code> means &quot;the second Sunday in March&quot;.</p>
+<p>The <code>M</code> format is sufficient to describe many common daylight-savings transition laws. But note that none of these variants can deal with daylight-savings law changes, so in practice the historical data stored for named time zones (in the IANA time zone database) is necessary to interpret past time stamps correctly.</p>
+<p>The time fields in a transition rule have the same format as the offset fields described previously, except that they cannot contain signs. They define the current local time at which the change to the other time occurs. If omitted, they default to <code>02:00:00</code>.</p>
+<p>If a daylight-savings abbreviation is given but the transition &lt;rule&gt; field is omitted, the fallback behavior is to use the rule <code>M3.2.0,M11.1.0</code>, which corresponds to USA practice as of 2020 (that is, spring forward on the second Sunday of March, fall back on the first Sunday of November, both transitions occurring at 2AM prevailing time). Note that this rule does not give correct USA transition dates for years before 2007.</p>
+<p>As an example, <code>CET-1CEST,M3.5.0,M10.5.0/3</code> describes the current (as of 2020) timekeeping practice in Paris. This specification says that standard time has the abbreviation <code>CET</code> and is one hour ahead (east) of UTC; daylight savings time has the abbreviation <code>CEST</code> and is implicitly two hours ahead of UTC; daylight savings time begins on the last Sunday in March at 2AM CET and ends on the last Sunday in October at 3AM CEST.</p>
+<p>The four timezone names <code>EST5EDT</code>, <code>CST6CDT</code>, <code>MST7MDT</code>, and <code>PST8PDT</code> look like they are POSIX zone specifications. However, they actually are treated as named time zones because (for historical reasons) there are files by those names in the IANA time zone database. The practical implication of this is that these zone names will produce valid historical USA daylight-savings transitions, even when a plain POSIX specification would not.</p>
+<p>One should be wary that it is easy to misspell a POSIX-style time zone specification, since there is no check on the reasonableness of the zone abbreviation(s). For example, <code>SET TIMEZONE TO FOOBAR0</code> will work, leaving the system effectively using a rather peculiar abbreviation for UTC.</p>
+<h1>History of Units</h1>
+<p>Gregorian calendar</p>
+<p>The SQL standard states that &quot;Within the definition of a &#39;datetime literal&#39;, the &#39;datetime values&#39; are constrained by the natural rules for dates and times according to the Gregorian calendar&quot;. PostgreSQL follows the SQL standard&#39;s lead by counting dates exclusively in the Gregorian calendar, even for years before that calendar was in use. This rule is known as the proleptic Gregorian calendar.</p>
+<p>The Julian calendar was introduced by Julius Caesar in 45 BC. It was in common use in the Western world until the year 1582, when countries started changing to the Gregorian calendar. In the Julian calendar, the tropical year is approximated as 365 1/4 days = 365.25 days. This gives an error of about 1 day in 128 years.</p>
+<p>The accumulating calendar error prompted Pope Gregory XIII to reform the calendar in accordance with instructions from the Council of Trent. In the Gregorian calendar, the tropical year is approximated as 365 + 97 / 400 days = 365.2425 days. Thus it takes approximately 3300 years for the tropical year to shift one day with respect to the Gregorian calendar.</p>
+<p>The approximation 365+97/400 is achieved by having 97 leap years every 400 years, using the following rules: Every year divisible by 4 is a leap year., However, every year divisible by 100 is not a leap year., However, every year divisible by 400 is a leap year after all. So, 1700, 1800, 1900, 2100, and 2200 are not leap years. But 1600, 2000, and 2400 are leap years. By contrast, in the older Julian calendar all years divisible by 4 are leap years.</p>
+<p>The papal bull of February 1582 decreed that 10 days should be dropped from October 1582 so that 15 October should follow immediately after 4 October. This was observed in Italy, Poland, Portugal, and Spain. Other Catholic countries followed shortly after, but Protestant countries were reluctant to change, and the Greek Orthodox countries didn&#39;t change until the start of the 20th century. The reform was observed by Great Britain and its dominions (including what is now the USA) in 1752. Thus 2 September 1752 was followed by 14 September 1752. This is why Unix systems that have the <code>cal</code> program produce the following: </p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>SQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-sql">$ <span class="hljs-operator">&lt;</span>userinput<span class="hljs-operator">&gt;</span>cal <span class="hljs-number">9</span> <span class="hljs-number">1752</span><span class="hljs-operator">&lt;</span><span class="hljs-operator">/</span>userinput<span class="hljs-operator">&gt;</span>
+   September <span class="hljs-number">1752</span>
+ S  M Tu  W Th  F  S
+       <span class="hljs-number">1</span>  <span class="hljs-number">2</span> <span class="hljs-number">14</span> <span class="hljs-number">15</span> <span class="hljs-number">16</span>
+<span class="hljs-number">17</span> <span class="hljs-number">18</span> <span class="hljs-number">19</span> <span class="hljs-number">20</span> <span class="hljs-number">21</span> <span class="hljs-number">22</span> <span class="hljs-number">23</span>
+<span class="hljs-number">24</span> <span class="hljs-number">25</span> <span class="hljs-number">26</span> <span class="hljs-number">27</span> <span class="hljs-number">28</span> <span class="hljs-number">29</span> <span class="hljs-number">30</span></code></pre></div></figure>
+<p> But, of course, this calendar is only valid for Great Britain and dominions, not other places. Since it would be difficult and confusing to try to track the actual calendars that were in use in various places at various times, PostgreSQL does not try, but rather follows the Gregorian calendar rules for all dates, even though this method is not historically accurate.</p>
+<p>Different calendars have been developed in various parts of the world, many predating the Gregorian system. For example, the beginnings of the Chinese calendar can be traced back to the 14th century BC. Legend has it that the Emperor Huangdi invented that calendar in 2637 BC. The People&#39;s Republic of China uses the Gregorian calendar for civil purposes. The Chinese calendar is used for determining festivals.</p>
+<h1>Julian Dates</h1>
+<p>Julian date</p>
+<p>The Julian Date system is a method for numbering days. It is unrelated to the Julian calendar, though it is confusingly named similarly to that calendar. The Julian Date system was invented by the French scholar Joseph Justus Scaliger (15401609) and probably takes its name from Scaliger&#39;s father, the Italian scholar Julius Caesar Scaliger (14841558).</p>
+<p>In the Julian Date system, each day has a sequential number, starting from JD 0 (which is sometimes called <em>the</em> Julian Date). JD 0 corresponds to 1 January 4713 BC in the Julian calendar, or 24 November 4714 BC in the Gregorian calendar. Julian Date counting is most often used by astronomers for labeling their nightly observations, and therefore a date runs from noon UTC to the next noon UTC, rather than from midnight to midnight: JD 0 designates the 24 hours from noon UTC on 24 November 4714 BC to noon UTC on 25 November 4714 BC.</p>
+<p>Although PostgreSQL supports Julian Date notation for input and output of dates (and also uses Julian dates for some internal datetime calculations), it does not observe the nicety of having dates run from noon to noon. PostgreSQL treats a Julian Date as running from local midnight to local midnight, the same as a normal date.</p>
+<p>This definition does, however, provide a way to obtain the astronomical definition when you need it: do the arithmetic in time zone <code>UTC+12</code>. For example, </p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>SQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-sql"><span class="hljs-operator">=</span><span class="hljs-operator">&gt;</span> <span class="hljs-keyword">SELECT</span> <span class="hljs-built_in">extract</span>(julian <span class="hljs-keyword">FROM</span> <span class="hljs-string">&#x27;2021-06-23 7:00:00-04&#x27;</span>::timestamptz <span class="hljs-keyword">AT</span> <span class="hljs-type">TIME</span> ZONE <span class="hljs-string">&#x27;UTC+12&#x27;</span>);
+           extract
+<span class="hljs-comment">------------------------------</span>
+ <span class="hljs-number">2459388.95833333333333333333</span>
+(<span class="hljs-number">1</span> <span class="hljs-type">row</span>)
+<span class="hljs-operator">=</span><span class="hljs-operator">&gt;</span> <span class="hljs-keyword">SELECT</span> <span class="hljs-built_in">extract</span>(julian <span class="hljs-keyword">FROM</span> <span class="hljs-string">&#x27;2021-06-23 8:00:00-04&#x27;</span>::timestamptz <span class="hljs-keyword">AT</span> <span class="hljs-type">TIME</span> ZONE <span class="hljs-string">&#x27;UTC+12&#x27;</span>);
+               extract
+<span class="hljs-comment">--------------------------------------</span>
+ <span class="hljs-number">2459389.0000000000000000000000000000</span>
+(<span class="hljs-number">1</span> <span class="hljs-type">row</span>)
+<span class="hljs-operator">=</span><span class="hljs-operator">&gt;</span> <span class="hljs-keyword">SELECT</span> <span class="hljs-built_in">extract</span>(julian <span class="hljs-keyword">FROM</span> <span class="hljs-type">date</span> <span class="hljs-string">&#x27;2021-06-23&#x27;</span>);
+ extract
+<span class="hljs-comment">---------</span>
+ <span class="hljs-number">2459389</span>
+(<span class="hljs-number">1</span> <span class="hljs-type">row</span>)</code></pre></div></figure>

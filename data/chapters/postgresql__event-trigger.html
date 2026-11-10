@@ -1,0 +1,242 @@
+<p>event trigger</p>
+<p>To supplement the trigger mechanism discussed in <a href="#triggers">???</a>, PostgreSQL also provides event triggers. Unlike regular triggers, which are attached to a single table and capture only DML events, event triggers are global to a particular database and are capable of capturing DDL events.</p>
+<p>Like regular triggers, event triggers can be written in any procedural language that includes event trigger support, or in C, but not in plain SQL.</p>
+<h2 id="overview-of-event-trigger-behavior">Overview of Event Trigger Behavior</h2>
+<p>An event trigger fires whenever the event with which it is associated occurs in the database in which it is defined. Currently, the supported events are <code>login</code>, <code>ddl_command_start</code>, <code>ddl_command_end</code>, <code>table_rewrite</code> and <code>sql_drop</code>. Support for additional events may be added in future releases.</p>
+<h3 id="login">login</h3>
+<p>The <code>login</code> event occurs when an authenticated user logs into the system. Any bug in a trigger procedure for this event may prevent successful login to the system. Such bugs may be worked around by setting <a href="#guc-event-triggers">???</a> to <code>false</code> either in a connection string or configuration file. Alternatively, you can restart the system in single-user mode (as event triggers are disabled in this mode). See the <a href="#app-postgres">???</a> reference page for details about using single-user mode. The <code>login</code> event will also fire on standby servers. To prevent servers from becoming inaccessible, such triggers must avoid writing anything to the database when running on a standby. Also, it&#39;s recommended to avoid long-running queries in <code>login</code> event triggers. Note that, for instance, canceling a connection in psql will not cancel the in-progress <code>login</code> trigger.</p>
+<p>For an example on how to use the <code>login</code> event trigger, see <a href="#event-trigger-database-login-example">A Database Login Event Trigger Example</a>.</p>
+<h3 id="ddlcommandstart">ddl_command_start</h3>
+<p>The <code>ddl_command_start</code> event occurs just before the execution of a DDL command. DDL commands in this context are:</p>
+<ul>
+<li><p><code>CREATE</code></p>
+</li>
+<li><p><code>ALTER</code></p>
+</li>
+<li><p><code>DROP</code></p>
+</li>
+<li><p><code>COMMENT</code></p>
+</li>
+<li><p><code>GRANT</code></p>
+</li>
+<li><p><code>IMPORT FOREIGN SCHEMA</code></p>
+</li>
+<li><p><code>REINDEX</code></p>
+</li>
+<li><p><code>REFRESH MATERIALIZED VIEW</code></p>
+</li>
+<li><p><code>REVOKE</code></p>
+</li>
+<li><p><code>SECURITY LABEL</code></p>
+</li>
+</ul>
+<p><code>ddl_command_start</code> also occurs just before the execution of a <code>SELECT INTO</code> command, since this is equivalent to <code>CREATE TABLE AS</code>.</p>
+<p>As an exception, this event does not occur for DDL commands targeting shared objects:</p>
+<ul>
+<li><p>databases</p>
+</li>
+<li><p>roles (role definitions and role memberships)</p>
+</li>
+<li><p>tablespaces</p>
+</li>
+<li><p>parameter privileges</p>
+</li>
+<li><p><code>ALTER SYSTEM</code></p>
+</li>
+</ul>
+<p>This event also does not occur for commands targeting event triggers themselves.</p>
+<p>No check whether the affected object exists or doesn&#39;t exist is performed before the event trigger fires.</p>
+<h3 id="ddlcommandend">ddl_command_end</h3>
+<p>The <code>ddl_command_end</code> event occurs just after the execution of the same set of commands as <code>ddl_command_start</code>. To obtain more details on the DDL operations that took place, use the set-returning function <code>pg_event_trigger_ddl_commands()</code> from the <code>ddl_command_end</code> event trigger code (see <a href="#functions-event-triggers">???</a>). Note that the trigger fires after the actions have taken place (but before the transaction commits), and thus the system catalogs can be read as already changed.</p>
+<h3 id="sqldrop">sql_drop</h3>
+<p>The <code>sql_drop</code> event occurs just before the <code>ddl_command_end</code> event trigger for any operation that drops database objects. Note that besides the obvious <code>DROP</code> commands, some <code>ALTER</code> commands can also trigger an <code>sql_drop</code> event.</p>
+<p>To list the objects that have been dropped, use the set-returning function <code>pg_event_trigger_dropped_objects()</code> from the <code>sql_drop</code> event trigger code (see <a href="#functions-event-triggers">???</a>). Note that the trigger is executed after the objects have been deleted from the system catalogs, so it&#39;s not possible to look them up anymore.</p>
+<h3 id="tablerewrite">table_rewrite</h3>
+<p>The <code>table_rewrite</code> event occurs just before a table is rewritten by some actions of the commands <code>ALTER TABLE</code> and <code>ALTER TYPE</code>. While other control statements are available to rewrite a table, like <code>CLUSTER</code> and <code>VACUUM</code>, the <code>table_rewrite</code> event is not triggered by them. To find the OID of the table that was rewritten, use the function <code>pg_event_trigger_table_rewrite_oid()</code>, to discover the reason(s) for the rewrite, use the function <code>pg_event_trigger_table_rewrite_reason()</code> (see <a href="#functions-event-triggers">???</a>).</p>
+<h3 id="event-triggers-in-aborted-transactions">Event Triggers in Aborted Transactions</h3>
+<p>Event triggers (like other functions) cannot be executed in an aborted transaction. Thus, if a DDL command fails with an error, any associated <code>ddl_command_end</code> triggers will not be executed. Conversely, if a <code>ddl_command_start</code> trigger fails with an error, no further event triggers will fire, and no attempt will be made to execute the command itself. Similarly, if a <code>ddl_command_end</code> trigger fails with an error, the effects of the DDL statement will be rolled back, just as they would be in any other case where the containing transaction aborts.</p>
+<h3 id="creating-event-triggers">Creating Event Triggers</h3>
+<p>Event triggers are created using the command <a href="#sql-createeventtrigger">???</a>. In order to create an event trigger, you must first create a function with the special return type <code>event_trigger</code>. This function need not (and may not) return a value; the return type serves merely as a signal that the function is to be invoked as an event trigger.</p>
+<p>If more than one event trigger is defined for a particular event, they will fire in alphabetical order by trigger name.</p>
+<p>A trigger definition can also specify a <code>WHEN</code> condition so that, for example, a <code>ddl_command_start</code> trigger can be fired only for particular commands which the user wishes to intercept. A common use of such triggers is to restrict the range of DDL operations which users may perform.</p>
+<h2 id="writing-event-trigger-functions-in-c">Writing Event Trigger Functions in C</h2>
+<p>event trigger</p>
+<p>in C</p>
+<p>This section describes the low-level details of the interface to an event trigger function. This information is only needed when writing event trigger functions in C. If you are using a higher-level language then these details are handled for you. In most cases you should consider using a procedural language before writing your event triggers in C. The documentation of each procedural language explains how to write an event trigger in that language.</p>
+<p>Event trigger functions must use the &quot;version 1&quot; function manager interface.</p>
+<p>When a function is called by the event trigger manager, it is not passed any normal arguments, but it is passed a &quot;context&quot; pointer pointing to a EventTriggerData structure. C functions can check whether they were called from the event trigger manager or not by executing the macro: </p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>SQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-sql">CALLED_AS_EVENT_TRIGGER(fcinfo)</code></pre></div></figure>
+<p> which expands to: </p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>SQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-sql">((fcinfo)<span class="hljs-operator">-</span><span class="hljs-operator">&gt;</span>context <span class="hljs-operator">!=</span> <span class="hljs-keyword">NULL</span> <span class="hljs-operator">&amp;&amp;</span> IsA((fcinfo)<span class="hljs-operator">-</span><span class="hljs-operator">&gt;</span>context, EventTriggerData))</code></pre></div></figure>
+<p> If this returns true, then it is safe to cast <code>fcinfo-&gt;context</code> to type <code>EventTriggerData *</code> and make use of the pointed-to EventTriggerData structure. The function must <em>not</em> alter the EventTriggerData structure or any of the data it points to.</p>
+<p>struct EventTriggerData is defined in <code>commands/event_trigger.h</code>: </p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>SQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-sql">typedef struct EventTriggerData
+{
+    NodeTag     type;
+    const <span class="hljs-type">char</span> <span class="hljs-operator">*</span>event;      <span class="hljs-comment">/* event name */</span>
+    Node       <span class="hljs-operator">*</span>parsetree;  <span class="hljs-comment">/* parse tree */</span>
+    CommandTag  tag;        <span class="hljs-comment">/* command tag */</span>
+} EventTriggerData;</code></pre></div></figure>
+<p> where the members are defined as follows:</p>
+<p>type</p>
+<p>:   Always <code>T_EventTriggerData</code>.</p>
+<p>event</p>
+<p>:   Describes the event for which the function is called, one of <code>&quot;login&quot;</code>, <code>&quot;ddl_command_start&quot;</code>, <code>&quot;ddl_command_end&quot;</code>, <code>&quot;sql_drop&quot;</code>, <code>&quot;table_rewrite&quot;</code>. See <a href="#event-trigger-definition">Overview of Event Trigger Behavior</a> for the meaning of these events.</p>
+<p>parsetree</p>
+<p>:   A pointer to the parse tree of the command. Check the PostgreSQL source code for details. The parse tree structure is subject to change without notice.</p>
+<p>tag</p>
+<p>:   The command tag associated with the event for which the event trigger is run, for example <code>&quot;CREATE FUNCTION&quot;</code>.</p>
+<p>An event trigger function must return a <code>NULL</code> pointer (<em>not</em> an SQL null value, that is, do not set <code>isNull</code> true).</p>
+<h2 id="a-complete-event-trigger-example">A Complete Event Trigger Example</h2>
+<p>Here is a very simple example of an event trigger function written in C. (Examples of triggers written in procedural languages can be found in the documentation of the procedural languages.)</p>
+<p>The function <code>noddl</code> raises an exception each time it is called. The event trigger definition associated the function with the <code>ddl_command_start</code> event. The effect is that all DDL commands (with the exceptions mentioned in <a href="#event-trigger-definition">Overview of Event Trigger Behavior</a>) are prevented from running.</p>
+<p>This is the source code of the trigger function: </p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>SQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-sql">#include &quot;postgres.h&quot;
+
+#include &quot;commands/event_trigger.h&quot;
+#include &quot;fmgr.h&quot;
+
+PG_MODULE_MAGIC;
+
+PG_FUNCTION_INFO_V1(noddl);
+
+Datum
+noddl(PG_FUNCTION_ARGS)
+{
+    EventTriggerData <span class="hljs-operator">*</span>trigdata;
+
+    if (<span class="hljs-operator">!</span>CALLED_AS_EVENT_TRIGGER(fcinfo))  <span class="hljs-comment">/* internal error */</span>
+        elog(ERROR, &quot;not fired by event trigger manager&quot;);
+
+    trigdata <span class="hljs-operator">=</span> (EventTriggerData <span class="hljs-operator">*</span>) fcinfo<span class="hljs-operator">-</span><span class="hljs-operator">&gt;</span>context;
+
+    ereport(ERROR,
+            (errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+             errmsg(&quot;command \&quot;<span class="hljs-operator">%</span>s\&quot; denied&quot;,
+                    GetCommandTagName(trigdata<span class="hljs-operator">-</span><span class="hljs-operator">&gt;</span>tag))));
+
+    PG_RETURN_NULL();
+}</code></pre></div></figure>
+<p>After you have compiled the source code (see <a href="#dfunc">???</a>), declare the function and the triggers: </p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>SQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-sql"><span class="hljs-keyword">CREATE</span> <span class="hljs-keyword">FUNCTION</span> noddl() <span class="hljs-keyword">RETURNS</span> event_trigger
+    <span class="hljs-keyword">AS</span> <span class="hljs-string">&#x27;noddl&#x27;</span> <span class="hljs-keyword">LANGUAGE</span> C;
+
+<span class="hljs-keyword">CREATE</span> EVENT <span class="hljs-keyword">TRIGGER</span> noddl <span class="hljs-keyword">ON</span> ddl_command_start
+    <span class="hljs-keyword">EXECUTE</span> <span class="hljs-keyword">FUNCTION</span> noddl();</code></pre></div></figure>
+<p>Now you can test the operation of the trigger: </p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>SQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-sql"><span class="hljs-operator">=</span># \dy
+                     List <span class="hljs-keyword">of</span> event triggers
+ Name  <span class="hljs-operator">|</span>       Event       <span class="hljs-operator">|</span> Owner <span class="hljs-operator">|</span> Enabled <span class="hljs-operator">|</span> <span class="hljs-keyword">Function</span> <span class="hljs-operator">|</span> Tags
+<span class="hljs-comment">-------+-------------------+-------+---------+----------+------</span>
+ noddl <span class="hljs-operator">|</span> ddl_command_start <span class="hljs-operator">|</span> dim   <span class="hljs-operator">|</span> enabled <span class="hljs-operator">|</span> noddl    <span class="hljs-operator">|</span>
+(<span class="hljs-number">1</span> <span class="hljs-type">row</span>)
+
+<span class="hljs-operator">=</span># <span class="hljs-keyword">CREATE TABLE</span> foo(id serial);
+ERROR:  command &quot;CREATE TABLE&quot; denied</code></pre></div></figure>
+<p>In this situation, in order to be able to run some DDL commands when you need to do so, you have to either drop the event trigger or disable it. It can be convenient to disable the trigger for only the duration of a transaction: </p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>SQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-sql"><span class="hljs-keyword">BEGIN</span>;
+<span class="hljs-keyword">ALTER</span> EVENT <span class="hljs-keyword">TRIGGER</span> noddl DISABLE;
+<span class="hljs-keyword">CREATE TABLE</span> foo (id serial);
+<span class="hljs-keyword">ALTER</span> EVENT <span class="hljs-keyword">TRIGGER</span> noddl ENABLE;
+<span class="hljs-keyword">COMMIT</span>;</code></pre></div></figure>
+<p> (Recall that DDL commands on event triggers themselves are not affected by event triggers.)</p>
+<h2 id="a-table-rewrite-event-trigger-example">A Table Rewrite Event Trigger Example</h2>
+<p>Thanks to the <code>table_rewrite</code> event, it is possible to implement a table rewriting policy only allowing the rewrite in maintenance windows.</p>
+<p>Here&#39;s an example implementing such a policy. </p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>SQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-sql"><span class="hljs-keyword">CREATE</span> <span class="hljs-keyword">OR</span> REPLACE <span class="hljs-keyword">FUNCTION</span> no_rewrite()
+ <span class="hljs-keyword">RETURNS</span> event_trigger
+ <span class="hljs-keyword">LANGUAGE</span> plpgsql <span class="hljs-keyword">AS</span>
+$$
+<span class="hljs-comment">---</span>
+<span class="hljs-comment">--- Implement local Table Rewriting policy:</span>
+<span class="hljs-comment">---   public.foo is not allowed rewriting, ever</span>
+<span class="hljs-comment">---   other tables are only allowed rewriting between 1am and 6am</span>
+<span class="hljs-comment">---   unless they have more than 100 blocks</span>
+<span class="hljs-comment">---</span>
+<span class="hljs-keyword">DECLARE</span>
+  table_oid oid :<span class="hljs-operator">=</span> pg_event_trigger_table_rewrite_oid();
+  current_hour <span class="hljs-type">integer</span> :<span class="hljs-operator">=</span> <span class="hljs-built_in">extract</span>(<span class="hljs-string">&#x27;hour&#x27;</span> <span class="hljs-keyword">FROM</span> <span class="hljs-built_in">current_time</span>);
+  pages <span class="hljs-type">integer</span>;
+  max_pages <span class="hljs-type">integer</span> :<span class="hljs-operator">=</span> <span class="hljs-number">100</span>;
+<span class="hljs-keyword">BEGIN</span>
+  IF pg_event_trigger_table_rewrite_oid() <span class="hljs-operator">=</span> <span class="hljs-string">&#x27;public.foo&#x27;</span>::regclass
+  <span class="hljs-keyword">THEN</span>
+        RAISE EXCEPTION <span class="hljs-string">&#x27;you&#x27;&#x27;re not allowed to rewrite the table %&#x27;</span>,
+                        table_oid::regclass;
+  <span class="hljs-keyword">END</span> IF;
+
+  <span class="hljs-keyword">SELECT</span> <span class="hljs-keyword">INTO</span> pages relpages <span class="hljs-keyword">FROM</span> pg_class <span class="hljs-keyword">WHERE</span> oid <span class="hljs-operator">=</span> table_oid;
+  IF pages <span class="hljs-operator">&gt;</span> max_pages
+  <span class="hljs-keyword">THEN</span>
+        RAISE EXCEPTION <span class="hljs-string">&#x27;rewrites only allowed for table with less than % pages&#x27;</span>,
+                        max_pages;
+  <span class="hljs-keyword">END</span> IF;
+
+  IF current_hour <span class="hljs-keyword">NOT</span> <span class="hljs-keyword">BETWEEN</span> <span class="hljs-number">1</span> <span class="hljs-keyword">AND</span> <span class="hljs-number">6</span>
+  <span class="hljs-keyword">THEN</span>
+        RAISE EXCEPTION <span class="hljs-string">&#x27;rewrites only allowed between 1am and 6am&#x27;</span>;
+  <span class="hljs-keyword">END</span> IF;
+<span class="hljs-keyword">END</span>;
+$$;
+
+<span class="hljs-keyword">CREATE</span> EVENT <span class="hljs-keyword">TRIGGER</span> no_rewrite_allowed
+                  <span class="hljs-keyword">ON</span> table_rewrite
+   <span class="hljs-keyword">EXECUTE</span> <span class="hljs-keyword">FUNCTION</span> no_rewrite();</code></pre></div></figure>
+<h2 id="a-database-login-event-trigger-example">A Database Login Event Trigger Example</h2>
+<p>The event trigger on the <code>login</code> event can be useful for logging user logins, for verifying the connection and assigning roles according to current circumstances, or for session data initialization. It is very important that any event trigger using the <code>login</code> event checks whether or not the database is in recovery before performing any writes. Writing to a standby server will make it inaccessible.</p>
+<p>The following example demonstrates these options. </p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>SQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-sql"><span class="hljs-comment">-- create test tables and roles</span>
+<span class="hljs-keyword">CREATE TABLE</span> user_login_log (
+  &quot;user&quot; text,
+  &quot;session_start&quot; <span class="hljs-type">timestamp</span> <span class="hljs-keyword">with</span> <span class="hljs-type">time</span> zone
+);
+<span class="hljs-keyword">CREATE</span> ROLE day_worker;
+<span class="hljs-keyword">CREATE</span> ROLE night_worker;
+
+<span class="hljs-comment">-- the example trigger function</span>
+<span class="hljs-keyword">CREATE</span> <span class="hljs-keyword">OR</span> REPLACE <span class="hljs-keyword">FUNCTION</span> init_session()
+  <span class="hljs-keyword">RETURNS</span> event_trigger SECURITY DEFINER
+  <span class="hljs-keyword">LANGUAGE</span> plpgsql <span class="hljs-keyword">AS</span>
+$$
+<span class="hljs-keyword">DECLARE</span>
+  <span class="hljs-keyword">hour</span> <span class="hljs-type">integer</span> <span class="hljs-operator">=</span> <span class="hljs-built_in">EXTRACT</span>(<span class="hljs-string">&#x27;hour&#x27;</span> <span class="hljs-keyword">FROM</span> <span class="hljs-built_in">current_time</span> <span class="hljs-keyword">at</span> <span class="hljs-type">time</span> zone <span class="hljs-string">&#x27;utc&#x27;</span>);
+  rec <span class="hljs-type">boolean</span>;
+<span class="hljs-keyword">BEGIN</span>
+<span class="hljs-comment">-- 1. Forbid logging in between 2AM and 4AM.</span>
+IF <span class="hljs-keyword">hour</span> <span class="hljs-keyword">BETWEEN</span> <span class="hljs-number">2</span> <span class="hljs-keyword">AND</span> <span class="hljs-number">4</span> <span class="hljs-keyword">THEN</span>
+  RAISE EXCEPTION <span class="hljs-string">&#x27;Login forbidden&#x27;</span>;
+<span class="hljs-keyword">END</span> IF;
+
+<span class="hljs-comment">-- The checks below cannot be performed on standby servers so</span>
+<span class="hljs-comment">-- ensure the database is not in recovery before we perform any</span>
+<span class="hljs-comment">-- operations.</span>
+<span class="hljs-keyword">SELECT</span> pg_is_in_recovery() <span class="hljs-keyword">INTO</span> rec;
+IF rec <span class="hljs-keyword">THEN</span>
+  <span class="hljs-keyword">RETURN</span>;
+<span class="hljs-keyword">END</span> IF;
+
+<span class="hljs-comment">-- 2. Assign some roles. At daytime, grant the day_worker role, else the</span>
+<span class="hljs-comment">-- night_worker role.</span>
+IF <span class="hljs-keyword">hour</span> <span class="hljs-keyword">BETWEEN</span> <span class="hljs-number">8</span> <span class="hljs-keyword">AND</span> <span class="hljs-number">20</span> <span class="hljs-keyword">THEN</span>
+  <span class="hljs-keyword">EXECUTE</span> <span class="hljs-string">&#x27;REVOKE night_worker FROM &#x27;</span> <span class="hljs-operator">||</span> quote_ident(<span class="hljs-built_in">session_user</span>);
+  <span class="hljs-keyword">EXECUTE</span> <span class="hljs-string">&#x27;GRANT day_worker TO &#x27;</span> <span class="hljs-operator">||</span> quote_ident(<span class="hljs-built_in">session_user</span>);
+<span class="hljs-keyword">ELSE</span>
+  <span class="hljs-keyword">EXECUTE</span> <span class="hljs-string">&#x27;REVOKE day_worker FROM &#x27;</span> <span class="hljs-operator">||</span> quote_ident(<span class="hljs-built_in">session_user</span>);
+  <span class="hljs-keyword">EXECUTE</span> <span class="hljs-string">&#x27;GRANT night_worker TO &#x27;</span> <span class="hljs-operator">||</span> quote_ident(<span class="hljs-built_in">session_user</span>);
+<span class="hljs-keyword">END</span> IF;
+
+<span class="hljs-comment">-- 3. Initialize user session data</span>
+<span class="hljs-keyword">CREATE</span> TEMP <span class="hljs-keyword">TABLE</span> session_storage (x <span class="hljs-type">float</span>, y <span class="hljs-type">integer</span>);
+<span class="hljs-keyword">ALTER TABLE</span> session_storage OWNER <span class="hljs-keyword">TO</span> <span class="hljs-built_in">session_user</span>;
+
+<span class="hljs-comment">-- 4. Log the connection time</span>
+<span class="hljs-keyword">INSERT INTO</span> public.user_login_log <span class="hljs-keyword">VALUES</span> (<span class="hljs-built_in">session_user</span>, <span class="hljs-built_in">current_timestamp</span>);
+
+<span class="hljs-keyword">END</span>;
+$$;
+
+<span class="hljs-comment">-- trigger definition</span>
+<span class="hljs-keyword">CREATE</span> EVENT <span class="hljs-keyword">TRIGGER</span> init_session
+  <span class="hljs-keyword">ON</span> login
+  <span class="hljs-keyword">EXECUTE</span> <span class="hljs-keyword">FUNCTION</span> init_session();
+<span class="hljs-keyword">ALTER</span> EVENT <span class="hljs-keyword">TRIGGER</span> init_session ENABLE ALWAYS;</code></pre></div></figure>
