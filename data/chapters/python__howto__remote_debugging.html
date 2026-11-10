@@ -1,0 +1,346 @@
+<p>This protocol enables external tools to attach to a running CPython process and execute Python code remotely.</p>
+<p>Attaching to another Python process may require additional permissions or configuration, depending on the platform.</p>
+<h2 id="disabling-remote-debugging">Disabling remote debugging</h2>
+<p>To disable remote debugging support, use any of the following:</p>
+<ul>
+<li>Set the [PYTHON_DISABLE_REMOTE_DEBUG] environment variable to <code>1</code> before starting the interpreter.</li>
+<li>Use the [-X disable-remote-debug] command-line option.</li>
+<li>Compile Python with the [--without-remote-debug] build flag.</li>
+</ul>
+<h1>Permission requirements</h1>
+<p>Attaching to a running Python process for remote debugging requires special configuration on most platforms. The specific requirements and troubleshooting steps depend on your operating system:</p>
+<p>In general, you can debug your own processes, but there are several common configurations that may disable this. Some Linux distributions enable <strong>ptrace restrictions</strong>, aka &quot;Yama,&quot; as a form of system hardening. Recent versions of the <code>setpriv</code> command (util-linux 2.41, released June 2025) let you loosen ptrace restrictions on a per-process basis:</p>
+<blockquote>
+<p><code>setpriv --ptracer any python3</code></p>
+</blockquote>
+<p>(This is configured on the process <em>being debugged</em>.) You can also turn off ptrace restrictions for all processes until reboot with:</p>
+<blockquote>
+<p><code>echo 0 | sudo tee /proc/sys/kernel/yama/ptrace_scope</code></p>
+</blockquote>
+<p>This can also be configured persistently, usually in <code>/etc/sysctl.d</code>.</p>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>Disabling <code>ptrace_scope</code> reduces system hardening and should only be done in low-security environments.</p>
+</div></aside>
+<p>It is also possible that the <code>ptrace</code> system call is disabled because of a security filter. In particular, this was common with older versions of some container software. Docker 19.03 or newer (released 2019) and containerd 1.6.7 or newer (released 2022) will automatically allow usage of the <code>ptrace</code> system call inside containers, when running on Linux kernel 4.8 or higher. If you cannot upgrade to these versions, you can create your container with an option like <code>--security-opt seccomp=unconfined</code> to disable the system call security filter for that container. This weakens the container&#39;s isolation and should only be done in low-security environments.</p>
+<p>If you need to trace a process that you <em>do not</em> own, you will need superuser access or equivalent. This also applies to processes that have changed their security credentials, e.g., set-user-ID or set-group-ID processes (though this is unusual for Python). Try running the debugging command with <code>sudo -E</code>.</p>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>The <code>CAP_SYS_PTRACE</code> capability is equivalent to superuser access, in that it allows debugging <em>any</em> process, not just your own. You may see advice on the internet suggesting using it to work around ptrace restrictions or system call filters. This may work in practice, as would <code>sudo</code>, but this gives the debugging process much more access than it needs and should only be done in low-security environments.</p>
+</div></aside>
+<p>Finally, note that a process can only have one tracer at a time. If you have already attached to a Python process under <code>strace</code>, <code>gdb</code>, etc., you won&#39;t be able to simultaneously use remote debugging. (Superuser access cannot get around this restriction.)</p>
+<p>By default, macOS disables the ability to debug other processes.</p>
+<p>You can modify your Python binary to opt in to being debugged by giving it an <strong>ad-hoc code signature</strong> with an <strong>entitlement</strong> enabling it to be debugged. (An ad-hoc &quot;signature&quot; is just a configuration without any actual cryptographic signature or a need for a certificate or anything else such as an Apple developer program membership.)</p>
+<p>The following commands will create a file <code>get-task-allow.plist</code> with the necessary entitlement and add it to the Python binary:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Terminal</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-bash">
+<span class="tk-cmd">echo</span> <span class="tk-str">'{"com.apple.security.get-task-allow": true}'</span> | plutil <span class="tk-flag">-convert</span> xml1 <span class="tk-flag">-o</span> get-task-allow.plist -
+<span class="tk-cmd">codesign</span> <span class="tk-flag">--sign</span> - <span class="tk-flag">--entitlements</span> get-task-allow.plist path/to/bin/python3</code></pre></div></figure>
+<p>where <code>path/to/bin/python3</code> is the path to your Python binary, which you can find by e.g. running <code>which python3</code> or evaluating <code>sys._base_executable</code> at the Python REPL. (These instructions are for a non-framework build of Python. Framework builds may need to be configured differently.)</p>
+<p>You should then be able to debug your own Python processes started with that binary.</p>
+<p>Alternatively, much as with Linux, processes with superuser privileges e.g. <code>sudo</code> are not subject to this check and can debug any user&#39;s process on the system (though there are additional checks on specific binaries, such as OS-provided commands, due to System Integrity Protection).</p>
+<p>To attach to another process, you usually need to run your debugging tool with administrative privileges. Start the command prompt or terminal as Administrator.</p>
+<p>Some processes may still be inaccessible even with Administrator rights, unless you have the <code>SeDebugPrivilege</code> privilege enabled.</p>
+<p>To resolve file or folder access issues, adjust the security permissions:</p>
+<blockquote>
+<ol>
+<li>Right-click the file or folder and select <strong>Properties</strong>.</li>
+<li>Go to the <strong>Security</strong> tab to view users and groups with access.</li>
+<li>Click <strong>Edit</strong> to modify permissions.</li>
+<li>Select your user account.</li>
+<li>In <strong>Permissions</strong>, check <strong>Read</strong> or <strong>Full control</strong> as needed.</li>
+<li>Click <strong>Apply</strong>, then <strong>OK</strong> to confirm.</li>
+</ol>
+</blockquote>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>Ensure you&#39;ve satisfied all permission-requirements before proceeding.</p>
+</div></aside>
+<p>This section describes the low-level protocol that enables external tools to inject and execute a Python script within a running CPython process.</p>
+<p>This mechanism forms the basis of the [sys.remote_exec] function, which instructs a remote Python process to execute a <code>.py</code> file. However, this section does not document the usage of that function. Instead, it provides a detailed explanation of the underlying protocol, which takes as input the <code>pid</code> of a target Python process and the path to a Python source file to be executed. This information supports independent reimplementation of the protocol, regardless of programming language.</p>
+<aside class="callout callout-warning"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 4 2.8 20h18.4L12 4z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M12 10v4.4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="17" r="1.3" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Warning</p><p>The execution of the injected script depends on the interpreter reaching a safe evaluation point. As a result, execution may be delayed depending on the runtime state of the target process.</p>
+</div></aside>
+<p>Once injected, the script is executed by the interpreter within the target process the next time a safe evaluation point is reached. This approach enables remote execution capabilities without modifying the behavior or structure of the running Python application.</p>
+<p>Subsequent sections provide a step-by-step description of the protocol, including techniques for locating interpreter structures in memory, safely accessing internal fields, and triggering code execution. Platform-specific variations are noted where applicable, and example implementations are included to clarify each operation.</p>
+<h1>Locating the PyRuntime structure</h1>
+<p>CPython places the <code>PyRuntime</code> structure in a dedicated binary section to help external tools find it at runtime. The name and format of this section vary by platform. For example, <code>.PyRuntime</code> is used on ELF systems, and <code>__DATA,__PyRuntime</code> is used on macOS. Tools can find the offset of this structure by examining the binary on disk.</p>
+<p>The <code>PyRuntime</code> structure contains CPython&#39;s global interpreter state and provides access to other internal data, including the list of interpreters, thread states, and debugger support fields.</p>
+<p>To work with a remote Python process, a debugger must first find the memory address of the <code>PyRuntime</code> structure in the target process. This address can&#39;t be hardcoded or calculated from a symbol name, because it depends on where the operating system loaded the binary.</p>
+<p>The method for finding <code>PyRuntime</code> depends on the platform, but the steps are the same in general:</p>
+<ol>
+<li>Find the base address where the Python binary or shared library was loaded in the target process.</li>
+<li>Use the on-disk binary to locate the offset of the <code>.PyRuntime</code> section.</li>
+<li>Add the section offset to the base address to compute the address in memory.</li>
+</ol>
+<p>The sections below explain how to do this on each supported platform and include example code.</p>
+<p>To find the <code>PyRuntime</code> structure on Linux:</p>
+<ol>
+<li>Read the process&#39;s memory map (for example, <code>/proc/&lt;pid&gt;/maps</code>) to find the address where the Python executable or <code>libpython</code> was loaded.</li>
+<li>Parse the ELF section headers in the binary to get the offset of the <code>.PyRuntime</code> section.</li>
+<li>Add that offset to the base address from step 1 to get the memory address of <code>PyRuntime</code>.</li>
+</ol>
+<p>The following is an example implementation:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">def find_py_runtime_linux(pid: int) -&gt; int:
+    # Step 1: Try to find the Python executable in memory
+    binary_path, base_address = find_mapped_binary(
+        pid, name_contains=&quot;python&quot;
+    )
+
+    # Step 2: Fallback to shared library if executable is not found
+    if binary_path is None:
+        binary_path, base_address = find_mapped_binary(
+            pid, name_contains=&quot;libpython&quot;
+        )
+
+    # Step 3: Parse ELF headers to get .PyRuntime section offset
+    section_offset = parse_elf_section_offset(
+        binary_path, &quot;.PyRuntime&quot;
+    )
+
+    # Step 4: Compute PyRuntime address in memory
+    return base_address + section_offset</code></pre></div></figure>
+<p>On Linux systems, there are two main approaches to read memory from another process. The first is through the <code>/proc</code> filesystem, specifically by reading from <code>/proc/[pid]/mem</code> which provides direct access to the process&#39;s memory. This requires appropriate permissions - either being the same user as the target process or having root access. The second approach is using the <code>process_vm_readv()</code> system call which provides a more efficient way to copy memory between processes. While ptrace&#39;s <code>PTRACE_PEEKTEXT</code> operation can also be used to read memory, it is significantly slower as it only reads one word at a time and requires multiple context switches between the tracer and tracee processes.</p>
+<p>For parsing ELF sections, the process involves reading and interpreting the ELF file format structures from the binary file on disk. The ELF header contains a pointer to the section header table. Each section header contains metadata about a section including its name (stored in a separate string table), offset, and size. To find a specific section like .PyRuntime, you need to walk through these headers and match the section name. The section header then provides the offset where that section exists in the file, which can be used to calculate its runtime address when the binary is loaded into memory.</p>
+<p>You can read more about the ELF file format in the <a target="_blank" rel="noopener" href="https://en.wikipedia.org/wiki/Executable_and_Linkable_Format">ELF specification</a>.</p>
+<p>To find the <code>PyRuntime</code> structure on macOS:</p>
+<ol>
+<li>Call <code>task_for_pid()</code> to get the <code>mach_port_t</code> task port for the target process. This handle is needed to read memory using APIs like <code>mach_vm_read_overwrite</code> and <code>mach_vm_region</code>.</li>
+<li>Scan the memory regions to find the one containing the Python executable or <code>libpython</code>.</li>
+<li>Load the binary file from disk and parse the Mach-O headers to find the section named <code>PyRuntime</code> in the <code>__DATA</code> segment. On macOS, symbol names are automatically prefixed with an underscore, so the <code>PyRuntime</code> symbol appears as <code>_PyRuntime</code> in the symbol table, but the section name is not affected.</li>
+</ol>
+<p>The following is an example implementation:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">def find_py_runtime_macos(pid: int) -&gt; int:
+    # Step 1: Get access to the process&#x27;s memory
+    handle = get_memory_access_handle(pid)
+
+    # Step 2: Try to find the Python executable in memory
+    binary_path, base_address = find_mapped_binary(
+        handle, name_contains=&quot;python&quot;
+    )
+
+    # Step 3: Fallback to libpython if the executable is not found
+    if binary_path is None:
+        binary_path, base_address = find_mapped_binary(
+            handle, name_contains=&quot;libpython&quot;
+        )
+
+    # Step 4: Parse Mach-O headers to get __DATA,__PyRuntime section offset
+    section_offset = parse_macho_section_offset(
+        binary_path, &quot;__DATA&quot;, &quot;__PyRuntime&quot;
+    )
+
+    # Step 5: Compute the PyRuntime address in memory
+    return base_address + section_offset</code></pre></div></figure>
+<p>On macOS, accessing another process&#39;s memory requires using Mach-O specific APIs and file formats. The first step is obtaining a <code>task_port</code> handle via <code>task_for_pid()</code>, which provides access to the target process&#39;s memory space. This handle enables memory operations through APIs like <code>mach_vm_read_overwrite()</code>.</p>
+<p>The process memory can be examined using <code>mach_vm_region()</code> to scan through the virtual memory space, while <code>proc_regionfilename()</code> helps identify which binary files are loaded at each memory region. When the Python binary or library is found, its Mach-O headers need to be parsed to locate the <code>PyRuntime</code> structure.</p>
+<p>The Mach-O format organizes code and data into segments and sections. The <code>PyRuntime</code> structure lives in a section named <code>__PyRuntime</code> within the <code>__DATA</code> segment. The actual runtime address calculation involves finding the <code>__TEXT</code> segment which serves as the binary&#39;s base address, then locating the <code>__DATA</code> segment containing our target section. The final address is computed by combining the base address with the appropriate section offsets from the Mach-O headers.</p>
+<p>Note that accessing another process&#39;s memory on macOS typically requires elevated privileges - either root access or special security entitlements granted to the debugging process.</p>
+<p>To find the <code>PyRuntime</code> structure on Windows:</p>
+<ol>
+<li>Use the ToolHelp API to enumerate all modules loaded in the target process. This is done using functions such as <a target="_blank" rel="noopener" href="https://learn.microsoft.com/en-us/windows/win32/api/tlhelp32/nf-tlhelp32-createtoolhelp32snapshot">CreateToolhelp32Snapshot</a>, <a target="_blank" rel="noopener" href="https://learn.microsoft.com/en-us/windows/win32/api/tlhelp32/nf-tlhelp32-module32first">Module32First</a>, and <a target="_blank" rel="noopener" href="https://learn.microsoft.com/en-us/windows/win32/api/tlhelp32/nf-tlhelp32-module32next">Module32Next</a>.</li>
+<li>Identify the module corresponding to [python.exe] or [python{XY}.dll], where <code>X</code> and <code>Y</code> are the major and minor version numbers of the Python version, and record its base address.</li>
+<li>Locate the <code>PyRuntim</code> section. Due to the PE format&#39;s 8-character limit on section names (defined as <code>IMAGE_SIZEOF_SHORT_NAME</code>), the original name <code>PyRuntime</code> is truncated. This section contains the <code>PyRuntime</code> structure.</li>
+<li>Retrieve the section&#39;s relative virtual address (RVA) and add it to the base address of the module.</li>
+</ol>
+<p>The following is an example implementation:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">def find_py_runtime_windows(pid: int) -&gt; int:
+    # Step 1: Try to find the Python executable in memory
+    binary_path, base_address = find_loaded_module(
+        pid, name_contains=&quot;python&quot;
+    )
+
+    # Step 2: Fallback to shared pythonXY.dll if the executable is not
+    # found
+    if binary_path is None:
+        binary_path, base_address = find_loaded_module(
+            pid, name_contains=&quot;python3&quot;
+        )
+
+    # Step 3: Parse PE section headers to get the RVA of the PyRuntime
+    # section. The section name appears as &quot;PyRuntim&quot; due to the
+    # 8-character limit defined by the PE format (IMAGE_SIZEOF_SHORT_NAME).
+    section_rva = parse_pe_section_offset(binary_path, &quot;PyRuntim&quot;)
+
+    # Step 4: Compute PyRuntime address in memory
+    return base_address + section_rva</code></pre></div></figure>
+<p>On Windows, accessing another process&#39;s memory requires using the Windows API functions like <code>CreateToolhelp32Snapshot()</code> and <code>Module32First()/Module32Next()</code> to enumerate loaded modules. The <code>OpenProcess()</code> function provides a handle to access the target process&#39;s memory space, enabling memory operations through <code>ReadProcessMemory()</code>.</p>
+<p>The process memory can be examined by enumerating loaded modules to find the Python binary or DLL. When found, its PE headers need to be parsed to locate the <code>PyRuntime</code> structure.</p>
+<p>The PE format organizes code and data into sections. The <code>PyRuntime</code> structure lives in a section named &quot;PyRuntim&quot; (truncated from &quot;PyRuntime&quot; due to PE&#39;s 8-character name limit). The actual runtime address calculation involves finding the module&#39;s base address from the module entry, then locating our target section in the PE headers. The final address is computed by combining the base address with the section&#39;s virtual address from the PE section headers.</p>
+<p>Note that accessing another process&#39;s memory on Windows typically requires appropriate privileges - either administrative access or the <code>SeDebugPrivilege</code> privilege granted to the debugging process.</p>
+<h1>Reading [Py_DebugOffsets]</h1>
+<p>Once the address of the <code>PyRuntime</code> structure has been determined, the next step is to read the <code>_Py_DebugOffsets</code> structure located at the beginning of the <code>PyRuntime</code> block.</p>
+<p>This structure provides version-specific field offsets that are needed to safely read interpreter and thread state memory. These offsets vary between CPython versions and must be checked before use to ensure they are compatible.</p>
+<p>To read and check the debug offsets, follow these steps:</p>
+<ol>
+<li>Read memory from the target process starting at the <code>PyRuntime</code> address, covering the same number of bytes as the <code>_Py_DebugOffsets</code> structure. This structure is located at the very start of the <code>PyRuntime</code> memory block. Its layout is defined in CPython&#39;s internal headers and stays the same within a given minor version, but may change in major versions.</li>
+<li>Check that the structure contains valid data:<ul>
+<li>The <code>cookie</code> field must match the expected debug marker.</li>
+<li>The <code>version</code> field must match the version of the Python interpreter used by the debugger.</li>
+<li>If either the debugger or the target process is using a pre-release version (for example, an alpha, beta, or release candidate), the versions must match exactly.</li>
+<li>The <code>free_threaded</code> field must have the same value in both the debugger and the target process.</li>
+</ul>
+</li>
+<li>If the structure is valid, the offsets it contains can be used to locate fields in memory. If any check fails, the debugger should stop the operation to avoid reading memory in the wrong format.</li>
+</ol>
+<p>The following is an example implementation that reads and checks <code>_Py_DebugOffsets</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">def read_debug_offsets(pid: int, py_runtime_addr: int) -&gt; DebugOffsets:
+    # Step 1: Read memory from the target process at the PyRuntime address
+    data = read_process_memory(
+        pid, address=py_runtime_addr, size=DEBUG_OFFSETS_SIZE
+    )
+
+    # Step 2: Deserialize the raw bytes into a _Py_DebugOffsets structure
+    debug_offsets = parse_debug_offsets(data)
+
+    # Step 3: Validate the contents of the structure
+    if debug_offsets.cookie != EXPECTED_COOKIE:
+        raise RuntimeError(&quot;Invalid or missing debug cookie&quot;)
+    if debug_offsets.version != LOCAL_PYTHON_VERSION:
+        raise RuntimeError(
+            &quot;Mismatch between caller and target Python versions&quot;
+        )
+    if debug_offsets.free_threaded != LOCAL_FREE_THREADED:
+        raise RuntimeError(&quot;Mismatch in free-threaded configuration&quot;)
+
+    return debug_offsets</code></pre></div></figure>
+<aside class="callout callout-warning"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 4 2.8 20h18.4L12 4z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M12 10v4.4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="17" r="1.3" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Warning</p><p><strong>Process suspension recommended</strong></p>
+<p>To avoid race conditions and ensure memory consistency, it is strongly recommended that the target process be suspended before performing any operations that read or write internal interpreter state. The Python runtime may concurrently mutate interpreter data structures---such as creating or destroying threads---during normal execution. This can result in invalid memory reads or writes.</p>
+<p>A debugger may suspend execution by attaching to the process with <code>ptrace</code> or by sending a <code>SIGSTOP</code> signal. Execution should only be resumed after debugger-side memory operations are complete.</p>
+<p>:::note
+Some tools, such as profilers or sampling-based debuggers, may operate on a running process without suspension. In such cases, tools must be explicitly designed to handle partially updated or inconsistent memory. For most debugger implementations, suspending the process remains the safest and most robust approach.</p>
+</div></aside>
+<p>:::</p>
+<h1>Locating the interpreter and thread state</h1>
+<p>Before code can be injected and executed in a remote Python process, the debugger must choose a thread in which to schedule execution. This is necessary because the control fields used to perform remote code injection are located in the <code>_PyRemoteDebuggerSupport</code> structure, which is embedded in a <code>PyThreadState</code> object. These fields are modified by the debugger to request execution of injected scripts.</p>
+<p>The <code>PyThreadState</code> structure represents a thread running inside a Python interpreter. It maintains the thread&#39;s evaluation context and contains the fields required for debugger coordination. Locating a valid <code>PyThreadState</code> is therefore a key prerequisite for triggering execution remotely.</p>
+<p>A thread is typically selected based on its role or ID. In most cases, the main thread is used, but some tools may target a specific thread by its native thread ID. Once the target thread is chosen, the debugger must locate both the interpreter and the associated thread state structures in memory.</p>
+<p>The relevant internal structures are defined as follows:</p>
+<ul>
+<li><code>PyInterpreterState</code> represents an isolated Python interpreter instance. Each interpreter maintains its own set of imported modules, built-in state, and thread state list. Although most Python applications use a single interpreter, CPython supports multiple interpreters in the same process.</li>
+<li><code>PyThreadState</code> represents a thread running within an interpreter. It contains execution state and the control fields used by the debugger.</li>
+</ul>
+<p>To locate a thread:</p>
+<ol>
+<li>Use the offset <code>runtime_state.interpreters_head</code> to obtain the address of the first interpreter in the <code>PyRuntime</code> structure. This is the entry point to the linked list of active interpreters.</li>
+<li>Use the offset <code>interpreter_state.threads_main</code> to access the main thread state associated with the selected interpreter. This is typically the most reliable thread to target.</li>
+<li>Optionally, use the offset <code>interpreter_state.threads_head</code> to iterate through the linked list of all thread states. Each <code>PyThreadState</code> structure contains a <code>native_thread_id</code> field, which may be compared to a target thread ID to find a specific thread.</li>
+<li>Once a valid <code>PyThreadState</code> has been found, its address can be used in later steps of the protocol, such as writing debugger control fields and scheduling execution.</li>
+</ol>
+<p>The following is an example implementation that locates the main thread state:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">def find_main_thread_state(
+    pid: int, py_runtime_addr: int, debug_offsets: DebugOffsets,
+) -&gt; int:
+    # Step 1: Read interpreters_head from PyRuntime
+    interp_head_ptr = (
+        py_runtime_addr + debug_offsets.runtime_state.interpreters_head
+    )
+    interp_addr = read_pointer(pid, interp_head_ptr)
+    if interp_addr == 0:
+        raise RuntimeError(&quot;No interpreter found in the target process&quot;)
+
+    # Step 2: Read the threads_main pointer from the interpreter
+    threads_main_ptr = (
+        interp_addr + debug_offsets.interpreter_state.threads_main
+    )
+    thread_state_addr = read_pointer(pid, threads_main_ptr)
+    if thread_state_addr == 0:
+        raise RuntimeError(&quot;Main thread state is not available&quot;)
+
+    return thread_state_addr</code></pre></div></figure>
+<p>The following example demonstrates how to locate a thread by its native thread ID:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">def find_thread_by_id(
+    pid: int,
+    interp_addr: int,
+    debug_offsets: DebugOffsets,
+    target_tid: int,
+) -&gt; int:
+    # Start at threads_head and walk the linked list
+    thread_ptr = read_pointer(
+        pid,
+        interp_addr + debug_offsets.interpreter_state.threads_head
+    )
+
+    while thread_ptr:
+        native_tid_ptr = (
+            thread_ptr + debug_offsets.thread_state.native_thread_id
+        )
+        native_tid = read_int(pid, native_tid_ptr)
+        if native_tid == target_tid:
+            return thread_ptr
+        thread_ptr = read_pointer(
+            pid,
+            thread_ptr + debug_offsets.thread_state.next
+        )
+
+    raise RuntimeError(&quot;Thread with the given ID was not found&quot;)</code></pre></div></figure>
+<p>Once a valid thread state has been located, the debugger can proceed with modifying its control fields and scheduling execution, as described in the next section.</p>
+<h1>Writing control information</h1>
+<p>Once a valid <code>PyThreadState</code> structure has been identified, the debugger may modify control fields within it to schedule the execution of a specified Python script. These control fields are checked periodically by the interpreter, and when set correctly, they trigger the execution of remote code at a safe point in the evaluation loop.</p>
+<p>Each <code>PyThreadState</code> contains a <code>_PyRemoteDebuggerSupport</code> structure used for communication between the debugger and the interpreter. The locations of its fields are defined by the <code>_Py_DebugOffsets</code> structure and include the following:</p>
+<ul>
+<li><code>debugger_script_path</code>: A fixed-size buffer that holds the full path to a Python source file (<code>.py</code>). This file must be accessible and readable by the target process when execution is triggered.</li>
+<li><code>debugger_pending_call</code>: An integer flag. Setting this to <code>1</code> tells the interpreter that a script is ready to be executed.</li>
+<li><code>eval_breaker</code>: A field checked by the interpreter during execution. Setting bit 5 (<code>_PY_EVAL_PLEASE_STOP_BIT</code>, value <code>1U &lt;&lt; 5</code>) in this field causes the interpreter to pause and check for debugger activity.</li>
+</ul>
+<p>To complete the injection, the debugger must perform the following steps:</p>
+<ol>
+<li>Write the full script path into the <code>debugger_script_path</code> buffer.</li>
+<li>Set <code>debugger_pending_call</code> to <code>1</code>.</li>
+<li>Read the current value of <code>eval_breaker</code>, set bit 5 (<code>_PY_EVAL_PLEASE_STOP_BIT</code>), and write the updated value back. This signals the interpreter to check for debugger activity.</li>
+</ol>
+<p>The following is an example implementation:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">def inject_script(
+    pid: int,
+    thread_state_addr: int,
+    debug_offsets: DebugOffsets,
+    script_path: str
+) -&gt; None:
+    # Compute the base offset of _PyRemoteDebuggerSupport
+    support_base = (
+        thread_state_addr +
+        debug_offsets.debugger_support.remote_debugger_support
+    )
+
+    # Step 1: Write the script path into debugger_script_path
+    script_path_ptr = (
+        support_base +
+        debug_offsets.debugger_support.debugger_script_path
+    )
+    write_string(pid, script_path_ptr, script_path)
+
+    # Step 2: Set debugger_pending_call to 1
+    pending_ptr = (
+        support_base +
+        debug_offsets.debugger_support.debugger_pending_call
+    )
+    write_int(pid, pending_ptr, 1)
+
+    # Step 3: Set _PY_EVAL_PLEASE_STOP_BIT (bit 5, value 1 &lt;&lt; 5) in
+    # eval_breaker
+    eval_breaker_ptr = (
+        thread_state_addr +
+        debug_offsets.debugger_support.eval_breaker
+    )
+    breaker = read_int(pid, eval_breaker_ptr)
+    breaker |= (1 &lt;&lt; 5)
+    write_int(pid, eval_breaker_ptr, breaker)</code></pre></div></figure>
+<p>Once these fields are set, the debugger may resume the process (if it was suspended). The interpreter will process the request at the next safe evaluation point, load the script from disk, and execute it.</p>
+<p>It is the responsibility of the debugger to ensure that the script file remains present and accessible to the target process during execution.</p>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>Script execution is asynchronous. The script file cannot be deleted immediately after injection. The debugger should wait until the injected script has produced an observable effect before removing the file. This effect depends on what the script is designed to do. For example, a debugger might wait until the remote process connects back to a socket before removing the script. Once such an effect is observed, it is safe to assume the file is no longer needed.</p>
+</div></aside>
+<h1>Summary</h1>
+<p>To inject and execute a Python script in a remote process:</p>
+<ol>
+<li>Locate the <code>PyRuntime</code> structure in the target process&#39;s memory.</li>
+<li>Read and validate the <code>_Py_DebugOffsets</code> structure at the beginning of <code>PyRuntime</code>.</li>
+<li>Use the offsets to locate a valid <code>PyThreadState</code>.</li>
+<li>Write the path to a Python script into <code>debugger_script_path</code>.</li>
+<li>Set the <code>debugger_pending_call</code> flag to <code>1</code>.</li>
+<li>Set <code>_PY_EVAL_PLEASE_STOP_BIT</code> in the <code>eval_breaker</code> field.</li>
+<li>Resume the process (if suspended). The script will execute at the next safe evaluation point.</li>
+</ol>
+<h1>Security and threat model</h1>
+<p>The remote debugging protocol relies on the same operating system primitives used by native debuggers such as GDB and LLDB. Attaching to a process requires the <strong>same privileges</strong> that those debuggers require, for example <code>ptrace</code> / Yama LSM on Linux, <code>task_for_pid</code> on macOS, and <code>SeDebugPrivilege</code> on Windows. Python does not introduce any new privilege escalation path; if an attacker already possesses the permissions needed to attach to a process, they could equally use GDB to read memory or inject code.</p>
+<p>The following principles define what is, and is not, considered a security vulnerability in this feature:</p>
+<p>Attaching requires OS-level privileges</p>
+<p>:   On every supported platform the operating system gates cross-process memory access behind privilege checks (<code>CAP_SYS_PTRACE</code>, root, or administrator rights). A report that demonstrates an issue only after these privileges have already been obtained is <strong>not</strong> a vulnerability in CPython, since the OS security boundary was already crossed.</p>
+<p>Crashes or memory errors when reading a compromised process are not vulnerabilities</p>
+<p>:   A tool that reads internal interpreter state from a target process must trust that memory to be well-formed. If the target process has been corrupted or is controlled by an attacker, the debugger or profiler may crash, produce garbage output, or behave unpredictably. This is the same risk accepted by every <code>ptrace</code>-based debugger. Bugs in this category (buffer overflows, segmentation faults, or undefined behaviour triggered by reading corrupted state) are <strong>not</strong> treated as security issues, though fixes that improve robustness are welcome.</p>
+<p>Vulnerabilities in the target process are not in scope</p>
+<p>:   If the Python process being debugged has already been compromised, the attacker already controls execution in that process. Demonstrating further impact from that starting point does not constitute a vulnerability in the remote debugging protocol.</p>
+<h2 id="when-to-use-pythondisableremotedebug">When to use <code>PYTHON_DISABLE_REMOTE_DEBUG</code></h2>
+<p>The environment variable [PYTHON_DISABLE_REMOTE_DEBUG] (and the equivalent [-X disable-remote-debug] flag) allows operators to disable the in-process side of the protocol as a <strong>defence-in-depth</strong> measure. This may be useful in hardened or sandboxed deployment environments where no debugging or profiling of the process is expected and reducing attack surface is a priority, even though the OS-level privilege checks already prevent unprivileged access.</p>
+<p>Setting this variable does <strong>not</strong> affect other OS-level debugging interfaces (<code>ptrace</code>, <code>/proc</code>, <code>task_for_pid</code>, etc.), which remain available according to their own permission models.</p>

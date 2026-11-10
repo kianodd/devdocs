@@ -1,0 +1,112 @@
+<p>To define module objects and classes using the C API, you may use an array of <em>slots</em> -- essentially, key-value pairs that describe features of the object to create. This decouples the data from the structures used at runtime, allowing CPython -- and other Python C API implementations -- to update the structures without breaking backwards compatibility.</p>
+<p>This section documents slots in general. For object-specific behavior and slot values, see documentation for functions that apply slots:</p>
+<ul>
+<li>:c`PyType_FromSlots` for types;</li>
+<li>:c`PyModule_FromSlotsAndSpec` and extension-export-hook for modules.</li>
+</ul>
+<p>When slots are passed to a function that applies them, the function will not modify the slot array, nor any data it points to (recursively). After the function is done, the caller is allowed to modify or deallocate the array and any data it points to (recursively), except data explicitly marked with :c`PySlot_STATIC`.</p>
+<p>Except when documented otherwise, multiple slots with the same ID (:c`~PySlot.sl_id`) may not occur in a single slots array.</p>
+<p>Entries of the slots array use the following structure:</p>
+<blockquote>
+<p>An entry in a slots array. Defined as:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>C</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-c"><span class="hljs-keyword">typedef</span> <span class="hljs-class"><span class="hljs-keyword">struct</span> {</span>
+    <span class="hljs-type">uint16_t</span> sl_id;
+    <span class="hljs-type">uint16_t</span> sl_flags;
+    <span class="hljs-class"><span class="hljs-keyword">union</span> {</span>
+        <span class="hljs-type">uint32_t</span> sl_reserved;  <span class="hljs-comment">// must be 0</span>
+    };
+    <span class="hljs-class"><span class="hljs-keyword">union</span> {</span>
+        <span class="hljs-type">void</span> *sl_ptr;
+        <span class="hljs-type">void</span> (*sl_func)(<span class="hljs-type">void</span>);
+        Py_ssize_t sl_size;
+        <span class="hljs-type">int64_t</span> sl_int64;
+        <span class="hljs-type">uint64_t</span> sl_uint64;
+    };
+} PySlot;</code></pre></div></figure>
+<blockquote>
+<p>A slot ID, chosen from:</p>
+<ul>
+<li><code>Py_slot_*</code> values documented in pyslot-common-ids below;</li>
+<li><code>Py_mod_*</code> values for modules, as documented in c_module_slots;</li>
+<li>Values for types, as documented in pyslot_type_slot_ids.</li>
+</ul>
+<p>A :c`!sl_id` of zero (:c`Py_slot_end`) marks the end of a slots array.</p>
+</blockquote>
+<blockquote>
+<p>Zero or more of the following flags, OR-ed together:</p>
+<blockquote>
+<p>All data the slot points to is statically allocated and constant. Thus, the interpreter does not need to copy the information.</p>
+<p>This flag is implied for function pointers.</p>
+<p>The flag applies even to data the slot points to &quot;indirectly&quot;, except for slots nested via :c`Py_slot_subslots` which may have their own :c`!PySlot_STATIC` flags. For example, if applied to a :c`Py_tp_members` slot that points to an array of :c`PyMemberDef` structures, then the entire array, as well as the name and doc strings in its elements, must be static and constant.</p>
+</blockquote>
+<blockquote>
+<p>The data is stored in <code>sl_ptr</code>; CPython will cast it to the appropriate type.</p>
+<p>This flag can simplify porting from the older :c`PyType_Slot` and :c`PyModuleDef_Slot` structures.</p>
+</blockquote>
+<blockquote>
+<p>If the slot ID is unknown, the interpreter should ignore the slot, rather than fail.</p>
+<p>For example, if Python 3.16 adds a new feature with a new slot ID,attr the corresponding slot may be marked :c`!PySlot_OPTIONAL` so that Python 3.15 ignores it.</p>
+<p>Note that the &quot;optionality&quot; only applies to unknown slot IDs. This flag does not make Python skip invalid values of known slots.</p>
+</blockquote>
+</blockquote>
+<p>::: versionadded
+3.15
+:::</p>
+</blockquote>
+<h2 id="convenience-macros">Convenience macros</h2>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">   #define PySlot_DATA(NAME, VALUE) \
+      {.sl_id=NAME, .sl_ptr=(void*)(VALUE)}
+
+   #define PySlot_FUNC(NAME, VALUE) \
+      {.sl_id=NAME, .sl_func=(VALUE)}
+
+   #define PySlot_SIZE(NAME, VALUE) \
+      {.sl_id=NAME, .sl_size=(VALUE)}
+
+   #define PySlot_INT64(NAME, VALUE) \
+      {.sl_id=NAME, .sl_int64=(VALUE)}
+
+   #define PySlot_UINT64(NAME, VALUE) \
+      {.sl_id=NAME, .sl_uint64=(VALUE)}
+
+   #define PySlot_STATIC_DATA(NAME, VALUE) \
+      {.sl_id=NAME, .sl_flags=PySlot_STATIC, .sl_ptr=(VALUE)}
+
+.. versionadded:: 3.15</code></pre></div></figure>
+<blockquote>
+<p>Convenience macro to mark the end of a :c`!PySlot` array.</p>
+<p>Defined as:</p>
+</blockquote>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">   #define PySlot_END {0}
+
+.. versionadded:: 3.15</code></pre></div></figure>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">   #define PySlot_PTR(NAME, VALUE) \
+      {NAME, PySlot_INTPTR, {0}, {(void*)(VALUE)}}
+
+   #define PySlot_PTR_STATIC(NAME, VALUE) \
+      {NAME, PySlot_INTPTR|PySlot_STATIC, {0}, {(void*)(VALUE)}}
+
+.. versionadded:: 3.15</code></pre></div></figure>
+<h2 id="common-slot-ids">Common slot IDs</h2>
+<p>The following slot IDs may be used in both type and module definitions.</p>
+<blockquote>
+<p>Marks the end of a slots array. Defined as zero.</p>
+<p>::: versionadded
+3.15
+:::</p>
+</blockquote>
+<blockquote>
+<p>Nested slots array.</p>
+<p>The value (:c`~PySlot.sl_ptr`) should point to an array of :c`PySlot` structures. The slots in the array (up to but not including the zero-ID terminator) will be treated as if they were inserted if the current slot array, at the point :c`!Py_slot_subslots` appears.</p>
+<p>Slot nesting depth is limited to 5 levels. This restriction may be lifted in the future.</p>
+<p>::: versionadded
+3.15
+:::</p>
+</blockquote>
+<blockquote>
+<p>Reserved; will always be treated as an unknown slot ID. Defined as <code>UINT16_MAX</code> (<code>0xFFFF</code>).</p>
+<p>When used with the :c`PySlot_OPTIONAL` flag, defines a slot with no effect. Without the flag, processing a slot with this ID will fail.</p>
+<p>::: versionadded
+3.15
+:::</p>
+</blockquote>

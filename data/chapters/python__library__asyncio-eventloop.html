@@ -1,0 +1,627 @@
+<p><strong>Source code:</strong> [Lib/asyncio/events.py], [Lib/asyncio/base_events.py]</p>
+<hr>
+<p>The event loop is the core of every asyncio application. Event loops run asynchronous tasks and callbacks, perform network IO operations, and run subprocesses.</p>
+<p>Application developers should typically use the high-level asyncio functions, such as [asyncio.run], and should rarely need to reference the loop object or call its methods. This section is intended mostly for authors of lower-level code, libraries, and frameworks, who need finer control over the event loop behavior.</p>
+<p>The following low-level functions can be used to get, set, or create an event loop:</p>
+<p><strong><code>get_running_loop()</code></strong></p>
+<p>Return the running event loop in the current OS thread.</p>
+<p>Raise a [RuntimeError] if there is no running event loop.</p>
+<p>This function can only be called from a coroutine or a callback.</p>
+<p><strong><code>get_event_loop()</code></strong></p>
+<p>Get the current event loop.</p>
+<p>When called from a coroutine or a callback (e.g. scheduled with call_soon or similar API), this function will always return the running event loop.</p>
+<p>If there is no running event loop set, the function will return the loop set by [set_event_loop], or raise a [RuntimeError] if no loop has been set.</p>
+<p>Because this function has rather complex behavior, using the [get_running_loop] function is preferred to [get_event_loop] in coroutines and callbacks.</p>
+<p>As noted above, consider using the higher-level [asyncio.run] function, instead of using these lower level functions to manually create and close an event loop.</p>
+<p><strong><code>set_event_loop(loop)</code></strong></p>
+<p>Set <em>loop</em> as the current event loop for the current OS thread.</p>
+<p><strong><code>new_event_loop()</code></strong></p>
+<p>Create and return a new event loop object.</p>
+<p>This documentation page contains the following sections:</p>
+<ul>
+<li>The <a href="#event-loop-methods">Event Loop Methods</a> section is the reference documentation of the event loop APIs;</li>
+<li>The <a href="#callback-handles">Callback Handles</a> section documents the [Handle] and [TimerHandle] instances which are returned from scheduling methods such as [loop.call_soon] and [loop.call_later];</li>
+<li>The <a href="#server-objects">Server Objects</a> section documents types returned from event loop methods like [loop.create_server];</li>
+<li>The <a href="#event-loop-implementations">Event Loop Implementations</a> section documents the [SelectorEventLoop] and [ProactorEventLoop] classes;</li>
+<li>The <a href="#examples">Examples</a> section showcases how to work with some event loop APIs.</li>
+</ul>
+<h2 id="event-loop-methods">Event loop methods</h2>
+<p>Event loops have <strong>low-level</strong> APIs for the following:</p>
+<p>local</p>
+<p>:</p>
+<h3 id="running-and-stopping-the-loop">Running and stopping the loop</h3>
+<p><strong><code>loop.run_until_complete(future)</code></strong></p>
+<p>Run until the <em>future</em> (an instance of [Future]) has completed.</p>
+<p>If the argument is a coroutine object it is implicitly scheduled to run as a [asyncio.Task].</p>
+<p>Return the Future&#39;s result or raise its exception.</p>
+<p><strong><code>loop.run_forever()</code></strong></p>
+<p>Run the event loop until [stop] is called.</p>
+<p>If [stop] is called before [run_forever] is called, the loop will poll the I/O selector once with a timeout of zero, run all callbacks scheduled in response to I/O events (and those that were already scheduled), and then exit.</p>
+<p>If [stop] is called while [run_forever] is running, the loop will run the current batch of callbacks and then exit. Note that new callbacks scheduled by callbacks will not run in this case; instead, they will run the next time [run_forever] or [run_until_complete] is called.</p>
+<p><strong><code>loop.stop()</code></strong></p>
+<p>Stop the event loop.</p>
+<p><strong><code>loop.is_running()</code></strong></p>
+<p>Return <code>True</code> if the event loop is currently running.</p>
+<p><strong><code>loop.is_closed()</code></strong></p>
+<p>Return <code>True</code> if the event loop was closed.</p>
+<p><strong><code>loop.close()</code></strong></p>
+<p>Close the event loop.</p>
+<p>The loop must not be running when this function is called. Any pending callbacks will be discarded.</p>
+<p>This method clears all queues and shuts down the executor, but does not wait for the executor to finish.</p>
+<p>This method is idempotent and irreversible. No other methods should be called after the event loop is closed.</p>
+<p><strong><code>loop.shutdown_asyncgens()</code></strong></p>
+<p>Schedule all currently open asynchronous generator objects to close with an [~agen.aclose] call. After calling this method, the event loop will issue a warning if a new asynchronous generator is iterated. This should be used to reliably finalize all scheduled asynchronous generators.</p>
+<p>Note that there is no need to call this function when [asyncio.run] is used.</p>
+<p>Example:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">try:
+    loop.run_forever()
+finally:
+    loop.run_until_complete(loop.shutdown_asyncgens())
+    loop.close()</code></pre></div></figure>
+<p><strong><code>loop.shutdown_default_executor(timeout=None)</code></strong></p>
+<p>Schedule the closure of the default executor and wait for it to join all of the threads in the [~concurrent.futures.ThreadPoolExecutor]. Once this method has been called, using the default executor with [loop.run_in_executor] will raise a [RuntimeError].</p>
+<p>The <em>timeout</em> parameter specifies the amount of time (in [float] seconds) the executor will be given to finish joining. With the default, <code>None</code>, the executor is allowed an unlimited amount of time.</p>
+<p>If the <em>timeout</em> is reached, a [RuntimeWarning] is emitted and the default executor is terminated without waiting for its threads to finish joining.</p>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>Do not call this method when using [asyncio.run], as the latter handles default executor shutdown automatically.</p>
+</div></aside>
+<h3 id="scheduling-callbacks">Scheduling callbacks</h3>
+<p><strong><code>loop.call_soon(callback, *args, context=None)</code></strong></p>
+<p>Schedule the <em>callback</em> callback to be called with <em>args</em> arguments at the next iteration of the event loop.</p>
+<p>Return an instance of [asyncio.Handle], which can be used later to cancel the callback.</p>
+<p>Callbacks are called in the order in which they are registered. Each callback will be called exactly once.</p>
+<p>The optional keyword-only <em>context</em> argument specifies a custom [contextvars.Context] for the <em>callback</em> to run in. Callbacks use the current context when no <em>context</em> is provided.</p>
+<p>Unlike [call_soon_threadsafe], this method is not thread-safe.</p>
+<p><strong><code>loop.call_soon_threadsafe(callback, *args, context=None)</code></strong></p>
+<p>A thread-safe variant of [call_soon]. When scheduling callbacks from another thread, this function <em>must</em> be used, since [call_soon] is not thread-safe.</p>
+<p>This function is safe to be called from a reentrant context or signal handler, however, it is not safe or fruitful to use the returned handle in such contexts.</p>
+<p>Raises [RuntimeError] if called on a loop that&#39;s been closed. This can happen on a secondary thread when the main application is shutting down.</p>
+<p>See the concurrency and multithreading section of the documentation.</p>
+<p>::: </p>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>Most [asyncio] scheduling functions don&#39;t allow passing keyword arguments. To do that, use `functools.partial`:</p>
+<p><figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext"># will schedule &quot;print(&quot;Hello&quot;, flush=True)&quot;
+loop.call_soon(
+    functools.partial(print, &quot;Hello&quot;, flush=True))</code></pre></div></figure></p>
+<p>Using partial objects is usually more convenient than using lambdas, as asyncio can render partial objects better in debug and error messages.</p>
+</div></aside>
+<p>:::</p>
+<h3 id="scheduling-delayed-callbacks">Scheduling delayed callbacks</h3>
+<p>Event loop provides mechanisms to schedule callback functions to be called at some point in the future. Event loop uses monotonic clocks to track time.</p>
+<p><strong><code>loop.call_later(delay, callback, *args, context=None)</code></strong></p>
+<p>Schedule <em>callback</em> to be called after the given <em>delay</em> number of seconds (can be either an int or a float).</p>
+<p>An instance of [asyncio.TimerHandle] is returned which can be used to cancel the callback.</p>
+<p><em>callback</em> will be called exactly once. If two callbacks are scheduled for exactly the same time, the order in which they are called is undefined.</p>
+<p>The optional positional <em>args</em> will be passed to the callback when it is called. Use [functools.partial] to pass keyword arguments to <em>callback</em>.</p>
+<p>An optional keyword-only <em>context</em> argument allows specifying a custom [contextvars.Context] for the <em>callback</em> to run in. The current context is used when no <em>context</em> is provided.</p>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>For performance, callbacks scheduled with [loop.call_later] may run up to one clock-resolution early (see <code>time.get_clock_info(&#39;monotonic&#39;).resolution</code>).</p>
+</div></aside>
+<p><strong><code>loop.call_at(when, callback, *args, context=None)</code></strong></p>
+<p>Schedule <em>callback</em> to be called at the given absolute timestamp <em>when</em> (an int or a float), using the same time reference as [loop.time].</p>
+<p>This method&#39;s behavior is the same as [call_later].</p>
+<p>An instance of [asyncio.TimerHandle] is returned which can be used to cancel the callback.</p>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>For performance, callbacks scheduled with [loop.call_at] may run up to one clock-resolution early (see <code>time.get_clock_info(&#39;monotonic&#39;).resolution</code>).</p>
+</div></aside>
+<p><strong><code>loop.time()</code></strong></p>
+<p>Return the current time, as a [float] value, according to the event loop&#39;s internal monotonic clock.</p>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p></div></aside>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>The [asyncio.sleep] function.</p>
+</div></aside>
+<h3 id="creating-futures-and-tasks">Creating futures and tasks</h3>
+<p><strong><code>loop.create_future()</code></strong></p>
+<p>Create an [asyncio.Future] object attached to the event loop.</p>
+<p>This is the preferred way to create Futures in asyncio. This lets third-party event loops provide alternative implementations of the Future object (with better performance or instrumentation).</p>
+<p><strong><code>loop.create_task(coro, *, name=None, context=None, eager_start=None, **kwargs)</code></strong></p>
+<p>Schedule the execution of coroutine <em>coro</em>. Return a [Task] object.</p>
+<p>Third-party event loops can use their own subclass of [Task] for interoperability. In this case, the result type is a subclass of [Task].</p>
+<p>The full function signature is largely the same as that of the [Task] constructor (or factory) - all of the keyword arguments to this function are passed through to that interface.</p>
+<p>If the <em>name</em> argument is provided and not <code>None</code>, it is set as the name of the task using [Task.set_name].</p>
+<p>An optional keyword-only <em>context</em> argument allows specifying a custom [contextvars.Context] for the <em>coro</em> to run in. The current context copy is created when no <em>context</em> is provided.</p>
+<p>An optional keyword-only <em>eager_start</em> argument allows specifying if the task should execute eagerly during the call to create_task, or be scheduled later. If <em>eager_start</em> is not passed the mode set by [loop.set_task_factory] will be used.</p>
+<p><strong><code>loop.set_task_factory(factory)</code></strong></p>
+<p>Set a task factory that will be used by [loop.create_task].</p>
+<p>If <em>factory</em> is <code>None</code> the default task factory will be set. Otherwise, <em>factory</em> must be a <em>callable</em> with the signature matching <code>(loop, coro, **kwargs)</code>, where <em>loop</em> is a reference to the active event loop, and <em>coro</em> is a coroutine object. The callable must pass on all <em>kwargs</em>, and return a [asyncio.Task]-compatible object.</p>
+<p><strong><code>loop.get_task_factory()</code></strong></p>
+<p>Return a task factory or <code>None</code> if the default one is in use.</p>
+<h3 id="opening-network-connections">Opening network connections</h3>
+<p><strong><code>loop.create_connection(protocol_factory, \</code></strong></p>
+<blockquote>
+<p>host=None, port=None, *, ssl=None, family=0, proto=0, flags=0, sock=None, local_addr=None, server_hostname=None, ssl_handshake_timeout=None, ssl_shutdown_timeout=None, happy_eyeballs_delay=None, interleave=None, all_errors=False)</p>
+</blockquote>
+<p>async</p>
+<p>:   </p>
+<p>Open a streaming transport connection to a given address specified by <em>host</em> and <em>port</em>.</p>
+<p>The socket family can be either :py`~socket.AF_INET` or :py`~socket.AF_INET6` depending on <em>host</em> (or the <em>family</em> argument, if provided).</p>
+<p>The socket type will be :py`~socket.SOCK_STREAM`.</p>
+<p><em>protocol_factory</em> must be a callable returning an asyncio protocol implementation.</p>
+<p>This method will try to establish the connection in the background. When successful, it returns a <code>(transport, protocol)</code> pair.</p>
+<p>The chronological synopsis of the underlying operation is as follows:</p>
+<ol>
+<li>The connection is established and a transport is created for it.</li>
+<li><em>protocol_factory</em> is called without arguments and is expected to return a protocol instance.</li>
+<li>The protocol instance is coupled with the transport by calling its [~BaseProtocol.connection_made] method.</li>
+<li>A <code>(transport, protocol)</code> tuple is returned on success.</li>
+</ol>
+<p>The created transport is an implementation-dependent bidirectional stream.</p>
+<p>Other arguments:</p>
+<ul>
+<li><p><em>ssl</em>: if given and not false, a SSL/TLS transport is created (by default a plain TCP transport is created). If <em>ssl</em> is a [ssl.SSLContext] object, this context is used to create the transport; if <em>ssl</em> is [True], a default context returned from [ssl.create_default_context] is used.</p>
+<p>::: seealso
+SSL/TLS security considerations
+:::</p>
+</li>
+<li><p><em>server_hostname</em> sets or overrides the hostname that the target server&#39;s certificate will be matched against. Should only be passed if <em>ssl</em> is not <code>None</code>. By default the value of the <em>host</em> argument is used. If <em>host</em> is empty, there is no default and you must pass a value for <em>server_hostname</em>. If <em>server_hostname</em> is an empty string, hostname matching is disabled (which is a serious security risk, allowing for potential man-in-the-middle attacks).</p>
+</li>
+<li><p><em>family</em>, <em>proto</em>, <em>flags</em> are the optional address family, protocol and flags to be passed through to getaddrinfo() for <em>host</em> resolution. If given, these should all be integers from the corresponding [socket] module constants.</p>
+</li>
+<li><p><em>happy_eyeballs_delay</em>, if given, enables Happy Eyeballs for this connection. It should be a floating-point number representing the amount of time in seconds to wait for a connection attempt to complete, before starting the next attempt in parallel. This is the &quot;Connection Attempt Delay&quot; as defined in [8305]. A sensible default value recommended by the RFC is <code>0.25</code> (250 milliseconds).</p>
+</li>
+<li><p><em>interleave</em> controls address reordering when a host name resolves to multiple IP addresses. If <code>0</code> or unspecified, no reordering is done, and addresses are tried in the order returned by [getaddrinfo]. If a positive integer is specified, the addresses are interleaved by address family, and the given integer is interpreted as &quot;First Address Family Count&quot; as defined in [8305]. The default is <code>0</code> if <em>happy_eyeballs_delay</em> is not specified, and <code>1</code> if it is.</p>
+</li>
+<li><p><em>sock</em>, if given, should be an existing, already connected [socket.socket] object to be used by the transport. If <em>sock</em> is given, none of <em>host</em>, <em>port</em>, <em>family</em>, <em>proto</em>, <em>flags</em>, <em>happy_eyeballs_delay</em>, <em>interleave</em> and <em>local_addr</em> should be specified.</p>
+</li>
+</ul>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">The *sock* argument transfers ownership of the socket to the
+transport created. To close the socket, call the transport&#x27;s
+:meth:`~asyncio.BaseTransport.close` method.</code></pre></div></figure>
+<ul>
+<li><em>local_addr</em>, if given, is a <code>(local_host, local_port)</code> tuple used to bind the socket locally. The <em>local_host</em> and <em>local_port</em> are looked up using <code>getaddrinfo()</code>, similarly to <em>host</em> and <em>port</em>.</li>
+<li><em>ssl_handshake_timeout</em> is (for a TLS connection) the time in seconds to wait for the TLS handshake to complete before aborting the connection. <code>60.0</code> seconds if <code>None</code> (default).</li>
+<li><em>ssl_shutdown_timeout</em> is the time in seconds to wait for the SSL shutdown to complete before aborting the connection. <code>30.0</code> seconds if <code>None</code> (default).</li>
+<li><em>all_errors</em> determines what exceptions are raised when a connection cannot be created. By default, only a single <code>Exception</code> is raised: the first exception if there is only one or all errors have same message, or a single <code>OSError</code> with the error messages combined. When <code>all_errors</code> is <code>True</code>, an <code>ExceptionGroup</code> will be raised containing all exceptions (even if there is only one).</li>
+</ul>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>The [open_connection] function is a high-level alternative API. It returns a pair of ([StreamReader], [StreamWriter]) that can be used directly in async/await code.</p>
+</div></aside>
+<p><strong><code>loop.create_datagram_endpoint(protocol_factory, \</code></strong></p>
+<blockquote>
+<p>local_addr=None, remote_addr=None, *, family=0, proto=0, flags=0, reuse_port=None, allow_broadcast=None, sock=None)</p>
+</blockquote>
+<p>async</p>
+<p>:   </p>
+<p>Create a datagram connection.</p>
+<p>The socket family can be either :py`~socket.AF_INET`, :py`~socket.AF_INET6`, or :py`~socket.AF_UNIX`, depending on <em>host</em> (or the <em>family</em> argument, if provided).</p>
+<p>The socket type will be :py`~socket.SOCK_DGRAM`.</p>
+<p><em>protocol_factory</em> must be a callable returning a protocol implementation.</p>
+<p>A tuple of <code>(transport, protocol)</code> is returned on success.</p>
+<p>Other arguments:</p>
+<ul>
+<li><em>local_addr</em>, if given, is a <code>(local_host, local_port)</code> tuple used to bind the socket locally. The <em>local_host</em> and <em>local_port</em> are looked up using [getaddrinfo].</li>
+</ul>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">On Windows, when using the proactor event loop with ``local_addr=None``,
+an :exc:`OSError` with :attr:`!errno.WSAEINVAL` will be raised
+when running it.</code></pre></div></figure>
+<ul>
+<li><em>remote_addr</em>, if given, is a <code>(remote_host, remote_port)</code> tuple used to connect the socket to a remote address. The <em>remote_host</em> and <em>remote_port</em> are looked up using [getaddrinfo].</li>
+<li><em>family</em>, <em>proto</em>, <em>flags</em> are the optional address family, protocol and flags to be passed through to [getaddrinfo] for <em>host</em> resolution. If given, these should all be integers from the corresponding [socket] module constants.</li>
+<li><em>reuse_port</em> tells the kernel to allow this endpoint to be bound to the same port as other existing endpoints are bound to, so long as they all set this flag when being created. This option is not supported on Windows and some Unixes. If the socket.SO_REUSEPORT constant is not defined then this capability is unsupported.</li>
+<li><em>allow_broadcast</em> tells the kernel to allow this endpoint to send messages to the broadcast address.</li>
+<li><em>sock</em> can optionally be specified in order to use a preexisting, already connected, [socket.socket] object to be used by the transport. If specified, <em>local_addr</em> and <em>remote_addr</em> should be omitted (must be [None]).</li>
+</ul>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">The *sock* argument transfers ownership of the socket to the
+transport created. To close the socket, call the transport&#x27;s
+:meth:`~asyncio.BaseTransport.close` method.</code></pre></div></figure>
+<p>See UDP echo client protocol and UDP echo server protocol examples.</p>
+<p><strong><code>loop.create_unix_connection(protocol_factory, \</code></strong></p>
+<blockquote>
+<p>path=None, *, ssl=None, sock=None, server_hostname=None, ssl_handshake_timeout=None, ssl_shutdown_timeout=None)</p>
+</blockquote>
+<p>async</p>
+<p>:   </p>
+<p>Create a Unix connection.</p>
+<p>The socket family will be :py`~socket.AF_UNIX`; socket type will be :py`~socket.SOCK_STREAM`.</p>
+<p>A tuple of <code>(transport, protocol)</code> is returned on success.</p>
+<p><em>path</em> is the name of a Unix domain socket and is required, unless a <em>sock</em> parameter is specified. Abstract Unix sockets, [str], [bytes], and [~pathlib.Path] paths are supported.</p>
+<p>See the documentation of the [loop.create_connection] method for information about arguments to this method.</p>
+<h3 id="creating-network-servers">Creating network servers</h3>
+<p>::: </p>
+<p><strong><code>loop.create_server(protocol_factory, \</code></strong></p>
+<blockquote>
+<p>host=None, port=None, *, family=socket.AF_UNSPEC, flags=socket.AI_PASSIVE, sock=None, backlog=100, ssl=None, reuse_address=None, reuse_port=None, keep_alive=None, ssl_handshake_timeout=None, ssl_shutdown_timeout=None, start_serving=True)</p>
+</blockquote>
+<p>async</p>
+<p>:   </p>
+<p>Create a TCP server (socket type [~socket.SOCK_STREAM]) listening on <em>port</em> of the <em>host</em> address.</p>
+<p>Returns a [Server] object.</p>
+<p>Arguments:</p>
+<ul>
+<li><em>protocol_factory</em> must be a callable returning a protocol implementation.</li>
+<li>The <em>host</em> parameter can be set to several types which determine where the server would be listening:<ul>
+<li>If <em>host</em> is a string, the TCP server is bound to a single network interface specified by <em>host</em>.</li>
+<li>If <em>host</em> is a sequence of strings, the TCP server is bound to all network interfaces specified by the sequence.</li>
+<li>If <em>host</em> is an empty string or <code>None</code>, all interfaces are assumed and a list of multiple sockets will be returned (most likely one for IPv4 and another one for IPv6).</li>
+</ul>
+</li>
+<li>The <em>port</em> parameter can be set to specify which port the server should listen on. If <code>0</code> or <code>None</code> (the default), a random unused port will be selected (note that if <em>host</em> resolves to multiple network interfaces, a different random port will be selected for each interface).</li>
+<li><em>family</em> can be set to either [socket.AF_INET] or [~socket.AF_INET6] to force the socket to use IPv4 or IPv6. If not set, the <em>family</em> will be determined from host name (defaults to [~socket.AF_UNSPEC]).</li>
+<li><em>flags</em> is a bitmask for [getaddrinfo].</li>
+<li><em>sock</em> can optionally be specified in order to use a preexisting socket object. If specified, <em>host</em> and <em>port</em> must not be specified.</li>
+</ul>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">The *sock* argument transfers ownership of the socket to the
+server created. To close the socket, call the server&#x27;s
+:meth:`~asyncio.Server.close` method.</code></pre></div></figure>
+<ul>
+<li><em>backlog</em> is the maximum number of queued connections passed to [~socket.socket.listen] (defaults to 100).</li>
+<li><em>ssl</em> can be set to an [~ssl.SSLContext] instance to enable TLS over the accepted connections.</li>
+<li><em>reuse_address</em> tells the kernel to reuse a local socket in <code>TIME_WAIT</code> state, without waiting for its natural timeout to expire. If not specified will automatically be set to <code>True</code> on Unix.</li>
+<li><em>reuse_port</em> tells the kernel to allow this endpoint to be bound to the same port as other existing endpoints are bound to, so long as they all set this flag when being created. This option is not supported on Windows.</li>
+<li><em>keep_alive</em> set to <code>True</code> keeps connections active by enabling the periodic transmission of messages.</li>
+<li><em>ssl_handshake_timeout</em> is (for a TLS server) the time in seconds to wait for the TLS handshake to complete before aborting the connection. <code>60.0</code> seconds if <code>None</code> (default).</li>
+<li><em>ssl_shutdown_timeout</em> is the time in seconds to wait for the SSL shutdown to complete before aborting the connection. <code>30.0</code> seconds if <code>None</code> (default).</li>
+<li><em>start_serving</em> set to <code>True</code> (the default) causes the created server to start accepting connections immediately. When set to <code>False</code>, the user should await on [Server.start_serving] or [Server.serve_forever] to make the server to start accepting connections.</li>
+</ul>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>The [start_server] function is a higher-level alternative API that returns a pair of [StreamReader] and [StreamWriter] that can be used in an async/await code.</p>
+</div></aside>
+<p>:::</p>
+<p><strong><code>loop.create_unix_server(protocol_factory, path=None, \</code></strong></p>
+<blockquote>
+<p>*, sock=None, backlog=100, ssl=None, ssl_handshake_timeout=None, ssl_shutdown_timeout=None, start_serving=True, cleanup_socket=True, mode=None)</p>
+</blockquote>
+<p>async</p>
+<p>:   </p>
+<p>Similar to [loop.create_server] but works with the :py`~socket.AF_UNIX` socket family.</p>
+<p><em>path</em> is the name of a Unix domain socket, and is required, unless a <em>sock</em> argument is provided. Abstract Unix sockets, [str], [bytes], and [~pathlib.Path] paths are supported.</p>
+<p>If <em>cleanup_socket</em> is true then the Unix socket will automatically be removed from the filesystem when the server is closed, unless the socket has been replaced after the server has been created.</p>
+<p>If <em>mode</em> is not <code>None</code>, the permissions of the socket file created for <em>path</em> are changed to <em>mode</em> (as accepted by [os.chmod]) right after binding, before the server starts accepting connections, so a connection can never be accepted while the default, umask-derived permissions are still in effect. <em>mode</em> cannot be combined with <em>sock</em> and is not supported for abstract Unix sockets.</p>
+<p>See the documentation of the [loop.create_server] method for information about arguments to this method.</p>
+<p><strong><code>loop.connect_accepted_socket(protocol_factory, \</code></strong></p>
+<blockquote>
+<p>sock, *, ssl=None, ssl_handshake_timeout=None, ssl_shutdown_timeout=None)</p>
+</blockquote>
+<p>async</p>
+<p>:   </p>
+<p>Wrap an already accepted connection into a transport/protocol pair.</p>
+<p>This method can be used by servers that accept connections outside of asyncio but that use asyncio to handle them.</p>
+<p>Parameters:</p>
+<ul>
+<li><em>protocol_factory</em> must be a callable returning a protocol implementation.</li>
+<li><em>sock</em> is a preexisting socket object returned from [socket.accept ].</li>
+</ul>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">The *sock* argument transfers ownership of the socket to the
+transport created. To close the socket, call the transport&#x27;s
+:meth:`~asyncio.BaseTransport.close` method.</code></pre></div></figure>
+<ul>
+<li><em>ssl</em> can be set to an [~ssl.SSLContext] to enable SSL over the accepted connections.</li>
+<li><em>ssl_handshake_timeout</em> is (for an SSL connection) the time in seconds to wait for the SSL handshake to complete before aborting the connection. <code>60.0</code> seconds if <code>None</code> (default).</li>
+<li><em>ssl_shutdown_timeout</em> is the time in seconds to wait for the SSL shutdown to complete before aborting the connection. <code>30.0</code> seconds if <code>None</code> (default).</li>
+</ul>
+<p>Returns a <code>(transport, protocol)</code> pair.</p>
+<h3 id="transferring-files">Transferring files</h3>
+<p><strong><code>loop.sendfile(transport, file, \</code></strong></p>
+<blockquote>
+<p>offset=0, count=None, *, fallback=True)</p>
+</blockquote>
+<p>async</p>
+<p>:   </p>
+<p>Send a <em>file</em> over a <em>transport</em>. Return the total number of bytes sent.</p>
+<p>The method uses high-performance [os.sendfile] if available.</p>
+<p><em>file</em> must be a regular file object opened in binary mode.</p>
+<p><em>offset</em> tells from where to start reading the file. If specified, <em>count</em> is the total number of bytes to transmit as opposed to sending the file until EOF is reached. File position is always updated, even when this method raises an error, and [file.tell() ] can be used to obtain the actual number of bytes sent.</p>
+<p><em>fallback</em> set to <code>True</code> makes asyncio to manually read and send the file when the platform does not support the sendfile system call (e.g. Windows or SSL socket on Unix).</p>
+<p>Raise [SendfileNotAvailableError] if the system does not support the <em>sendfile</em> syscall and <em>fallback</em> is <code>False</code>.</p>
+<h3 id="tls-upgrade">TLS upgrade</h3>
+<p><strong><code>loop.start_tls(transport, protocol, \</code></strong></p>
+<blockquote>
+<p>sslcontext, *, server_side=False, server_hostname=None, ssl_handshake_timeout=None, ssl_shutdown_timeout=None)</p>
+</blockquote>
+<p>async</p>
+<p>:   </p>
+<p>Upgrade an existing transport-based connection to TLS.</p>
+<p>Create a TLS coder/decoder instance and insert it between the <em>transport</em> and the <em>protocol</em>. The coder/decoder implements both <em>transport</em>-facing protocol and <em>protocol</em>-facing transport.</p>
+<p>Return the created two-interface instance. After <em>await</em>, the <em>protocol</em> must stop using the original <em>transport</em> and communicate with the returned object only because the coder caches <em>protocol</em>-side data and sporadically exchanges extra TLS session packets with <em>transport</em>.</p>
+<p>In some situations (e.g. when the passed transport is already closing) this may return <code>None</code>.</p>
+<p>Parameters:</p>
+<ul>
+<li><em>transport</em> and <em>protocol</em> instances that methods like [~loop.create_server] and [~loop.create_connection] return.</li>
+<li><em>sslcontext</em>: a configured instance of [~ssl.SSLContext].</li>
+<li><em>server_side</em> pass <code>True</code> when a server-side connection is being upgraded (like the one created by [~loop.create_server]).</li>
+<li><em>server_hostname</em>: sets or overrides the host name that the target server&#39;s certificate will be matched against.</li>
+<li><em>ssl_handshake_timeout</em> is (for a TLS connection) the time in seconds to wait for the TLS handshake to complete before aborting the connection. <code>60.0</code> seconds if <code>None</code> (default).</li>
+<li><em>ssl_shutdown_timeout</em> is the time in seconds to wait for the SSL shutdown to complete before aborting the connection. <code>30.0</code> seconds if <code>None</code> (default).</li>
+</ul>
+<h3 id="watching-file-descriptors">Watching file descriptors</h3>
+<p><strong><code>loop.add_reader(fd, callback, *args)</code></strong></p>
+<p>Start monitoring the <em>fd</em> file descriptor for read availability and invoke <em>callback</em> with the specified arguments once <em>fd</em> is available for reading.</p>
+<p>Any preexisting callback registered for <em>fd</em> is cancelled and replaced by <em>callback</em>.</p>
+<p><strong><code>loop.remove_reader(fd)</code></strong></p>
+<p>Stop monitoring the <em>fd</em> file descriptor for read availability. Returns <code>True</code> if <em>fd</em> was previously being monitored for reads.</p>
+<p><strong><code>loop.add_writer(fd, callback, *args)</code></strong></p>
+<p>Start monitoring the <em>fd</em> file descriptor for write availability and invoke <em>callback</em> with the specified arguments <em>args</em> once <em>fd</em> is available for writing.</p>
+<p>Any preexisting callback registered for <em>fd</em> is cancelled and replaced by <em>callback</em>.</p>
+<p>Use [functools.partial] to pass keyword arguments</p>
+<p>:   to <em>callback</em>.</p>
+<p><strong><code>loop.remove_writer(fd)</code></strong></p>
+<p>Stop monitoring the <em>fd</em> file descriptor for write availability. Returns <code>True</code> if <em>fd</em> was previously being monitored for writes.</p>
+<p>See also Platform Support section for some limitations of these methods.</p>
+<h3 id="working-with-socket-objects-directly">Working with socket objects directly</h3>
+<p>In general, protocol implementations that use transport-based APIs such as [loop.create_connection] and [loop.create_server] are faster than implementations that work with sockets directly. However, there are some use cases when performance is not critical, and working with [~socket.socket] objects directly is more convenient.</p>
+<p><strong><code>loop.sock_recv(sock, nbytes)</code></strong></p>
+<p>Receive up to <em>nbytes</em> from <em>sock</em>. Asynchronous version of [socket.recv() ].</p>
+<p>Return the received data as a bytes object.</p>
+<p><em>sock</em> must be a non-blocking socket.</p>
+<p><strong><code>loop.sock_recv_into(sock, buf)</code></strong></p>
+<p>Receive data from <em>sock</em> into the <em>buf</em> buffer. Modeled after the blocking [socket.recv_into() ] method.</p>
+<p>Return the number of bytes written to the buffer.</p>
+<p><em>sock</em> must be a non-blocking socket.</p>
+<p><strong><code>loop.sock_recvfrom(sock, bufsize)</code></strong></p>
+<p>Receive a datagram of up to <em>bufsize</em> from <em>sock</em>. Asynchronous version of [socket.recvfrom() ].</p>
+<p>Return a tuple of (received data, remote address).</p>
+<p><em>sock</em> must be a non-blocking socket.</p>
+<p><strong><code>loop.sock_recvfrom_into(sock, buf, nbytes=0)</code></strong></p>
+<p>Receive a datagram of up to <em>nbytes</em> from <em>sock</em> into <em>buf</em>. Asynchronous version of [socket.recvfrom_into() ].</p>
+<p>Return a tuple of (number of bytes received, remote address).</p>
+<p><em>sock</em> must be a non-blocking socket.</p>
+<p><strong><code>loop.sock_sendall(sock, data)</code></strong></p>
+<p>Send <em>data</em> to the <em>sock</em> socket. Asynchronous version of [socket.sendall() ].</p>
+<p>This method continues to send to the socket until either all data in <em>data</em> has been sent or an error occurs. <code>None</code> is returned on success. On error, an exception is raised. Additionally, there is no way to determine how much data, if any, was successfully processed by the receiving end of the connection.</p>
+<p><em>sock</em> must be a non-blocking socket.</p>
+<p><strong><code>loop.sock_sendto(sock, data, address)</code></strong></p>
+<p>Send a datagram from <em>sock</em> to <em>address</em>. Asynchronous version of [socket.sendto() ].</p>
+<p>Return the number of bytes sent.</p>
+<p><em>sock</em> must be a non-blocking socket.</p>
+<p><strong><code>loop.sock_connect(sock, address)</code></strong></p>
+<p>Connect <em>sock</em> to a remote socket at <em>address</em>.</p>
+<p>Asynchronous version of [socket.connect() ].</p>
+<p><em>sock</em> must be a non-blocking socket.</p>
+<p>With [SelectorEventLoop], <em>address</em> does not need to be resolved: for [~socket.AF_INET] and [~socket.AF_INET6] sockets, <code>sock_connect</code> first checks whether <em>address</em> is already resolved by calling [socket.inet_pton], and uses [loop.getaddrinfo] to resolve it if it is not.</p>
+<p>[ProactorEventLoop], the default event loop on Windows, does not resolve <em>address</em>. The host must already be a numeric IP address; passing a host name raises [OSError]. Resolve the address with [loop.getaddrinfo] first, or use [loop.create_connection], which resolves the address on every platform.</p>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>[loop.create_connection] and [asyncio.open_connection() ].</p>
+</div></aside>
+<p><strong><code>loop.sock_accept(sock)</code></strong></p>
+<p>Accept a connection. Modeled after the blocking [socket.accept() ] method.</p>
+<p>The socket must be bound to an address and listening for connections. The return value is a pair <code>(conn, address)</code> where <em>conn</em> is a <em>new</em> socket object usable to send and receive data on the connection, and <em>address</em> is the address bound to the socket on the other end of the connection.</p>
+<p><em>sock</em> must be a non-blocking socket.</p>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>[loop.create_server] and [start_server].</p>
+</div></aside>
+<p><strong><code>loop.sock_sendfile(sock, file, offset=0, count=None, \</code></strong></p>
+<blockquote>
+<p>*, fallback=True)</p>
+</blockquote>
+<p>async</p>
+<p>:   </p>
+<p>Send a file using high-performance [os.sendfile] if possible. Return the total number of bytes sent.</p>
+<p>Asynchronous version of [socket.sendfile() ].</p>
+<p><em>sock</em> must be a non-blocking [socket.SOCK_STREAM] [~socket.socket].</p>
+<p><em>file</em> must be a regular file object open in binary mode.</p>
+<p><em>offset</em> tells from where to start reading the file. If specified, <em>count</em> is the total number of bytes to transmit as opposed to sending the file until EOF is reached. File position is always updated, even when this method raises an error, and [file.tell() ] can be used to obtain the actual number of bytes sent.</p>
+<p><em>fallback</em>, when set to <code>True</code>, makes asyncio manually read and send the file when the platform does not support the sendfile syscall (e.g. Windows or SSL socket on Unix).</p>
+<p>Raise [SendfileNotAvailableError] if the system does not support <em>sendfile</em> syscall and <em>fallback</em> is <code>False</code>.</p>
+<p><em>sock</em> must be a non-blocking socket.</p>
+<h3 id="dns">DNS</h3>
+<p><strong><code>loop.getaddrinfo(host, port, *, family=0, \</code></strong></p>
+<blockquote>
+<p>type=0, proto=0, flags=0)</p>
+</blockquote>
+<p>async</p>
+<p>:   </p>
+<p>Asynchronous version of [socket.getaddrinfo].</p>
+<p><strong><code>loop.getnameinfo(sockaddr, flags=0)</code></strong></p>
+<p>Asynchronous version of [socket.getnameinfo].</p>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>Both <em>getaddrinfo</em> and <em>getnameinfo</em> internally utilize their synchronous versions through the loop&#39;s default thread pool executor. When this executor is saturated, these methods may experience delays, which higher-level networking libraries may report as increased timeouts. To mitigate this, consider using a custom executor for other user tasks, or setting a default executor with a larger number of workers.</p>
+</div></aside>
+<h3 id="working-with-pipes">Working with pipes</h3>
+<p><strong><code>loop.connect_read_pipe(protocol_factory, pipe)</code></strong></p>
+<p>Register the read end of <em>pipe</em> in the event loop.</p>
+<p><em>protocol_factory</em> must be a callable returning an asyncio protocol implementation.</p>
+<p><em>pipe</em> is a file-like object . See Supported pipe objects for the objects supported as <em>pipe</em>.</p>
+<p>Return pair <code>(transport, protocol)</code>, where <em>transport</em> supports the [ReadTransport] interface and <em>protocol</em> is an object instantiated by the <em>protocol_factory</em>.</p>
+<p>With [SelectorEventLoop] event loop, the <em>pipe</em> is set to non-blocking mode.</p>
+<p><strong><code>loop.connect_write_pipe(protocol_factory, pipe)</code></strong></p>
+<p>Register the write end of <em>pipe</em> in the event loop.</p>
+<p><em>protocol_factory</em> must be a callable returning an asyncio protocol implementation.</p>
+<p><em>pipe</em> is a file-like object . See Supported pipe objects for the objects supported as <em>pipe</em>.</p>
+<p>Return pair <code>(transport, protocol)</code>, where <em>transport</em> supports [WriteTransport] interface and <em>protocol</em> is an object instantiated by the <em>protocol_factory</em>.</p>
+<p>With [SelectorEventLoop] event loop, the <em>pipe</em> is set to non-blocking mode.</p>
+<p>::: 
+These methods only work with objects the operating system can poll for readiness or perform overlapped I/O on. Regular files on disk are <strong>not</strong> supported on any platform. There is no asynchronous file I/O in asyncio; use [loop.run_in_executor] to read and write regular files without blocking the event loop.
+:::</p>
+<p>On Unix, with [SelectorEventLoop], <em>pipe</em> must wrap one of the following:</p>
+<ul>
+<li>a pipe, such as an end of an [os.pipe] pair or a FIFO created with [os.mkfifo];</li>
+<li>a socket;</li>
+<li>a character device, such as a terminal.</li>
+</ul>
+<p>On Windows, where only [ProactorEventLoop] implements these methods, <em>pipe</em> must wrap a handle opened for overlapped I/O (that is, created with the <code>FILE_FLAG_OVERLAPPED</code> flag), since the handle has to be associated with an I/O completion port. Handles that were not opened for overlapped I/O are rejected. In particular, the standard streams ([sys.stdin], [sys.stdout] and [sys.stderr]), console handles, and the pipes created by [os.pipe] are <strong>not</strong> opened for overlapped I/O and therefore cannot be used with these methods.</p>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>[SelectorEventLoop] does not support the above methods on Windows. Use [ProactorEventLoop] instead for Windows.</p>
+</div></aside>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>The [loop.subprocess_exec] and [loop.subprocess_shell] methods.</p>
+</div></aside>
+<h3 id="unix-signals">Unix signals</h3>
+<p>::: </p>
+<p><strong><code>loop.add_signal_handler(signum, callback, *args)</code></strong></p>
+<p>Set <em>callback</em> as the handler for the <em>signum</em> signal, passing <em>args</em> as positional arguments.</p>
+<p>The callback will be invoked by <em>loop</em>, along with other queued callbacks and runnable coroutines of that event loop. Unlike signal handlers registered using [signal.signal], a callback registered with this function is allowed to interact with the event loop.</p>
+<p>Raise [ValueError] if the signal number is invalid or uncatchable. Raise [RuntimeError] if there is a problem setting up the handler.</p>
+<p>Use [functools.partial] to pass keyword arguments</p>
+<p>:   to <em>callback</em>.</p>
+<p>Like [signal.signal], this function must be invoked in the main thread.</p>
+<p>:::</p>
+<p><strong><code>loop.remove_signal_handler(sig)</code></strong></p>
+<p>Remove the handler for the <em>sig</em> signal.</p>
+<p>Return <code>True</code> if the signal handler was removed, or <code>False</code> if no handler was set for the given signal.</p>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>The [signal] module.</p>
+</div></aside>
+<h3 id="executing-code-in-thread-or-process-pools">Executing code in thread or process pools</h3>
+<p><strong><code>loop.set_default_executor(executor)</code></strong></p>
+<p>Set <em>executor</em> as the default executor used by [run_in_executor]. <em>executor</em> must be an instance of [~concurrent.futures.ThreadPoolExecutor], which includes [~concurrent.futures.InterpreterPoolExecutor].</p>
+<h3 id="error-handling-api">Error handling API</h3>
+<p>Allows customizing how exceptions are handled in the event loop.</p>
+<p><strong><code>loop.set_exception_handler(handler)</code></strong></p>
+<p>Set <em>handler</em> as the new event loop exception handler.</p>
+<p>If <em>handler</em> is <code>None</code>, the default exception handler will be set. Otherwise, <em>handler</em> must be a callable with the signature matching <code>(loop, context)</code>, where <code>loop</code> is a reference to the active event loop, and <code>context</code> is a <code>dict</code> object containing the details of the exception (see [call_exception_handler] documentation for details about context).</p>
+<p>If the handler is called on behalf of a [~asyncio.Task] or [~asyncio.Handle], it is run in the [contextvars.Context] of that task or callback handle.</p>
+<p><strong><code>loop.get_exception_handler()</code></strong></p>
+<p>Return the current exception handler, or <code>None</code> if no custom exception handler was set.</p>
+<p><strong><code>loop.default_exception_handler(context)</code></strong></p>
+<p>Default exception handler.</p>
+<p>This is called when an exception occurs and no exception handler is set. This can be called by a custom exception handler that wants to defer to the default handler behavior.</p>
+<p><em>context</em> parameter has the same meaning as in [call_exception_handler].</p>
+<p><strong><code>loop.call_exception_handler(context)</code></strong></p>
+<p>Call the current event loop exception handler.</p>
+<p><em>context</em> is a <code>dict</code> object containing the following keys (new keys may be introduced in future Python versions):</p>
+<ul>
+<li>&#39;message&#39;: Error message;</li>
+<li>&#39;exception&#39; (optional): Exception object;</li>
+<li>&#39;future&#39; (optional): [asyncio.Future] instance;</li>
+<li>&#39;task&#39; (optional): [asyncio.Task] instance;</li>
+<li>&#39;handle&#39; (optional): [asyncio.Handle] instance;</li>
+<li>&#39;protocol&#39; (optional): Protocol instance;</li>
+<li>&#39;transport&#39; (optional): Transport instance;</li>
+<li>&#39;socket&#39; (optional): [socket.socket] instance;</li>
+<li>&#39;source_traceback&#39; (optional): Traceback of the source;</li>
+<li>&#39;handle_traceback&#39; (optional): Traceback of the handle;</li>
+<li>&#39;asyncgen&#39; (optional): Asynchronous generator that caused the exception.</li>
+</ul>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>This method should not be overloaded in subclassed event loops. For custom exception handling, use the [set_exception_handler] method.</p>
+</div></aside>
+<h3 id="enabling-debug-mode">Enabling debug mode</h3>
+<p><strong><code>loop.get_debug()</code></strong></p>
+<p>Get the debug mode ([bool]) of the event loop.</p>
+<p>The default value is <code>True</code> if the environment variable [PYTHONASYNCIODEBUG] is set to a non-empty string, <code>False</code> otherwise.</p>
+<p><strong><code>loop.set_debug(enabled: bool)</code></strong></p>
+<p>Set the debug mode of the event loop.</p>
+<p><strong><code>loop.slow_callback_duration</code></strong></p>
+<p>This attribute can be used to set the minimum execution duration in seconds that is considered &quot;slow&quot;. When debug mode is enabled, &quot;slow&quot; callbacks are logged.</p>
+<p>Default value is 100 milliseconds.</p>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>The debug mode of asyncio .</p>
+</div></aside>
+<h3 id="running-subprocesses">Running subprocesses</h3>
+<p>Methods described in this subsections are low-level. In regular async/await code consider using the high-level [asyncio.create_subprocess_shell] and [asyncio.create_subprocess_exec] convenience functions instead.</p>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>On Windows, the default event loop [ProactorEventLoop] supports subprocesses, whereas [SelectorEventLoop] does not. See Subprocess Support on Windows for details.</p>
+</div></aside>
+<p>::: </p>
+<p><strong><code>loop.subprocess_exec(protocol_factory, *args, \</code></strong></p>
+<blockquote>
+<p>stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **kwargs)</p>
+</blockquote>
+<p>async</p>
+<p>:   </p>
+<p>Create a subprocess from one or more string arguments specified by <em>args</em>.</p>
+<p><em>args</em> must be a list of strings represented by:</p>
+<ul>
+<li>[str];</li>
+<li>or [bytes], encoded to the filesystem encoding .</li>
+</ul>
+<p>The first string specifies the program executable, and the remaining strings specify the arguments. Together, string arguments form the <code>argv</code> of the program.</p>
+<p>This is similar to the standard library [subprocess.Popen] class called with <code>shell=False</code> and the list of strings passed as the first argument; however, where [~subprocess.Popen] takes a single argument which is list of strings, <em>subprocess_exec</em> takes multiple string arguments.</p>
+<p>The <em>protocol_factory</em> must be a callable returning a subclass of the [asyncio.SubprocessProtocol] class.</p>
+<p>Other parameters:</p>
+<ul>
+<li><p><em>stdin</em> can be any of these:</p>
+<ul>
+<li>a file-like object</li>
+<li>an existing file descriptor (a positive integer), for example those created with [os.pipe]</li>
+<li>the [subprocess.PIPE] constant (default) which will create a new pipe and connect it,</li>
+<li>the value <code>None</code> which will make the subprocess inherit the file descriptor from this process</li>
+<li>the [subprocess.DEVNULL] constant which indicates that the special [os.devnull] file will be used</li>
+</ul>
+</li>
+<li><p><em>stdout</em> can be any of these:</p>
+<ul>
+<li>a file-like object</li>
+<li>the [subprocess.PIPE] constant (default) which will create a new pipe and connect it,</li>
+<li>the value <code>None</code> which will make the subprocess inherit the file descriptor from this process</li>
+<li>the [subprocess.DEVNULL] constant which indicates that the special [os.devnull] file will be used</li>
+</ul>
+</li>
+<li><p><em>stderr</em> can be any of these:</p>
+<ul>
+<li>a file-like object</li>
+<li>the [subprocess.PIPE] constant (default) which will create a new pipe and connect it,</li>
+<li>the value <code>None</code> which will make the subprocess inherit the file descriptor from this process</li>
+<li>the [subprocess.DEVNULL] constant which indicates that the special [os.devnull] file will be used</li>
+<li>the [subprocess.STDOUT] constant which will connect the standard error stream to the process&#39; standard output stream</li>
+</ul>
+</li>
+<li><p>All other keyword arguments are passed to [subprocess.Popen] without interpretation, except for <em>bufsize</em>, <em>universal_newlines</em>, <em>shell</em>, <em>text</em>, <em>encoding</em> and <em>errors</em>, which should not be specified at all.</p>
+<p>The <code>asyncio</code> subprocess API does not support decoding the streams as text. [bytes.decode] can be used to convert the bytes returned from the stream to text.</p>
+</li>
+</ul>
+<p>If a file-like object passed as <em>stdin</em>, <em>stdout</em> or <em>stderr</em> represents a pipe, then the other side of this pipe should be registered with [~loop.connect_write_pipe] or [~loop.connect_read_pipe] for use with the event loop.</p>
+<p>See the constructor of the [subprocess.Popen] class for documentation on other arguments.</p>
+<p>Returns a pair of <code>(transport, protocol)</code>, where <em>transport</em> conforms to the [asyncio.SubprocessTransport] base class and <em>protocol</em> is an object instantiated by the <em>protocol_factory</em>.</p>
+<p>If the transport is closed or is garbage collected, the child process is killed if it is still running.</p>
+<p>:::</p>
+<p><strong><code>loop.subprocess_shell(protocol_factory, cmd, *, \</code></strong></p>
+<blockquote>
+<p>stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **kwargs)</p>
+</blockquote>
+<p>async</p>
+<p>:   </p>
+<p>Create a subprocess from <em>cmd</em>, which can be a [str] or a [bytes] string encoded to the filesystem encoding , using the platform&#39;s &quot;shell&quot; syntax.</p>
+<p>This is similar to the standard library [subprocess.Popen] class called with <code>shell=True</code>.</p>
+<p>The <em>protocol_factory</em> must be a callable returning a subclass of the [SubprocessProtocol] class.</p>
+<p>See [~loop.subprocess_exec] for more details about the remaining arguments.</p>
+<p>Returns a pair of <code>(transport, protocol)</code>, where <em>transport</em> conforms to the [SubprocessTransport] base class and <em>protocol</em> is an object instantiated by the <em>protocol_factory</em>.</p>
+<p>If the transport is closed or is garbage collected, the child process is killed if it is still running.</p>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>It is the application&#39;s responsibility to ensure that all whitespace and special characters are quoted appropriately to avoid <a target="_blank" rel="noopener" href="https://en.wikipedia.org/wiki/Shell_injection#Shell_injection">shell injection</a> vulnerabilities. The [shlex.quote] function can be used to properly escape whitespace and special characters in strings that are going to be used to construct shell commands.</p>
+</div></aside>
+<h2 id="callback-handles">Callback handles</h2>
+<p><strong><code>Handle</code></strong></p>
+<p>A callback wrapper object returned by [loop.call_soon], [loop.call_soon_threadsafe].</p>
+<p><strong><code>get_context()</code></strong></p>
+<p>Return the [contextvars.Context] object associated with the handle.</p>
+<p><strong><code>cancel()</code></strong></p>
+<p>Cancel the callback. If the callback has already been canceled or executed, this method has no effect.</p>
+<p><strong><code>cancelled()</code></strong></p>
+<p>Return <code>True</code> if the callback was cancelled.</p>
+<p><strong><code>TimerHandle</code></strong></p>
+<p>A callback wrapper object returned by [loop.call_later], and [loop.call_at].</p>
+<p>This class is a subclass of [Handle].</p>
+<p><strong><code>when()</code></strong></p>
+<p>Return a scheduled callback time as [float] seconds.</p>
+<p>The time is an absolute timestamp, using the same time reference as [loop.time].</p>
+<h2 id="server-objects">Server objects</h2>
+<p>Server objects are created by [loop.create_server], [loop.create_unix_server], [start_server], and [start_unix_server] functions.</p>
+<p>Do not instantiate the [Server] class directly.</p>
+<p><strong><code>Server</code></strong></p>
+<p><em>Server</em> objects are asynchronous context managers. When used in an <code>async with</code> statement, it&#39;s guaranteed that the Server object is closed and not accepting new connections when the <code>async with</code> statement is completed:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">srv = await loop.create_server(...)
+
+async with srv:
+    # some code
+
+# At this point, srv is closed and no longer accepts new connections.</code></pre></div></figure>
+<p><strong><code>close()</code></strong></p>
+<p>Stop serving: close listening sockets and set the [sockets] attribute to <code>None</code>.</p>
+<p>The sockets that represent existing incoming client connections are left open.</p>
+<p>The server is closed asynchronously; use the [wait_closed] coroutine to wait until the server is closed (and no more connections are active).</p>
+<p><strong><code>close_clients()</code></strong></p>
+<p>Close all existing incoming client connections.</p>
+<p>Calls [~asyncio.BaseTransport.close] on all associated transports.</p>
+<p>[close] should be called before [close_clients] when closing the server to avoid races with new clients connecting.</p>
+<p><strong><code>abort_clients()</code></strong></p>
+<p>Close all existing incoming client connections immediately, without waiting for pending operations to complete.</p>
+<p>Calls [~asyncio.WriteTransport.abort] on all associated transports.</p>
+<p>[close] should be called before [abort_clients] when closing the server to avoid races with new clients connecting.</p>
+<p><strong><code>get_loop()</code></strong></p>
+<p>Return the event loop associated with the server object.</p>
+<p><strong><code>start_serving()</code></strong></p>
+<p>Start accepting connections.</p>
+<p>This method is idempotent, so it can be called when the server is already serving.</p>
+<p>The <em>start_serving</em> keyword-only parameter to [loop.create_server] and [asyncio.start_server] allows creating a Server object that is not accepting connections initially. In this case <code>Server.start_serving()</code>, or [Server.serve_forever] can be used to make the Server start accepting connections.</p>
+<p><strong><code>serve_forever()</code></strong></p>
+<p>Start accepting connections until the coroutine is cancelled. Cancellation of <code>serve_forever</code> task causes the server to be closed.</p>
+<p>This method can be called if the server is already accepting connections. Only one <code>serve_forever</code> task can exist per one <em>Server</em> object.</p>
+<p>Example:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">async def client_connected(reader, writer):
+    # Communicate with the client with
+    # reader/writer streams.  For example:
+    await reader.readline()
+
+async def main(host, port):
+    srv = await asyncio.start_server(
+        client_connected, host, port)
+    await srv.serve_forever()
+
+asyncio.run(main(&#x27;127.0.0.1&#x27;, 0))</code></pre></div></figure>
+<p><strong><code>is_serving()</code></strong></p>
+<p>Return <code>True</code> if the server is accepting new connections.</p>
+<p><strong><code>wait_closed()</code></strong></p>
+<p>Wait until the [close] method completes and all active connections have finished.</p>
+<p><strong><code>sockets</code></strong></p>
+<p>List of socket-like objects, <code>asyncio.trsock.TransportSocket</code>, which the server is listening on.</p>
+<h2 id="event-loop-implementations">Event loop implementations[]</h2>
+<p>asyncio ships with two different event loop implementations: [SelectorEventLoop] and [ProactorEventLoop].</p>
+<p>By default asyncio is configured to use [EventLoop].</p>
+<p><strong><code>SelectorEventLoop</code></strong></p>
+<p>A subclass of [AbstractEventLoop] based on the [selectors] module.</p>
+<p>Uses the most efficient <em>selector</em> available for the given platform. It is also possible to manually configure the exact selector implementation to be used:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext"></code></pre></div></figure>

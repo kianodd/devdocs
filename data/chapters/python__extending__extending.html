@@ -1,0 +1,476 @@
+<p>The tutorial walked you through creating a C API extension module, but left many areas unexplained. This document looks at several concepts that you&#39;ll need to learn in order to write more complex extensions.</p>
+<h2 id="errors-and-exceptions">Errors and Exceptions</h2>
+<p>An important convention throughout the Python interpreter is the following: when a function fails, it should set an exception condition and return an error value (usually <code>-1</code> or a <code>NULL</code> pointer). Exception information is stored in three members of the interpreter&#39;s thread state. These are <code>NULL</code> if there is no exception. Otherwise they are the C equivalents of the members of the Python tuple returned by [sys.exc_info]. These are the exception type, exception instance, and a traceback object. It is important to know about them to understand how errors are passed around.</p>
+<p>The Python API defines a number of functions to set various types of exceptions.</p>
+<p>The most common one is :c`PyErr_SetString`. Its arguments are an exception object and a C string. The exception object is usually a predefined object like :c`PyExc_ZeroDivisionError`. The C string indicates the cause of the error and is converted to a Python string object and stored as the &quot;associated value&quot; of the exception.</p>
+<p>Another useful function is :c`PyErr_SetFromErrno`, which only takes an exception argument and constructs the associated value by inspection of the global variable :c`errno`. The most general function is :c`PyErr_SetObject`, which takes two object arguments, the exception and its associated value. You don&#39;t need to :c`Py_INCREF` the objects passed to any of these functions.</p>
+<p>You can test non-destructively whether an exception has been set with :c`PyErr_Occurred`. This returns the current exception object, or <code>NULL</code> if no exception has occurred. You normally don&#39;t need to call :c`PyErr_Occurred` to see whether an error occurred in a function call, since you should be able to tell from the return value.</p>
+<p>When a function <em>f</em> that calls another function <em>g</em> detects that the latter fails, <em>f</em> should itself return an error value (usually <code>NULL</code> or <code>-1</code>). It should <em>not</em> call one of the <code>PyErr_*</code> functions --- one has already been called by <em>g</em>. <em>f</em>&#39;s caller is then supposed to also return an error indication to <em>its</em> caller, again <em>without</em> calling <code>PyErr_*</code>, and so on --- the most detailed cause of the error was already reported by the function that first detected it. Once the error reaches the Python interpreter&#39;s main loop, this aborts the currently executing Python code and tries to find an exception handler specified by the Python programmer.</p>
+<p>(There are situations where a module can actually give a more detailed error message by calling another <code>PyErr_*</code> function, and in such cases it is fine to do so. As a general rule, however, this is not necessary, and can cause information about the cause of the error to be lost: most operations can fail for a variety of reasons.)</p>
+<p>To ignore an exception set by a function call that failed, the exception condition must be cleared explicitly by calling :c`PyErr_Clear`. The only time C code should call :c`PyErr_Clear` is if it doesn&#39;t want to pass the error on to the interpreter but wants to handle it completely by itself (possibly by trying something else, or pretending nothing went wrong).</p>
+<p>Every failing :c`malloc` call must be turned into an exception --- the direct caller of :c`malloc` (or :c`realloc`) must call :c`PyErr_NoMemory` and return a failure indicator itself. All the object-creating functions (for example, :c`PyLong_FromLong`) already do this, so this note is only relevant to those who call :c`malloc` directly.</p>
+<p>Also note that, with the important exception of :c`PyArg_ParseTuple` and friends, functions that return an integer status usually return a positive value or zero for success and <code>-1</code> for failure, like Unix system calls.</p>
+<p>Finally, be careful to clean up garbage (by making :c`Py_XDECREF` or :c`Py_DECREF` calls for objects you have already created) when you return an error indicator!</p>
+<p>The choice of which exception to raise is entirely yours. There are predeclared C objects corresponding to all built-in Python exceptions, such as :c`PyExc_ZeroDivisionError`, which you can use directly. Of course, you should choose exceptions wisely --- don&#39;t use :c`PyExc_TypeError` to mean that a file couldn&#39;t be opened (that should probably be :c`PyExc_OSError`). If something&#39;s wrong with the argument list, the :c`PyArg_ParseTuple` function usually raises :c`PyExc_TypeError`. If you have an argument whose value must be in a particular range or must satisfy other conditions, :c`PyExc_ValueError` is appropriate.</p>
+<p>You can also define a new exception that is unique to your module. The simplest way to do this is to declare a static global object variable at the beginning of the file:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">static PyObject *SpamError = NULL;</code></pre></div></figure>
+<p>and initialize it by calling :c`PyErr_NewException` in the module&#39;s :c`Py_mod_exec` function (:c`!spam_module_exec`):</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">SpamError = PyErr_NewException(&quot;spam.error&quot;, NULL, NULL);</code></pre></div></figure>
+<p>Since :c`!SpamError` is a global variable, it will be overwritten every time the module is reinitialized, when the :c`Py_mod_exec` function is called.</p>
+<p>For now, let&#39;s avoid the issue: we will block repeated initialization by raising an :py`ImportError`:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">static PyObject *SpamError = NULL;
+
+static int
+spam_module_exec(PyObject *m)
+{
+    if (SpamError != NULL) {
+        PyErr_SetString(PyExc_ImportError,
+                        &quot;cannot initialize spam module more than once&quot;);
+        return -1;
+    }
+    SpamError = PyErr_NewException(&quot;spam.error&quot;, NULL, NULL);
+    if (PyModule_AddObjectRef(m, &quot;SpamError&quot;, SpamError) &lt; 0) {
+        return -1;
+    }
+
+    return 0;
+}
+
+static PyModuleDef_Slot spam_module_slots[] = {
+    {Py_mod_exec, spam_module_exec},
+    {0, NULL}
+};
+
+static struct PyModuleDef spam_module = {
+    .m_base = PyModuleDef_HEAD_INIT,
+    .m_name = &quot;spam&quot;,
+    .m_size = 0,  // non-negative
+    .m_slots = spam_module_slots,
+};
+
+PyMODINIT_FUNC
+PyInit_spam(void)
+{
+    return PyModuleDef_Init(&amp;spam_module);
+}</code></pre></div></figure>
+<p>Note that the Python name for the exception object is [!spam.error]. The :c`PyErr_NewException` function may create a class with the base class being [Exception] (unless another class is passed in instead of <code>NULL</code>), described in bltin-exceptions.</p>
+<p>Note also that the :c`!SpamError` variable retains a reference to the newly created exception class; this is intentional! Since the exception could be removed from the module by external code, an owned reference to the class is needed to ensure that it will not be discarded, causing :c`!SpamError` to become a dangling pointer. Should it become a dangling pointer, C code which raises the exception could cause a core dump or other unintended side effects.</p>
+<p>For now, the :c`Py_DECREF` call to remove this reference is missing. Even when the Python interpreter shuts down, the global :c`!SpamError` variable will not be garbage-collected. It will &quot;leak&quot;. We did, however, ensure that this will happen at most once per process.</p>
+<p>We discuss the use of :c`PyMODINIT_FUNC` as a function return type later in this sample.</p>
+<p>The [!spam.error] exception can be raised in your extension module using a call to :c`PyErr_SetString` as shown below:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">static PyObject *
+spam_system(PyObject *self, PyObject *args)
+{
+    const char *command;
+    int sts;
+
+    if (!PyArg_ParseTuple(args, &quot;s&quot;, &amp;command))
+        return NULL;
+    sts = system(command);
+    if (sts &lt; 0) {
+        PyErr_SetString(SpamError, &quot;System command failed&quot;);
+        return NULL;
+    }
+    return PyLong_FromLong(sts);
+}</code></pre></div></figure>
+<h2 id="embedding-an-extension">Embedding an extension</h2>
+<p>If you want to make your module a permanent part of the Python interpreter, you will have to change the configuration setup and rebuild the interpreter. On Unix, place your file ([spammodule.c] for example) in the [Modules/] directory of an unpacked source distribution, add a line to the file [Modules/Setup.local] describing your file:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Terminal</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-bash">
+<span class="tk-cmd">spam</span> spammodule.o</code></pre></div></figure>
+<p>and rebuild the interpreter by running [make] in the toplevel directory. You can also run [make] in the [Modules/] subdirectory, but then you must first rebuild [Makefile] there by running &#39;`make` Makefile&#39;. (This is necessary each time you change the [Setup] file.)</p>
+<p>If your module requires additional libraries to link with, these can be listed on the line in the configuration file as well, for instance:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Terminal</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-bash">
+<span class="tk-cmd">spam</span> spammodule.o <span class="tk-flag">-lX11</span></code></pre></div></figure>
+<h2 id="calling-python-functions-from-c">Calling Python Functions from C</h2>
+<p>The tutorial concentrated on making C functions callable from Python. The reverse is also useful: calling Python functions from C. This is especially the case for libraries that support so-called &quot;callback&quot; functions. If a C interface makes use of callbacks, the equivalent Python often needs to provide a callback mechanism to the Python programmer; the implementation will require calling the Python callback functions from a C callback. Other uses are also imaginable.</p>
+<p>Fortunately, the Python interpreter is easily called recursively, and there is a standard interface to call a Python function. (If you&#39;re interested in how to call the Python parser with a particular string as input, see veryhigh.)</p>
+<p>Calling a Python function is easy. First, the Python program must somehow pass you the Python function object. You should provide a function (or some other interface) to do this. When this function is called, save a pointer to the Python function object (be careful to :c`Py_INCREF` it!) in a global variable --- or wherever you see fit. For example, the following function might be part of a module definition:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">static PyObject *my_callback = NULL;
+
+static PyObject *
+my_set_callback(PyObject *dummy, PyObject *args)
+{
+    PyObject *result = NULL;
+    PyObject *temp;
+
+    if (PyArg_ParseTuple(args, &quot;O:set_callback&quot;, &amp;temp)) {
+        if (!PyCallable_Check(temp)) {
+            PyErr_SetString(PyExc_TypeError, &quot;parameter must be callable&quot;);
+            return NULL;
+        }
+        Py_XINCREF(temp);         /* Add a reference to new callback */
+        Py_XDECREF(my_callback);  /* Dispose of previous callback */
+        my_callback = temp;       /* Remember new callback */
+        /* Boilerplate to return &quot;None&quot; */
+        Py_INCREF(Py_None);
+        result = Py_None;
+    }
+    return result;
+}</code></pre></div></figure>
+<p>This function must be registered with the interpreter using the :c`METH_VARARGS` flag in :c`PyMethodDef.ml_flags`. The :c`PyArg_ParseTuple` function and its arguments are documented in section parsetuple.</p>
+<p>The macros :c`Py_XINCREF` and :c`Py_XDECREF` increment/decrement the reference count of an object and are safe in the presence of <code>NULL</code> pointers (but note that <em>temp</em> will not be <code>NULL</code> in this context). More info on them in section refcounts.</p>
+<p>Later, when it is time to call the function, you call the C function :c`PyObject_CallObject`. This function has two arguments, both pointers to arbitrary Python objects: the Python function, and the argument list. The argument list must always be a tuple object, whose length is the number of arguments. To call the Python function with no arguments, pass in <code>NULL</code>, or an empty tuple; to call it with one argument, pass a singleton tuple. :c`Py_BuildValue` returns a tuple when its format string consists of zero or more format codes between parentheses. For example:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">int arg;
+PyObject *arglist;
+PyObject *result;
+...
+arg = 123;
+...
+/* Time to call the callback */
+arglist = Py_BuildValue(&quot;(i)&quot;, arg);
+result = PyObject_CallObject(my_callback, arglist);
+Py_DECREF(arglist);</code></pre></div></figure>
+<p>c`PyObject_CallObject` returns a Python object pointer
+:   this is the return</p>
+<p>value of the Python function. :c`PyObject_CallObject` is &quot;reference-count-neutral&quot; with respect to its arguments. In the example a new tuple was created to serve as the argument list, which is :c`Py_DECREF`-ed immediately after the :c`PyObject_CallObject` call.</p>
+<p>The return value of :c`PyObject_CallObject` is &quot;new&quot;: either it is a brand new object, or it is an existing object whose reference count has been incremented. So, unless you want to save it in a global variable, you should somehow :c`Py_DECREF` the result, even (especially!) if you are not interested in its value.</p>
+<p>Before you do this, however, it is important to check that the return value isn&#39;t <code>NULL</code>. If it is, the Python function terminated by raising an exception. If the C code that called :c`PyObject_CallObject` is called from Python, it should now return an error indication to its Python caller, so the interpreter can print a stack trace, or the calling Python code can handle the exception. If this is not possible or desirable, the exception should be cleared by calling :c`PyErr_Clear`. For example:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">if (result == NULL)
+    return NULL; /* Pass error back */
+...use result...
+Py_DECREF(result);</code></pre></div></figure>
+<p>Depending on the desired interface to the Python callback function, you may also have to provide an argument list to :c`PyObject_CallObject`. In some cases the argument list is also provided by the Python program, through the same interface that specified the callback function. It can then be saved and used in the same manner as the function object. In other cases, you may have to construct a new tuple to pass as the argument list. The simplest way to do this is to call :c`Py_BuildValue`. For example, if you want to pass an integral event code, you might use the following code:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">PyObject *arglist;
+...
+arglist = Py_BuildValue(&quot;(l)&quot;, eventcode);
+if (arglist == NULL)
+    return NULL;
+result = PyObject_CallObject(my_callback, arglist);
+Py_DECREF(arglist);
+if (result == NULL)
+    return NULL; /* Pass error back */
+/* Here maybe use the result */
+Py_DECREF(result);</code></pre></div></figure>
+<p>Note the placement of <code>Py_DECREF(arglist)</code> immediately after the call, before the error check!</p>
+<p>You may also call a function with keyword arguments by using :c`PyObject_Call`, which supports arguments and keyword arguments. As in the above example, we use :c`Py_BuildValue` to construct the dictionary. :</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">PyObject *arglist, *dict;
+...
+arglist = PyTuple_New(0);
+if (arglist == NULL)
+    return NULL;
+dict = Py_BuildValue(&quot;{s:i}&quot;, &quot;name&quot;, val);
+if (dict == NULL) {
+    Py_DECREF(arglist);
+    return NULL;
+}
+result = PyObject_Call(my_callback, arglist, dict);
+Py_DECREF(arglist);
+Py_DECREF(dict);
+if (result == NULL)
+    return NULL; /* Pass error back */
+/* Here maybe use the result */
+Py_DECREF(result);</code></pre></div></figure>
+<h2 id="extracting-parameters-in-extension-functions">Extracting Parameters in Extension Functions</h2>
+<p>The tutorial uses a &quot;:c`METH_O`&quot; function, which is limited to a single Python argument. If you want more, you can use :c`METH_VARARGS` instead. With this flag, the C function will receive a :py`tuple` of arguments instead of a single object.</p>
+<p>For unpacking the tuple, CPython provides the :c`PyArg_ParseTuple` function, declared as follows:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">int PyArg_ParseTuple(PyObject *arg, const char *format, ...);</code></pre></div></figure>
+<p>The <em>arg</em> argument must be a tuple object containing an argument list passed from Python to a C function. The <em>format</em> argument must be a format string, whose syntax is explained in arg-parsing in the Python/C API Reference Manual. The remaining arguments must be addresses of variables whose type is determined by the format string.</p>
+<p>For example, to receive a single Python :py`str` object and turn it into a C buffer, you would use <code>&quot;s&quot;</code> as the format string:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">const char *command;
+if (!PyArg_ParseTuple(args, &quot;s&quot;, &amp;command)) {
+    return NULL;
+}</code></pre></div></figure>
+<p>If an error is detected in the argument list, :c`!PyArg_ParseTuple` returns <code>NULL</code> (the error indicator for functions returning object pointers); your function may return <code>NULL</code>, relying on the exception set by :c`PyArg_ParseTuple`.</p>
+<p>Note that while :c`PyArg_ParseTuple` checks that the Python arguments have the required types, it cannot check the validity of the addresses of C variables passed to the call: if you make mistakes there, your code will probably crash or at least overwrite random bits in memory. So be careful!</p>
+<p>Note that any Python object references which are provided to the caller are <em>borrowed</em> references; do not decrement their reference count!</p>
+<p>Some example calls:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">#include &lt;Python.h&gt;</code></pre></div></figure>
+<p>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">int ok;
+int i, j;
+long k, l;
+const char *s;
+Py_ssize_t size;
+
+ok = PyArg_ParseTuple(args, &quot;&quot;); /* No arguments */
+    /* Python call: f() */</code></pre></div></figure>
+<p>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">ok = PyArg_ParseTuple(args, &quot;s&quot;, &amp;s); /* A string */
+    /* Possible Python call: f(&#x27;whoops!&#x27;) */</code></pre></div></figure>
+<p>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">ok = PyArg_ParseTuple(args, &quot;lls&quot;, &amp;k, &amp;l, &amp;s); /* Two longs and a string */
+    /* Possible Python call: f(1, 2, &#x27;three&#x27;) */</code></pre></div></figure>
+<p>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">ok = PyArg_ParseTuple(args, &quot;(ii)s#&quot;, &amp;i, &amp;j, &amp;s, &amp;size);
+    /* A pair of ints and a string, whose size is also returned */
+    /* Possible Python call: f((1, 2), &#x27;three&#x27;) */</code></pre></div></figure>
+<p>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">{
+    const char *file;
+    const char *mode = &quot;r&quot;;
+    int bufsize = 0;
+    ok = PyArg_ParseTuple(args, &quot;s|si&quot;, &amp;file, &amp;mode, &amp;bufsize);
+    /* A string, and optionally another string and an integer */
+    /* Possible Python calls:
+       f(&#x27;spam&#x27;)
+       f(&#x27;spam&#x27;, &#x27;w&#x27;)
+       f(&#x27;spam&#x27;, &#x27;wb&#x27;, 100000) */
+}</code></pre></div></figure>
+<p>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">{
+    int left, top, right, bottom, h, v;
+    ok = PyArg_ParseTuple(args, &quot;((ii)(ii))(ii)&quot;,
+             &amp;left, &amp;top, &amp;right, &amp;bottom, &amp;h, &amp;v);
+    /* A rectangle and a point */
+    /* Possible Python call:
+       f(((0, 0), (400, 300)), (10, 10)) */
+}</code></pre></div></figure>
+<p>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">{
+    Py_complex c;
+    ok = PyArg_ParseTuple(args, &quot;D:myfunction&quot;, &amp;c);
+    /* a complex, also providing a function name for errors */
+    /* Possible Python call: myfunction(1+2j) */
+}</code></pre></div></figure>
+<h2 id="keyword-parameters-for-extension-functions">Keyword Parameters for Extension Functions</h2>
+<p>If you also want your function to accept keyword arguments , use the :c`METH_KEYWORDS` flag in combination with :c`METH_VARARGS`. (:c`!METH_KEYWORDS` can also be used with other flags; see its documentation for the allowed combinations.)</p>
+<p>In this case, the C function should accept a third <code>PyObject *</code> parameter which will be a dictionary of keywords. Use :c`PyArg_ParseTupleAndKeywords` to parse the arguments to such a function.</p>
+<p>The :c`PyArg_ParseTupleAndKeywords` function is declared as follows:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">int PyArg_ParseTupleAndKeywords(PyObject *arg, PyObject *kwdict,
+                                const char *format, char * const *kwlist, ...);</code></pre></div></figure>
+<p>The <em>arg</em> and <em>format</em> parameters are identical to those of the :c`PyArg_ParseTuple` function. The <em>kwdict</em> parameter is the dictionary of keywords received as the third parameter from the Python runtime. The <em>kwlist</em> parameter is a <code>NULL</code>-terminated list of strings which identify the parameters; the names are matched with the type information from <em>format</em> from left to right. On success, :c`PyArg_ParseTupleAndKeywords` returns true, otherwise it returns false and raises an appropriate exception.</p>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>Nested tuples cannot be parsed when using keyword arguments! Keyword parameters passed in which are not present in the <em>kwlist</em> will cause [TypeError] to be raised.</p>
+</div></aside>
+<p>Here is an example module which uses keywords, based on an example by Geoff Philbrick (<a href="mailto:philbrick@hks.com">philbrick@hks.com</a>):</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">#define PY_SSIZE_T_CLEAN
+#include &lt;Python.h&gt;
+
+static PyObject *
+keywdarg_parrot(PyObject *self, PyObject *args, PyObject *keywds)
+{
+    int voltage;
+    const char *state = &quot;a stiff&quot;;
+    const char *action = &quot;voom&quot;;
+    const char *type = &quot;Norwegian Blue&quot;;
+
+    static char *kwlist[] = {&quot;voltage&quot;, &quot;state&quot;, &quot;action&quot;, &quot;type&quot;, NULL};
+
+    if (!PyArg_ParseTupleAndKeywords(args, keywds, &quot;i|sss&quot;, kwlist,
+                                     &amp;voltage, &amp;state, &amp;action, &amp;type))
+        return NULL;
+
+    printf(&quot;-- This parrot wouldn&#x27;t %s if you put %i Volts through it.\n&quot;,
+           action, voltage);
+    printf(&quot;-- Lovely plumage, the %s -- It&#x27;s %s!\n&quot;, type, state);
+
+    Py_RETURN_NONE;
+}
+
+static PyMethodDef keywdarg_methods[] = {
+    /* The cast of the function is necessary since PyCFunction values
+     * only take two PyObject* parameters, and keywdarg_parrot() takes
+     * three.
+     */
+    {&quot;parrot&quot;, (PyCFunction)(void(*)(void))keywdarg_parrot, METH_VARARGS | METH_KEYWORDS,
+     &quot;Print a lovely skit to standard output.&quot;},
+    {NULL, NULL, 0, NULL}   /* sentinel */
+};</code></pre></div></figure>
+<h2 id="building-arbitrary-values">Building Arbitrary Values</h2>
+<p>This function is the counterpart to :c`PyArg_ParseTuple`. It is declared as follows:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">PyObject *Py_BuildValue(const char *format, ...);</code></pre></div></figure>
+<p>It recognizes a set of format units similar to the ones recognized by :c`PyArg_ParseTuple`, but the arguments (which are input to the function, not output) must not be pointers, just values. It returns a new Python object, suitable for returning from a C function called from Python.</p>
+<p>One difference with :c`PyArg_ParseTuple`: while the latter requires its first argument to be a tuple (since Python argument lists are always represented as tuples internally), :c`Py_BuildValue` does not always build a tuple. It builds a tuple only if its format string contains two or more format units. If the format string is empty, it returns <code>None</code>; if it contains exactly one format unit, it returns whatever object is described by that format unit. To force it to return a tuple of size 0 or one, parenthesize the format string.</p>
+<p>Examples (to the left the call, to the right the resulting Python value):</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">
+Py_BuildValue(&quot;&quot;)                        None
+Py_BuildValue(&quot;i&quot;, 123)                  123
+Py_BuildValue(&quot;iii&quot;, 123, 456, 789)      (123, 456, 789)
+Py_BuildValue(&quot;s&quot;, &quot;hello&quot;)              &#x27;hello&#x27;
+Py_BuildValue(&quot;y&quot;, &quot;hello&quot;)              b&#x27;hello&#x27;
+Py_BuildValue(&quot;ss&quot;, &quot;hello&quot;, &quot;world&quot;)    (&#x27;hello&#x27;, &#x27;world&#x27;)
+Py_BuildValue(&quot;s#&quot;, &quot;hello&quot;, 4)          &#x27;hell&#x27;
+Py_BuildValue(&quot;y#&quot;, &quot;hello&quot;, 4)          b&#x27;hell&#x27;
+Py_BuildValue(&quot;()&quot;)                      ()
+Py_BuildValue(&quot;(i)&quot;, 123)                (123,)
+Py_BuildValue(&quot;(ii)&quot;, 123, 456)          (123, 456)
+Py_BuildValue(&quot;(i,i)&quot;, 123, 456)         (123, 456)
+Py_BuildValue(&quot;[i,i]&quot;, 123, 456)         [123, 456]
+Py_BuildValue(&quot;{s:i,s:i}&quot;,
+              &quot;abc&quot;, 123, &quot;def&quot;, 456)    {&#x27;abc&#x27;: 123, &#x27;def&#x27;: 456}
+Py_BuildValue(&quot;((ii)(ii)) (ii)&quot;,
+              1, 2, 3, 4, 5, 6)          (((1, 2), (3, 4)), (5, 6))</code></pre></div></figure>
+<h2 id="reference-counts">Reference Counts</h2>
+<p>In languages like C or C++, the programmer is responsible for dynamic allocation and deallocation of memory on the heap. In C, this is done using the functions :c`malloc` and :c`free`. In C++, the operators <code>new</code> and <code>delete</code> are used with essentially the same meaning and we&#39;ll restrict the following discussion to the C case.</p>
+<p>Every block of memory allocated with :c`malloc` should eventually be returned to the pool of available memory by exactly one call to :c`free`. It is important to call :c`free` at the right time. If a block&#39;s address is forgotten but :c`free` is not called for it, the memory it occupies cannot be reused until the program terminates. This is called a [memory leak]. On the other hand, if a program calls :c`free` for a block and then continues to use the block, it creates a conflict with reuse of the block through another :c`malloc` call. This is called [using freed memory]. It has the same bad consequences as referencing uninitialized data --- core dumps, wrong results, mysterious crashes.</p>
+<p>Common causes of memory leaks are unusual paths through the code. For instance, a function may allocate a block of memory, do some calculation, and then free the block again. Now a change in the requirements for the function may add a test to the calculation that detects an error condition and can return prematurely from the function. It&#39;s easy to forget to free the allocated memory block when taking this premature exit, especially when it is added later to the code. Such leaks, once introduced, often go undetected for a long time: the error exit is taken only in a small fraction of all calls, and most modern machines have plenty of virtual memory, so the leak only becomes apparent in a long-running process that uses the leaking function frequently. Therefore, it&#39;s important to prevent leaks from happening by having a coding convention or strategy that minimizes this kind of errors.</p>
+<p>Since Python makes heavy use of :c`malloc` and :c`free`, it needs a strategy to avoid memory leaks as well as the use of freed memory. The chosen method is called [reference counting]. The principle is simple: every object contains a counter, which is incremented when a reference to the object is stored somewhere, and which is decremented when a reference to it is deleted. When the counter reaches zero, the last reference to the object has been deleted and the object is freed.</p>
+<p>An alternative strategy is called [automatic garbage collection]. (Sometimes, reference counting is also referred to as a garbage collection strategy, hence the use of &quot;automatic&quot; to distinguish the two.) The big advantage of automatic garbage collection is that the user doesn&#39;t need to call :c`free` explicitly. (Another claimed advantage is an improvement in speed or memory usage --- this is no hard fact however.) The disadvantage is that for C, there is no truly portable automatic garbage collector, while reference counting can be implemented portably (as long as the functions :c`malloc` and :c`free` are available --- which the C Standard guarantees). Maybe some day a sufficiently portable automatic garbage collector will be available for C. Until then, we&#39;ll have to live with reference counts.</p>
+<p>While Python uses the traditional reference counting implementation, it also offers a cycle detector that works to detect reference cycles. This allows applications to not worry about creating direct or indirect circular references; these are the weakness of garbage collection implemented using only reference counting. Reference cycles consist of objects which contain (possibly indirect) references to themselves, so that each object in the cycle has a reference count which is non-zero. Typical reference counting implementations are not able to reclaim the memory belonging to any objects in a reference cycle, or referenced from the objects in the cycle, even though there are no further references to the cycle itself.</p>
+<p>The cycle detector is able to detect garbage cycles and can reclaim them. The [gc] module exposes a way to run the detector (the [~gc.collect] function), as well as configuration interfaces and the ability to disable the detector at runtime.</p>
+<h3 id="reference-counting-in-python">Reference Counting in Python</h3>
+<p>There are two macros, <code>Py_INCREF(x)</code> and <code>Py_DECREF(x)</code>, which handle the incrementing and decrementing of the reference count. :c`Py_DECREF` also frees the object when the count reaches zero. For flexibility, it doesn&#39;t call :c`free` directly --- rather, it makes a call through a function pointer in the object&#39;s [type object]. For this purpose (and others), every object also contains a pointer to its type object.</p>
+<p>The big question now remains: when to use <code>Py_INCREF(x)</code> and <code>Py_DECREF(x)</code>? Let&#39;s first introduce some terms. Nobody &quot;owns&quot; an object; however, you can [own a reference] to an object. An object&#39;s reference count is now defined as the number of owned references to it. The owner of a reference is responsible for calling :c`Py_DECREF` when the reference is no longer needed. Ownership of a reference can be transferred. There are three ways to dispose of an owned reference: pass it on, store it, or call :c`Py_DECREF`. Forgetting to dispose of an owned reference creates a memory leak.</p>
+<p>It is also possible to [borrow][^1] a reference to an object. The borrower of a reference should not call :c`Py_DECREF`. The borrower must not hold on to the object longer than the owner from which it was borrowed. Using a borrowed reference after the owner has disposed of it risks using freed memory and should be avoided completely[^2].</p>
+<p>The advantage of borrowing over owning a reference is that you don&#39;t need to take care of disposing of the reference on all possible paths through the code --- in other words, with a borrowed reference you don&#39;t run the risk of leaking when a premature exit is taken. The disadvantage of borrowing over owning is that there are some subtle situations where in seemingly correct code a borrowed reference can be used after the owner from which it was borrowed has in fact disposed of it.</p>
+<p>A borrowed reference can be changed into an owned reference by calling :c`Py_INCREF`. This does not affect the status of the owner from which the reference was borrowed --- it creates a new owned reference, and gives full owner responsibilities (the new owner must dispose of the reference properly, as well as the previous owner).</p>
+<h3 id="ownership-rules">Ownership Rules</h3>
+<p>Whenever an object reference is passed into or out of a function, it is part of the function&#39;s interface specification whether ownership is transferred with the reference or not.</p>
+<p>Most functions that return a reference to an object pass on ownership with the reference. In particular, all functions whose function it is to create a new object, such as :c`PyLong_FromLong` and :c`Py_BuildValue`, pass ownership to the receiver. Even if the object is not actually new, you still receive ownership of a new reference to that object. For instance, :c`PyLong_FromLong` maintains a cache of popular values and can return a reference to a cached item.</p>
+<p>Many functions that extract objects from other objects also transfer ownership with the reference, for instance :c`PyObject_GetAttrString`. The picture is less clear, here, however, since a few common routines are exceptions: :c`PyTuple_GetItem`, :c`PyList_GetItem`, :c`PyDict_GetItem`, and :c`PyDict_GetItemString` all return references that you borrow from the tuple, list or dictionary.</p>
+<p>The function :c`PyImport_AddModule` also returns a borrowed reference, even though it may actually create the object it returns: this is possible because an owned reference to the object is stored in <code>sys.modules</code>.</p>
+<p>When you pass an object reference into another function, in general, the function borrows the reference from you --- if it needs to store it, it will use :c`Py_INCREF` to become an independent owner. There are exactly two important exceptions to this rule: :c`PyTuple_SetItem` and :c`PyList_SetItem`. These functions take over ownership of the item passed to them --- even if they fail! (Note that :c`PyDict_SetItem` and friends don&#39;t take over ownership --- they are &quot;normal.&quot;)</p>
+<p>When a C function is called from Python, it borrows references to its arguments from the caller. The caller owns a reference to the object, so the borrowed reference&#39;s lifetime is guaranteed until the function returns. Only when such a borrowed reference must be stored or passed on, it must be turned into an owned reference by calling :c`Py_INCREF`.</p>
+<p>The object reference returned from a C function that is called from Python must be an owned reference --- ownership is transferred from the function to its caller.</p>
+<h3 id="thin-ice">Thin Ice</h3>
+<p>There are a few situations where seemingly harmless use of a borrowed reference can lead to problems. These all have to do with implicit invocations of the interpreter, which can cause the owner of a reference to dispose of it.</p>
+<p>The first and most important case to know about is using :c`Py_DECREF` on an unrelated object while borrowing a reference to a list item. For instance:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">void
+bug(PyObject *list)
+{
+    PyObject *item = PyList_GetItem(list, 0);
+
+    PyList_SetItem(list, 1, PyLong_FromLong(0L));
+    PyObject_Print(item, stdout, 0); /* BUG! */
+}</code></pre></div></figure>
+<p>This function first borrows a reference to <code>list[0]</code>, then replaces <code>list[1]</code> with the value <code>0</code>, and finally prints the borrowed reference. Looks harmless, right? But it&#39;s not!</p>
+<p>Let&#39;s follow the control flow into :c`PyList_SetItem`. The list owns references to all its items, so when item 1 is replaced, it has to dispose of the original item 1. Now let&#39;s suppose the original item 1 was an instance of a user-defined class, and let&#39;s further suppose that the class defined a [!__del__] method. If this class instance has a reference count of 1, disposing of it will call its [!__del__] method. Internally, :c`PyList_SetItem` calls :c`Py_DECREF` on the replaced item, which invokes replaced item&#39;s corresponding :c`~PyTypeObject.tp_dealloc` function. During deallocation, :c`~PyTypeObject.tp_dealloc` calls :c`~PyTypeObject.tp_finalize`, which is mapped to the [!__del__] method for class instances (see [442]). This entire sequence happens synchronously within the :c`PyList_SetItem` call.</p>
+<p>Since it is written in Python, the [!__del__] method can execute arbitrary Python code. Could it perhaps do something to invalidate the reference to <code>item</code> in :c`!bug`? You bet! Assuming that the list passed into :c`!bug` is accessible to the [!__del__] method, it could execute a statement to the effect of <code>del list[0]</code>, and assuming this was the last reference to that object, it would free the memory associated with it, thereby invalidating <code>item</code>.</p>
+<p>The solution, once you know the source of the problem, is easy: temporarily increment the reference count. The correct version of the function reads:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">void
+no_bug(PyObject *list)
+{
+    PyObject *item = PyList_GetItem(list, 0);
+
+    Py_INCREF(item);
+    PyList_SetItem(list, 1, PyLong_FromLong(0L));
+    PyObject_Print(item, stdout, 0);
+    Py_DECREF(item);
+}</code></pre></div></figure>
+<p>This is a true story. An older version of Python contained variants of this bug and someone spent a considerable amount of time in a C debugger to figure out why his [!__del__] methods would fail...</p>
+<p>The second case of problems with a borrowed reference is a variant involving threads. Normally, multiple threads in the Python interpreter can&#39;t get in each other&#39;s way, because there is a global lock protecting Python&#39;s entire object space. However, it is possible to temporarily release this lock using the macro :c`Py_BEGIN_ALLOW_THREADS`, and to re-acquire it using :c`Py_END_ALLOW_THREADS`. This is common around blocking I/O calls, to let other threads use the processor while waiting for the I/O to complete. Obviously, the following function has the same problem as the previous one:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">void
+bug(PyObject *list)
+{
+    PyObject *item = PyList_GetItem(list, 0);
+    Py_BEGIN_ALLOW_THREADS
+    ...some blocking I/O call...
+    Py_END_ALLOW_THREADS
+    PyObject_Print(item, stdout, 0); /* BUG! */
+}</code></pre></div></figure>
+<h3 id="null-pointers">NULL Pointers</h3>
+<p>In general, functions that take object references as arguments do not expect you to pass them <code>NULL</code> pointers, and will dump core (or cause later core dumps) if you do so. Functions that return object references generally return <code>NULL</code> only to indicate that an exception occurred. The reason for not testing for <code>NULL</code> arguments is that functions often pass the objects they receive on to other function --- if each function were to test for <code>NULL</code>, there would be a lot of redundant tests and the code would run more slowly.</p>
+<p>It is better to test for <code>NULL</code> only at the &quot;source:&quot; when a pointer that may be <code>NULL</code> is received, for example, from :c`malloc` or from a function that may raise an exception.</p>
+<p>The macros :c`Py_INCREF` and :c`Py_DECREF` do not check for <code>NULL</code> pointers --- however, their variants :c`Py_XINCREF` and :c`Py_XDECREF` do.</p>
+<p>The macros for checking for a particular object type (<code>Pytype_Check()</code>) don&#39;t check for <code>NULL</code> pointers --- again, there is much code that calls several of these in a row to test an object against various different expected types, and this would generate redundant tests. There are no variants with <code>NULL</code> checking.</p>
+<p>The C function calling mechanism guarantees that the argument list passed to C functions (<code>args</code> in the examples) is never <code>NULL</code> --- in fact it guarantees that it is always a tuple[^3].</p>
+<p>It is a severe error to ever let a <code>NULL</code> pointer &quot;escape&quot; to the Python user.</p>
+<h2 id="writing-extensions-in-c">Writing Extensions in C++</h2>
+<p>It is possible to write extension modules in C++. Some restrictions apply. If the main program (the Python interpreter) is compiled and linked by the C compiler, global or static objects with constructors cannot be used. This is not a problem if the main program is linked by the C++ compiler. Functions that will be called by the Python interpreter (in particular, module initialization functions) have to be declared using <code>extern &quot;C&quot;</code>. It is unnecessary to enclose the Python header files in <code>extern &quot;C&quot; {...}</code> --- they use this form already if the symbol <code>__cplusplus</code> is defined (all recent C++ compilers define this symbol).</p>
+<h2 id="providing-a-c-api-for-an-extension-module">Providing a C API for an Extension Module</h2>
+<p>Many extension modules just provide new functions and types to be used from Python, but sometimes the code in an extension module can be useful for other extension modules. For example, an extension module could implement a type &quot;collection&quot; which works like lists without order. Just like the standard Python list type has a C API which permits extension modules to create and manipulate lists, this new collection type should have a set of C functions for direct manipulation from other extension modules.</p>
+<p>At first sight this seems easy: just write the functions (without declaring them <code>static</code>, of course), provide an appropriate header file, and document the C API. And in fact this would work if all extension modules were always linked statically with the Python interpreter. When modules are used as shared libraries, however, the symbols defined in one module may not be visible to another module. The details of visibility depend on the operating system; some systems use one global namespace for the Python interpreter and all extension modules (Windows, for example), whereas others require an explicit list of imported symbols at module link time (AIX is one example), or offer a choice of different strategies (most Unices). And even if symbols are globally visible, the module whose functions one wishes to call might not have been loaded yet!</p>
+<p>Portability therefore requires not to make any assumptions about symbol visibility. This means that all symbols in extension modules should be declared <code>static</code>, except for the module&#39;s initialization function, in order to avoid name clashes with other extension modules. And it means that symbols that <em>should</em> be accessible from other extension modules must be exported in a different way.</p>
+<p>Python provides a special mechanism to pass C-level information (pointers) from one extension module to another one: Capsules. A Capsule is a Python data type which stores a pointer (:c`void *`). Capsules can only be created and accessed via their C API, but they can be passed around like any other Python object. In particular, they can be assigned to a name in an extension module&#39;s namespace. Other extension modules can then import this module, retrieve the value of this name, and then retrieve the pointer from the Capsule.</p>
+<p>There are many ways in which Capsules can be used to export the C API of an extension module. Each function could get its own Capsule, or all C API pointers could be stored in an array whose address is published in a Capsule. And the various tasks of storing and retrieving the pointers can be distributed in different ways between the module providing the code and the client modules.</p>
+<p>Whichever method you choose, it&#39;s important to name your Capsules properly. The function :c`PyCapsule_New` takes a name parameter (:c`const char *`); you&#39;re permitted to pass in a <code>NULL</code> name, but we strongly encourage you to specify a name. Properly named Capsules provide a degree of runtime type-safety; there is no feasible way to tell one unnamed Capsule from another.</p>
+<p>In particular, Capsules used to expose C APIs should be given a name following this convention:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">modulename.attributename</code></pre></div></figure>
+<p>The convenience function :c`PyCapsule_Import` makes it easy to load a C API provided via a Capsule, but only if the Capsule&#39;s name matches this convention. This behavior gives C API users a high degree of certainty that the Capsule they load contains the correct C API.</p>
+<p>The following example demonstrates an approach that puts most of the burden on the writer of the exporting module, which is appropriate for commonly used library modules. It stores all C API pointers (just one in the example!) in an array of :c`void` pointers which becomes the value of a Capsule. The header file corresponding to the module provides a macro that takes care of importing the module and retrieving its C API pointers; client modules only have to call this macro before accessing the C API.</p>
+<p>The exporting module is a modification of the [!spam] module from the tutorial . The function [!spam.system] does not call the C library function :c`system` directly, but a function :c`!PySpam_System`, which would of course do something more complicated in reality (such as adding &quot;spam&quot; to every command). This function :c`!PySpam_System` is also exported to other extension modules.</p>
+<p>The function :c`!PySpam_System` is a plain C function, declared <code>static</code> like everything else:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">static int
+PySpam_System(const char *command)
+{
+    return system(command);
+}</code></pre></div></figure>
+<p>The function :c`!spam_system` is modified in a trivial way:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">static PyObject *
+spam_system(PyObject *self, PyObject *args)
+{
+    const char *command;
+    int sts;
+
+    if (!PyArg_ParseTuple(args, &quot;s&quot;, &amp;command))
+        return NULL;
+    sts = PySpam_System(command);
+    return PyLong_FromLong(sts);
+}</code></pre></div></figure>
+<p>In the beginning of the module, right after the line :</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">#include &lt;Python.h&gt;</code></pre></div></figure>
+<p>two more lines must be added:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">#define SPAM_MODULE
+#include &quot;spammodule.h&quot;</code></pre></div></figure>
+<p>The <code>#define</code> is used to tell the header file that it is being included in the exporting module, not a client module. Finally, the module&#39;s :c`mod_exec ` function must take care of initializing the C API pointer array:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">static int
+spam_module_exec(PyObject *m)
+{
+    static void *PySpam_API[PySpam_API_pointers];
+    PyObject *c_api_object;
+
+    /* Initialize the C API pointer array */
+    PySpam_API[PySpam_System_NUM] = (void *)PySpam_System;
+
+    /* Create a Capsule containing the API pointer array&#x27;s address */
+    c_api_object = PyCapsule_New((void *)PySpam_API, &quot;spam._C_API&quot;, NULL);
+
+    if (PyModule_Add(m, &quot;_C_API&quot;, c_api_object) &lt; 0) {
+        return -1;
+    }
+
+    return 0;
+}</code></pre></div></figure>
+<p>Note that <code>PySpam_API</code> is declared <code>static</code>; otherwise the pointer array would disappear when :c`!spam_module_exec` terminates!</p>
+<p>The bulk of the work is in the header file [spammodule.h], which looks like this:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">#ifndef Py_SPAMMODULE_H
+#define Py_SPAMMODULE_H
+#ifdef __cplusplus
+extern &quot;C&quot; {
+#endif
+
+/* Header file for spammodule */
+
+/* C API functions */
+#define PySpam_System_NUM 0
+#define PySpam_System_RETURN int
+#define PySpam_System_PROTO (const char *command)
+
+/* Total number of C API pointers */
+#define PySpam_API_pointers 1
+
+
+#ifdef SPAM_MODULE
+/* This section is used when compiling spammodule.c */
+
+static PySpam_System_RETURN PySpam_System PySpam_System_PROTO;
+
+#else
+/* This section is used in modules that use spammodule&#x27;s API */
+
+static void **PySpam_API;
+
+#define PySpam_System \
+ (*(PySpam_System_RETURN (*)PySpam_System_PROTO) PySpam_API[PySpam_System_NUM])
+
+/* Return -1 on error, 0 on success.
+ * PyCapsule_Import will set an exception if there&#x27;s an error.
+ */
+static int
+import_spam(void)
+{
+    PySpam_API = (void **)PyCapsule_Import(&quot;spam._C_API&quot;, 0);
+    return (PySpam_API != NULL) ? 0 : -1;
+}
+
+#endif
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* !defined(Py_SPAMMODULE_H) */</code></pre></div></figure>
+<p>All that a client module must do in order to have access to the function :c`!PySpam_System` is to call the function (or rather macro) :c`!import_spam` in its :c`mod_exec ` function:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">static int
+client_module_exec(PyObject *m)
+{
+    if (import_spam() &lt; 0) {
+        return -1;
+    }
+    /* additional initialization can happen here */
+    return 0;
+}</code></pre></div></figure>
+<p>The main disadvantage of this approach is that the file [spammodule.h] is rather complicated. However, the basic structure is the same for each function that is exported, so it has to be learned only once.</p>
+<p>Finally it should be mentioned that Capsules offer additional functionality, which is especially useful for memory allocation and deallocation of the pointer stored in a Capsule. The details are described in the Python/C API Reference Manual in the section capsules and in the implementation of Capsules (files [Include/pycapsule.h] and [Objects/capsule.c] in the Python source code distribution).</p>
+<p>[^1]: The metaphor of &quot;borrowing&quot; a reference is not completely correct: the owner still has a copy of the reference.</p>
+<p>[^2]: Checking that the reference count is at least 1 <strong>does not work</strong> --- the reference count itself could be in freed memory and may thus be reused for another object!</p>
+<p>[^3]: These guarantees don&#39;t hold when you use the &quot;old&quot; style calling convention ---this is still found in much existing code.</p>

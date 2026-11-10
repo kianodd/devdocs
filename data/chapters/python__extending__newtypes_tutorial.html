@@ -1,0 +1,457 @@
+<p>Python allows the writer of a C extension module to define new types that can be manipulated from Python code, much like the built-in [str] and [list] types. The code for all extension types follows a pattern, but there are some details that you need to understand before you can get started. This document is a gentle introduction to the topic.</p>
+<h2 id="the-basics">The Basics</h2>
+<p>The CPython runtime sees all Python objects as variables of type :c`PyObject*`, which serves as a &quot;base type&quot; for all Python objects. The :c`PyObject` structure itself only contains the object&#39;s reference count and a pointer to the object&#39;s &quot;type object&quot;. This is where the action is; the type object determines which (C) functions get called by the interpreter when, for instance, an attribute gets looked up on an object, a method called, or it is multiplied by another object. These C functions are called &quot;type methods&quot;.</p>
+<p>So, if you want to define a new extension type, you need to create a new type object.</p>
+<p>This sort of thing can only be explained by example, so here&#39;s a minimal, but complete, module that defines a new type named [!Custom] inside a C extension module `!custom`:</p>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>What we&#39;re showing here is the traditional way of defining <em>static</em> extension types. It should be adequate for most uses. The C API also allows defining heap-allocated extension types using the :c`PyType_FromSpec` function, which isn&#39;t covered in this tutorial.</p>
+</div></aside>
+<p>Now that&#39;s quite a bit to take in at once, but hopefully bits will seem familiar from the previous chapter. This file defines three things:</p>
+<ol>
+<li>What a [!Custom] <strong>object</strong> contains: this is the <code>CustomObject</code> struct, which is allocated once for each [!Custom] instance.</li>
+<li>How the [!Custom] <strong>type</strong> behaves: this is the <code>CustomType</code> struct, which defines a set of flags and function pointers that the interpreter inspects when specific operations are requested.</li>
+<li>How to define and execute the [!custom] module: this is the <code>PyInit_custom</code> function and the associated <code>custom_module</code> struct for defining the module, and the <code>custom_module_exec</code> function to set up a fresh module object.</li>
+</ol>
+<p>The first bit is:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">typedef struct {
+    PyObject_HEAD
+} CustomObject;</code></pre></div></figure>
+<p>This is what a Custom object will contain. <code>PyObject_HEAD</code> is mandatory at the start of each object struct and defines a field called <code>ob_base</code> of type :c`PyObject`, containing a pointer to a type object and a reference count (these can be accessed using the macros :c`Py_TYPE` and :c`Py_REFCNT` respectively). The reason for the macro is to abstract away the layout and to enable additional fields in debug builds .</p>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>There is no semicolon above after the :c`PyObject_HEAD` macro. Be wary of adding one by accident: some compilers will complain.</p>
+</div></aside>
+<p>Of course, objects generally store additional data besides the standard <code>PyObject_HEAD</code> boilerplate; for example, here is the definition for standard Python floats:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">typedef struct {
+    PyObject_HEAD
+    double ob_fval;
+} PyFloatObject;</code></pre></div></figure>
+<p>The second bit is the definition of the type object. :</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">static PyTypeObject CustomType = {
+    .ob_base = PyVarObject_HEAD_INIT(NULL, 0)
+    .tp_name = &quot;custom.Custom&quot;,
+    .tp_doc = PyDoc_STR(&quot;Custom objects&quot;),
+    .tp_basicsize = sizeof(CustomObject),
+    .tp_itemsize = 0,
+    .tp_flags = Py_TPFLAGS_DEFAULT,
+    .tp_new = PyType_GenericNew,
+};</code></pre></div></figure>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>We recommend using C99-style designated initializers as above, to avoid listing all the :c`PyTypeObject` fields that you don&#39;t care about and also to avoid caring about the fields&#39; declaration order.</p>
+</div></aside>
+<p>The actual definition of :c`PyTypeObject` in [object.h] has many more fields than the definition above. The remaining fields will be filled with zeros by the C compiler, and it&#39;s common practice to not specify them explicitly unless you need them.</p>
+<p>We&#39;re going to pick it apart, one field at a time:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">.ob_base = PyVarObject_HEAD_INIT(NULL, 0)</code></pre></div></figure>
+<p>This line is mandatory boilerplate to initialize the <code>ob_base</code> field mentioned above. :</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">.tp_name = &quot;custom.Custom&quot;,</code></pre></div></figure>
+<p>The name of our type. This will appear in the default textual representation of our objects and in some error messages, for example:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Python</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-python">
+<span class="hljs-meta">&gt;&gt;&gt; </span><span class="hljs-string">&quot;&quot;</span> + custom.Custom()
+Traceback (most recent call last):
+  File <span class="hljs-string">&quot;&lt;stdin&gt;&quot;</span>, line <span class="hljs-number">1</span>, <span class="hljs-keyword">in</span> &lt;module&gt;
+TypeError: can only concatenate <span class="hljs-built_in">str</span> (<span class="hljs-keyword">not</span> <span class="hljs-string">&quot;custom.Custom&quot;</span>) to <span class="hljs-built_in">str</span></code></pre></div></figure>
+<p>Note that the name is a dotted name that includes both the module name and the name of the type within the module. The module in this case is [!custom] and the type is [!Custom], so we set the type name to [!custom.Custom]. Using the real dotted import path is important to make your type compatible with the [pydoc] and [pickle] modules. :</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">.tp_basicsize = sizeof(CustomObject),
+.tp_itemsize = 0,</code></pre></div></figure>
+<p>This is so that Python knows how much memory to allocate when creating new [!Custom] instances. :c`~PyTypeObject.tp_itemsize` is only used for variable-sized objects and should otherwise be zero.</p>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>If you want your type to be subclassable from Python, and your type has the same :c`~PyTypeObject.tp_basicsize` as its base type, you may have problems with multiple inheritance. A Python subclass of your type will have to list your type first in its [~type.__bases__], or else it will not be able to call your type&#39;s [~object.__new__] method without getting an error. You can avoid this problem by ensuring that your type has a larger value for :c`~PyTypeObject.tp_basicsize` than its base type does. Most of the time, this will be true anyway, because either your base type will be [object], or else you will be adding data members to your base type, and therefore increasing its size.</p>
+</div></aside>
+<p>We set the class flags to :c`Py_TPFLAGS_DEFAULT`. :</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">.tp_flags = Py_TPFLAGS_DEFAULT,</code></pre></div></figure>
+<p>All types should include this constant in their flags. It enables all of the members defined until at least Python 3.3. If you need further members, you will need to OR the corresponding flags.</p>
+<p>We provide a doc string for the type in :c`~PyTypeObject.tp_doc`. :</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">.tp_doc = PyDoc_STR(&quot;Custom objects&quot;),</code></pre></div></figure>
+<p>To enable object creation, we have to provide a :c`~PyTypeObject.tp_new` handler. This is the equivalent of the Python method [~object.__new__], but has to be specified explicitly. In this case, we can just use the default implementation provided by the API function :c`PyType_GenericNew`. :</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">.tp_new = PyType_GenericNew,</code></pre></div></figure>
+<p>Everything else in the file should be familiar, except for some code in :c`!custom_module_exec`:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">if (PyType_Ready(&amp;CustomType) &lt; 0) {
+    return -1;
+}</code></pre></div></figure>
+<p>This initializes the [!Custom] type, filling in a number of members to the appropriate default values, including :c`~PyObject.ob_type` that we initially set to <code>NULL</code>. :</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">if (PyModule_AddObjectRef(m, &quot;Custom&quot;, (PyObject *) &amp;CustomType) &lt; 0) {
+    return -1;
+}</code></pre></div></figure>
+<p>This adds the type to the module dictionary. This allows us to create [!Custom] instances by calling the [!Custom] class:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Python</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-python">
+<span class="hljs-meta">&gt;&gt;&gt; </span><span class="hljs-keyword">import</span> custom
+<span class="hljs-meta">&gt;&gt;&gt; </span>mycustom = custom.Custom()</code></pre></div></figure>
+<p>That&#39;s it! All that remains is to build it; put the above code in a file called [custom.c],</p>
+<p>in a file called [pyproject.toml], and</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Python</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-python">
+<span class="hljs-keyword">from</span> setuptools <span class="hljs-keyword">import</span> Extension, setup
+setup(ext_modules=[Extension(<span class="hljs-string">&quot;custom&quot;</span>, [<span class="hljs-string">&quot;custom.c&quot;</span>])])</code></pre></div></figure>
+<p>in a file called [setup.py]; then typing</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">
+$ python -m pip install .</code></pre></div></figure>
+<p>in a shell should produce a file [custom.so] in a subdirectory and install it; now fire up Python --- you should be able to <code>import custom</code> and play around with <code>Custom</code> objects.</p>
+<p>That wasn&#39;t so hard, was it?</p>
+<p>Of course, the current Custom type is pretty uninteresting. It has no data and doesn&#39;t do anything. It can&#39;t even be subclassed.</p>
+<h2 id="adding-data-and-methods-to-the-basic-example">Adding data and methods to the Basic example</h2>
+<p>Let&#39;s extend the basic example to add some data and methods. Let&#39;s also make the type usable as a base class. We&#39;ll create a new module, [!custom2] that adds these capabilities:</p>
+<p>This version of the module has a number of changes.</p>
+<p>The [!Custom] type now has three data attributes in its C struct, <em>first</em>, <em>last</em>, and <em>number</em>. The <em>first</em> and <em>last</em> variables are Python strings containing first and last names. The <em>number</em> attribute is a C integer.</p>
+<p>The object structure is updated accordingly:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">typedef struct {
+    PyObject_HEAD
+    PyObject *first; /* first name */
+    PyObject *last;  /* last name */
+    int number;
+} CustomObject;</code></pre></div></figure>
+<p>Because we now have data to manage, we have to be more careful about object allocation and deallocation. At a minimum, we need a deallocation method:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">static void
+Custom_dealloc(PyObject *op)
+{
+    CustomObject *self = (CustomObject *) op;
+    Py_XDECREF(self-&gt;first);
+    Py_XDECREF(self-&gt;last);
+    Py_TYPE(self)-&gt;tp_free(self);
+}</code></pre></div></figure>
+<p>which is assigned to the :c`~PyTypeObject.tp_dealloc` member:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">.tp_dealloc = Custom_dealloc,</code></pre></div></figure>
+<p>This method first clears the reference counts of the two Python attributes. :c`Py_XDECREF` correctly handles the case where its argument is <code>NULL</code> (which might happen here if <code>tp_new</code> failed midway). It then calls the :c`~PyTypeObject.tp_free` member of the object&#39;s type (computed by <code>Py_TYPE(self)</code>) to free the object&#39;s memory. Note that the object&#39;s type might not be [!CustomType], because the object may be an instance of a subclass.</p>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>The explicit cast to <code>CustomObject *</code> above is needed because we defined <code>Custom_dealloc</code> to take a <code>PyObject *</code> argument, as the <code>tp_dealloc</code> function pointer expects to receive a <code>PyObject *</code> argument. By assigning to the <code>tp_dealloc</code> slot of a type, we declare that it can only be called with instances of our <code>CustomObject</code> class, so the cast to <code>(CustomObject *)</code> is safe. This is object-oriented polymorphism, in C!</p>
+<p>In existing code, or in previous versions of this tutorial, you might see similar functions take a pointer to the subtype object structure (<code>CustomObject*</code>) directly, like this:</p>
+<p><figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">Custom_dealloc(CustomObject *self)
+{
+    Py_XDECREF(self-&gt;first);
+    Py_XDECREF(self-&gt;last);
+    Py_TYPE(self)-&gt;tp_free((PyObject *) self);
+}
+...
+.tp_dealloc = (destructor) Custom_dealloc,</code></pre></div></figure></p>
+<p>This does the same thing on all architectures that CPython supports, but according to the C standard, it invokes undefined behavior.</p>
+</div></aside>
+<p>We want to make sure that the first and last names are initialized to empty strings, so we provide a <code>tp_new</code> implementation:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">static PyObject *
+Custom_new(PyTypeObject *type, PyObject *args, PyObject *kwds)
+{
+    CustomObject *self;
+    self = (CustomObject *) type-&gt;tp_alloc(type, 0);
+    if (self != NULL) {
+        self-&gt;first = PyUnicode_FromString(&quot;&quot;);
+        if (self-&gt;first == NULL) {
+            Py_DECREF(self);
+            return NULL;
+        }
+        self-&gt;last = PyUnicode_FromString(&quot;&quot;);
+        if (self-&gt;last == NULL) {
+            Py_DECREF(self);
+            return NULL;
+        }
+        self-&gt;number = 0;
+    }
+    return (PyObject *) self;
+}</code></pre></div></figure>
+<p>and install it in the :c`~PyTypeObject.tp_new` member:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">.tp_new = Custom_new,</code></pre></div></figure>
+<p>The <code>tp_new</code> handler is responsible for creating (as opposed to initializing) objects of the type. It is exposed in Python as the [~object.__new__] method. It is not required to define a <code>tp_new</code> member, and indeed many extension types will simply reuse :c`PyType_GenericNew` as done in the first version of the [!Custom] type above. In this case, we use the <code>tp_new</code> handler to initialize the <code>first</code> and <code>last</code> attributes to non-<code>NULL</code> default values.</p>
+<p><code>tp_new</code> is passed the type being instantiated (not necessarily <code>CustomType</code>, if a subclass is instantiated) and any arguments passed when the type was called, and is expected to return the instance created. <code>tp_new</code> handlers always accept positional and keyword arguments, but they often ignore the arguments, leaving the argument handling to initializer (a.k.a. <code>tp_init</code> in C or <code>__init__</code> in Python) methods.</p>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p><code>tp_new</code> shouldn&#39;t call <code>tp_init</code> explicitly, as the interpreter will do it itself.</p>
+</div></aside>
+<p>The <code>tp_new</code> implementation calls the :c`~PyTypeObject.tp_alloc` slot to allocate memory:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">self = (CustomObject *) type-&gt;tp_alloc(type, 0);</code></pre></div></figure>
+<p>Since memory allocation may fail, we must check the :c`~PyTypeObject.tp_alloc` result against <code>NULL</code> before proceeding.</p>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>We didn&#39;t fill the :c`~PyTypeObject.tp_alloc` slot ourselves. Rather :c`PyType_Ready` fills it for us by inheriting it from our base class, which is [object] by default. Most types use the default allocation strategy.</p>
+</div></aside>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>If you are creating a co-operative :c`~PyTypeObject.tp_new` (one that calls a base type&#39;s :c`~PyTypeObject.tp_new` or [~object.__new__]), you must <em>not</em> try to determine what method to call using method resolution order at runtime. Always statically determine what type you are going to call, and call its :c`~PyTypeObject.tp_new` directly, or via <code>type-&gt;tp_base-&gt;tp_new</code>. If you do not do this, Python subclasses of your type that also inherit from other Python-defined classes may not work correctly. (Specifically, you may not be able to create instances of such subclasses without getting a [TypeError].)</p>
+</div></aside>
+<p>We also define an initialization function which accepts arguments to provide initial values for our instance:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">static int
+Custom_init(PyObject *op, PyObject *args, PyObject *kwds)
+{
+    CustomObject *self = (CustomObject *) op;
+    static char *kwlist[] = {&quot;first&quot;, &quot;last&quot;, &quot;number&quot;, NULL};
+    PyObject *first = NULL, *last = NULL, *tmp;
+
+    if (!PyArg_ParseTupleAndKeywords(args, kwds, &quot;|OOi&quot;, kwlist,
+                                     &amp;first, &amp;last,
+                                     &amp;self-&gt;number))
+        return -1;
+
+    if (first) {
+        tmp = self-&gt;first;
+        Py_INCREF(first);
+        self-&gt;first = first;
+        Py_XDECREF(tmp);
+    }
+    if (last) {
+        tmp = self-&gt;last;
+        Py_INCREF(last);
+        self-&gt;last = last;
+        Py_XDECREF(tmp);
+    }
+    return 0;
+}</code></pre></div></figure>
+<p>by filling the :c`~PyTypeObject.tp_init` slot. :</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">.tp_init = Custom_init,</code></pre></div></figure>
+<p>The :c`~PyTypeObject.tp_init` slot is exposed in Python as the [~object.__init__] method. It is used to initialize an object after it&#39;s created. Initializers always accept positional and keyword arguments, and they should return either <code>0</code> on success or <code>-1</code> on error.</p>
+<p>Unlike the <code>tp_new</code> handler, there is no guarantee that <code>tp_init</code> is called at all (for example, the [pickle] module by default doesn&#39;t call [~object.__init__] on unpickled instances). It can also be called multiple times. Anyone can call the [!__init__] method on our objects. For this reason, we have to be extra careful when assigning the new attribute values. We might be tempted, for example to assign the <code>first</code> member like this:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">if (first) {
+    Py_XDECREF(self-&gt;first);
+    Py_INCREF(first);
+    self-&gt;first = first;
+}</code></pre></div></figure>
+<p>But this would be risky. Our type doesn&#39;t restrict the type of the <code>first</code> member, so it could be any kind of object. It could have a destructor that causes code to be executed that tries to access the <code>first</code> member; or that destructor could detach the thread state and let arbitrary code run in other threads that accesses and modifies our object.</p>
+<p>To be paranoid and protect ourselves against this possibility, we almost always reassign members before decrementing their reference counts. When don&#39;t we have to do this?</p>
+<ul>
+<li>when we absolutely know that the reference count is greater than 1;</li>
+<li>when we know that deallocation of the object[^1] will neither detach the thread state nor cause any calls back into our type&#39;s code;</li>
+<li>when decrementing a reference count in a :c`~PyTypeObject.tp_dealloc` handler on a type which doesn&#39;t support cyclic garbage collection[^2].</li>
+</ul>
+<p>We want to expose our instance variables as attributes. There are a number of ways to do that. The simplest way is to define member definitions:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">static PyMemberDef Custom_members[] = {
+    {&quot;first&quot;, Py_T_OBJECT_EX, offsetof(CustomObject, first), 0,
+     &quot;first name&quot;},
+    {&quot;last&quot;, Py_T_OBJECT_EX, offsetof(CustomObject, last), 0,
+     &quot;last name&quot;},
+    {&quot;number&quot;, Py_T_INT, offsetof(CustomObject, number), 0,
+     &quot;custom number&quot;},
+    {NULL}  /* Sentinel */
+};</code></pre></div></figure>
+<p>and put the definitions in the :c`~PyTypeObject.tp_members` slot:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">.tp_members = Custom_members,</code></pre></div></figure>
+<p>Each member definition has a member name, type, offset, access flags and documentation string. See the Generic-Attribute-Management section below for details.</p>
+<p>A disadvantage of this approach is that it doesn&#39;t provide a way to restrict the types of objects that can be assigned to the Python attributes. We expect the first and last names to be strings, but any Python objects can be assigned. Further, the attributes can be deleted, setting the C pointers to <code>NULL</code>. Even though we can make sure the members are initialized to non-<code>NULL</code> values, the members can be set to <code>NULL</code> if the attributes are deleted.</p>
+<p>We define a single method, [!Custom.name], that outputs the objects name as the concatenation of the first and last names. :</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">static PyObject *
+Custom_name(PyObject *op, PyObject *Py_UNUSED(dummy))
+{
+    CustomObject *self = (CustomObject *) op;
+    if (self-&gt;first == NULL) {
+        PyErr_SetString(PyExc_AttributeError, &quot;first&quot;);
+        return NULL;
+    }
+    if (self-&gt;last == NULL) {
+        PyErr_SetString(PyExc_AttributeError, &quot;last&quot;);
+        return NULL;
+    }
+    return PyUnicode_FromFormat(&quot;%S %S&quot;, self-&gt;first, self-&gt;last);
+}</code></pre></div></figure>
+<p>The method is implemented as a C function that takes a [!Custom] (or [!Custom] subclass) instance as the first argument. Methods always take an instance as the first argument. Methods often take positional and keyword arguments as well, but in this case we don&#39;t take any and don&#39;t need to accept a positional argument tuple or keyword argument dictionary. This method is equivalent to the Python method:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Python</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-python">
+<span class="hljs-keyword">def</span> <span class="hljs-title function_">name</span>(<span class="hljs-params">self</span>):
+    <span class="hljs-keyword">return</span> <span class="hljs-string">&quot;%s %s&quot;</span> % (<span class="hljs-variable language_">self</span>.first, <span class="hljs-variable language_">self</span>.last)</code></pre></div></figure>
+<p>Note that we have to check for the possibility that our [!first] and [!last] members are <code>NULL</code>. This is because they can be deleted, in which case they are set to <code>NULL</code>. It would be better to prevent deletion of these attributes and to restrict the attribute values to be strings. We&#39;ll see how to do that in the next section.</p>
+<p>Now that we&#39;ve defined the method, we need to create an array of method definitions:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">static PyMethodDef Custom_methods[] = {
+    {&quot;name&quot;, Custom_name, METH_NOARGS,
+     &quot;Return the name, combining the first and last name&quot;
+    },
+    {NULL}  /* Sentinel */
+};</code></pre></div></figure>
+<p>(note that we used the :c`METH_NOARGS` flag to indicate that the method is expecting no arguments other than <em>self</em>)</p>
+<p>and assign it to the :c`~PyTypeObject.tp_methods` slot:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">.tp_methods = Custom_methods,</code></pre></div></figure>
+<p>Finally, we&#39;ll make our type usable as a base class for subclassing. We&#39;ve written our methods carefully so far so that they don&#39;t make any assumptions about the type of the object being created or used, so all we need to do is to add the :c`Py_TPFLAGS_BASETYPE` to our class flag definition:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">.tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE,</code></pre></div></figure>
+<p>We rename :c`!PyInit_custom` to :c`!PyInit_custom2`, update the module name in the :c`PyModuleDef` struct, and update the full class name in the :c`PyTypeObject` struct.</p>
+<p>Finally, we update our [setup.py] file to include the new module,</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Python</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-python">
+<span class="hljs-keyword">from</span> setuptools <span class="hljs-keyword">import</span> Extension, setup
+setup(ext_modules=[
+    Extension(<span class="hljs-string">&quot;custom&quot;</span>, [<span class="hljs-string">&quot;custom.c&quot;</span>]),
+    Extension(<span class="hljs-string">&quot;custom2&quot;</span>, [<span class="hljs-string">&quot;custom2.c&quot;</span>]),
+])</code></pre></div></figure>
+<p>and then we re-install so that we can <code>import custom2</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">
+$ python -m pip install .</code></pre></div></figure>
+<h2 id="providing-finer-control-over-data-attributes">Providing finer control over data attributes</h2>
+<p>In this section, we&#39;ll provide finer control over how the [!first] and [!last] attributes are set in the [!Custom] example. In the previous version of our module, the instance variables [!first] and [!last] could be set to non-string values or even deleted. We want to make sure that these attributes always contain strings.</p>
+<p>To provide greater control, over the [!first] and [!last] attributes, we&#39;ll use custom getter and setter functions. Here are the functions for getting and setting the [!first] attribute:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">static PyObject *
+Custom_getfirst(PyObject *op, void *closure)
+{
+    CustomObject *self = (CustomObject *) op;
+    Py_INCREF(self-&gt;first);
+    return self-&gt;first;
+}
+
+static int
+Custom_setfirst(PyObject *op, PyObject *value, void *closure)
+{
+    CustomObject *self = (CustomObject *) op;
+    PyObject *tmp;
+    if (value == NULL) {
+        PyErr_SetString(PyExc_TypeError, &quot;Cannot delete the first attribute&quot;);
+        return -1;
+    }
+    if (!PyUnicode_Check(value)) {
+        PyErr_SetString(PyExc_TypeError,
+                        &quot;The first attribute value must be a string&quot;);
+        return -1;
+    }
+    tmp = self-&gt;first;
+    Py_INCREF(value);
+    self-&gt;first = value;
+    Py_DECREF(tmp);
+    return 0;
+}</code></pre></div></figure>
+<p>The getter function is passed a [!Custom] object and a &quot;closure&quot;, which is a void pointer. In this case, the closure is ignored. (The closure supports an advanced usage in which definition data is passed to the getter and setter. This could, for example, be used to allow a single set of getter and setter functions that decide the attribute to get or set based on data in the closure.)</p>
+<p>The setter function is passed the [!Custom] object, the new value, and the closure. The new value may be <code>NULL</code>, in which case the attribute is being deleted. In our setter, we raise an error if the attribute is deleted or if its new value is not a string.</p>
+<p>We create an array of :c`PyGetSetDef` structures:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">static PyGetSetDef Custom_getsetters[] = {
+    {&quot;first&quot;, Custom_getfirst, Custom_setfirst,
+     &quot;first name&quot;, NULL},
+    {&quot;last&quot;, Custom_getlast, Custom_setlast,
+     &quot;last name&quot;, NULL},
+    {NULL}  /* Sentinel */
+};</code></pre></div></figure>
+<p>and register it in the :c`~PyTypeObject.tp_getset` slot:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">.tp_getset = Custom_getsetters,</code></pre></div></figure>
+<p>The last item in a :c`PyGetSetDef` structure is the &quot;closure&quot; mentioned above. In this case, we aren&#39;t using a closure, so we just pass <code>NULL</code>.</p>
+<p>We also remove the member definitions for these attributes:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">static PyMemberDef Custom_members[] = {
+    {&quot;number&quot;, Py_T_INT, offsetof(CustomObject, number), 0,
+     &quot;custom number&quot;},
+    {NULL}  /* Sentinel */
+};</code></pre></div></figure>
+<p>We also need to update the :c`~PyTypeObject.tp_init` handler to only allow strings[^3] to be passed:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">static int
+Custom_init(PyObject *op, PyObject *args, PyObject *kwds)
+{
+    CustomObject *self = (CustomObject *) op;
+    static char *kwlist[] = {&quot;first&quot;, &quot;last&quot;, &quot;number&quot;, NULL};
+    PyObject *first = NULL, *last = NULL, *tmp;
+
+    if (!PyArg_ParseTupleAndKeywords(args, kwds, &quot;|UUi&quot;, kwlist,
+                                     &amp;first, &amp;last,
+                                     &amp;self-&gt;number))
+        return -1;
+
+    if (first) {
+        tmp = self-&gt;first;
+        Py_INCREF(first);
+        self-&gt;first = first;
+        Py_DECREF(tmp);
+    }
+    if (last) {
+        tmp = self-&gt;last;
+        Py_INCREF(last);
+        self-&gt;last = last;
+        Py_DECREF(tmp);
+    }
+    return 0;
+}</code></pre></div></figure>
+<p>With these changes, we can assure that the <code>first</code> and <code>last</code> members are never <code>NULL</code> so we can remove checks for <code>NULL</code> values in almost all cases. This means that most of the :c`Py_XDECREF` calls can be converted to :c`Py_DECREF` calls. The only place we can&#39;t change these calls is in the <code>tp_dealloc</code> implementation, where there is the possibility that the initialization of these members failed in <code>tp_new</code>.</p>
+<p>We also rename the module initialization function and module name in the initialization function, as we did before, and we add an extra definition to the [setup.py] file.</p>
+<h2 id="supporting-cyclic-garbage-collection">Supporting cyclic garbage collection</h2>
+<p>Python has a cyclic garbage collector (GC) that can identify unneeded objects even when their reference counts are not zero. This can happen when objects are involved in cycles. For example, consider:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Python</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-python">
+<span class="hljs-meta">&gt;&gt;&gt; </span>l = []
+<span class="hljs-meta">&gt;&gt;&gt; </span>l.append(l)
+<span class="hljs-meta">&gt;&gt;&gt; </span><span class="hljs-keyword">del</span> l</code></pre></div></figure>
+<p>In this example, we create a list that contains itself. When we delete it, it still has a reference from itself. Its reference count doesn&#39;t drop to zero. Fortunately, Python&#39;s cyclic garbage collector will eventually figure out that the list is garbage and free it.</p>
+<p>In the second version of the [!Custom] example, we allowed any kind of object to be stored in the [!first] or [!last] attributes[^4]. Besides, in the second and third versions, we allowed subclassing [!Custom], and subclasses may add arbitrary attributes. For any of those two reasons, [!Custom] objects can participate in cycles:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Python</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-python">
+<span class="hljs-meta">&gt;&gt;&gt; </span><span class="hljs-keyword">import</span> custom3
+<span class="hljs-meta">&gt;&gt;&gt; </span><span class="hljs-keyword">class</span> <span class="hljs-title class_">Derived</span>(custom3.Custom): <span class="hljs-keyword">pass</span>
+...
+<span class="hljs-meta">&gt;&gt;&gt; </span>n = Derived()
+<span class="hljs-meta">&gt;&gt;&gt; </span>n.some_attribute = n</code></pre></div></figure>
+<p>To allow a [!Custom] instance participating in a reference cycle to be properly detected and collected by the cyclic GC, our [!Custom] type needs to fill two additional slots and to enable a flag that enables these slots:</p>
+<p>First, the traversal method lets the cyclic GC know about subobjects that could participate in cycles:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">static int
+Custom_traverse(PyObject *op, visitproc visit, void *arg)
+{
+    CustomObject *self = (CustomObject *) op;
+    int vret;
+    if (self-&gt;first) {
+        vret = visit(self-&gt;first, arg);
+        if (vret != 0)
+            return vret;
+    }
+    if (self-&gt;last) {
+        vret = visit(self-&gt;last, arg);
+        if (vret != 0)
+            return vret;
+    }
+    return 0;
+}</code></pre></div></figure>
+<p>For each subobject that can participate in cycles, we need to call the :c`!visit` function, which is passed to the traversal method. The :c`!visit` function takes as arguments the subobject and the extra argument <em>arg</em> passed to the traversal method. It returns an integer value that must be returned if it is non-zero.</p>
+<p>Python provides a :c`Py_VISIT` macro that automates calling visit functions. With :c`Py_VISIT`, we can minimize the amount of boilerplate in <code>Custom_traverse</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">static int
+Custom_traverse(PyObject *op, visitproc visit, void *arg)
+{
+    CustomObject *self = (CustomObject *) op;
+    Py_VISIT(self-&gt;first);
+    Py_VISIT(self-&gt;last);
+    return 0;
+}</code></pre></div></figure>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>The :c`~PyTypeObject.tp_traverse` implementation must name its arguments exactly <em>visit</em> and <em>arg</em> in order to use :c`Py_VISIT`.</p>
+</div></aside>
+<p>Second, we need to provide a method for clearing any subobjects that can participate in cycles:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">static int
+Custom_clear(PyObject *op)
+{
+    CustomObject *self = (CustomObject *) op;
+    Py_CLEAR(self-&gt;first);
+    Py_CLEAR(self-&gt;last);
+    return 0;
+}</code></pre></div></figure>
+<p>Notice the use of the :c`Py_CLEAR` macro. It is the recommended and safe way to clear data attributes of arbitrary types while decrementing their reference counts. If you were to call :c`Py_XDECREF` instead on the attribute before setting it to <code>NULL</code>, there is a possibility that the attribute&#39;s destructor would call back into code that reads the attribute again (<em>especially</em> if there is a reference cycle).</p>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>You could emulate :c`Py_CLEAR` by writing:</p>
+<p><figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">PyObject *tmp;
+tmp = self-&gt;first;
+self-&gt;first = NULL;
+Py_XDECREF(tmp);</code></pre></div></figure></p>
+<p>Nevertheless, it is much easier and less error-prone to always use :c`Py_CLEAR` when deleting an attribute. Don&#39;t try to micro-optimize at the expense of robustness!</p>
+</div></aside>
+<p>The deallocator <code>Custom_dealloc</code> may call arbitrary code when clearing attributes. It means the circular GC can be triggered inside the function. Since the GC assumes reference count is not zero, we need to untrack the object from the GC by calling :c`PyObject_GC_UnTrack` before clearing members. Here is our reimplemented deallocator using :c`PyObject_GC_UnTrack` and <code>Custom_clear</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">static void
+Custom_dealloc(PyObject *op)
+{
+    PyObject_GC_UnTrack(op);
+    (void)Custom_clear(op);
+    Py_TYPE(op)-&gt;tp_free(op);
+}</code></pre></div></figure>
+<p>Finally, we add the :c`Py_TPFLAGS_HAVE_GC` flag to the class flags:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">.tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE | Py_TPFLAGS_HAVE_GC,</code></pre></div></figure>
+<p>That&#39;s pretty much it. If we had written custom :c`~PyTypeObject.tp_alloc` or :c`~PyTypeObject.tp_free` handlers, we&#39;d need to modify them for cyclic garbage collection. Most extensions will use the versions automatically provided.</p>
+<h2 id="subclassing-other-types">Subclassing other types</h2>
+<p>It is possible to create new extension types that are derived from existing types. It is easiest to inherit from the built in types, since an extension can easily use the :c`PyTypeObject` it needs. It can be difficult to share these :c`PyTypeObject` structures between extension modules.</p>
+<p>In this example we will create a [!SubList] type that inherits from the built-in [list] type. The new type will be completely compatible with regular lists, but will have an additional [!increment] method that increases an internal counter:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Python</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-python">
+<span class="hljs-meta">&gt;&gt;&gt; </span><span class="hljs-keyword">import</span> sublist
+<span class="hljs-meta">&gt;&gt;&gt; </span>s = sublist.SubList(<span class="hljs-built_in">range</span>(<span class="hljs-number">3</span>))
+<span class="hljs-meta">&gt;&gt;&gt; </span>s.extend(s)
+<span class="hljs-meta">&gt;&gt;&gt; </span><span class="hljs-built_in">print</span>(<span class="hljs-built_in">len</span>(s))
+<span class="hljs-number">6</span>
+<span class="hljs-meta">&gt;&gt;&gt; </span><span class="hljs-built_in">print</span>(s.increment())
+<span class="hljs-number">1</span>
+<span class="hljs-meta">&gt;&gt;&gt; </span><span class="hljs-built_in">print</span>(s.increment())
+<span class="hljs-number">2</span></code></pre></div></figure>
+<p>As you can see, the source code closely resembles the [!Custom] examples in previous sections. We will break down the main differences between them. :</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">typedef struct {
+    PyListObject list;
+    int state;
+} SubListObject;</code></pre></div></figure>
+<p>The primary difference for derived type objects is that the base type&#39;s object structure must be the first value. The base type will already include the :c`PyObject_HEAD` at the beginning of its structure.</p>
+<p>When a Python object is a [!SubList] instance, its <code>PyObject *</code> pointer can be safely cast to both <code>PyListObject *</code> and <code>SubListObject *</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">static int
+SubList_init(PyObject *op, PyObject *args, PyObject *kwds)
+{
+    SubListObject *self = (SubListObject *) op;
+    if (PyList_Type.tp_init(op, args, kwds) &lt; 0)
+        return -1;
+    self-&gt;state = 0;
+    return 0;
+}</code></pre></div></figure>
+<p>We see above how to call through to the [~object.__init__] method of the base type.</p>
+<p>This pattern is important when writing a type with custom :c`~PyTypeObject.tp_new` and :c`~PyTypeObject.tp_dealloc` members. The :c`~PyTypeObject.tp_new` handler should not actually create the memory for the object with its :c`~PyTypeObject.tp_alloc`, but let the base class handle it by calling its own :c`~PyTypeObject.tp_new`.</p>
+<p>The :c`PyTypeObject` struct supports a :c`~PyTypeObject.tp_base` specifying the type&#39;s concrete base class. Due to cross-platform compiler issues, you can&#39;t fill that field directly with a reference to :c`PyList_Type`; it should be done in the :c`Py_mod_exec` function:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">static int
+sublist_module_exec(PyObject *m)
+{
+    SubListType.tp_base = &amp;PyList_Type;
+    if (PyType_Ready(&amp;SubListType) &lt; 0) {
+        return -1;
+    }
+
+    if (PyModule_AddObjectRef(m, &quot;SubList&quot;, (PyObject *) &amp;SubListType) &lt; 0) {
+        return -1;
+    }
+
+    return 0;
+}</code></pre></div></figure>
+<p>Before calling :c`PyType_Ready`, the type structure must have the :c`~PyTypeObject.tp_base` slot filled in. When we are deriving an existing type, it is not necessary to fill out the :c`~PyTypeObject.tp_alloc` slot with :c`PyType_GenericAlloc` -- the allocation function from the base type will be inherited.</p>
+<p>After that, calling :c`PyType_Ready` and adding the type object to the module is the same as with the basic [!Custom] examples.</p>
+<p>[^1]: This is true when we know that the object is a basic type, like a string or a float.</p>
+<p>[^2]: We relied on this in the :c`~PyTypeObject.tp_dealloc` handler in this example, because our type doesn&#39;t support garbage collection.</p>
+<p>[^3]: We now know that the first and last members are strings, so perhaps we could be less careful about decrementing their reference counts, however, we accept instances of string subclasses. Even though deallocating normal strings won&#39;t call back into our objects, we can&#39;t guarantee that deallocating an instance of a string subclass won&#39;t call back into our objects.</p>
+<p>[^4]: Also, even with our attributes restricted to strings instances, the user could pass arbitrary [str] subclasses and therefore still create reference cycles.</p>

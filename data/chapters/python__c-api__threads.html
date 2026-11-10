@@ -1,0 +1,463 @@
+<p>Unless on a free-threaded build of CPython, the Python interpreter is generally not thread-safe. In order to support multi-threaded Python programs, there&#39;s a global lock, called the global interpreter lock or GIL, that must be held by a thread before accessing Python objects. Without the lock, even the simplest operations could cause problems in a multi-threaded program: for example, when two threads simultaneously increment the reference count of the same object, the reference count could end up being incremented only once instead of twice.</p>
+<p>As such, only a thread that holds the GIL may operate on Python objects or invoke Python&#39;s C API.</p>
+<p>In order to emulate concurrency, the interpreter regularly tries to switch threads between bytecode instructions (see [sys.setswitchinterval]). This is why locks are also necessary for thread-safety in pure-Python code.</p>
+<p>Additionally, the global interpreter lock is released around blocking I/O operations, such as reading or writing to a file. From the C API, this is done by detaching the thread state .</p>
+<p>The Python interpreter keeps some thread-local information inside a data structure called :c`PyThreadState`, known as a thread state. Each thread has a thread-local pointer to a :c`PyThreadState`; a thread state referenced by this pointer is considered to be attached .</p>
+<p>A thread can only have one attached thread state at a time. An attached thread state is typically analogous with holding the GIL, except on free-threaded builds. On builds with the GIL enabled, attaching a thread state will block until the GIL can be acquired. However, even on builds with the GIL disabled, it is still required to have an attached thread state, as the interpreter needs to keep track of which threads may access Python objects.</p>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>Even on the free-threaded build, attaching a thread state may block, as the GIL can be re-enabled or threads might be temporarily suspended (such as during a garbage collection).</p>
+</div></aside>
+<p>Generally, there will always be an attached thread state when using Python&#39;s C API, including during embedding and when implementing methods, so it&#39;s uncommon to need to set up a thread state on your own. Only in some specific cases, such as in a :c`Py_BEGIN_ALLOW_THREADS` block or in a fresh thread, will the thread not have an attached thread state. If uncertain, check if :c`PyThreadState_GetUnchecked` returns <code>NULL</code>.</p>
+<p>If it turns out that you do need to create a thread state, it is recommended to use :c`PyThreadState_Ensure` or :c`PyThreadState_EnsureFromView`, which will manage the thread state for you.</p>
+<h2 id="detaching-the-thread-state-from-extension-code">Detaching the thread state from extension code</h2>
+<p>Most extension code manipulating the thread state has the following simple structure:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">Save the thread state in a local variable.
+... Do some blocking I/O operation ...
+Restore the thread state from the local variable.</code></pre></div></figure>
+<p>This is so common that a pair of macros exists to simplify it:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">Py_BEGIN_ALLOW_THREADS
+... Do some blocking I/O operation ...
+Py_END_ALLOW_THREADS</code></pre></div></figure>
+<p>The :c`Py_BEGIN_ALLOW_THREADS` macro opens a new block and declares a hidden local variable; the :c`Py_END_ALLOW_THREADS` macro closes the block.</p>
+<p>The block above expands to the following code:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">PyThreadState *_save;
+
+_save = PyEval_SaveThread();
+... Do some blocking I/O operation ...
+PyEval_RestoreThread(_save);</code></pre></div></figure>
+<p>Here is how these functions work:</p>
+<p>The attached thread state implies that the GIL is held for the interpreter. To detach it, :c`PyEval_SaveThread` is called and the result is stored in a local variable.</p>
+<p>By detaching the thread state, the GIL is released, which allows other threads to attach to the interpreter and execute while the current thread performs blocking I/O. When the I/O operation is complete, the old thread state is reattached by calling :c`PyEval_RestoreThread`, which will wait until the GIL can be acquired.</p>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>Performing blocking I/O is the most common use case for detaching the thread state, but it is also useful to call it over long-running native code that doesn&#39;t need access to Python objects or Python&#39;s C API. For example, the standard [zlib] and [hashlib] modules detach the thread state when compressing or hashing data.</p>
+</div></aside>
+<p>On a free-threaded build, the GIL is usually out of the question, but <strong>detaching the thread state is still required</strong>, because the interpreter periodically needs to block all threads to get a consistent view of Python objects without the risk of race conditions. For example, CPython currently suspends all threads for a short period of time while running the garbage collector.</p>
+<aside class="callout callout-warning"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 4 2.8 20h18.4L12 4z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M12 10v4.4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="17" r="1.3" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Warning</p><p>Detaching the thread state can lead to unexpected behavior during interpreter finalization. See cautions-regarding-runtime-finalization for more details.</p>
+</div></aside>
+<h3 id="apis">APIs</h3>
+<p>The following macros are normally used without a trailing semicolon; look for example usage in the Python source distribution.</p>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>These macros are still necessary on the free-threaded build to prevent deadlocks.</p>
+</div></aside>
+<blockquote>
+<p>This macro expands to <code>{ PyThreadState *_save; _save = PyEval_SaveThread();</code>. Note that it contains an opening brace; it must be matched with a following :c`Py_END_ALLOW_THREADS` macro. See above for further discussion of this macro.</p>
+</blockquote>
+<blockquote>
+<p>This macro expands to <code>PyEval_RestoreThread(_save); }</code>. Note that it contains a closing brace; it must be matched with an earlier :c`Py_BEGIN_ALLOW_THREADS` macro. See above for further discussion of this macro.</p>
+</blockquote>
+<blockquote>
+<p>This macro expands to <code>PyEval_RestoreThread(_save);</code>: it is equivalent to :c`Py_END_ALLOW_THREADS` without the closing brace.</p>
+</blockquote>
+<blockquote>
+<p>This macro expands to <code>_save = PyEval_SaveThread();</code>: it is equivalent to :c`Py_BEGIN_ALLOW_THREADS` without the opening brace and variable declaration.</p>
+</blockquote>
+<h2 id="using-the-c-api-from-foreign-threads">Using the C API from foreign threads[]</h2>
+<p>When threads are created using the dedicated Python APIs (such as the [threading] module), a thread state is automatically associated with them, However, when a thread is created from native code (for example, by a third-party library with its own thread management), it doesn&#39;t hold an attached thread state.</p>
+<p>If you need to call Python code from these threads (often this will be part of a callback API provided by the aforementioned third-party library), you must first register these threads with the interpreter by creating a new thread state and attaching it.</p>
+<p>The easiest way to do this is through :c`PyThreadState_Ensure` or :c`PyThreadState_EnsureFromView`.</p>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>These functions require an argument pointing to the desired interpreter; such a pointer can be acquired via a call to :c`PyInterpreterGuard_FromCurrent` (for <code>PyThreadState_Ensure</code>) or :c`PyInterpreterView_FromCurrent` (for <code>PyThreadState_EnsureFromView</code>) from the function that creates the thread. If no pointer is available (such as when the given native thread library doesn&#39;t provide a data argument), :c`PyInterpreterView_FromMain` can be used to get a view for the main interpreter, but note that this will make the code incompatible with subinterpreters.</p>
+</div></aside>
+<p>For example:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">// The return value of PyInterpreterGuard_FromCurrent() from the
+// function that created this thread.
+PyInterpreterGuard *guard = thread_data-&gt;guard;
+
+// Create a new thread state for the interpreter.
+PyThreadStateToken *token = PyThreadState_Ensure(guard);
+if (token == NULL) {
+   PyInterpreterGuard_Close(guard);
+   return;
+}
+
+// We have a valid thread state -- perform Python actions here.
+result = CallSomeFunction();
+// Evaluate result or handle exceptions.
+
+// Release the thread state. No calls to the C API are allowed beyond this
+// point.
+PyThreadState_Release(token);
+PyInterpreterGuard_Close(guard);</code></pre></div></figure>
+<p>Keep in mind that calling <code>PyThreadState_Ensure</code> might not always create a new thread state, and calling <code>PyThreadState_Release</code> might not always detach it. These functions may reuse an existing attached thread state, or may re-attach a thread state that was previously attached for the current thread.</p>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p></div></aside>
+<h3 id="reusing-a-thread-state-across-repeated-calls">Reusing a thread state across repeated calls</h3>
+<p>Creating and destroying a :c`PyThreadState` is not free, and is more expensive on a free-threaded build. A foreign thread that calls into the interpreter many times -- for example, a worker thread in a native thread pool -- should avoid creating a fresh thread state on every entry and destroying it on every exit. Instead, set up one thread state when the thread starts (or lazily on its first call into Python), attach and detach it around each call, and tear it down once when the thread exits.</p>
+<p>Manage the thread state explicitly with :c`PyThreadState_New`, attaching and detaching it with :c`PyEval_RestoreThread` and :c`PyEval_SaveThread`. This happens in three distinct phases, at different points in the thread&#39;s life.</p>
+<p>When the thread starts, create one thread state for it. <code>interp</code> is the target interpreter, captured by the code that created this thread while it held an attached thread state (for example via :c`PyInterpreterState_Get`):</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">PyThreadState *tstate = PyThreadState_New(interp);</code></pre></div></figure>
+<p>Then, on each call into Python -- which may happen many times over the thread&#39;s life -- attach the thread state, make the Python C API calls that require it, and detach again so the thread does not hold the GIL while off doing non-Python work:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">PyEval_RestoreThread(tstate);
+result = CallSomeFunction();  /* your Python C API calls go here */
+PyEval_SaveThread();</code></pre></div></figure>
+<p>When the thread is finished calling into Python, destroy the thread state once:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">PyEval_RestoreThread(tstate);
+PyThreadState_Clear(tstate);
+PyThreadState_DeleteCurrent();</code></pre></div></figure>
+<p>The general-purpose entry points for calling in from a foreign thread --:c`PyThreadState_Ensure` and the older :c`PyGILState_Ensure` -- do <em>not</em> guarantee a persistent thread state: their thread-state lifetime is deliberately implementation-defined, so a matched acquire/release pair may create and destroy a thread state each time. Use :c`PyThreadState_New`, as shown here, whenever you specifically want to reuse one thread state across calls.</p>
+<p>The code that created the foreign thread must arrange for the shutdown sequence to run before the thread exits, and before :c`Py_FinalizeEx` is called. If interpreter finalization begins first, the shutdown :c`PyEval_RestoreThread` call will hang the thread rather than return (see cautions-regarding-runtime-finalization). If the thread exits without running the shutdown sequence, the thread state is leaked for the remainder of the process.</p>
+<h3 id="attachingdetaching-thread-states">Attaching/detaching thread states</h3>
+<blockquote>
+<p>Ensure that the thread has an attached thread state for the interpreter protected by <em>guard</em>, and thus can safely invoke that interpreter.</p>
+<p>It is OK to call this function if the thread already has an attached thread state, as long as there is a subsequent call to :c`PyThreadState_Release` that matches this one (meaning that &quot;nested&quot; calls to this function are permitted).</p>
+<p>The function&#39;s effect (if any) will be reversed by the matching call to :c`PyThreadState_Release`.</p>
+<p>On error, this function returns <code>NULL</code> <em>without</em> an exception set. Do not call :c`!PyThreadState_Release` in this case.</p>
+<p>On success, this function returns a pointer value that must be passed to the matching call to :c`!PyThreadState_Release`.</p>
+<p>The conditions in which this function creates a new thread state are considered unstable and implementation-dependent. If you need to control the exact lifetime of a thread state, consider using :c`PyThreadState_New`. However, do not avoid this function solely on the basis that the lifetime of the thread state may be inconsistent across versions; changes to this function will be done with caution and in a backwards-compatible manner. In particular, the saving of thread-local variables and similar state will be retained across Python versions.</p>
+</blockquote>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">   The exact behavior of whether this function creates a new thread state is
+   described below, but be aware that this may change in the future.
+
+   First, this function checks if an attached thread state is present.
+   If there is, this function then checks if the interpreter of that
+   thread state matches the interpreter guarded by *guard*. If that is
+   the case, this function simply marks the thread state as being used
+   by a ``PyThreadState_Ensure`` call and returns.
+
+   If there is no attached thread state, then this function checks if any
+   thread state has been used by the current OS thread. (This is
+   returned by :c:func:`PyGILState_GetThisThreadState`.)
+   If there was, then this function checks if that thread state&#x27;s interpreter
+   matches *guard*. If it does, it is re-attached and marked as used.
+
+   Otherwise, if both of the above cases fail, a new thread state is created
+   for *guard*. It is then attached and marked as owned by ``PyThreadState_Ensure``.
+
+.. versionadded:: 3.15</code></pre></div></figure>
+<blockquote>
+<p>Get an attached thread state for the interpreter referenced by <em>view</em>.</p>
+<p>The behavior and return value are the same as for :c`PyThreadState_Ensure`; additionally, if the function succeeds, the interpreter referenced by <em>view</em> will be implicitly guarded. The guard will be released upon the corresponding :c`PyThreadState_Release` call.</p>
+<p>::: versionadded
+3.15
+:::</p>
+</blockquote>
+<blockquote>
+<p>Undo a :c`PyThreadState_Ensure` or :c`PyThreadState_EnsureFromView` call.</p>
+<p>This must be called exactly once for each successful <em>Ensure</em> call, with <em>token</em> set to that call&#39;s return value.</p>
+<p>The state that was attached before the corresponding <em>Ensure</em> call (if any) will be attached when :c`PyThreadState_Release` returns.</p>
+<p>The exact behavior of whether this function deletes a thread state is considered unstable and implementation-dependent.</p>
+</blockquote>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">   Currently, this function will decrement an internal counter on the
+   attached thread state. If this counter ever reaches below zero, this
+   function emits a fatal error (via :c:func:`Py_FatalError`).
+
+   If the attached thread state is owned by ``PyThreadState_Ensure``, then the
+   attached thread state will be deallocated and deleted upon the internal counter
+   reaching zero. Otherwise, nothing happens when the counter reaches zero.
+
+.. versionadded:: 3.15</code></pre></div></figure>
+<blockquote>
+<p>An opaque token retrieved from a :c`PyThreadState_Ensure` call and passed to a corresponding :c`PyThreadState_Release` call.</p>
+</blockquote>
+<h2 id="gil-state-apis">GIL-state APIs[]</h2>
+<p>The following APIs are generally not compatible with subinterpreters and will hang the process during interpreter finalization (see cautions-regarding-runtime-finalization). As such, these APIs were soft deprecated in Python 3.15 in favor of the new APIs .</p>
+<blockquote>
+<p>The type of the value returned by :c`PyGILState_Ensure` and passed to :c`PyGILState_Release`.</p>
+<blockquote>
+<p>The GIL was already held when :c`PyGILState_Ensure` was called.</p>
+</blockquote>
+<blockquote>
+<p>The GIL was not held when :c`PyGILState_Ensure` was called.</p>
+</blockquote>
+</blockquote>
+<blockquote>
+<p>Ensure that the current thread is ready to call the Python C API regardless of the current state of Python, or of the attached thread state. This may be called as many times as desired by a thread as long as each call is matched with a call to :c`PyGILState_Release`. In general, other thread-related APIs may be used between :c`PyGILState_Ensure` and :c`PyGILState_Release` calls as long as the thread state is restored to its previous state before the Release(). For example, normal usage of the :c`Py_BEGIN_ALLOW_THREADS` and :c`Py_END_ALLOW_THREADS` macros is acceptable.</p>
+<p>The return value is an opaque &quot;handle&quot; to the attached thread state when :c`PyGILState_Ensure` was called, and must be passed to :c`PyGILState_Release` to ensure Python is left in the same state. Even though recursive calls are allowed, these handles <em>cannot</em> be shared - each unique call to :c`PyGILState_Ensure` must save the handle for its call to :c`PyGILState_Release`.</p>
+<p>When the function returns, there will be an attached thread state and the thread will be able to call arbitrary Python code.</p>
+<p>This function has no way to return an error. As such, errors are either fatal (that is, they send <code>SIGABRT</code> and crash the process; see :c`Py_FatalError`), or the thread will be permanently blocked (such as during interpreter finalization).</p>
+</blockquote>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">   Calling this function when the interpreter is finalizing will
+   infinitely hang the thread, which may cause deadlocks.
+   :ref:`cautions-regarding-runtime-finalization` for more details.
+
+   In addition, this function generally does not work with subinterpreters
+   when used from foreign threads, because this function has no way of
+   knowing which interpreter created the thread (and as such, will implicitly
+   pick the main interpreter).
+
+.. versionchanged:: 3.14
+   Hangs the current thread, rather than terminating it, if called while the
+   interpreter is finalizing.
+
+.. soft-deprecated:: 3.15
+   Use :c:func:`PyThreadState_Ensure` or
+   :c:func:`PyThreadState_EnsureFromView` instead.</code></pre></div></figure>
+<blockquote>
+<p>Release any resources previously acquired. After this call, Python&#39;s state will be the same as it was prior to the corresponding :c`PyGILState_Ensure` call (but generally this state will be unknown to the caller, hence the use of the GIL-state API).</p>
+<p>Every call to :c`PyGILState_Ensure` must be matched by a call to :c`PyGILState_Release` on the same thread.</p>
+<p>::: soft-deprecated
+3.15 Use :c`PyThreadState_Release` instead.
+:::</p>
+</blockquote>
+<blockquote>
+<p>Get the thread state that was most recently attached</p>
+<p>:   for this thread. (If the most recent thread state</p>
+<p>has been deleted, this returns <code>NULL</code>.)</p>
+<p>If the caller has an attached thread state, it is returned.</p>
+<p>In other terms, this function returns the thread state that will be used by :c`PyGILState_Ensure`. If this returns <code>NULL</code>, then <code>PyGILState_Ensure</code> will create a new thread state.</p>
+<p>This function cannot fail.</p>
+<p>::: soft-deprecated
+3.15 Use :c`PyThreadState_Get` or :c`PyThreadState_GetUnchecked` instead.
+:::</p>
+</blockquote>
+<blockquote>
+<p>Return <code>1</code> if the current thread has an attached thread state that matches the thread state returned by :c`PyGILState_GetThisThreadState`. If the caller has no attached thread state or it otherwise doesn&#39;t match, then this returns <code>0</code>.</p>
+<p>If the current Python process has ever created a subinterpreter, this function will <em>always</em> return <code>1</code>.</p>
+<p>This is mainly a helper/diagnostic function.</p>
+<p>::: versionadded
+3.4
+:::</p>
+<p>::: soft-deprecated
+3.15 Use <code>PyThreadState_GetUnchecked() != NULL</code> instead.
+:::</p>
+</blockquote>
+<h2 id="cautions-about-fork">Cautions about fork()</h2>
+<p>Another important thing to note about threads is their behaviour in the face of the C :c`fork` call. On most systems with :c`fork`, after a process forks only the thread that issued the fork will exist. This has a concrete impact both on how locks must be handled and on all stored state in CPython&#39;s runtime.</p>
+<p>The fact that only the &quot;current&quot; thread remains means any locks held by other threads will never be released. Python solves this for [os.fork] by acquiring the locks it uses internally before the fork, and releasing them afterwards. In addition, it resets any lock-objects in the child. When extending or embedding Python, there is no way to inform Python of additional (non-Python) locks that need to be acquired before or reset after a fork. OS facilities such as :c`!pthread_atfork` would need to be used to accomplish the same thing. Additionally, when extending or embedding Python, calling :c`fork` directly rather than through [os.fork] (and returning to or calling into Python) may result in a deadlock by one of Python&#39;s internal locks being held by a thread that is defunct after the fork. :c`PyOS_AfterFork_Child` tries to reset the necessary locks, but is not always able to.</p>
+<p>The fact that all other threads go away also means that CPython&#39;s runtime state there must be cleaned up properly, which [os.fork] does. This means finalizing all other :c`PyThreadState` objects belonging to the current interpreter and all other :c`PyInterpreterState` objects. Due to this and the special nature of the &quot;main&quot; interpreter , :c`fork` should only be called in that interpreter&#39;s &quot;main&quot; thread, where the CPython global runtime was originally initialized. The only exception is if :c`exec` will be called immediately after.</p>
+<h2 id="high-level-apis">High-level APIs</h2>
+<p>These are the most commonly used types and functions when writing multi-threaded C extensions.</p>
+<blockquote>
+<p>This data structure represents the state of a single thread. The only public data member is:</p>
+<blockquote>
+<p>This thread&#39;s interpreter state.</p>
+</blockquote>
+</blockquote>
+<blockquote>
+<p>Detach the attached thread state and return it. The thread will have no thread state upon returning.</p>
+</blockquote>
+<blockquote>
+<p>Set the attached thread state to <em>tstate</em>. The passed thread state <strong>should not</strong> be attached , otherwise deadlock ensues. <em>tstate</em> will be attached upon returning.</p>
+</blockquote>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">   Calling this function from a thread when the runtime is finalizing will
+   hang the thread until the program exits, even if the thread was not
+   created by Python.  Refer to
+   :ref:`cautions-regarding-runtime-finalization` for more details.
+
+.. versionchanged:: 3.14
+   Hangs the current thread, rather than terminating it, if called while the
+   interpreter is finalizing.</code></pre></div></figure>
+<blockquote>
+<p>Return the attached thread state. If the thread has no attached thread state, (such as when inside of :c`Py_BEGIN_ALLOW_THREADS` block), then this issues a fatal error (so that the caller needn&#39;t check for <code>NULL</code>).</p>
+<p>See also :c`PyThreadState_GetUnchecked`.</p>
+</blockquote>
+<blockquote>
+<p>Similar to :c`PyThreadState_Get`, but don&#39;t kill the process with a fatal error if it is NULL. The caller is responsible to check if the result is NULL.</p>
+<p>::: versionadded
+3.13 In Python 3.5 to 3.12, the function was private and known as <code>_PyThreadState_UncheckedGet()</code>.
+:::</p>
+</blockquote>
+<blockquote>
+<p>Set the attached thread state to <em>tstate</em>, and return the thread state that was attached prior to calling.</p>
+<p>This function is safe to call without an attached thread state; it will simply return <code>NULL</code> indicating that there was no prior thread state.</p>
+</blockquote>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">   :c:func:`PyEval_ReleaseThread`
+
+.. note::
+   Similar to :c:func:`PyGILState_Ensure`, this function will hang the
+   thread if the runtime is finalizing.</code></pre></div></figure>
+<h2 id="low-level-apis">Low-level APIs</h2>
+<blockquote>
+<p>Create a new thread state object belonging to the given interpreter object. An attached thread state is not needed.</p>
+</blockquote>
+<blockquote>
+<p>Reset all information in a thread state object. <em>tstate</em> must be attached</p>
+<p>::: versionchanged
+3.9 This function now calls the :c`!PyThreadState.on_delete` callback. Previously, that happened in :c`PyThreadState_Delete`.
+:::</p>
+<p>::: versionchanged
+3.13 The :c`!PyThreadState.on_delete` callback was removed.
+:::</p>
+</blockquote>
+<blockquote>
+<p>Destroy a thread state object. <em>tstate</em> should not be attached to any thread. <em>tstate</em> must have been reset with a previous call to :c`PyThreadState_Clear`.</p>
+</blockquote>
+<blockquote>
+<p>Detach the attached thread state (which must have been reset with a previous call to :c`PyThreadState_Clear`) and then destroy it.</p>
+<p>No thread state will be attached upon returning.</p>
+</blockquote>
+<blockquote>
+<p>Get the current frame of the Python thread state <em>tstate</em>.</p>
+<p>Return a strong reference. Return <code>NULL</code> if no frame is currently executing.</p>
+<p>See also :c`PyEval_GetFrame`.</p>
+<p><em>tstate</em> must not be <code>NULL</code>, and must be attached .</p>
+<p>::: versionadded
+3.9
+:::</p>
+</blockquote>
+<blockquote>
+<p>Get the unique thread state identifier of the Python thread state <em>tstate</em>.</p>
+<p><em>tstate</em> must not be <code>NULL</code>, and must be attached .</p>
+<p>::: versionadded
+3.9
+:::</p>
+</blockquote>
+<blockquote>
+<p>Get the interpreter of the Python thread state <em>tstate</em>.</p>
+<p><em>tstate</em> must not be <code>NULL</code>, and must be attached .</p>
+<p>::: versionadded
+3.9
+:::</p>
+</blockquote>
+<blockquote>
+<p>Suspend tracing and profiling in the Python thread state <em>tstate</em>.</p>
+<p>Resume them using the :c`PyThreadState_LeaveTracing` function.</p>
+<p>::: versionadded
+3.11
+:::</p>
+</blockquote>
+<blockquote>
+<p>Resume tracing and profiling in the Python thread state <em>tstate</em> suspended by the :c`PyThreadState_EnterTracing` function.</p>
+<p>See also :c`PyEval_SetTrace` and :c`PyEval_SetProfile` functions.</p>
+<p>::: versionadded
+3.11
+:::</p>
+</blockquote>
+<blockquote>
+<p>Set the stack protection start address and stack protection size of a Python thread state.</p>
+<p>On success, return <code>0</code>. On failure, set an exception and return <code>-1</code>.</p>
+<p>CPython implements recursion control for C code by raising :py`RecursionError` when it notices that the machine execution stack is close to overflow. See for example the :c`Py_EnterRecursiveCall` function. For this, it needs to know the location of the current thread&#39;s stack, which it normally gets from the operating system. When the stack is changed, for example using context switching techniques like the Boost library&#39;s <code>boost::context</code>, you must call :c`~PyUnstable_ThreadState_SetStackProtection` to inform CPython of the change.</p>
+<p>Call :c`~PyUnstable_ThreadState_SetStackProtection` either before or after changing the stack. Do not call any other Python C API between the call and the stack change.</p>
+<p>See :c`PyUnstable_ThreadState_ResetStackProtection` for undoing this operation.</p>
+<p>::: versionadded
+3.15
+:::</p>
+</blockquote>
+<blockquote>
+<p>Reset the stack protection start address and stack protection size of a Python thread state to the operating system defaults.</p>
+<p>See :c`PyUnstable_ThreadState_SetStackProtection` for an explanation.</p>
+<p>::: versionadded
+3.15
+:::</p>
+</blockquote>
+<blockquote>
+<p>Return a dictionary in which extensions can store thread-specific state information. Each extension should use a unique key to store a state in the dictionary. It is okay to call this function when no thread state is attached . If this function returns <code>NULL</code> and no exception has been raised, then the caller should assume no thread state is attached.</p>
+</blockquote>
+<blockquote>
+<p>Attach <em>tstate</em> to the current thread, which must not be <code>NULL</code> or already attached .</p>
+<p>The calling thread must not already have an attached thread state.</p>
+</blockquote>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">   Calling this function from a thread when the runtime is finalizing will
+   hang the thread until the program exits, even if the thread was not
+   created by Python.  Refer to
+   :ref:`cautions-regarding-runtime-finalization` for more details.
+
+.. versionchanged:: 3.8
+   Updated to be consistent with :c:func:`PyEval_RestoreThread`,
+   :c:func:`Py_END_ALLOW_THREADS`, and :c:func:`PyGILState_Ensure`,
+   and terminate the current thread if called while the interpreter is finalizing.
+
+.. versionchanged:: 3.14
+   Hangs the current thread, rather than terminating it, if called while the
+   interpreter is finalizing.
+
+:c:func:`PyEval_RestoreThread` is a higher-level function which is always
+available (even when threads have not been initialized).</code></pre></div></figure>
+<blockquote>
+<p>Detach the attached thread state. The <em>tstate</em> argument, which must not be <code>NULL</code>, is only used to check that it represents the attached thread state --- if it isn&#39;t, a fatal error is reported.</p>
+<p>:c`PyEval_SaveThread` is a higher-level function which is always available (even when threads have not been initialized).</p>
+</blockquote>
+<h1>Asynchronous notifications</h1>
+<p>A mechanism is provided to make asynchronous notifications to the main interpreter thread. These notifications take the form of a function pointer and a void pointer argument.</p>
+<blockquote>
+<p>Schedule a function to be called from the main interpreter thread. On success, <code>0</code> is returned and <em>func</em> is queued for being called in the main thread. On failure, <code>-1</code> is returned without setting any exception.</p>
+<p>When successfully queued, <em>func</em> will be <em>eventually</em> called from the main interpreter thread with the argument <em>arg</em>. It will be called asynchronously with respect to normally running Python code, but with both these conditions met:</p>
+<ul>
+<li>on a bytecode boundary;</li>
+<li>with the main thread holding an attached thread state (<em>func</em> can therefore use the full C API).</li>
+</ul>
+<p><em>func</em> must return <code>0</code> on success, or <code>-1</code> on failure with an exception set. <em>func</em> won&#39;t be interrupted to perform another asynchronous notification recursively, but it can still be interrupted to switch threads if the thread state is detached.</p>
+<p>This function doesn&#39;t need an attached thread state. However, to call this function in a subinterpreter, the caller must have an attached thread state. Otherwise, the function <em>func</em> can be scheduled to be called from the wrong interpreter.</p>
+</blockquote>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">   This is a low-level function, only useful for very special cases.
+   There is no guarantee that *func* will be called as quick as
+   possible.  If the main thread is busy executing a system call,
+   *func* won&#x27;t be called before the system call returns.  This
+   function is generally **not** suitable for calling Python code from
+   arbitrary C threads.  Instead, use :c:func:`PyThreadState_EnsureFromView`.
+
+.. versionadded:: 3.1
+
+.. versionchanged:: 3.9
+   If this function is called in a subinterpreter, the function *func* is
+   now scheduled to be called from the subinterpreter, rather than being
+   called from the main interpreter. Each subinterpreter now has its own
+   list of scheduled calls.
+
+.. versionchanged:: 3.12
+   This function now always schedules *func* to be run in the main
+   interpreter.</code></pre></div></figure>
+<blockquote>
+<p>Execute all pending calls. This is usually executed automatically by the interpreter.</p>
+<p>This function returns <code>0</code> on success, and returns <code>-1</code> with an exception set on failure.</p>
+<p>If this is not called in the main thread of the main interpreter, this function does nothing and returns <code>0</code>. The caller must hold an attached thread state.</p>
+<p>::: versionadded
+3.1
+:::</p>
+<p>::: versionchanged
+3.12 This function only runs pending calls in the main interpreter.
+:::</p>
+</blockquote>
+<blockquote>
+<p>Schedule an exception to be raised asynchronously in a thread. If the thread has a previously scheduled exception, it is overwritten.</p>
+<p>The <em>id</em> argument is the thread id of the target thread, as returned by :c`PyThread_get_thread_ident`. <em>exc</em> is the class of the exception to be raised, or <code>NULL</code> to clear the pending exception (if any).</p>
+<p>Return the number of affected thread states. This is normally <code>1</code> if <em>id</em> is found, even when no change was made (the given <em>exc</em> was already pending, or <em>exc</em> is <code>NULL</code> but no exception is pending). If the thread id isn&#39;t found, return <code>0</code>. This raises no exceptions.</p>
+<p>To prevent naive misuse, you must write your own C extension to call this. This function must be called with an attached thread state. This function does not steal any references to <em>exc</em>. This function does not necessarily interrupt system calls such as :py`~time.sleep`.</p>
+<p>::: versionchanged
+3.7 The type of the <em>id</em> parameter changed from :c`long` to :c`unsigned long`.
+:::</p>
+</blockquote>
+<h1>Operating system thread APIs</h1>
+<blockquote>
+<p>Sentinel value for an invalid thread ID.</p>
+<p>This is currently equivalent to <code>(unsigned long)-1</code>.</p>
+</blockquote>
+<blockquote>
+<p>Start function <em>func</em> in a new thread with argument <em>arg</em>. The resulting thread is not intended to be joined.</p>
+<p><em>func</em> must not be <code>NULL</code>, but <em>arg</em> may be <code>NULL</code>.</p>
+<p>On success, this function returns the identifier of the new thread; on failure, this returns :c`PYTHREAD_INVALID_THREAD_ID`.</p>
+<p>The caller does not need to hold an attached thread state.</p>
+</blockquote>
+<blockquote>
+<p>Return the identifier of the current thread, which will never be zero.</p>
+<p>This function cannot fail, and the caller does not need to hold an attached thread state.</p>
+</blockquote>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">:py:func:`threading.get_ident` and :py:attr:`threading.Thread.ident`
+expose this identifier to Python.</code></pre></div></figure>
+<blockquote>
+<p>Get general information about the current thread in the form of a struct sequence object. This information is accessible as :py`sys.thread_info` in Python.</p>
+<p>On success, this returns a new strong reference to the thread information; on failure, this returns <code>NULL</code> with an exception set.</p>
+<p>The caller must hold an attached thread state.</p>
+</blockquote>
+<blockquote>
+<p>This macro is defined when the system supports native thread IDs.</p>
+</blockquote>
+<blockquote>
+<p>Get the native identifier of the current thread as it was assigned by the operating system&#39;s kernel, which will never be less than zero.</p>
+<p>This function is only available when :c`PY_HAVE_THREAD_NATIVE_ID` is defined.</p>
+<p>This function cannot fail, and the caller does not need to hold an attached thread state.</p>
+</blockquote>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">:py:func:`threading.get_native_id`</code></pre></div></figure>
+<blockquote>
+<p>Terminate the current thread. This function is generally considered unsafe and should be avoided. It is kept solely for backwards compatibility.</p>
+<p>This function is only safe to call if all functions in the full call stack are written to safely allow it.</p>
+</blockquote>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">   If the current system uses POSIX threads (also known as &quot;pthreads&quot;),
+   this calls :manpage:`pthread_exit(3)`, which attempts to unwind the stack
+   and call C++ destructors on some libc implementations. However, if a
+   ``noexcept`` function is reached, it may terminate the process.
+   Other systems, such as macOS, do unwinding.
+
+   On Windows, this function calls ``_endthreadex()``, which kills the thread
+   without calling C++ destructors.
+
+   In any case, there is a risk of corruption on the thread&#x27;s stack.
+
+.. deprecated:: 3.14</code></pre></div></figure>
+<blockquote>
+<p>Initialize <code>PyThread*</code> APIs. Python executes this function automatically, so there&#39;s little need to call it from an extension module.</p>
+</blockquote>
+<blockquote>
+<p>Set the stack size of the current thread to <em>size</em> bytes.</p>
+<p>This function returns <code>0</code> on success, <code>-1</code> if <em>size</em> is invalid, or <code>-2</code> if the system does not support changing the stack size. This function does not set exceptions.</p>
+<p>The caller does not need to hold an attached thread state.</p>
+</blockquote>
+<blockquote>
+<p>Return the stack size of the current thread in bytes, or <code>0</code> if the system&#39;s default stack size is in use.</p>
+<p>The caller does not need to hold an attached thread state.</p>
+</blockquote>
