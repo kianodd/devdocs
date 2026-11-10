@@ -1,0 +1,103 @@
+<p>description : Estimate the storage and write amplification impact of your Queryable Encryption configuration before finalizing your encryption schema.</p>
+<p>On this page</p>
+<p>backlinks : none</p>
+<p>depth : 2</p>
+<p>class : singlecol</p>
+<p>Encrypting a field with {+qe+} and enabling queries on encrypted fields increase the storage that a collection requires. Estimate these increases before you finalize your {+enc-schema+}, since changing the increases requires you to re-create the collection.</p>
+<p>You can calculate these estimates for your collection with the <a target="_blank" rel="noopener" href="https://github.com/mongodb/agent-skills/tree/main/skills/mongodb-qe-size-estimation">mongodb-qe-size-estimation agent skill</a>, available directly from the public repository, or from the <code>mongodb</code> or <code>mongodb-atlas</code> plugins.</p>
+<p>For more in-depth information about {+qe+}, see <a target="_blank" rel="noopener" href="https://cdn.bfldr.com/2URK6TO/as/64kp46t53v34xw37gkngbrg/An_Overview_of_Queryable_Encryption">the {+qe+} whitepaper</a>.</p>
+<h2 id="about-this-task">About this Task</h2>
+<p>MongoDB indexes each queryable encrypted field by generating <em>tags</em>, T, which it stores in the metadata collections it creates for every encrypted collection. Storage grows with the number of tags each value produces. The formulas below are for the maximum number of tags a value can generate.</p>
+<ul>
+<li>Non-queryable (&quot;unindexed&quot;) fields generate no tags, <code>T=0</code>.</li>
+<li>Fields indexed for equality queries generate one tag, <code>T=1</code>.</li>
+<li>Fields indexed for prefix or suffix queries generate one initial tag, then grow linearly with the difference between the query&#39;s maximum and minimum length, <code>T = 1 + (strMaxQueryLength - strMinQueryLength + 1)</code>.</li>
+<li>Fields indexed for both prefix and suffix queries grow linearly with the difference between both the prefix and suffix query&#39;s maximum and minimum length, <code>T = 1 + (strMaxQueryLength_prefix - strMinQueryLength_prefix + 1) + (strMaxQueryLength_suffix - strMinQueryLength_suffix + 1)</code></li>
+<li>Fields indexed for substring queries generate the most tags, using the formula <code>T = 1 + (strMaxQueryLength - strMinQueryLength + 1) * (2 * strMaxLength + 2 - strMaxQueryLength - strMinQueryLength) / 2</code>.</li>
+</ul>
+<p>Enabling {+qe+} on your collection will likely have a smaller disk storage and memory impact than calculated. These formulas guard against the worst case.</p>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>Each write of an encrypted field value also writes two metadata documents per tag, one to the ESC and one to the ECOC, so write throughput scales with the tag count in the same way as storage.</p>
+</div></aside>
+<h3 id="tag-growth-by-query-type">Tag Growth by Query Type</h3>
+<p>For prefix and suffix queries, only the difference between the maximum and minimum query length contributes to tag growth. For substring queries, all parameters contribute, and the searchable length is the largest contributor. The following table compares how many tags a string field generates as <code>strMaxQueryLength</code> increases, assuming a <code>strMaxLength</code> of 50 and a <code>strMinQueryLength</code> of 2. Substring queries enforce a maximum <code>strMaxQueryLength</code> of 6, so this table only compares values 2 through 6, despite prefix and suffix queries allowing higher values.</p>
+<p>widths : 20 16 16 16 16 16</p>
+<ul>
+<li>[strMaxQueryLength]<ul>
+<li>2</li>
+<li>3</li>
+<li>4</li>
+<li>5</li>
+<li>6</li>
+</ul>
+</li>
+<li>[prefix] or [suffix]<ul>
+<li>2</li>
+<li>3</li>
+<li>4</li>
+<li>5</li>
+<li>6</li>
+</ul>
+</li>
+<li>[substring]<ul>
+<li>50</li>
+<li>98</li>
+<li>145</li>
+<li>191</li>
+<li>236</li>
+</ul>
+</li>
+</ul>
+<p>Because of this growth, avoid enabling substring queries on more than one field. Enable them only if prefix and suffix queries can&#39;t meet your needs, and the collection contains fewer than 50 million documents.</p>
+<h2 id="before-you-begin">Before you Begin</h2>
+<p>Make sure you have the following information:</p>
+<ul>
+<li>The number of documents in the collection that contain encrypted fields.</li>
+<li>The average byte length of each encrypted field&#39;s plaintext values.</li>
+<li>The number of fields you plan to encrypt, and their encrypted query configuration.</li>
+</ul>
+<h2 id="steps">Steps</h2>
+<p>Calculate the worst-case tag count for each field and query type.</p>
+<p>For each encrypted field, calculate [T], the upper bound on the number of tags a single value generates. Calculate one [T] per field: a field indexed for both prefix and suffix queries uses a single formula that combines both query types.</p>
+<p>a.  For unindexed fields, [T = 0].</p>
+<p>b.  For fields indexed for equality queries, [T = 1].</p>
+<p>c.  For fields indexed for [prefix] or [suffix] queries:</p>
+<pre><code>`` ` none T = 1 + (strMaxQueryLength - strMinQueryLength + 1) ``\`
+</code></pre>
+<p>d.  For fields indexed for both [prefix] and [suffix] queries:</p>
+<pre><code>`` ` none T = 1 + (strMaxQueryLength_prefix - strMinQueryLength_prefix + 1) +     (strMaxQueryLength_suffix - strMinQueryLength_suffix + 1) ``\`
+</code></pre>
+<p>e.  For fields indexed for [substring] queries:</p>
+<pre><code>`` ` none T = 1 + (strMaxQueryLength - strMinQueryLength + 1) *     (2 * strMaxLength + 2 - strMaxQueryLength -     strMinQueryLength) / 2 ``\`
+
+For example, for a field with \[strMinQueryLength\] 2, \[strMaxQueryLength\] 6, and \[strMaxLength\] 50:
+
+`` ` none T = 1 + (6 - 2 + 1) * (2 * 50 + 2 - 6 - 2) / 2   = 1 + 5 * 94 / 2   = 236 ``\`
+</code></pre>
+<p>Calculate the document storage for each field.</p>
+<p>Using the tag count from the previous step, calculate the storage a single document requires for the field, in bytes. Use the following formulas, where [v] is the average byte length of the field&#39;s unencrypted values.</p>
+<p>For unindexed fields, use:</p>
+<p><code>`none  document storage = 71 + ceil((v+6)/16) * 16</code>`</p>
+<p>For other fields, use:</p>
+<p><code>`none  document storage = 1.2 * (255 * T + 122 + ceil((v + 6) / 16) * 16)</code>`</p>
+<p>Verify that documents remain within the size limit. Encrypted values and their metadata count toward the 16 MB [BSON Document Size] limit.</p>
+<p>Calculate index storage, total disk storage, and memory.</p>
+<p>Sum the [T] value of every field into [T_Total]. Then, using [N], the number of documents that contain encrypted fields, calculate the following, in bytes:</p>
+<p><code>`none  index storage = 1.2 * (67 * T_Total + 640)</code>`</p>
+<p><code>`none  total disk storage = N * (index storage + sum of the document storage per field)</code>`</p>
+<p><code>`none  memory = N * (52 * T_Total + 17)</code>`</p>
+<p>Convert total disk storage to GB by dividing by 1,000,000,000. Convert memory to GiB by dividing by 1,073,741,824.</p>
+<p>Compare estimates against your deployment&#39;s capacity.</p>
+<p>Add the estimated disk and memory impact to your current collection size, then compare the totals against the storage and memory available in your deployment.</p>
+<ul>
+<li>If your deployment meets the storage and memory requirements, continue to qe-create-encryption-schema.</li>
+<li>If your deployment doesn&#39;t meet the requirements, consider the following options:<ul>
+<li>replace substring queries with prefix or suffix queries</li>
+<li>reduce [strMaxLength] on fields indexed for substring queries</li>
+<li>narrow the range between [strMinQueryLength] and [strMaxQueryLength] on fields indexed for substring queries</li>
+</ul>
+</li>
+</ul>
+<p>For details on query configuration options on encrypted fields, see qe-encryption-schema-field-reference.</p>
+<h2 id="learn-more">Learn More</h2>
+<p>To configure encrypted fields and query types, see qe-create-encryption-schema.</p>
+<p>To learn how each configuration option affects security and performance, see qe-field-configuration.</p>

@@ -1,0 +1,128 @@
+<p>On this page</p>
+<p>backlinks : none</p>
+<p>depth : 1</p>
+<p>class : singlecol</p>
+<p>For any given query, the MongoDB query planner chooses and caches an efficient query plan given the available indexes. The planner can use either the classic multi-planner or the cost-based ranker (CBR) to select a plan.</p>
+<h2 id="query-plan-options">Query Plan Options</h2>
+<p>In the classic multi-planner, the winning plan is the query plan that produces the most results during the trial period while performing the least amount of work.</p>
+<p>Starting in MongoDB 8.3, multi-planning with a cost-based ranker backup is the default plan selection mechanism for eligible queries. For a short trial period, the multi-planner attempts to find a plan capable of returning a result within the timeframe.</p>
+<p>If the attempt is unsuccessful, MongoDB applies a set of rules to decide whether the multi-planner should continue or if CBR should evaluate the plans to determine the optimal solution. CBR evaluates each node in a plan based on a cost function and its cardinality estimations. MongoDB selects the plan with the lowest overall cost as the winning plan. Currently, MongoDB only invokes the CBR for a small amount of queries.</p>
+<p>Both ranking mechanisms store the chosen plan in the <strong>query plan cache</strong> and reuse it for subsequent queries with the same plan cache query shape. The rest of this page describes plan cache behavior and related concepts that apply to both mechanisms.</p>
+<p>The following diagram illustrates the query planner logic:</p>
+<p>![:figwidth: 700px](/images/general-query-planner-logic.svg)</p>
+<h3 id="plan-cache-entry-state">Plan Cache Entry State</h3>
+<p>Each plan cache query shape is associated with one of three states in the cache:</p>
+<p>widths : 15 85</p>
+<ul>
+<li>State<ul>
+<li>Description</li>
+</ul>
+</li>
+<li>Missing<ul>
+<li><p>::: No entry for this shape exists in the cache. ::</p>
+<p>For a query, if the cache entry state for a plan cache query shape is Missing :</p>
+<ol>
+<li>Candidate plans are evaluated and a winning plan is selected.</li>
+<li>The cache creates an entry for the plan cache query shape in state Inactive with a value that quantifies the amount of work required by the plan.</li>
+</ol>
+</li>
+</ul>
+</li>
+<li>Inactive<ul>
+<li><p>::: The entry in the cache is a placeholder entry for this shape. That is, the planner has seen the shape, calculated a value that quantifies the amount of work required by the plan and stored the shape placeholder entry but the plan cache query shape is <strong>not</strong> used to generate query plans. ::</p>
+<p>For a query, if the cache entry state for a shape is Inactive :</p>
+<ol>
+<li>Candidate plans are evaluated and a winning plan is selected.</li>
+<li>The selected plan&#39;s value that quantifies the amount of work required by the plan is compared to the Inactive entry&#39;s. If the selected plan&#39;s value is:</li>
+</ol>
+</li>
+<li><p>Less than or equal to the Inactive entry&#39;s:</p>
+<p>:</p>
+<blockquote>
+<p>The selected plan replaces the placeholder Inactive</p>
+<p>: entry and has an Active state.</p>
+<p>If before the replacement happens, the Inactive</p>
+<p>: entry becomes Active (for example, due to another query</p>
+<p>operation), the newly active entry will only be replaced if its value that quantifies the amount of work required by the plan is greater than the selected plan.</p>
+</blockquote>
+</li>
+<li><p>Greater than the Inactive entry&#39;s:</p>
+<p>: The Inactive entry remains but its value that quantifies the amount of work required by the plan is incremented.</p>
+</li>
+</ul>
+</li>
+<li>Active<ul>
+<li><p>::: The entry in the cache is for the winning plan. The planner can use this entry to generate query plans. ::</p>
+<p>For a query, if the cache entry state for a shape is Active :</p>
+<p>The active entry is used to generate query plans.</p>
+<p>The planner also evaluates the entry&#39;s performance and if its value that quantifies the amount of work required by the plan no longer meets the selection criterion, it will transition to Inactive state.</p>
+</li>
+</ul>
+</li>
+</ul>
+<p>See query-plans-plan-cache-flushes for additional scenarios that trigger changes to the plan cache.</p>
+<h3 id="query-plan-and-cache-information">Query Plan and Cache Information</h3>
+<p>To view the query plan information for a given query, you can use [db.collection.explain()] or the [cursor.explain()] .</p>
+<p>To view plan cache information for a collection, you can use the [$planCacheStats] aggregation stage.</p>
+<h3 id="plan-cache-flushes">Plan Cache Flushes[]</h3>
+<p>The query plan cache does not persist if a [~bin.mongod] restarts or shuts down. In addition:</p>
+<ul>
+<li>Any DDL event clears the plan cache for the relevant collection. Example DDL events include dropping a collection, and creating, deleting, or hiding an index.</li>
+<li>Least recently used (LRU) cache replacement mechanism clears the least recently accessed cache entry, regardless of state.</li>
+</ul>
+<p>Users can also:</p>
+<ul>
+<li>Manually clear the entire plan cache using the [PlanCache.clear()] method.</li>
+<li>Manually clear specific plan cache entries using the [PlanCache.clearPlansByQuery()] method.</li>
+</ul>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>query-hash-plan-cache-key</p>
+</div></aside>
+<h3 id="plan-cache-debug-info-size-limit">Plan Cache Debug Info Size Limit</h3>
+<p>Starting in MongoDB 5.0, the plan cache will save full <code>plan cache</code> entries only if the cumulative size of the <code>plan caches</code> for all collections is lower than 0.5 GB. When the cumulative size of the <code>plan caches</code> for all collections exceeds this threshold, additional <code>plan cache</code> entries are stored without the following debug information:</p>
+<ul>
+<li>createdFromQuery</li>
+<li>cachedPlan</li>
+<li>creationExecStats</li>
+<li>candidatePlanScores</li>
+</ul>
+<p>The estimated size in bytes of a <code>plan cache</code> entry is available in the output of [$planCacheStats].</p>
+<h3 id="plancacheshapehash-and-plancachekey">planCacheShapeHash and planCacheKey</h3>
+<h2 id="plancacheshapehash">planCacheShapeHash</h2>
+<h2 id="plancachekey">planCacheKey</h2>
+<p>For example, consider the <code>movies</code> collection with the following indexes:</p>
+<p>The following queries on the collection have the same shape:</p>
+<p>Given these queries, the index with the partial filter expression</p>
+<p>:   can support query operation 2 but <em>not</em></p>
+<p>support query operation 1. Since the indexes available to support query operation 1 differs from query operation 2, the two queries have different <code>planCacheKey</code>.</p>
+<p>If one of the indexes were dropped, or if a new index <code>{ year: 1, title: 1 }</code> were added, the <code>planCacheKey</code> for both query operations will change.</p>
+<h2 id="availability">Availability</h2>
+<p>The <code>planCacheShapeHash</code> and <code>planCacheKey</code> are available in:</p>
+<ul>
+<li>explain() output fields:<ul>
+<li>[queryPlanner.planCacheShapeHash ]</li>
+<li>[queryPlanner.planCacheKey ]</li>
+</ul>
+</li>
+<li>profiler log messages and diagnostic log messages (i.e. mongod/mongos log messages) when logging slow queries.</li>
+<li>[$planCacheStats] aggregation stage</li>
+<li><code>PlanCache.listQueryShapes()</code> method/<code>planCacheListQueryShapes</code> command</li>
+<li><code>PlanCache.getPlansByQuery()</code> method/<code>planCacheListPlans</code> command</li>
+</ul>
+<h3 id="index-filters">Index Filters</h3>
+<p>Index filters are set with the [planCacheSetFilter] command and determine which indexes the planner evaluates for a query shape. A plan cache query shape consists of a combination of query, sort, and projection specifications. If an index filter exists for a given query shape, the planner only considers those indexes specified in the filter.</p>
+<p>When an index filter exists for the plan cache query shape, MongoDB ignores the [~cursor.hint()]. To see whether MongoDB applied an index filter for a query shape, check the [~explain.queryPlanner.indexFilterSet] field of either the [db.collection.explain()] or the [cursor.explain()] method.</p>
+<p>Index filters only affect which indexes the planner evaluates; the planner may still select the collection scan as the winning plan for a given plan cache query shape.</p>
+<p>Index filters exist for the duration of the server process and do not persist after shutdown. MongoDB also provides a command to manually remove filters.</p>
+<p>Because index filters override the expected behavior of the planner as well as the [~cursor.hint()] method, use index filters sparingly.</p>
+<p>Starting in MongoDB 6.0, an index filter uses the collation</p>
+<p>: previously set using the [planCacheSetFilter]</p>
+<p>command.</p>
+<p>Starting in MongoDB 8.0, use query settings instead of adding index filters . Index filters are deprecated starting in MongoDB 8.0.</p>
+<p>Query settings have more functionality than index filters. Also, index filters aren&#39;t persistent and you cannot easily create index filters for all cluster nodes. To add query settings and explore examples, see [setQuerySettings].</p>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><ul>
+<li>[planCacheListFilters]</li>
+<li>[planCacheClearFilters]</li>
+<li>[planCacheSetFilter]</li>
+<li>manual-indexing-strategies</li>
+</ul>
+</div></aside>
