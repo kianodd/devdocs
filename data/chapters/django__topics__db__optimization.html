@@ -1,0 +1,207 @@
+<p>Django&#39;s database layer provides various ways to help developers get the most out of their databases. This document gathers together links to the relevant documentation, and adds various tips, organized under a number of headings that outline the steps to take when attempting to optimize your database usage.</p>
+<h2 id="profile-first">Profile first</h2>
+<p>As general programming practice, this goes without saying. Find out what queries you are doing and what they are costing you . Use [.QuerySet.explain] to understand how specific <code>QuerySet</code>s are executed by your database. You may also want to use an external project like [django-debug-toolbar], or a tool that monitors your database directly.</p>
+<p>Remember that you may be optimizing for speed or memory or both, depending on your requirements. Sometimes optimizing for one will be detrimental to the other, but sometimes they will help each other. Also, work that is done by the database process might not have the same cost (to you) as the same amount of work done in your Python process. It is up to you to decide what your priorities are, where the balance must lie, and profile all of these as required since this will depend on your application and server.</p>
+<p>With everything that follows, remember to profile after every change to ensure that the change is a benefit, and a big enough benefit given the decrease in readability of your code. <strong>All</strong> of the suggestions below come with the caveat that in your circumstances the general principle might not apply, or might even be reversed.</p>
+<h2 id="use-standard-db-optimization-techniques">Use standard DB optimization techniques</h2>
+<p>...including:</p>
+<ul>
+<li><a target="_blank" rel="noopener" href="https://en.wikipedia.org/wiki/Database_index">Indexes</a>. This is a number one priority, <em>after</em> you have determined from profiling what indexes should be added. Use [Meta.indexes ] or [Field.db_index ] to add these from Django. Consider adding indexes to fields that you frequently query using [~django.db.models.query.QuerySet.filter], [~django.db.models.query.QuerySet.exclude], [~django.db.models.query.QuerySet.order_by], etc. as indexes may help to speed up lookups. Note that determining the best indexes is a complex database-dependent topic that will depend on your particular application. The overhead of maintaining an index may outweigh any gains in query speed.</li>
+</ul>
+<!-- --><ul>
+<li>Appropriate use of field types.</li>
+</ul>
+<p>We will assume you have done the things listed above. The rest of this document focuses on how to use Django in such a way that you are not doing unnecessary work. This document also does not address other optimization techniques that apply to all expensive operations, such as [general purpose caching ](topics/cache.rst).</p>
+<h2 id="understand-querysets">Understand <code>QuerySet</code>s</h2>
+<p>Understanding [QuerySets ](ref/models/querysets.rst) is vital to getting good performance with simple code. In particular:</p>
+<h3 id="understand-queryset-evaluation">Understand <code>QuerySet</code> evaluation</h3>
+<p>To avoid performance problems, it is important to understand:</p>
+<ul>
+<li>that QuerySets are lazy .</li>
+<li>when they are evaluated .</li>
+<li>how the data is held in memory .</li>
+</ul>
+<h3 id="understand-cached-attributes">Understand cached attributes</h3>
+<p>As well as caching of the whole <code>QuerySet</code>, there is caching of the result of attributes on ORM objects. In general, attributes that are not callable will be cached. For example, assuming the example blog models :</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Python</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-python">
+<span class="hljs-meta">&gt;&gt;&gt; </span>entry = Entry.objects.get(<span class="hljs-built_in">id</span>=<span class="hljs-number">1</span>)
+<span class="hljs-meta">&gt;&gt;&gt; </span>entry.blog  <span class="hljs-comment"># Blog object is retrieved at this point</span>
+<span class="hljs-meta">&gt;&gt;&gt; </span>entry.blog  <span class="hljs-comment"># cached version, no DB access</span></code></pre></div></figure>
+<p>But in general, callable attributes cause DB lookups every time:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Python</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-python">
+<span class="hljs-meta">&gt;&gt;&gt; </span>entry = Entry.objects.get(<span class="hljs-built_in">id</span>=<span class="hljs-number">1</span>)
+<span class="hljs-meta">&gt;&gt;&gt; </span>entry.authors.<span class="hljs-built_in">all</span>()  <span class="hljs-comment"># query performed</span>
+<span class="hljs-meta">&gt;&gt;&gt; </span>entry.authors.<span class="hljs-built_in">all</span>()  <span class="hljs-comment"># query performed again</span></code></pre></div></figure>
+<p>Be careful when reading template code - the template system does not allow use of parentheses, but will call callables automatically, hiding the above distinction.</p>
+<p>Be careful with your own custom properties - it is up to you to implement caching when required, for example using Python&#39;s [@cached_property ] decorator.</p>
+<h3 id="use-the-with-template-tag">Use the <code>with</code> template tag</h3>
+<p>To make use of the caching behavior of <code>QuerySet</code>, you may need to use the [with] template tag.</p>
+<h3 id="use-iterator">Use <code>iterator()</code></h3>
+<p>When you have a lot of objects, the caching behavior of the <code>QuerySet</code> can cause a large amount of memory to be used. In this case, [~django.db.models.query.QuerySet.iterator] may help.</p>
+<h3 id="use-explain">Use <code>explain()</code></h3>
+<p>[.QuerySet.explain] gives you detailed information about how the database executes a query, including indexes and joins that are used. These details may help you find queries that could be rewritten more efficiently, or identify indexes that could be added to improve performance.</p>
+<h2 id="do-database-work-in-the-database-rather-than-in-python">Do database work in the database rather than in Python</h2>
+<p>For instance:</p>
+<ul>
+<li>At the most basic level, use filter and exclude to do filtering in the database.</li>
+<li>Use f-expressions to filter based on other fields within the same model.</li>
+<li>Use [annotate to do aggregation in the database ](topics/db/aggregation.rst).</li>
+</ul>
+<p>If these aren&#39;t enough to generate the SQL you need:</p>
+<h3 id="use-rawsql">Use <code>RawSQL</code></h3>
+<p>A less portable but more powerful method is the [~django.db.models.expressions.RawSQL] expression, which allows some SQL to be explicitly added to the query. If that still isn&#39;t powerful enough:</p>
+<h3 id="use-raw-sql">Use raw SQL</h3>
+<p>Write your own [custom SQL to retrieve data or populate models ](topics/db/sql.rst). Use <code>django.db.connection.queries</code> to find out what Django is writing for you and start from there.</p>
+<h2 id="retrieve-individual-objects-using-a-unique-indexed-column">Retrieve individual objects using a unique, indexed column</h2>
+<p>There are two reasons to use a column with [~django.db.models.Field.unique] or [~django.db.models.Field.db_index] when using [~django.db.models.query.QuerySet.get] to retrieve individual objects. First, the query will be quicker because of the underlying database index. Also, the query could run much slower if multiple objects match the lookup; having a unique constraint on the column guarantees this will never happen.</p>
+<p>So using the example blog models :</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Python</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-python">
+<span class="hljs-meta">&gt;&gt;&gt; </span>entry = Entry.objects.get(<span class="hljs-built_in">id</span>=<span class="hljs-number">10</span>)</code></pre></div></figure>
+<p>will be quicker than:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Python</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-python">
+<span class="hljs-meta">&gt;&gt;&gt; </span>entry = Entry.objects.get(headline=<span class="hljs-string">&quot;News Item Title&quot;</span>)</code></pre></div></figure>
+<p>because <code>id</code> is indexed by the database and is guaranteed to be unique.</p>
+<p>Doing the following is potentially quite slow:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Python</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-python">
+<span class="hljs-meta">&gt;&gt;&gt; </span>entry = Entry.objects.get(headline__startswith=<span class="hljs-string">&quot;News&quot;</span>)</code></pre></div></figure>
+<p>First of all, <code>headline</code> is not indexed, which will make the underlying database fetch slower.</p>
+<p>Second, the lookup may return multiple results. Even though Django applies a limit of 21 objects when using [~django.db.models.query.QuerySet.get], the database may still need to scan everything to evaluate a non-unique condition. Narrowing your query up-front is more efficient.</p>
+<h2 id="retrieve-related-objects-efficiently">Retrieve related objects efficiently</h2>
+<p>Generally, accessing the database multiple times to retrieve different parts of a single &quot;set&quot; of data is less efficient than retrieving it all in one query. This is particularly important if you have a query that is executed in a loop, and could therefore end up doing many database queries, when only one is needed. Below are some techniques to combine queries for efficiency.</p>
+<h3 id="use-the-fetchpeers-fetch-mode">Use the <code>FETCH_PEERS</code> fetch mode</h3>
+<p>Use the [~django.db.models.FETCH_PEERS] fetch mode to make on-demand field access more efficient with bulk-fetching. Enable it for all usage of your models with a custom manager .</p>
+<p>Using this fetch mode is easier than declaring fields to fetch with [~django.db.models.query.QuerySet.select_related] or [~django.db.models.query.QuerySet.prefetch_related], especially when it&#39;s hard to predict which fields will be accessed.</p>
+<h3 id="use-querysetselectrelated-and-prefetchrelated">Use <code>QuerySet.select_related()</code> and <code>prefetch_related()</code></h3>
+<p>When the [~django.db.models.FETCH_PEERS] fetch mode is not appropriate or efficient enough, use [~django.db.models.query.QuerySet.select_related] and [~django.db.models.query.QuerySet.prefetch_related]. Understand their documentation thoroughly and apply them where needed.</p>
+<p>It may be useful to apply these methods in [managers and default managers ](topics/db/managers.rst). Be aware when your manager is and is not used; for example, related object access uses the base manager rather than the default manager.</p>
+<h3 id="use-prefetchrelatedobjects">Use <code>prefetch_related_objects()</code></h3>
+<p>Where [~django.db.models.query.QuerySet.prefetch_related] would be useful after the queryset has been evaluated, use [~django.db.models.prefetch_related_objects] to execute an extra prefetch.</p>
+<h2 id="don39t-retrieve-things-you-don39t-need">Don&#39;t retrieve things you don&#39;t need</h2>
+<h3 id="use-querysetvalues-and-valueslist">Use <code>QuerySet.values()</code> and <code>values_list()</code></h3>
+<p>When you only want a <code>dict</code> or <code>list</code> of values, and don&#39;t need ORM model objects, make appropriate usage of [~django.db.models.query.QuerySet.values]. These can be useful for replacing model objects in template code - as long as the dicts you supply have the same attributes as those used in the template, you are fine.</p>
+<h3 id="use-querysetdefer-and-only">Use <code>QuerySet.defer()</code> and <code>only()</code></h3>
+<p>Use [~django.db.models.query.QuerySet.defer] and [~django.db.models.query.QuerySet.only] if there are database columns you know that you won&#39;t need (or won&#39;t need in most cases) to avoid loading them. Note that if you <em>do</em> use them, the ORM will have to go and get them in a separate query, making this a pessimization if you use it inappropriately.</p>
+<p>Don&#39;t be too aggressive in deferring fields without profiling as the database has to read most of the non-text, non-<code>VARCHAR</code> data from the disk for a single row in the results, even if it ends up only using a few columns. The <code>defer()</code> and <code>only()</code> methods are most useful when you can avoid loading a lot of text data or for fields that might take a lot of processing to convert back to Python. As always, profile first, then optimize.</p>
+<h3 id="use-querysetcontainsobj">Use <code>QuerySet.contains(obj)</code></h3>
+<p>...if you only want to find out if <code>obj</code> is in the queryset, rather than <code>if obj in queryset</code>.</p>
+<h3 id="use-querysetcount">Use <code>QuerySet.count()</code></h3>
+<p>...if you only want the count, rather than doing <code>len(queryset)</code>.</p>
+<h3 id="use-querysetexists">Use <code>QuerySet.exists()</code></h3>
+<p>...if you only want to find out if at least one result exists, rather than <code>if queryset</code>.</p>
+<p>But:</p>
+<h3 id="don39t-overuse-contains-count-and-exists">Don&#39;t overuse <code>contains()</code>, <code>count()</code>, and <code>exists()</code></h3>
+<p>If you are going to need other data from the QuerySet, evaluate it immediately.</p>
+<p>For example, assuming a <code>Group</code> model that has a many-to-many relation to <code>User</code>, the following code is optimal:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">members = group.members.all()
+
+if display_group_members:
+    if members:
+        if current_user in members:
+            print(&quot;You and&quot;, len(members) - 1, &quot;other users are members of this group.&quot;)
+        else:
+            print(&quot;There are&quot;, len(members), &quot;members in this group.&quot;)
+
+        for member in members:
+            print(member.username)
+    else:
+        print(&quot;There are no members in this group.&quot;)</code></pre></div></figure>
+<p>It is optimal because:</p>
+<ol>
+<li>Since QuerySets are lazy, this does no database queries if <code>display_group_members</code> is <code>False</code>.</li>
+<li>Storing <code>group.members.all()</code> in the <code>members</code> variable allows its result cache to be reused.</li>
+<li>The line <code>if members:</code> causes <code>QuerySet.__bool__()</code> to be called, which causes the <code>group.members.all()</code> query to be run on the database. If there aren&#39;t any results, it will return <code>False</code>, otherwise <code>True</code>.</li>
+<li>The line <code>if current_user in members:</code> checks if the user is in the result cache, so no additional database queries are issued.</li>
+<li>The use of <code>len(members)</code> calls <code>QuerySet.__len__()</code>, reusing the result cache, so again, no database queries are issued.</li>
+<li>The <code>for member</code> loop iterates over the result cache.</li>
+</ol>
+<p>In total, this code does either one or zero database queries. The only deliberate optimization performed is using the <code>members</code> variable. Using <code>QuerySet.exists()</code> for the <code>if</code>, <code>QuerySet.contains()</code> for the <code>in</code>, or <code>QuerySet.count()</code> for the count would each cause additional queries.</p>
+<h3 id="use-querysetupdate-and-delete">Use <code>QuerySet.update()</code> and <code>delete()</code></h3>
+<p>Rather than retrieve a load of objects, set some values, and save them individual, use a bulk SQL UPDATE statement, via QuerySet.update() . Similarly, do bulk deletes where possible.</p>
+<p>Note, however, that these bulk update methods cannot call the <code>save()</code> or <code>delete()</code> methods of individual instances, which means that any custom behavior you have added for these methods will not be executed, including anything driven from the normal database object [signals ](ref/signals.rst).</p>
+<h3 id="use-foreign-key-values-directly">Use foreign key values directly</h3>
+<p>If you only need a foreign key value, use the foreign key value that is already on the object you&#39;ve got, rather than getting the whole related object and taking its primary key. i.e. do:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">entry.blog_id</code></pre></div></figure>
+<p>instead of:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">entry.blog.id</code></pre></div></figure>
+<h3 id="don39t-order-results-if-you-don39t-care">Don&#39;t order results if you don&#39;t care</h3>
+<p>Ordering is not free; each field to order by is an operation the database must perform. If a model has a default ordering ([Meta.ordering ]) and you don&#39;t need it, remove it on a <code>QuerySet</code> by calling [~django.db.models.query.QuerySet.order_by] with no parameters.</p>
+<p>Adding an index to your database may help to improve ordering performance.</p>
+<h2 id="use-bulk-methods">Use bulk methods</h2>
+<p>Use bulk methods to reduce the number of SQL statements.</p>
+<h3 id="create-in-bulk">Create in bulk</h3>
+<p>When creating objects, where possible, use the [~django.db.models.query.QuerySet.bulk_create] method to reduce the number of SQL queries. For example:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">Entry.objects.bulk_create(
+    [
+        Entry(headline=&quot;This is a test&quot;),
+        Entry(headline=&quot;This is only a test&quot;),
+    ]
+)</code></pre></div></figure>
+<p>...is preferable to:</p>
+<pre><code>Entry.objects.create(headline=&quot;This is a test&quot;)
+Entry.objects.create(headline=&quot;This is only a test&quot;)
+</code></pre>
+<p>Note that [~django.db.models.query.QuerySet.bulk_create] has several caveats, so ensure it&#39;s appropriate for your use case.</p>
+<h3 id="update-in-bulk">Update in bulk</h3>
+<p>When updating objects, where possible, use the [~django.db.models.query.QuerySet.bulk_update] method to reduce the number of SQL queries. Given a list or queryset of objects:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">entries = Entry.objects.bulk_create(
+    [
+        Entry(headline=&quot;This is a test&quot;),
+        Entry(headline=&quot;This is only a test&quot;),
+    ]
+)</code></pre></div></figure>
+<p>The following example:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">entries[0].headline = &quot;This is not a test&quot;
+entries[1].headline = &quot;This is no longer a test&quot;
+Entry.objects.bulk_update(entries, [&quot;headline&quot;])</code></pre></div></figure>
+<p>...is preferable to:</p>
+<pre><code>entries[0].headline = &quot;This is not a test&quot;
+entries[0].save()
+entries[1].headline = &quot;This is no longer a test&quot;
+entries[1].save()
+</code></pre>
+<p>Note that [~django.db.models.query.QuerySet.bulk_update] has several caveats, so ensure it&#39;s appropriate for your use case.</p>
+<h3 id="insert-in-bulk">Insert in bulk</h3>
+<p>When inserting objects into [ManyToManyFields ], use [~django.db.models.fields.related.RelatedManager.add] with multiple objects to reduce the number of SQL queries. For example:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">my_band.members.add(me, my_friend)</code></pre></div></figure>
+<p>...is preferable to:</p>
+<pre><code>my_band.members.add(me)
+my_band.members.add(my_friend)
+</code></pre>
+<p>...where <code>Band</code> and <code>Artist</code> are models with a many-to-many relationship.</p>
+<p>When inserting different pairs of objects into [~django.db.models.ManyToManyField] or when the custom [~django.db.models.ManyToManyField.through] table is defined, use [~django.db.models.query.QuerySet.bulk_create] method to reduce the number of SQL queries. For example:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">PizzaToppingRelationship = Pizza.toppings.through
+PizzaToppingRelationship.objects.bulk_create(
+    [
+        PizzaToppingRelationship(pizza=my_pizza, topping=pepperoni),
+        PizzaToppingRelationship(pizza=your_pizza, topping=pepperoni),
+        PizzaToppingRelationship(pizza=your_pizza, topping=mushroom),
+    ],
+    ignore_conflicts=True,
+)</code></pre></div></figure>
+<p>...is preferable to:</p>
+<pre><code>my_pizza.toppings.add(pepperoni)
+your_pizza.toppings.add(pepperoni, mushroom)
+</code></pre>
+<p>...where <code>Pizza</code> and <code>Topping</code> have a many-to-many relationship. Note that there are a number of [caveats to this method ], so make sure it&#39;s appropriate for your use case.</p>
+<h3 id="remove-in-bulk">Remove in bulk</h3>
+<p>When removing objects from [ManyToManyFields ], use [~django.db.models.fields.related.RelatedManager.remove] with multiple objects to reduce the number of SQL queries. For example:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">my_band.members.remove(me, my_friend)</code></pre></div></figure>
+<p>...is preferable to:</p>
+<pre><code>my_band.members.remove(me)
+my_band.members.remove(my_friend)
+</code></pre>
+<p>...where <code>Band</code> and <code>Artist</code> are models with a many-to-many relationship.</p>
+<p>When removing multiple many-to-many relationships involving several instances of the related models, use the [~django.db.models.query.QuerySet.delete] method on a filtered queryset of the field&#39;s [~django.db.models.ManyToManyField.through] model. By combining multiple conditions with q-objects, you can delete several relationships in a single query. For example:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">from django.db.models import Q
+
+PizzaToppingRelationship = Pizza.toppings.through
+PizzaToppingRelationship.objects.filter(
+    Q(pizza=my_pizza, topping=pepperoni)
+    | Q(pizza=your_pizza, topping=pepperoni)
+    | Q(pizza=your_pizza, topping=mushroom)
+).delete()</code></pre></div></figure>
+<p>...is preferable to:</p>
+<pre><code>my_pizza.toppings.remove(pepperoni)
+your_pizza.toppings.remove(pepperoni, mushroom)
+</code></pre>
+<p>...where <code>Pizza</code> and <code>Topping</code> have a many-to-many relationship.</p>

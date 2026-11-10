@@ -1,0 +1,559 @@
+<p>The authentication that comes with Django is good enough for most common cases, but you may have needs not met by the out-of-the-box defaults. Customizing authentication in your projects requires understanding what points of the provided system are extensible or replaceable. This document provides details about how the auth system can be customized.</p>
+<p>Authentication backends provide an extensible system for when a username and password stored with the user model need to be authenticated against a different service than Django&#39;s default.</p>
+<p>You can give your models custom permissions that can be checked through Django&#39;s authorization system.</p>
+<p>You can extend the default <code>User</code> model, or substitute a completely customized model.</p>
+<h2 id="other-authentication-sources">Other authentication sources</h2>
+<p>There may be times you have the need to hook into another authentication source -- that is, another source of usernames and passwords or authentication methods.</p>
+<p>For example, your company may already have an LDAP setup that stores a username and password for every employee. It&#39;d be a hassle for both the network administrator and the users themselves if users had separate accounts in LDAP and the Django-based applications.</p>
+<p>So, to handle situations like this, the Django authentication system lets you plug in other authentication sources. You can override Django&#39;s default database-based scheme, or you can use the default system in tandem with other systems.</p>
+<p>See the authentication backend reference</p>
+<p>:   for information on the authentication</p>
+<p>backends included with Django.</p>
+<h3 id="specifying-authentication-backends">Specifying authentication backends</h3>
+<p>Behind the scenes, Django maintains a list of &quot;authentication backends&quot; that it checks for authentication. When somebody calls [django.contrib.auth.authenticate] -- as described in How to log a user in -- Django tries authenticating across all of its authentication backends. If the first authentication method fails, Django tries the second one, and so on, until all backends have been attempted.</p>
+<p>The list of authentication backends to use is specified in the [AUTHENTICATION_BACKENDS] setting. This should be a list of Python path names that point to Python classes that know how to authenticate. These classes can be anywhere on your Python path.</p>
+<p>By default, [AUTHENTICATION_BACKENDS] is set to:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">[&quot;django.contrib.auth.backends.ModelBackend&quot;]</code></pre></div></figure>
+<p>That&#39;s the basic authentication backend that checks the Django users database and queries the built-in permissions. It does not provide protection against brute force attacks via any rate limiting mechanism. You may either implement your own rate limiting mechanism in a custom auth backend, or use the mechanisms provided by most web servers.</p>
+<p>The order of [AUTHENTICATION_BACKENDS] matters, so if the same username and password is valid in multiple backends, Django will stop processing at the first positive match.</p>
+<p>If a backend raises a [~django.core.exceptions.PermissionDenied] exception, authentication will immediately fail. Django won&#39;t check the backends that follow.</p>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>Once a user has authenticated, Django stores which backend was used to authenticate the user in the user&#39;s session, and reuses the same backend for the duration of that session whenever access to the currently authenticated user is needed. This effectively means that authentication sources are cached on a per-session basis, so if you change [AUTHENTICATION_BACKENDS], you&#39;ll need to clear out session data if you need to force users to re-authenticate using different methods. A simple way to do that is to execute <code>Session.objects.all().delete()</code>.</p>
+</div></aside>
+<h3 id="writing-an-authentication-backend">Writing an authentication backend</h3>
+<p>An authentication backend is a class that implements two required methods: <code>get_user(user_id)</code> and <code>authenticate(request, **credentials)</code>, as well as a set of optional permission related authorization methods .</p>
+<p>The <code>get_user</code> method takes a <code>user_id</code> -- which could be a username, database ID or whatever, but has to be the primary key of your user object --and returns a user object or <code>None</code>.</p>
+<p>The <code>authenticate</code> method takes a <code>request</code> argument and credentials as keyword arguments. Most of the time, it&#39;ll look like this:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">from django.contrib.auth.backends import BaseBackend
+
+
+class MyBackend(BaseBackend):
+    def authenticate(self, request, username=None, password=None):
+        # Check the username/password and return a user.
+        ...</code></pre></div></figure>
+<p>But it could also authenticate a token, like so:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">from django.contrib.auth.backends import BaseBackend
+
+
+class MyBackend(BaseBackend):
+    def authenticate(self, request, token=None):
+        # Check the token and return a user.
+        ...</code></pre></div></figure>
+<p>Either way, <code>authenticate()</code> should check the credentials it gets and return a user object that matches those credentials if the credentials are valid. If they&#39;re not valid, it should return <code>None</code>.</p>
+<p><code>request</code> is an [~django.http.HttpRequest] and may be <code>None</code> if it wasn&#39;t provided to [~django.contrib.auth.authenticate] (which passes it on to the backend).</p>
+<p>The Django admin is tightly coupled to the Django User object . For example, for a user to access the admin, [.User.is_staff] and [.User.is_active] must be <code>True</code> (see [.AdminSite.has_permission] for details).</p>
+<p>The best way to deal with this is to create a Django <code>User</code> object for each user that exists for your backend (e.g., in your LDAP directory, your external SQL database, etc.). You can either write a script to do this in advance, or your <code>authenticate</code> method can do it the first time a user logs in.</p>
+<p>Here&#39;s an example backend that authenticates against a username and password variable defined in your <code>settings.py</code> file and creates a Django <code>User</code> object the first time a user authenticates. In this example, the created Django <code>User</code> object is a superuser who will have full access to the admin:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">from django.conf import settings
+from django.contrib.auth.backends import BaseBackend
+from django.contrib.auth.hashers import check_password
+from django.contrib.auth.models import User
+
+
+class SettingsBackend(BaseBackend):
+    &quot;&quot;&quot;
+    Authenticate against the settings ADMIN_LOGIN and ADMIN_PASSWORD.
+
+    Use the login name and a hash of the password. For example:
+
+    ADMIN_LOGIN = &#x27;admin&#x27;
+    ADMIN_PASSWORD = &#x27;pbkdf2_sha256$30000$Vo0VlMnkR4Bk$qEvtdyZRWTcOsCnI/oQ7fVOu1XAURIZYoOZ3iq8Dr4M=&#x27;
+    &quot;&quot;&quot;
+
+    def authenticate(self, request, username=None, password=None):
+        login_valid = settings.ADMIN_LOGIN == username
+        pwd_valid = check_password(password, settings.ADMIN_PASSWORD)
+        if login_valid and pwd_valid:
+            try:
+                user = User.objects.get(username=username)
+            except User.DoesNotExist:
+                # Create a new user. There&#x27;s no need to set a password
+                # because only the password from settings.py is checked.
+                user = User(username=username)  # is_active defaults to True.
+                user.is_staff = True
+                user.is_superuser = True
+                user.save()
+            return user
+        return None
+
+    def get_user(self, user_id):
+        try:
+            return User.objects.get(pk=user_id)
+        except User.DoesNotExist:
+            return None</code></pre></div></figure>
+<h3 id="handling-authorization-in-custom-backends">Handling authorization in custom backends</h3>
+<p>Custom auth backends can provide their own permissions.</p>
+<p>The user model and its manager will delegate permission lookup functions ([~django.contrib.auth.models.User.get_user_permissions], [~django.contrib.auth.models.User.get_group_permissions], [~django.contrib.auth.models.User.get_all_permissions], [~django.contrib.auth.models.User.has_perm], [~django.contrib.auth.models.User.has_module_perms], and [~django.contrib.auth.models.UserManager.with_perm]) to any authentication backend that implements these functions.</p>
+<p>The permissions given to the user will be the superset of all permissions returned by all backends. That is, Django grants a permission to a user that any one backend grants.</p>
+<p>If a backend raises a [~django.core.exceptions.PermissionDenied] exception in [~django.contrib.auth.models.User.has_perm] or [~django.contrib.auth.models.User.has_module_perms], the authorization will immediately fail and Django won&#39;t check the backends that follow.</p>
+<p>A backend could implement permissions for the magic admin like this:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">from django.contrib.auth.backends import BaseBackend
+
+
+class MagicAdminBackend(BaseBackend):
+    def has_perm(self, user_obj, perm, obj=None):
+        return user_obj.username == settings.ADMIN_LOGIN</code></pre></div></figure>
+<p>This gives full permissions to the user granted access in the above example. Notice that in addition to the same arguments given to the associated [django.contrib.auth.models.User] functions, the backend auth functions all take the user object, which may be an anonymous user, as an argument.</p>
+<p>A full authorization implementation can be found in the <code>ModelBackend</code> class in [django/contrib/auth/backends.py], which is the default backend and queries the <code>auth_permission</code> table most of the time.</p>
+<h4 id="authorization-for-anonymous-users">Authorization for anonymous users</h4>
+<p>An anonymous user is one that is not authenticated i.e. they have provided no valid authentication details. However, that does not necessarily mean they are not authorized to do anything. At the most basic level, most websites authorize anonymous users to browse most of the site, and many allow anonymous posting of comments etc.</p>
+<p>Django&#39;s permission framework does not have a place to store permissions for anonymous users. However, the user object passed to an authentication backend may be an [django.contrib.auth.models.AnonymousUser] object, allowing the backend to specify custom authorization behavior for anonymous users. This is especially useful for the authors of reusable apps, who can delegate all questions of authorization to the auth backend, rather than needing settings, for example, to control anonymous access.</p>
+<h4 id="authorization-for-inactive-users">Authorization for inactive users</h4>
+<p>An inactive user is one that has its [~django.contrib.auth.models.User.is_active] field set to <code>False</code>. The [~django.contrib.auth.backends.ModelBackend] and [~django.contrib.auth.backends.RemoteUserBackend] authentication backends prohibits these users from authenticating. If a custom user model doesn&#39;t have an [~django.contrib.auth.models.CustomUser.is_active] field, all users will be allowed to authenticate.</p>
+<p>You can use [~django.contrib.auth.backends.AllowAllUsersModelBackend] or [~django.contrib.auth.backends.AllowAllUsersRemoteUserBackend] if you want to allow inactive users to authenticate.</p>
+<p>The support for anonymous users in the permission system allows for a scenario where anonymous users have permissions to do something while inactive authenticated users do not.</p>
+<p>Do not forget to test for the <code>is_active</code> attribute of the user in your own backend permission methods.</p>
+<h4 id="handling-object-permissions">Handling object permissions</h4>
+<p>Django&#39;s permission framework has a foundation for object permissions, though there is no implementation for it in the core. That means that checking for object permissions will always return <code>False</code> or an empty list (depending on the check performed). An authentication backend will receive the keyword parameters <code>obj</code> and <code>user_obj</code> for each object related authorization method and can return the object level permission as appropriate.</p>
+<h2 id="custom-permissions">Custom permissions</h2>
+<p>To create custom permissions for a given model object, use the <code>permissions</code> model Meta attribute .</p>
+<p>This example <code>Task</code> model creates two custom permissions, i.e., actions users can or cannot do with <code>Task</code> instances, specific to your application:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">class Task(models.Model):
+    ...
+
+    class Meta:
+        permissions = [
+            (&quot;change_task_status&quot;, &quot;Can change the status of tasks&quot;),
+            (&quot;close_task&quot;, &quot;Can remove a task by setting its status as closed&quot;),
+        ]</code></pre></div></figure>
+<p>The only thing this does is create those extra permissions when you run [manage.py migrate ] (the function that creates permissions is connected to the [~django.db.models.signals.post_migrate] signal). Your code is in charge of checking the value of these permissions when a user is trying to access the functionality provided by the application (changing the status of tasks or closing tasks.) Continuing the above example, the following checks if a user may close tasks:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">user.has_perm(&quot;app.close_task&quot;)</code></pre></div></figure>
+<h2 id="extending-the-existing-user-model">Extending the existing <code>User</code> model</h2>
+<p>There are two ways to extend the default [~django.contrib.auth.models.User] model without substituting your own model. If the changes you need are purely behavioral, and don&#39;t require any change to what is stored in the database, you can create a proxy model based on [~django.contrib.auth.models.User]. This allows for any of the features offered by proxy models including default ordering, custom managers, or custom model methods.</p>
+<p>If you wish to store information related to <code>User</code>, you can use a [~django.db.models.OneToOneField] to a model containing the fields for additional information. This one-to-one model is often called a profile model, as it might store non-auth related information about a site user. For example you might create an Employee model:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">from django.contrib.auth.models import User
+
+
+class Employee(models.Model):
+    user = models.OneToOneField(User, on_delete=models.CASCADE)
+    department = models.CharField(max_length=100)</code></pre></div></figure>
+<p>Assuming an existing Employee Fred Smith who has both a User and Employee model, you can access the related information using Django&#39;s standard related model conventions:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Python</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-python">
+<span class="hljs-meta">&gt;&gt;&gt; </span>u = User.objects.get(username=<span class="hljs-string">&quot;fsmith&quot;</span>)
+<span class="hljs-meta">&gt;&gt;&gt; </span>freds_department = u.employee.department</code></pre></div></figure>
+<p>To add a profile model&#39;s fields to the user page in the admin, define an [~django.contrib.admin.InlineModelAdmin] (for this example, we&#39;ll use a [~django.contrib.admin.StackedInline]) in your app&#39;s <code>admin.py</code> and add it to a <code>UserAdmin</code> class which is registered with the [~django.contrib.auth.models.User] class:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">from django.contrib import admin
+from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
+from django.contrib.auth.models import User
+
+from my_user_profile_app.models import Employee
+
+
+# Define an inline admin descriptor for Employee model
+# which acts a bit like a singleton
+class EmployeeInline(admin.StackedInline):
+    model = Employee
+    can_delete = False
+    verbose_name_plural = &quot;employee&quot;
+
+
+# Define a new User admin
+class UserAdmin(BaseUserAdmin):
+    inlines = [EmployeeInline]
+
+
+# Re-register UserAdmin
+admin.site.unregister(User)
+admin.site.register(User, UserAdmin)</code></pre></div></figure>
+<p>These profile models are not special in any way - they are just Django models that happen to have a one-to-one link with a user model. As such, they aren&#39;t auto created when a user is created, but a [django.db.models.signals.post_save] could be used to create or update related models as appropriate.</p>
+<p>Using related models results in additional queries or joins to retrieve the related data. Depending on your needs, a custom user model that includes the related fields may be your better option, however, existing relations to the default user model within your project&#39;s apps may justify the extra database load.</p>
+<h2 id="substituting-a-custom-user-model">Substituting a custom <code>User</code> model</h2>
+<p>Some kinds of projects may have authentication requirements for which Django&#39;s built-in [~django.contrib.auth.models.User] model is not always appropriate. For instance, on some sites it makes more sense to use an email address as your identification token instead of a username.</p>
+<p>Django allows you to override the default user model by providing a value for the [AUTH_USER_MODEL] setting that references a custom model:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">AUTH_USER_MODEL = &quot;myapp.MyUser&quot;</code></pre></div></figure>
+<p>This dotted pair describes the [~django.apps.AppConfig.label] of the Django app (which must be in your [INSTALLED_APPS]), and the name of the Django model that you wish to use as your user model.</p>
+<h3 id="using-a-custom-user-model-when-starting-a-project">Using a custom user model when starting a project</h3>
+<p>If you&#39;re starting a new project, you can set up a custom user model that behaves identically to the default user model by subclassing `~django.contrib.auth.models.AbstractUser`:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">from django.contrib.auth.models import AbstractUser
+
+
+class User(AbstractUser):
+    pass</code></pre></div></figure>
+<p>Don&#39;t forget to point [AUTH_USER_MODEL] to it. Do this before creating any migrations or running <code>manage.py migrate</code> for the first time.</p>
+<p>Also, register the model in the app&#39;s <code>admin.py</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">from django.contrib import admin
+from django.contrib.auth.admin import UserAdmin
+from .models import User
+
+admin.site.register(User, UserAdmin)</code></pre></div></figure>
+<h3 id="changing-to-a-custom-user-model-mid-project">Changing to a custom user model mid-project</h3>
+<p>Changing [AUTH_USER_MODEL] after you&#39;ve created database tables is possible, but can be complex, since it affects foreign keys and many-to-many relationships, for example.</p>
+<p>This change can&#39;t be done automatically and requires manually fixing your schema, moving your data from the old user table, and possibly manually reapplying some migrations. See [25313] for an outline of the steps.</p>
+<p>Due to limitations of Django&#39;s dynamic dependency feature for swappable models, the model referenced by [AUTH_USER_MODEL] must be created in the first migration of its app (usually called <code>0001_initial</code>); otherwise, you&#39;ll have dependency issues.</p>
+<p>In addition, you may run into a <code>CircularDependencyError</code> when running your migrations as Django won&#39;t be able to automatically break the dependency loop due to the dynamic dependency. If you see this error, you should break the loop by moving the models depended on by your user model into a second migration. (You can try making two normal models that have a <code>ForeignKey</code> to each other and seeing how <code>makemigrations</code> resolves that circular dependency if you want to see how it&#39;s usually done.)</p>
+<h3 id="reusable-apps-and-authusermodel">Reusable apps and <code>AUTH_USER_MODEL</code></h3>
+<p>Reusable apps shouldn&#39;t implement a custom user model. A project may use many apps, and two reusable apps that implemented a custom user model couldn&#39;t be used together. If you need to store per user information in your app, use a [~django.db.models.ForeignKey] or [~django.db.models.OneToOneField] to <code>settings.AUTH_USER_MODEL</code> as described below.</p>
+<h3 id="referencing-the-user-model">Referencing the <code>User</code> model</h3>
+<p>If you reference [~django.contrib.auth.models.User] directly (for example, by referring to it in a foreign key), your code will not work in projects where the [AUTH_USER_MODEL] setting has been changed to a different user model.</p>
+<p><strong><code>get_user_model()</code></strong></p>
+<p>Instead of referring to [~django.contrib.auth.models.User] directly, you should reference the user model using <code>django.contrib.auth.get_user_model()</code>. This method will return the currently active user model -- the custom user model if one is specified, or [~django.contrib.auth.models.User] otherwise.</p>
+<p>When you define a foreign key or many-to-many relations to the user model, you should specify the custom model using the [AUTH_USER_MODEL] setting. For example:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">from django.conf import settings
+from django.db import models
+
+
+class Article(models.Model):
+    author = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+    )</code></pre></div></figure>
+<p>When connecting to signals sent by the user model, you should specify the custom model using the [AUTH_USER_MODEL] setting. For example:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">from django.conf import settings
+from django.db.models.signals import post_save
+
+
+def post_save_receiver(sender, instance, created, **kwargs):
+    pass
+
+
+post_save.connect(post_save_receiver, sender=settings.AUTH_USER_MODEL)</code></pre></div></figure>
+<p>Generally speaking, it&#39;s easiest to refer to the user model with the [AUTH_USER_MODEL] setting in code that&#39;s executed at import time, however, it&#39;s also possible to call <code>get_user_model()</code> while Django is importing models, so you could use <code>models.ForeignKey(get_user_model(), ...)</code>.</p>
+<p>If your app is tested with multiple user models, using <code>@override_settings(AUTH_USER_MODEL=...)</code> for example, and you cache the result of <code>get_user_model()</code> in a module-level variable, you may need to listen to the [~django.test.signals.setting_changed] signal to clear the cache. For example:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">from django.apps import apps
+from django.contrib.auth import get_user_model
+from django.core.signals import setting_changed
+from django.dispatch import receiver
+
+
+@receiver(setting_changed)
+def user_model_swapped(*, setting, **kwargs):
+    if setting == &quot;AUTH_USER_MODEL&quot;:
+        apps.clear_cache()
+        from myapp import some_module
+
+        some_module.UserModel = get_user_model()</code></pre></div></figure>
+<h3 id="specifying-a-custom-user-model">Specifying a custom user model</h3>
+<p>When you start your project with a custom user model, stop to consider if this is the right choice for your project.</p>
+<p>Keeping all user related information in one model removes the need for additional or more complex database queries to retrieve related models. On the other hand, it may be more suitable to store app-specific user information in a model that has a relation with your custom user model. That allows each app to specify its own user data requirements without potentially conflicting or breaking assumptions by other apps. It also means that you would keep your user model as simple as possible, focused on authentication, and following the minimum requirements Django expects custom user models to meet.</p>
+<p>If you use the default authentication backend, then your model must have a single unique field that can be used for identification purposes. This can be a username, an email address, or any other unique attribute. A non-unique username field is allowed if you use a custom authentication backend that can support it.</p>
+<p>The easiest way to construct a compliant custom user model is to inherit from [~django.contrib.auth.models.AbstractBaseUser]. [~django.contrib.auth.models.AbstractBaseUser] provides the core implementation of a user model, including hashed passwords and tokenized password resets. You must then provide some key implementation details:</p>
+<p><strong><code>models.CustomUser</code></strong></p>
+<p><strong><code>USERNAME_FIELD</code></strong></p>
+<p>A string describing the name of the field on the user model that is used as the unique identifier. This will usually be a username of some kind, but it can also be an email address, or any other unique identifier. The field <em>must</em> be unique (e.g. have <code>unique=True</code> set in its definition), unless you use a custom authentication backend that can support non-unique usernames.</p>
+<p>In the following example, the field <code>identifier</code> is used as the identifying field:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">class MyUser(AbstractBaseUser):
+    identifier = models.CharField(max_length=40, unique=True)
+    ...
+    USERNAME_FIELD = &quot;identifier&quot;</code></pre></div></figure>
+<p><strong><code>EMAIL_FIELD</code></strong></p>
+<p>A string describing the name of the email field on the <code>User</code> model. This value is returned by [~models.AbstractBaseUser.get_email_field_name].</p>
+<p><strong><code>REQUIRED_FIELDS</code></strong></p>
+<p>A list of the field names that will be prompted for when creating a user via the [createsuperuser] management command. The user will be prompted to supply a value for each of these fields. It must include any field for which [~django.db.models.Field.blank] is <code>False</code> or undefined and may include additional fields you want prompted for when a user is created interactively. <code>REQUIRED_FIELDS</code> has no effect in other parts of Django, like creating a user in the admin.</p>
+<p>For example, here is the partial definition for a user model that defines two required fields - a date of birth and height:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">class MyUser(AbstractBaseUser):
+    ...
+    date_of_birth = models.DateField()
+    height = models.FloatField()
+    ...
+    REQUIRED_FIELDS = [&quot;date_of_birth&quot;, &quot;height&quot;]</code></pre></div></figure>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p><code>REQUIRED_FIELDS</code> must contain all required fields on your user model, but should <em>not</em> contain the <code>USERNAME_FIELD</code> or <code>password</code> as these fields will always be prompted for.</p>
+</div></aside>
+<p><strong><code>is_active</code></strong></p>
+<p>A boolean attribute that indicates whether the user is considered &quot;active&quot;. This attribute is provided as an attribute on <code>AbstractBaseUser</code> defaulting to <code>True</code>. How you choose to implement it will depend on the details of your chosen auth backends. See the documentation of the [is_active attribute on the built-in user model ] for details.</p>
+<p><strong><code>get_full_name()</code></strong></p>
+<p>Optional. A longer formal identifier for the user such as their full name. If implemented, this appears alongside the username in an object&#39;s history in [django.contrib.admin].</p>
+<p><strong><code>get_short_name()</code></strong></p>
+<p>Optional. A short, informal identifier for the user such as their first name. If implemented, this replaces the username in the greeting to the user in the header of [django.contrib.admin].</p>
+<p>The following attributes and methods are available on any subclass of `~django.contrib.auth.models.AbstractBaseUser`:</p>
+<p><strong><code>models.AbstractBaseUser</code></strong></p>
+<p><strong><code>get_username()</code></strong></p>
+<p>Returns the value of the field nominated by <code>USERNAME_FIELD</code>.</p>
+<p><strong><code>clean()</code></strong></p>
+<p>Normalizes the username by calling [normalize_username]. If you override this method, be sure to call <code>super()</code> to retain the normalization.</p>
+<p><strong><code>get_email_field_name()</code></strong></p>
+<p>Returns the name of the email field specified by the [~models.CustomUser.EMAIL_FIELD] attribute. Defaults to <code>&#39;email&#39;</code> if <code>EMAIL_FIELD</code> isn&#39;t specified.</p>
+<p><strong><code>normalize_username(username)</code></strong></p>
+<p>Applies NFKC Unicode normalization to usernames so that visually identical characters with different Unicode code points are considered identical.</p>
+<p><strong><code>models.AbstractBaseUser.is_authenticated</code></strong></p>
+<p>Read-only attribute which is always <code>True</code> (as opposed to <code>AnonymousUser.is_authenticated</code> which is always <code>False</code>). This is a way to tell if the user has been authenticated. This does not imply any permissions and doesn&#39;t check if the user is active or has a valid session. Even though normally you will check this attribute on <code>request.user</code> to find out whether it has been populated by the [~django.contrib.auth.middleware.AuthenticationMiddleware] (representing the currently logged-in user), you should know this attribute is <code>True</code> for any [~models.User] instance.</p>
+<p><strong><code>models.AbstractBaseUser.is_anonymous</code></strong></p>
+<p>Read-only attribute which is always <code>False</code>. This is a way of differentiating [~models.User] and [~models.AnonymousUser] objects. Generally, you should prefer using [~models.User.is_authenticated] to this attribute.</p>
+<p><strong><code>models.AbstractBaseUser.set_password(raw_password)</code></strong></p>
+<p>Sets the user&#39;s password to the given raw string, taking care of the password hashing. Doesn&#39;t save the [~django.contrib.auth.models.AbstractBaseUser] object.</p>
+<p>When the raw_password is <code>None</code>, the password will be set to an unusable password, as if [~django.contrib.auth.models.AbstractBaseUser.set_unusable_password] were used.</p>
+<p><strong><code>models.AbstractBaseUser.check_password(raw_password)</code></strong></p>
+<p><strong><code>models.AbstractBaseUser.acheck_password(raw_password)</code></strong></p>
+<p><em>Asynchronous version</em>: <code>acheck_password()</code></p>
+<p>Returns <code>True</code> if the given raw string is the correct password for the user. (This takes care of the password hashing in making the comparison.)</p>
+<p><strong><code>models.AbstractBaseUser.set_unusable_password()</code></strong></p>
+<p>Marks the user as having no password set. This isn&#39;t the same as having a blank string for a password. [~django.contrib.auth.models.AbstractBaseUser.check_password] for this user will never return <code>True</code>. Doesn&#39;t save the [~django.contrib.auth.models.AbstractBaseUser] object.</p>
+<p>You may need this if authentication for your application takes place against an existing external source such as an LDAP directory.</p>
+<p><strong><code>models.AbstractBaseUser.has_usable_password()</code></strong></p>
+<p>Returns <code>False</code> if [~django.contrib.auth.models.AbstractBaseUser.set_unusable_password] has been called for this user.</p>
+<p><strong><code>models.AbstractBaseUser.get_session_auth_hash()</code></strong></p>
+<p>Returns an HMAC of the password field. Used for session-invalidation-on-password-change.</p>
+<p><strong><code>models.AbstractBaseUser.get_session_auth_fallback_hash()</code></strong></p>
+<p>Yields the HMAC of the password field using [SECRET_KEY_FALLBACKS]. Used by <code>get_user()</code>.</p>
+<p>[~models.AbstractUser] subclasses `~models.AbstractBaseUser`:</p>
+<p><strong><code>models.AbstractUser</code></strong></p>
+<p><strong><code>clean()</code></strong></p>
+<p>Normalizes the email by calling [.BaseUserManager.normalize_email]. If you override this method, be sure to call <code>super()</code> to retain the normalization.</p>
+<h3 id="writing-a-manager-for-a-custom-user-model">Writing a manager for a custom user model</h3>
+<p>You should also define a custom manager for your user model. If your user model defines <code>username</code>, <code>email</code>, <code>is_staff</code>, <code>is_active</code>, <code>is_superuser</code>, <code>last_login</code>, and <code>date_joined</code> fields the same as Django&#39;s default user, you can install Django&#39;s [~django.contrib.auth.models.UserManager]; however, if your user model defines different fields, you&#39;ll need to define a custom manager that extends [~django.contrib.auth.models.BaseUserManager] providing two additional methods:</p>
+<p><strong><code>models.CustomUserManager</code></strong></p>
+<p><strong><code>models.CustomUserManager.create_user(username_field, password=None, **other_fields)</code></strong></p>
+<p>The prototype of <code>create_user()</code> should accept the username field, plus all required fields as arguments. For example, if your user model uses <code>email</code> as the username field, and has <code>date_of_birth</code> as a required field, then <code>create_user</code> should be defined as:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">def create_user(self, email, date_of_birth, password=None):
+    # create user here
+    ...</code></pre></div></figure>
+<p><strong><code>models.CustomUserManager.create_superuser(username_field, password=None, **other_fields)</code></strong></p>
+<p>The prototype of <code>create_superuser()</code> should accept the username field, plus all required fields as arguments. For example, if your user model uses <code>email</code> as the username field, and has <code>date_of_birth</code> as a required field, then <code>create_superuser</code> should be defined as:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">def create_superuser(self, email, date_of_birth, password=None):
+    # create superuser here
+    ...</code></pre></div></figure>
+<p>For a [~.ForeignKey] in [.USERNAME_FIELD] or [.REQUIRED_FIELDS], these methods receive the value of the [~.ForeignKey.to_field] (the [~django.db.models.Field.primary_key] by default) of an existing instance.</p>
+<p>[~django.contrib.auth.models.BaseUserManager] provides the following utility methods:</p>
+<p><strong><code>models.BaseUserManager</code></strong></p>
+<p><strong><code>models.BaseUserManager.normalize_email(email)</code></strong></p>
+<p>Normalizes email addresses by lowercasing the domain portion of the email address.</p>
+<p><strong><code>models.BaseUserManager.get_by_natural_key(username)</code></strong></p>
+<p><strong><code>models.BaseUserManager.aget_by_natural_key(username)</code></strong></p>
+<p><em>Asynchronous version</em>: <code>aget_by_natural_key()</code></p>
+<p>Retrieves a user instance using the contents of the field nominated by <code>USERNAME_FIELD</code>.</p>
+<h3 id="extending-django39s-default-user">Extending Django&#39;s default <code>User</code></h3>
+<p>If you&#39;re entirely happy with Django&#39;s [~django.contrib.auth.models.User] model, but you want to add some additional profile information, you could subclass [django.contrib.auth.models.AbstractUser] and add your custom profile fields, although we&#39;d recommend a separate model as described in specifying-custom-user-model. <code>AbstractUser</code> provides the full implementation of the default [~django.contrib.auth.models.User] as an abstract model .</p>
+<h3 id="custom-users-and-the-built-in-auth-forms">Custom users and the built-in auth forms</h3>
+<p>Django&#39;s built-in forms and views</p>
+<p>:   make certain assumptions about the user model that they</p>
+<p>are working with.</p>
+<p>The following forms are compatible with any subclass of `~django.contrib.auth.models.AbstractBaseUser`:</p>
+<ul>
+<li>`~django.contrib.auth.forms.AuthenticationForm`: Uses the username field specified by [~models.CustomUser.USERNAME_FIELD].</li>
+<li>[~django.contrib.auth.forms.SetPasswordForm]</li>
+<li>[~django.contrib.auth.forms.PasswordChangeForm]</li>
+<li>[~django.contrib.auth.forms.AdminPasswordChangeForm]</li>
+</ul>
+<p>The following forms make assumptions about the user model and can be used as-is if those assumptions are met:</p>
+<ul>
+<li>`~django.contrib.auth.forms.PasswordResetForm`: Assumes that the user model has a field that stores the user&#39;s email address with the name returned by [~models.AbstractBaseUser.get_email_field_name] (<code>email</code> by default) that can be used to identify the user and a boolean field named <code>is_active</code> to prevent password resets for inactive users.</li>
+</ul>
+<p>Finally, the following forms are tied to [~django.contrib.auth.models.User] and need to be rewritten or extended to work with a custom user model:</p>
+<ul>
+<li>[~django.contrib.auth.forms.UserCreationForm]</li>
+<li>[~django.contrib.auth.forms.UserChangeForm]</li>
+</ul>
+<p>If your custom user model is a subclass of <code>AbstractUser</code>, then you can extend these forms in this manner:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">from django.contrib.auth.forms import UserCreationForm
+from myapp.models import CustomUser
+
+
+class CustomUserCreationForm(UserCreationForm):
+    class Meta(UserCreationForm.Meta):
+        model = CustomUser
+        fields = UserCreationForm.Meta.fields + (&quot;custom_field&quot;,)</code></pre></div></figure>
+<h3 id="custom-users-and-djangocontribadmin">Custom users and [django.contrib.admin]</h3>
+<p>If you want your custom user model to also work with the admin, your user model must define some additional attributes and methods. These methods allow the admin to control access of the user to admin content:</p>
+<p><strong><code>models.CustomUser</code></strong></p>
+<p><strong><code>is_staff</code></strong></p>
+<p>Returns <code>True</code> if the user is allowed to have access to the admin site.</p>
+<p><strong><code>is_active</code></strong></p>
+<p>Returns <code>True</code> if the user account is currently active.</p>
+<p><strong><code>has_perm(perm, obj=None):</code></strong></p>
+<p>Returns <code>True</code> if the user has the named permission. If <code>obj</code> is provided, the permission needs to be checked against a specific object instance.</p>
+<p><strong><code>has_module_perms(app_label):</code></strong></p>
+<p>Returns <code>True</code> if the user has permission to access models in the given app.</p>
+<p>You will also need to register your custom user model with the admin. If your custom user model extends <code>django.contrib.auth.models.AbstractUser</code>, you can use Django&#39;s existing <code>django.contrib.auth.admin.UserAdmin</code> class. However, if your user model extends [~django.contrib.auth.models.AbstractBaseUser], you&#39;ll need to define a custom <code>ModelAdmin</code> class. It may be possible to subclass the default <code>django.contrib.auth.admin.UserAdmin</code>; however, you&#39;ll need to override any of the definitions that refer to fields on <code>django.contrib.auth.models.AbstractUser</code> that aren&#39;t on your custom user class.</p>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>If you are using a custom <code>ModelAdmin</code> which is a subclass of <code>django.contrib.auth.admin.UserAdmin</code>, then you need to add your custom fields to <code>fieldsets</code> (for fields to be used in editing users) and to <code>add_fieldsets</code> (for fields to be used when creating a user). For example:</p>
+<p><figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">from django.contrib.auth.admin import UserAdmin
+
+
+class CustomUserAdmin(UserAdmin):
+    ...
+    fieldsets = UserAdmin.fieldsets + ((None, {&quot;fields&quot;: [&quot;custom_field&quot;]}),)
+    add_fieldsets = UserAdmin.add_fieldsets + ((None, {&quot;fields&quot;: [&quot;custom_field&quot;]}),)</code></pre></div></figure></p>
+<p>See a full example for more details.</p>
+</div></aside>
+<h3 id="custom-users-and-permissions">Custom users and permissions</h3>
+<p>To make it easy to include Django&#39;s permission framework into your own user class, Django provides [~django.contrib.auth.models.PermissionsMixin]. This is an abstract model you can include in the class hierarchy for your user model, giving you all the methods and database fields necessary to support Django&#39;s permission model.</p>
+<p>[~django.contrib.auth.models.PermissionsMixin] provides the following methods and attributes:</p>
+<p><strong><code>models.PermissionsMixin</code></strong></p>
+<p><strong><code>models.PermissionsMixin.is_superuser</code></strong></p>
+<p>Boolean. Designates that this user has all permissions without explicitly assigning them.</p>
+<p><strong><code>models.PermissionsMixin.get_user_permissions(obj=None)</code></strong></p>
+<p>Returns a set of permission strings that the user has directly.</p>
+<p>If <code>obj</code> is passed in, only returns the user permissions for this specific object.</p>
+<p><strong><code>models.PermissionsMixin.get_group_permissions(obj=None)</code></strong></p>
+<p>Returns a set of permission strings that the user has, through their groups.</p>
+<p>If <code>obj</code> is passed in, only returns the group permissions for this specific object.</p>
+<p><strong><code>models.PermissionsMixin.get_all_permissions(obj=None)</code></strong></p>
+<p>Returns a set of permission strings that the user has, both through group and user permissions.</p>
+<p>If <code>obj</code> is passed in, only returns the permissions for this specific object.</p>
+<p><strong><code>models.PermissionsMixin.has_perm(perm, obj=None)</code></strong></p>
+<p>Returns <code>True</code> if the user has the specified permission, where <code>perm</code> is in the format <code>&quot;&lt;app label&gt;.&lt;permission codename&gt;&quot;</code> (see permissions ). If [.User.is_active] and [~.User.is_superuser] are both <code>True</code>, this method always returns <code>True</code>.</p>
+<p>If <code>obj</code> is passed in, this method won&#39;t check for a permission for the model, but for this specific object.</p>
+<p><strong><code>models.PermissionsMixin.has_perms(perm_list, obj=None)</code></strong></p>
+<p>Returns <code>True</code> if the user has each of the specified permissions, where each perm is in the format <code>&quot;&lt;app label&gt;.&lt;permission codename&gt;&quot;</code>. If [.User.is_active] and [~.User.is_superuser] are both <code>True</code>, this method always returns <code>True</code>.</p>
+<p>If <code>obj</code> is passed in, this method won&#39;t check for permissions for the model, but for the specific object.</p>
+<p><strong><code>models.PermissionsMixin.has_module_perms(package_name)</code></strong></p>
+<p>Returns <code>True</code> if the user has any permissions in the given package (the Django app label). If [.User.is_active] and [~.User.is_superuser] are both <code>True</code>, this method always returns <code>True</code>.</p>
+<h3 id="custom-users-and-proxy-models">Custom users and proxy models</h3>
+<p>One limitation of custom user models is that installing a custom user model will break any proxy model extending [~django.contrib.auth.models.User]. Proxy models must be based on a concrete base class; by defining a custom user model, you remove the ability of Django to reliably identify the base class.</p>
+<p>If your project uses proxy models, you must either modify the proxy to extend the user model that&#39;s in use in your project, or merge your proxy&#39;s behavior into your [~django.contrib.auth.models.User] subclass.</p>
+<h3 id="a-full-example">A full example</h3>
+<p>Here is an example of an admin-compliant custom user app. This user model uses an email address as the username, and has a required date of birth; it provides no permission checking beyond an <code>admin</code> flag on the user account. This model would be compatible with all the built-in auth forms and views, except for the user creation forms. This example illustrates how most of the components work together, but is not intended to be copied directly into projects for production use.</p>
+<p>This code would all live in a <code>models.py</code> file for a custom authentication app:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">from django.db import models
+from django.contrib.auth.models import BaseUserManager, AbstractBaseUser
+
+
+class MyUserManager(BaseUserManager):
+    def create_user(self, email, date_of_birth, password=None):
+        &quot;&quot;&quot;
+        Creates and saves a User with the given email, date of
+        birth and password.
+        &quot;&quot;&quot;
+        if not email:
+            raise ValueError(&quot;Users must have an email address&quot;)
+
+        user = self.model(
+            email=self.normalize_email(email),
+            date_of_birth=date_of_birth,
+        )
+
+        user.set_password(password)
+        user.save(using=self._db)
+        return user
+
+    def create_superuser(self, email, date_of_birth, password=None):
+        &quot;&quot;&quot;
+        Creates and saves a superuser with the given email, date of
+        birth and password.
+        &quot;&quot;&quot;
+        user = self.create_user(
+            email,
+            password=password,
+            date_of_birth=date_of_birth,
+        )
+        user.is_admin = True
+        user.save(using=self._db)
+        return user
+
+
+class MyUser(AbstractBaseUser):
+    email = models.EmailField(
+        verbose_name=&quot;email address&quot;,
+        max_length=255,
+        unique=True,
+    )
+    date_of_birth = models.DateField()
+    is_active = models.BooleanField(default=True)
+    is_admin = models.BooleanField(default=False)
+
+    objects = MyUserManager()
+
+    USERNAME_FIELD = &quot;email&quot;
+    REQUIRED_FIELDS = [&quot;date_of_birth&quot;]
+
+    def __str__(self):
+        return self.email
+
+    def has_perm(self, perm, obj=None):
+        &quot;Does the user have a specific permission?&quot;
+        # Simplest possible answer: Yes, always
+        return True
+
+    def has_module_perms(self, app_label):
+        &quot;Does the user have permissions to view the app `app_label`?&quot;
+        # Simplest possible answer: Yes, always
+        return True
+
+    @property
+    def is_staff(self):
+        &quot;Is the user a member of staff?&quot;
+        # Simplest possible answer: All admins are staff
+        return self.is_admin</code></pre></div></figure>
+<p>Then, to register this custom user model with Django&#39;s admin, the following code would be required in the app&#39;s <code>admin.py</code> file:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">from django import forms
+from django.contrib import admin
+from django.contrib.auth.models import Group
+from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
+from django.contrib.auth.forms import ReadOnlyPasswordHashField
+from django.core.exceptions import ValidationError
+
+from customauth.models import MyUser
+
+
+class UserCreationForm(forms.ModelForm):
+    &quot;&quot;&quot;A form for creating new users. Includes all the required
+    fields, plus a repeated password.&quot;&quot;&quot;
+
+    password1 = forms.CharField(label=&quot;Password&quot;, widget=forms.PasswordInput)
+    password2 = forms.CharField(
+        label=&quot;Password confirmation&quot;, widget=forms.PasswordInput
+    )
+
+    class Meta:
+        model = MyUser
+        fields = [&quot;email&quot;, &quot;date_of_birth&quot;]
+
+    def clean_password2(self):
+        # Check that the two password entries match
+        password1 = self.cleaned_data.get(&quot;password1&quot;)
+        password2 = self.cleaned_data.get(&quot;password2&quot;)
+        if password1 and password2 and password1 != password2:
+            raise ValidationError(&quot;Passwords don&#x27;t match&quot;)
+        return password2
+
+    def save(self, commit=True):
+        # Save the provided password in hashed format
+        user = super().save(commit=False)
+        user.set_password(self.cleaned_data[&quot;password1&quot;])
+        if commit:
+            user.save()
+        return user
+
+
+class UserChangeForm(forms.ModelForm):
+    &quot;&quot;&quot;A form for updating users. Includes all the fields on
+    the user, but replaces the password field with admin&#x27;s
+    disabled password hash display field.
+    &quot;&quot;&quot;
+
+    password = ReadOnlyPasswordHashField()
+
+    class Meta:
+        model = MyUser
+        fields = [&quot;email&quot;, &quot;password&quot;, &quot;date_of_birth&quot;, &quot;is_active&quot;, &quot;is_admin&quot;]
+
+
+class UserAdmin(BaseUserAdmin):
+    # The forms to add and change user instances
+    form = UserChangeForm
+    add_form = UserCreationForm
+
+    # The fields to be used in displaying the User model.
+    # These override the definitions on the base UserAdmin
+    # that reference specific fields on auth.User.
+    list_display = [&quot;email&quot;, &quot;date_of_birth&quot;, &quot;is_admin&quot;]
+    list_filter = [&quot;is_admin&quot;]
+    fieldsets = [
+        (None, {&quot;fields&quot;: [&quot;email&quot;, &quot;password&quot;]}),
+        (&quot;Personal info&quot;, {&quot;fields&quot;: [&quot;date_of_birth&quot;]}),
+        (&quot;Permissions&quot;, {&quot;fields&quot;: [&quot;is_admin&quot;]}),
+    ]
+    # add_fieldsets is not a standard ModelAdmin attribute. UserAdmin
+    # overrides get_fieldsets to use this attribute when creating a user.
+    add_fieldsets = [
+        (
+            None,
+            {
+                &quot;classes&quot;: [&quot;wide&quot;],
+                &quot;fields&quot;: [&quot;email&quot;, &quot;date_of_birth&quot;, &quot;password1&quot;, &quot;password2&quot;],
+            },
+        ),
+    ]
+    search_fields = [&quot;email&quot;]
+    ordering = [&quot;email&quot;]
+    filter_horizontal = []
+
+
+# Now register the new UserAdmin...
+admin.site.register(MyUser, UserAdmin)
+# ... and, since we&#x27;re not using Django&#x27;s built-in permissions,
+# unregister the Group model from admin.
+admin.site.unregister(Group)</code></pre></div></figure>
+<p>Finally, specify the custom model as the default user model for your project using the [AUTH_USER_MODEL] setting in your <code>settings.py</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">AUTH_USER_MODEL = &quot;customauth.MyUser&quot;</code></pre></div></figure>
+<h4 id="adding-an-async-interface">Adding an async interface</h4>
+<p>To optimize performance when called from an async context authentication, backends can implement async versions of each function - <code>aget_user(user_id)</code> and <code>aauthenticate(request, **credentials)</code>. When an authentication backend extends <code>BaseBackend</code> and async versions of these functions are not provided, they will be automatically synthesized with <code>sync_to_async</code>. This has performance penalties .</p>
+<p>While an async interface is optional, a synchronous interface is always required. There is no automatic synthesis for a synchronous interface if an async interface is implemented.</p>
+<p>Django&#39;s out-of-the-box authentication backends have native async support. If these native backends are extended take special care to make sure the async versions of modified functions are modified as well.</p>
