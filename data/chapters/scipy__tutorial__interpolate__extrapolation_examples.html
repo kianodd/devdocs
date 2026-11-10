@@ -1,0 +1,67 @@
+<p>Handling of extrapolation---evaluation of the interpolators on query points outside of the domain of interpolated data---is not fully consistent among different routines in [scipy.interpolate]. Different interpolators use different sets of keyword arguments to control the behavior outside of the data domain: some use <code>extrapolate=True/False/None</code>, some allow the <code>fill_value</code> keyword. Refer to the API documentation for details for each specific interpolation routine.</p>
+<p>Depending on a particular problem, the available keywords may or may not be sufficient. Special attention needs to be paid to extrapolation of non-linear interpolants. Very often the extrapolated results make less sense with increasing distance from the data domain. This is of course to be expected: an interpolant only knows the data within the data domain.</p>
+<p>When the default extrapolated results are not adequate, users need to implement the desired extrapolation mode themselves.</p>
+<p>In this tutorial, we consider several worked examples where we demonstrate both the use of available keywords and manual implementation of desired extrapolation modes. These examples may or may not be applicable to your particular problem; they are not necessarily best practices; and they are deliberately pared down to bare essentials needed to demonstrate the main ideas, in a hope that they serve as an inspiration for your handling of your particular problem.</p>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>The <code>extrapolate</code> argument is covered in detail in the 1-D interpolation tutorial .</p>
+</div></aside>
+<h2 id="replicate-numpyinterp-left-and-right-fill-values">Replicate [numpy.interp] left and right fill values</h2>
+<p>[numpy.interp] uses constant extrapolation, and defaults to extending the first and last values of the <code>y</code> array in the interpolation interval: the output of <code>np.interp(xnew, x, y)</code> is <code>y[0]</code> for <code>xnew &lt; x[0]</code> and <code>y[-1]</code> for <code>xnew &gt; x[-1]</code>. The values are also controllable by optional <code>left</code> and <code>right</code> keyword arguments.</p>
+<p>While <code>scipy.interpolate</code> interpolators do not offer this behavior out of the box, it is straightforward to emulate manually: we first compute the interpolation, and then explicitly fill the required values for <code>xnew &lt; min(x)</code> and <code>x &gt; max(x)</code> with <code>left</code> and <code>right</code>, respectively.</p>
+<p>To illustrate:</p>
+<p>The snippet above is straightforward to adapt for other ways of handling out-of-bounds values, such as raising errors; see also tutorial-extrapolation-asymptotics for a variation where we match in-bounds interpolation with known out-of-bounds asymptotic functions.</p>
+<h2 id="cubicspline-extend-the-boundary-conditions">CubicSpline extend the boundary conditions</h2>
+<p>[CubicSpline] needs two extra boundary conditions, which are controlled by the <code>bc_type</code> parameter. This parameter can either list explicit values of derivatives at the edges, or use helpful aliases. For instance, <code>bc_type=&quot;clamped&quot;</code> sets the first derivatives to zero, <code>bc_type=&quot;natural&quot;</code> sets the second derivatives to zero (two other recognized string values are &quot;periodic&quot; and &quot;not-a-knot&quot;)</p>
+<p>While the extrapolation is controlled by the boundary condition, the relation is not very intuitive. For instance, one can expect that for <code>bc_type=&quot;natural&quot;</code>, the extrapolation is linear. This expectation is too strong: each boundary condition sets the derivatives at a single point, <em>at the boundary</em> only. Extrapolation is done from the first and last polynomial pieces, which --- for a natural spline --- is a cubic with a zero second derivative at a given point.</p>
+<p>One other way of seeing why this expectation is too strong is to consider a dataset with only three data points, where the spline has two polynomial pieces. To extrapolate linearly, this expectation implies that both of these pieces are linear. But then, two linear pieces cannot match at a middle point with a continuous 2nd derivative! (Unless of course, if all three data points actually lie on a single straight line).</p>
+<p>To illustrate the behavior we consider a synthetic dataset and compare several boundary conditions:</p>
+<p>It is clearly seen that the natural spline does have the zero second derivative at the boundaries, but extrapolation is non-linear. <code>bc_type=&quot;clamped&quot;</code> shows a similar behavior: first derivatives are only equal to zero exactly at the boundary. In all cases, extrapolation is done by extending the first and last polynomial pieces of the spline, whatever they happen to be.</p>
+<p>One possible way to force the extrapolation is to extend the interpolation domain to add first and last polynomial pieces which have desired properties.</p>
+<p>Here we use <code>extend</code> method of the [CubicSpline] superclass, [PPoly], to add two extra breakpoints and to make sure that the additional polynomial pieces maintain the values of the derivatives. Then the extrapolation proceeds using these two additional intervals.</p>
+<h2 id="manually-implement-the-asymptotics">Manually implement the asymptotics</h2>
+<p>The previous trick of extending the interpolation domain relies on the [CubicSpline.extend] method. A somewhat more general alternative is to implement a wrapper which handles the out-of-bounds behavior explicitly. Let us consider a worked example.</p>
+<h3 id="the-setup">The setup</h3>
+<p>Suppose we want to solve at a given value of [a] the equation</p>
+<p>a x = 1/tan{x};.</p>
+<p>(One application where these kinds of equations appear is solving for energy levels of a quantum particle). For simplicity, let&#39;s only consider [xin (0, pi/2)].</p>
+<p>Solving this equation <em>once</em> is straightforward:</p>
+<p>However, if we need to solve it multiple times (e.g. to find <em>a series</em> of roots due to periodicity of the <code>tan</code> function), repeated calls to [scipy.optimize.brentq] become prohibitively expensive.</p>
+<p>To circumvent this difficulty, we tabulate [y = ax - 1/tan{x}] and interpolate it on the tabulated grid. In fact, we will use the <em>inverse</em> interpolation: we interpolate the values of [x] versus [y]. This way, solving the original equation becomes simply an evaluation of the interpolated function at zero [y] argument.</p>
+<p>To improve the interpolation accuracy we will use the knowledge of the derivatives of the tabulated function. We will use [BPoly.from_derivatives] to construct a cubic interpolant (equivalently, we could have used [CubicHermiteSpline])</p>
+<p>Note that for [a=3], <code>spl(0)</code> agrees with the <code>brentq</code> call above, while for [a = 93], the difference is substantial. The reason the procedure starts failing for large [a] is that the straight line [y = ax] tends towards the vertical axis, and the root of the original equation tends towards [x=0]. Since we tabulated the original function at a finite grid, <code>spl(0)</code> involves extrapolation for too-large values of [a]. Relying on extrapolation is prone to losing accuracy and is best avoided.</p>
+<h3 id="use-the-known-asymptotics">Use the known asymptotics</h3>
+<p>Looking at the original equation, we note that for [xto 0], [tan(x) = x + O(x^3)], and the original equation becomes</p>
+<p>ax = 1/x ;,</p>
+<p>so that [x_0 approx 1/sqrt{a}] for [a gg 1].</p>
+<p>We will use this to cook up a class which switches from interpolation to using this known asymptotic behavior for out-of-range data. A bare-bones implementation may look like this</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Python</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-python">
+<span class="hljs-keyword">class</span> <span class="hljs-title class_">RootWithAsymptotics</span>:
+   <span class="hljs-keyword">def</span> <span class="hljs-title function_">__init__</span>(<span class="hljs-params">self, a</span>):
+   
+       <span class="hljs-comment"># construct the interpolant</span>
+       xleft, xright = <span class="hljs-number">0.2</span>, np.pi/<span class="hljs-number">2</span>
+       x = np.linspace(xleft, xright, <span class="hljs-number">11</span>)
+
+       y = f(x, a)
+       dydx = a + <span class="hljs-number">1.</span>/np.sin(x)**<span class="hljs-number">2</span>    <span class="hljs-comment"># d(ax - 1/tan(x)) / dx</span>
+       dxdy = <span class="hljs-number">1</span> / dydx               <span class="hljs-comment"># dx/dy = 1 / (dy/dx)</span>
+
+       <span class="hljs-comment"># inverse interpolation</span>
+       <span class="hljs-variable language_">self</span>.spl = BPoly.from_derivatives(y, np.c_[x, dxdy])
+       <span class="hljs-variable language_">self</span>.a = a
+
+   <span class="hljs-keyword">def</span> <span class="hljs-title function_">root</span>(<span class="hljs-params">self</span>):
+       out = <span class="hljs-variable language_">self</span>.spl(<span class="hljs-number">0</span>)
+       asympt = <span class="hljs-number">1.</span>/np.sqrt(<span class="hljs-variable language_">self</span>.a)
+       <span class="hljs-keyword">return</span> np.where(<span class="hljs-variable language_">self</span>.spl.x.<span class="hljs-built_in">min</span>() &lt; asympt, out, asympt)</code></pre></div></figure>
+<p>And then</p>
+<blockquote>
+<p>&gt;&gt;&gt; r = RootWithAsymptotics(93) &gt;&gt;&gt; r.root() array(0.10369517)</p>
+</blockquote>
+<p>which differs from the extrapolated result and agrees with the <code>brentq</code> call.</p>
+<p>Note that this implementation is intentionally pared down. From the API perspective, you may want to instead implement the <code>__call__</code> method so that the full dependence of <code>x</code> on <code>y</code> is available. From the numerical perspective, more work is needed to make sure that the switch between interpolation and asymptotics occurs deep enough into the asymptotic regime, so that the resulting function is smooth enough at the switch-over point.</p>
+<p>Also in this example we artificially limited the problem to only consider a single periodicity interval of the <code>tan</code> function, and only dealt with [a &gt; 0]. For negative values of [a], we would need to implement the other asymptotics, for [xto pi].</p>
+<p>However the basic idea is the same.</p>
+<h2 id="extrapolation-in-d-1">Extrapolation in <code>D &gt; 1</code></h2>
+<p>The basic idea of implementing extrapolation manually in a wrapper class or function can be easily generalized to higher dimensions. As an example, we consider a C1-smooth interpolation problem of 2D data using [CloughTocher2DInterpolator]. By default, it fills the out of bounds values with <code>nan</code>s, and we want to instead use for each query point the value of its nearest neighbor.</p>
+<p>Since [CloughTocher2DInterpolator] accepts either 2D data or a Delaunay triangulation of the data points, the efficient way of finding nearest neighbors of query points would be to construct the triangulation (using [scipy.spatial] tools) and use it to find nearest neighbors on the convex hull of the data.</p>
+<p>We will instead use a simpler, naive method and rely on looping over the whole dataset using NumPy broadcasting.</p>

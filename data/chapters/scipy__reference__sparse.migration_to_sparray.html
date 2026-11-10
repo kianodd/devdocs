@@ -1,0 +1,148 @@
+<p>This document provides guidance for converting code from sparse <em>matrices</em> to sparse <em>arrays</em> in <code>scipy.sparse</code>.</p>
+<p>The change from sparse matrices to sparse arrays mirrors conversion from <code>np.matrix</code> to <code>np.ndarray</code>. Essentially we must move from an all-2D matrix-multiplication-centric <code>matrix</code> object to a 1D or 2D &quot;array&quot; object that supports the matrix multiplication operator and elementwise computation.</p>
+<p>Notation: For this guide we denote the sparse array classes generally as <code>sparray</code> and the sparse matrix classes <code>spmatrix</code>. Dense numpy arrays are denoted <code>np.ndarray</code> and dense matrix classes are <code>np.matrix</code>. Supported sparse formats are denoted BSR, COO, CSC, CSR, DIA, DOK, LIL and all formats are supported by both sparray and spmatrix. The term <code>sparse</code> refers to either <code>sparray</code> or <code>spmatrix</code>, while <code>dense</code> refers to either <code>np.ndarray</code> or <code>np.matrix</code>.</p>
+<h2 id="overview-and-big-picture">Overview and big picture</h2>
+<ul>
+<li>The constructor names <code>*_matrix</code>, e.g. <code>csr_matrix</code>, are changed to <code>*_array</code>.</li>
+<li>spmatrix <code>M</code> is always 2D (rows x columns) even e.g. <code>M.min(axis=0)</code>. sparray <code>A</code> can be 1D or 2D. Numpy scalars are returned for full (0D) reductions, i.e. <code>M.min()</code>.</li>
+<li>Iterating over a sparray gives 1D sparrays. Iterating spmatrix gives 2D row spmatrices</li>
+<li>Operators that change behavior are: <code>*, @, *=, @=, **</code><ul>
+<li>Scalar multiplication, e.g. <code>5 * A</code>, uses <code>*</code>, and <code>5 @ A</code> is not implemented.</li>
+<li>sparrays use <code>*</code> for elementwise multiplication and <code>@</code> for matrix multiplication while spmatrices use either operator <code>*</code> or <code>@</code> for matrix multiplication. Either can use <code>A.multiply(B)</code> for elementwise multiplication.</li>
+<li>Scalar exponents, e.g. <code>A**2</code>, use elementwise power for sparray and matrix power for spmatrix. Matrix power for sparrays uses <code>scipy.sparse.linalg.matrix_power(A, n)</code>.</li>
+</ul>
+</li>
+<li>When index arrays are provided to the constructor functions, spmatrix selects a dtype based on dtype and values of the incoming arrays, while sparray only considers the dtype of the incoming arrays. For example, <code>M=csr_matrix((data, indices, indptr))</code> results in <code>int32</code> dtype for <code>M.indices</code> so long as the values in <code>indices</code> and <code>indptr</code> are small, even if the <code>dtype</code> of the incoming arrays are <code>int64</code>. In contrast, <code>A=csr_array((data, indices, indptr))</code> results in <code>int64</code> dtype for <code>A.indices</code> when the input arrays are <code>int64</code>. This provides more predictable, often larger, index dtypes in sparrays and less casting to match dtypes.</li>
+<li>Checking the sparse type and format:<ul>
+<li><code>issparse(A)</code> returns <code>True</code> for any sparse array/matrix.</li>
+<li><code>isspmatrix(M)</code> returns <code>True</code> for any sparse matrix. A future proof idiom is <code>issparse(A) and not isinstance(A, sparray)</code></li>
+<li>The <code>isspmatrix*</code> helpers (e.g. <code>isspmatrix_csr</code>) are specific to the legacy spmatrix API and should be avoided. Use <code>issparse(A) and A.format == &#39;csr&#39;</code> instead.</li>
+</ul>
+</li>
+<li>Handling your software package API with sparse input/output:<ul>
+<li>Inputs are fairly easy to make work with either spmatrix or sparray. So long as you use <code>A.multiply(B)</code> for elementwise and <code>A @ B</code> for matrix multiplication, and you use <code>sparse.linalg.matrix_power</code> for matrix power, you should be fine after you complete the &quot;first pass&quot; of the migration steps described in the next section. Your code will handle both types of inputs interchangeably.</li>
+<li>Migrating sparse outputs from your functions requires a little more thought. Make a list of all your public functions that return spmatrix objects. Check whether you feel OK returning sparrays instead. That depends on your library and its users. If you want to allow these functions to continue to return spmatrix or sparray objects, you can often do that using a sparse input that also serves as a signal for what type of output should be returned. Design your function to return the type that was input. That approach can be extended to dense inputs. If the input is an np.matrix or a masked array with np.matrix as its <code>._baseclass</code> attribute, then return spmatrix. Otherwise return an sparray. Without those inputs, two other approaches are to create a keyword argument to signal which to return, or create a new function (like we have done with, e.g. <code>eye_array</code>) that has the same basic syntax, but returns sparray. Which method you choose should depend on your library and your users and your preferences.</li>
+</ul>
+</li>
+</ul>
+<h2 id="recommended-steps-for-migration">Recommended steps for migration</h2>
+<ul>
+<li>First pass (leaving spmatrix in the code):<ul>
+<li>In your spmatrix code, change <code>*</code> to <code>@</code> for matrix multiplication. Note that scalar multiplication with sparse should use <code>*</code>. (See helper-code sparse-migration-star-vs-at below)</li>
+<li>Matrix powers, e.g. <code>M**3</code>, should be converted to <code>scipy.sparse.linalg.matrix_power(A, 3)</code></li>
+<li>Implement alternatives to unsupported functions/methods like <code>A.getnnz()</code> -&gt; <code>A.nnz</code> (see sparse-migration-removed-methods below).</li>
+<li>Change any logic regarding <code>issparse()</code> and <code>isspmatrix()</code> as needed. Usually, this means replacing <code>isspmatrix</code> with <code>issparse</code>, and <code>isspmatrix_csr(G)</code> with <code>issparse(G) and G.format == &quot;csr&quot;</code>. If you need to see whether a sparse object is a sparray or spmatrix use <code>isinstance(G, sparray)</code>, or <code>issparse(G) and not isinstance(G, sparray)</code> Moreover <code>isspmatrix_csr(G) or isspmatrix_csc(G)</code> becomes <code>issparse(G) and G.format in [&#39;csr&#39;, &#39;csc&#39;]</code>. The git search idiom <code>git grep &#39;isspm[a-z_]*(&#39;</code> can help find these.</li>
+<li>Convert all <code>spdiags</code> calls to <code>dia_matrix</code>. See docs in [spdiags]. A search for <code>spdiags</code> is all you need here.</li>
+<li>Run all your tests on the resulting code. You are still using spmatrix, not sparray. But your code and tests are prepared for the change and you should be able to take sparrays as input to your code and have them mostly &quot;just work&quot;.</li>
+</ul>
+</li>
+<li>Second pass (switching to sparray):<ul>
+<li>Convert construction functions like <code>diags</code> and <code>triu</code> to the array version (see sparse-migration-construction below).</li>
+<li>Rename all <code>*_matrix</code> constructor calls to <code>*_array</code>.</li>
+<li>Check all functions/methods for which migration causes 1D return values. These are mostly indexing and the reduction functions (see sparse-migration-shapes-reductions below).</li>
+<li>Check all places where you iterate over spmatrices and change them to account for the sparrays yielding 1D sparrays rather than 2D spmatrices.</li>
+<li>Find and change places where your code makes use of <code>np.matrix</code> features. Convert those to <code>np.ndarray</code> features.</li>
+<li>If your code reads sparse from files with <code>mmread</code>, <code>hb_read</code> or <code>loadmat</code>, use the new keyword argument <code>spmatrix=False</code> in those functions to read to sparray.</li>
+<li>If you use sparse libraries that only accept <code>int32</code> index arrays for sparse representations, we suggest using just-in-time conversion. Convert to <code>int32</code> just before you call the code that requires <code>int32</code>.</li>
+<li><code>sparray</code> selects index dtype based on the dtype of the input array instead of the values in the array. So if you want your index arrays to be <code>int32</code>, you will need to ensure an <code>int32</code> dtype for each index array like <code>indptr</code> that you pass to <code>csr_array</code>. With <code>spmatrix</code> it is tempting to use the default int64 dtype for <code>numpy</code> arrays and rely on the sparse constructor to downcast if the values were small. But this downcasting leads to extra recasting when working with other matrices, slices or arithmetic expressions. For <code>sparray</code> you can still rely on the constructors to choose dtypes. But you are also given the power to choose your index dtype via the dtype of the incoming index arrays rather than their values. So, if you want <code>int32</code>, set the dtype, e.g. <code>indices = np.array([1,3,6], dtype=np.int32)</code> or <code>indptr = np.arange(9, dtype=np.int32)</code>, when creating the index arrays. See sparse-migration-index-array-dtypes below for more info. In many settings, the index array dtype isn&#39;t crucial and you can just let the constructors choose the dtype for both sparray and spmatrix.</li>
+<li>Test your code. And <strong>read</strong> your code. You have migrated to sparray.</li>
+</ul>
+</li>
+</ul>
+<h2 id="details-construction-functions">Details: construction functions</h2>
+<p>These four functions are new and only handle sparrays: [~scipy.sparse.block_array], [~scipy.sparse.diags_array], [~scipy.sparse.eye_array], and [~scipy.sparse.random_array]. Their signatures are:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">def block_array(blocks, format=None, dtype=None):
+def diags_array(diagonals, /, *, offsets=0, shape=None, format=None, dtype=None):
+def eye_array(m, n=None, *, k=0, dtype=float, format=None):
+def random_array(shape, density=0.01, format=&#x27;coo&#x27;, dtype=None, rng=None, data_sampler=None):</code></pre></div></figure>
+<p>The <code>random_array</code> function has a <code>shape</code> (2-tuple) arg rather than two integers. And the <code>rng</code> arg defaults to NumPy&#39;s new <code>default_rng()</code>. This differs from the spmatrix <code>rand</code> and <code>random</code> which default to the global RandomState instance. If you don&#39;t care much about these things, leaving it as the default should work fine. If you care about seeding your random numbers, you should probably add a <code>rng=...</code> keyword argument to this call when you switch functions. In summary, to migrate to <code>random_array</code> change the function name, switch the shape argument to a single tuple argument, leave any other parameters as before, and think about what sort of <code>rng=</code> argument should be used, if any.</p>
+<p>The [diags_array] function uses keyword-only rules for arguments. So you have to type the [offsets=] in front of the offsets arguments. That seems like a pain during migration from using [diags], but it helps avoid confusion and eases reading. A single shape parameter replaces two integers for this migration as well.</p>
+<h3 id="existing-functions-that-need-careful-migration">Existing functions that need careful migration</h3>
+<p>These functions return sparray or spmatrix, depending on the input types they receive: [~scipy.sparse.kron], [~scipy.sparse.kronsum], [~scipy.sparse.hstack], [~scipy.sparse.vstack], [~scipy.sparse.block_diag], [~scipy.sparse.tril], and [~scipy.sparse.triu]. Their signatures are:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">def kron(A, B, format=None):
+def kronsum(A, B, format=None):
+def hstack(blocks, format=None, dtype=None):
+def vstack(blocks, format=None, dtype=None):
+def block_diag(mats, format=None, dtype=None):
+def tril(A, k=0, format=None):
+def triu(A, k=0, format=None):</code></pre></div></figure>
+<p>Use of these functions should be examined and inputs adjusted to ensure return values are sparrays. And in turn the outputs should be treated as sparrays. To return sparrays, at least one input must be an sparray. If you use list-of-lists or numpy arrays as input you should convert one of them to a sparse array to get sparse arrays out.</p>
+<h3 id="functions-that-changed-names-for-the-migration">Functions that changed names for the migration</h3>
+<blockquote>
+<p>  Function   New function   Comments</p>
+<hr>
+<p>  eye        eye_array<br>identity   eye_array<br>diags      diags_array    keyword-only input
+  spdiags    dia_array      shape as 2-tuple
+  bmat       block<br>rand       random_array   shape as 2-tuple and default_rng
+  random     random_array   shape as 2-tuple and default_rng</p>
+</blockquote>
+<h2 id="details-shape-changes-and-reductions">Details: shape changes and reductions</h2>
+<ul>
+<li><p>Construction using 1d-list of values:</p>
+<ul>
+<li><code>csr_array([1, 2, 3]).shape == (3,)</code> 1D input makes a 1D array.</li>
+<li><code>csr_matrix([1, 2, 3]).shape == (1, 3)</code> 1D input makes a 2D matrix.</li>
+</ul>
+</li>
+<li><p>Indexing and iteration:</p>
+<ul>
+<li>Indexing of sparray allows 1D objects which can be made 2D using <code>np.newaxis</code> or <code>None</code>. E.g., <code>A[3, None, :]</code> gives a 2D row. Indexing of 2D sparray with implicit (not given) column index gives a 1D result, e.g. <code>A[3]</code> (note: best not to do this - write it as <code>A[3, :]</code> instead). If you need a 2D result, use <code>np.newaxis</code>, or <code>None</code> in your index, or wrap the integer index as a list for which fancy indexing gives 2D, e.g. <code>A[[3], :]</code>.</li>
+<li>Iteration over sparse object: <code>next(M)</code> yields a sparse 2D row matrix, <code>next(A)</code> yields a sparse 1D array.</li>
+</ul>
+</li>
+<li><p>Reduction operations along an axis reduce the shape:</p>
+<ul>
+<li><p><code>M.min(axis=1)</code> returns a 2D row matrix of the min along axis 1.</p>
+</li>
+<li><p><code>A.min(axis=1)</code> returns a 1D <code>coo_array</code> of the min along axis 1. Some reductions return dense arrays/matrices instead of sparse ones:</p>
+<p>  Method         Result</p>
+<hr>
+<p>  sum(axis)      dense
+  mean(axis)     dense
+  argmin(axis)   dense
+  argmax(axis)   dense
+  min(axis)      sparse
+  max(axis)      sparse
+  nanmin(axis)   sparse
+  nanmax(axis)   sparse</p>
+</li>
+</ul>
+<p>Generally, 2D sparray inputs lead to 1D results. 2D spmatrix inputs lead to 2D results.</p>
+</li>
+<li><p>Some reductions return a scalar. Those should behave as they did before and shouldn&#39;t need to be considered during migration. E.g. <code>A.min()</code></p>
+</li>
+</ul>
+<h2 id="removed-methods-and-attributes">Removed methods and attributes</h2>
+<ul>
+<li><p>The methods <code>get_shape</code>, <code>getrow</code>, <code>getcol</code>, <code>asfptype</code>, <code>getnnz</code>, <code>getH</code> and the attributes <code>.A</code> and <code>.H</code> are only present on spmatrices, not sparrays. It is recommended that you replace usage of them with alternatives before starting the shift to sparray.</p>
+<blockquote>
+<p>  Function          Alternative</p>
+<hr>
+<p>  M.get_shape()     A.shape
+  M.getformat()     A.format
+  M.asfptype(...)   A.astype(...)
+  M.getmaxprint()   A.maxprint
+  M.getnnz()        A.nnz
+  M.getnnz(axis)    A.count_nonzero(axis)
+  M.getH()          A.conj().T
+  M.getrow(i)       A[i, :]
+  M.getcol(j)       A[:, j]
+  M.A               A.toarray()
+  M.H               A.conj().T</p>
+</blockquote>
+</li>
+<li><p>Shape assignment (<code>M.shape = (2, 6)</code>) is not permitted for sparray. Instead you should use <code>A.reshape</code>.</p>
+</li>
+<li><p><code>M.getnnz()</code> returns the number of stored values -- not the number of non-zeros. <code>A.nnz</code> does the same. To get the number of non-zeros, use <code>A.count_nonzero()</code>. This is not new to the migration, but can be confusing.</p>
+<p>To migrate from the <code>axis</code> parameter of <code>M.getnnz(axis=...)</code>, you can use <code>A.count_nonzero(axis=...)</code> but it is not an exact replacement because it counts nonzero values instead of stored values. The difference is the number of explicitly stored zero values. If you really want the number of stored values by axis you will need to use some numpy tools.</p>
+<p>The numpy tools approach works for COO, CSR, CSC formats, so convert to one of them. For CSR and CSC, the major axis is compressed and <code>np.diff(A.indptr)</code> returns a dense 1D array with the number of stored values for each major axis value (row for CSR and column for CSC). The minor axes can be computed using <code>np.bincount(A.indices, minlength=N)</code> where <code>N</code> is the length of the minor axis (e.g. <code>A.shape[1]</code> for CSR). The <code>bincount</code> function works for any axis of COO format using <code>A.coords[axis]</code> in place of <code>A.indices</code>.</p>
+</li>
+</ul>
+<h2 id="use-tests-to-find-and-spots">Use tests to find * and ** spots</h2>
+<ul>
+<li><p>It can be tricky to distinguish scalar multiplication <code>*</code> from matrix multiplciation <code>*</code> as you migrate your code. Python solved this, in theory, by introducing the matrix multiplication operator <code>@</code>. <code>*</code> is used for scalar multiplication while <code>@</code> for matrix multiplication. But converting expressions that use <code>*</code> for both can be tricky and cause eye strain. Luckily, if your code has a test suite that covers the expressions you need to convert, you can use it to find places where <code>*</code> is being used for matrix multiplication involving sparse matrices. Change those to <code>@</code>.</p>
+<p>The approach monkey-patches the spmatrix class dunder methods to raise an exception when <code>*</code> is used for matrix multiplication (and not raise for scalar multiplication). The test suite will flag a failure at these locations. And a test failure is a success here because it shows where to make changes. Change the offending <code>*</code> to <code>@</code>, look nearby for other similar changes, and run the tests again. Similarly, this approach helps find where <code>**</code> is used for matrix power. SciPy raises an exception when <code>@</code> is used with for scalar multiplication, so that will catch places where you change when you shouldn&#39;t have. So the test suite with this monkey-patch checks the corrections too.</p>
+<p>Add the following code to your <code>conftest.py</code> file. Then run your tests locally. If there are many matrix expressions, you might want to test one section of your codebase at a time. A quick read of the code shows that it raises a <code>ValueError</code> whenever <code>*</code> is used between two matrix-like objects (sparse or dense), and whenever <code>**</code> is used for matrix power. It also produces a warning whenever sum/mean/min/max/argmin/argmax are used with an axis so the output will be 2D with spmatrix and 1D with sparray. That means you check that the code will handle either 1D or 2D output via <code>flatten</code>/<code>ravel</code>, <code>np.atleast_2d</code> or indexing.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Python</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-python"><span class="hljs-comment">#================== Added to check spmatrix usage ========================</span></code></pre></div></figure>
+</li>
+</ul>

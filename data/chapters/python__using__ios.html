@@ -1,0 +1,123 @@
+<p>Authors
+:   Russell Keith-Magee (2024-03)</p>
+<p>Python on iOS is unlike Python on desktop platforms. On a desktop platform, Python is generally installed as a system resource that can be used by any user of that computer. Users then interact with Python by running a [python] executable and entering commands at an interactive prompt, or by running a Python script.</p>
+<p>On iOS, there is no concept of installing as a system resource. The only unit of software distribution is an &quot;app&quot;. There is also no console where you could run a [python] executable, or interact with a Python REPL.</p>
+<p>As a result, the only way you can use Python on iOS is in embedded mode - that is, by writing a native iOS application, and embedding a Python interpreter using <code>libPython</code>, and invoking Python code using the Python embedding API . The full Python interpreter, the standard library, and all your Python code is then packaged as a standalone bundle that can be distributed via the iOS App Store.</p>
+<p>If you&#39;re looking to experiment for the first time with writing an iOS app in Python, projects such as <a target="_blank" rel="noopener" href="https://beeware.org">BeeWare</a>, <a target="_blank" rel="noopener" href="https://kivy.org">Kivy</a>, and <a target="_blank" rel="noopener" href="https://flet.dev/">Flet</a> will provide a much more approachable user experience. These projects manage the complexities associated with getting an iOS project running, so you only need to deal with the Python code itself.</p>
+<h2 id="python-at-runtime-on-ios">Python at runtime on iOS</h2>
+<h3 id="ios-version-compatibility">iOS version compatibility</h3>
+<p>The minimum supported iOS version is specified at compile time, using the [--host] option to <code>configure</code>. By default, when compiled for iOS, Python will be compiled with a minimum supported iOS version of 13.0. To use a different minimum iOS version, provide the version number as part of the [!--host] argument - for example, <code>--host=arm64-apple-ios15.4-simulator</code> would compile an ARM64 simulator build with a deployment target of 15.4.</p>
+<h3 id="platform-identification">Platform identification</h3>
+<p>When executing on iOS, <code>sys.platform</code> will report as <code>ios</code>. This value will be returned on an iPhone or iPad, regardless of whether the app is running on the simulator or a physical device.</p>
+<p>Information about the specific runtime environment, including the iOS version, device model, and whether the device is a simulator, can be obtained using [platform.ios_ver]. [platform.system] will report <code>iOS</code> or <code>iPadOS</code>, depending on the device.</p>
+<p>[os.uname] reports kernel-level details; it will report a name of <code>Darwin</code>.</p>
+<h3 id="standard-library-availability">Standard library availability</h3>
+<p>The Python standard library has some notable omissions and restrictions on iOS. See the API availability guide for iOS for details.</p>
+<h3 id="binary-extension-modules">Binary extension modules</h3>
+<p>One notable difference about iOS as a platform is that App Store distribution imposes hard requirements on the packaging of an application. One of these requirements governs how binary extension modules are distributed.</p>
+<p>The iOS App Store requires that <em>all</em> binary modules in an iOS app must be dynamic libraries, contained in a framework with appropriate metadata, stored in the <code>Frameworks</code> folder of the packaged app. There can be only a single binary per framework, and there can be no executable binary material outside the <code>Frameworks</code> folder.</p>
+<p>This conflicts with the usual Python approach for distributing binaries, which allows a binary extension module to be loaded from any location on <code>sys.path</code>. To ensure compliance with App Store policies, an iOS project must post-process any Python packages, converting <code>.so</code> binary modules into individual standalone frameworks with appropriate metadata and signing. For details on how to perform this post-processing, see the guide for adding Python to your project .</p>
+<p>To help Python discover binaries in their new location, the original <code>.so</code> file on <code>sys.path</code> is replaced with a <code>.fwork</code> file. This file is a text file containing the location of the framework binary, relative to the app bundle. To allow the framework to resolve back to the original location, the framework must contain a <code>.origin</code> file that contains the location of the <code>.fwork</code> file, relative to the app bundle.</p>
+<p>For example, consider the case of an import <code>from foo.bar import _whiz</code>, where <code>_whiz</code> is implemented with the binary module <code>sources/foo/bar/_whiz.abi3.so</code>, with <code>sources</code> being the location registered on <code>sys.path</code>, relative to the application bundle. This module <em>must</em> be distributed as <code>Frameworks/foo.bar._whiz.framework/foo.bar._whiz</code> (creating the framework name from the full import path of the module), with an <code>Info.plist</code> file in the <code>.framework</code> directory identifying the binary as a framework. The <code>foo.bar._whiz</code> module would be represented in the original location with a <code>sources/foo/bar/_whiz.abi3.fwork</code> marker file, containing the path <code>Frameworks/foo.bar._whiz/foo.bar._whiz</code>. The framework would also contain <code>Frameworks/foo.bar._whiz.framework/foo.bar._whiz.origin</code>, containing the path to the <code>.fwork</code> file.</p>
+<p>When running on iOS, the Python interpreter will install an [~importlib.machinery.AppleFrameworkLoader] that is able to read and import <code>.fwork</code> files. Once imported, the <code>__file__</code> attribute of the binary module will report as the location of the <code>.fwork</code> file. However, the [~importlib.machinery.ModuleSpec] for the loaded module will report the <code>origin</code> as the location of the binary in the framework folder.</p>
+<h3 id="compiler-stub-binaries">Compiler stub binaries</h3>
+<p>Xcode doesn&#39;t expose explicit compilers for iOS; instead, it uses an <code>xcrun</code> script that resolves to a full compiler path (e.g., <code>xcrun --sdk iphoneos clang</code> to get the <code>clang</code> for an iPhone device). However, using this script poses two problems:</p>
+<ul>
+<li>The output of <code>xcrun</code> includes paths that are machine specific, resulting in a sysconfig module that cannot be shared between users; and</li>
+<li>It results in <code>CC</code>/<code>CPP</code>/<code>LD</code>/<code>AR</code> definitions that include spaces. There is a lot of C ecosystem tooling that assumes that you can split a command line at the first space to get the path to the compiler executable; this isn&#39;t the case when using <code>xcrun</code>.</li>
+</ul>
+<p>To avoid these problems, Python provided stubs for these tools. These stubs are shell script wrappers around the underingly <code>xcrun</code> tools, distributed in a <code>bin</code> folder distributed alongside the compiled iOS framework. These scripts are relocatable, and will always resolve to the appropriate local system paths. By including these scripts in the bin folder that accompanies a framework, the contents of the <code>sysconfig</code> module becomes useful for end-users to compile their own modules. When compiling third-party Python modules for iOS, you should ensure these stub binaries are on your path.</p>
+<h2 id="installing-python-on-ios">Installing Python on iOS</h2>
+<p>The official iOS release artefact is a framework build, distributed as an <code>XCFramework</code>; this is the configuration described in the rest of this document, and the only one that supports binary extension modules. Static builds, where <code>libpython</code> and every extension module are linked directly into the app binary, are also possible, with limitations; see [Platforms/Apple/iOS/README.md] for details.</p>
+<h3 id="tools-for-building-ios-apps">Tools for building iOS apps</h3>
+<p>Building for iOS requires the use of Apple&#39;s Xcode tooling. It is strongly recommended that you use the most recent stable release of Xcode. This will require the use of the most (or second-most) recently released macOS version, as Apple does not maintain Xcode for older macOS versions. The Xcode Command Line Tools are not sufficient for iOS development; you need a <em>full</em> Xcode install.</p>
+<p>If you want to run your code on the iOS simulator, you&#39;ll also need to install an iOS Simulator Platform. You should be prompted to select an iOS Simulator Platform when you first run Xcode. Alternatively, you can add an iOS Simulator Platform by selecting from the Platforms tab of the Xcode Settings panel.</p>
+<h3 id="adding-python-to-an-ios-project">Adding Python to an iOS project</h3>
+<p>Python can be added to any iOS project, using either Swift or Objective C. The following examples will use Objective C; if you are using Swift, you may find a library like <a target="_blank" rel="noopener" href="https://github.com/pvieito/PythonKit">PythonKit</a> to be helpful.</p>
+<p>To add Python to an iOS Xcode project:</p>
+<ol>
+<li><p>Build or obtain a Python <code>XCFramework</code>. See the instructions in [Platforms/Apple/iOS/README.md] (in the CPython source distribution) for details on how to build a Python <code>XCFramework</code>. At a minimum, you will need a build that supports <code>arm64-apple-ios</code>, plus one of either <code>arm64-apple-ios-simulator</code> or <code>x86_64-apple-ios-simulator</code>.</p>
+</li>
+<li><p>Drag the <code>XCframework</code> into your iOS project. In the following instructions, we&#39;ll assume you&#39;ve dropped the <code>XCframework</code> into the root of your project; however, you can use any other location that you want by adjusting paths as needed.</p>
+</li>
+<li><p>Add your application code as a folder in your Xcode project. In the following instructions, we&#39;ll assume that your user code is in a folder named <code>app</code> in the root of your project; you can use any other location by adjusting paths as needed. Ensure that this folder is associated with your app target.</p>
+</li>
+<li><p>Select the app target by selecting the root node of your Xcode project, then the target name in the sidebar that appears.</p>
+</li>
+<li><p>In the &quot;General&quot; settings, under &quot;Frameworks, Libraries and Embedded Content&quot;, add <code>Python.xcframework</code>, with &quot;Embed &amp; Sign&quot; selected.</p>
+</li>
+<li><p>In the &quot;Build Settings&quot; tab, modify the following:</p>
+<ul>
+<li>Build Options<ul>
+<li>User Script Sandboxing: No</li>
+<li>Enable Testability: Yes</li>
+</ul>
+</li>
+<li>Search Paths<ul>
+<li>Framework Search Paths: <code>$(PROJECT_DIR)</code></li>
+<li>Header Search Paths: <code>&quot;$(BUILT_PRODUCTS_DIR)/Python.framework/Headers&quot;</code></li>
+</ul>
+</li>
+<li>Apple Clang - Warnings - All languages<ul>
+<li>Quoted Include In Framework Header: No</li>
+</ul>
+</li>
+</ul>
+</li>
+<li><p>Add a build step that processes the Python standard library, and your own Python binary dependencies. In the &quot;Build Phases&quot; tab, add a new &quot;Run Script&quot; build step <em>before</em> the &quot;Embed Frameworks&quot; step, but <em>after</em> the &quot;Copy Bundle Resources&quot; step. Name the step &quot;Process Python libraries&quot;, disable the &quot;Based on dependency analysis&quot; checkbox, and set the script content to:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Terminal</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-bash"><span class="tk-cmd">set</span> <span class="tk-flag">-e</span>
+<span class="tk-cmd">source</span> <span class="tk-var">$PROJECT_DIR</span>/Python.xcframework/build/build_utils.sh
+<span class="tk-cmd">install_python</span> Python.xcframework app</code></pre></div></figure>
+<p>If you have placed your XCframework somewhere other than the root of your project, modify the path to the first argument.</p>
+</li>
+<li><p>Add Objective C code to initialize and use a Python interpreter in embedded mode. You should ensure that:</p>
+<ul>
+<li>UTF-8 mode (:c`PyPreConfig.utf8_mode`) is <em>enabled</em>;</li>
+<li>Buffered stdio (:c`PyConfig.buffered_stdio`) is <em>disabled</em>;</li>
+<li>Writing bytecode (:c`PyConfig.write_bytecode`) is <em>disabled</em>;</li>
+<li>Signal handlers (:c`PyConfig.install_signal_handlers`) are <em>enabled</em>;</li>
+<li>System logging (:c`PyConfig.use_system_logger`) is <em>enabled</em> (optional, but strongly recommended; this is enabled by default);</li>
+<li>[PYTHONHOME] for the interpreter is configured to point at the <code>python</code> subfolder of your app&#39;s bundle; and</li>
+<li>The [PYTHONPATH] for the interpreter includes:<ul>
+<li>the <code>python/lib/python3.X</code> subfolder of your app&#39;s bundle,</li>
+<li>the <code>python/lib/python3.X/lib-dynload</code> subfolder of your app&#39;s bundle, and</li>
+<li>the <code>app</code> subfolder of your app&#39;s bundle</li>
+</ul>
+</li>
+</ul>
+<p>Your app&#39;s bundle location can be determined using <code>[[NSBundle mainBundle] resourcePath]</code>.</p>
+</li>
+</ol>
+<p>Steps 7 and 8 of these instructions assume that you have a single folder of pure Python application code, named <code>app</code>. If you have third-party binary modules in your app, some additional steps will be required:</p>
+<ul>
+<li>You need to ensure that any folders containing third-party binaries are either associated with the app target, or are explicitly copied as part of step 7. Step 7 should also purge any binaries that are not appropriate for the platform a specific build is targeting (i.e., delete any device binaries if you&#39;re building an app targeting the simulator).</li>
+<li>If you&#39;re using a separate folder for third-party packages, ensure that folder is added to the end of the call to <code>install_python</code> in step 7, and as part of the [PYTHONPATH] configuration in step 8.</li>
+<li>If any of the folders that contain third-party packages will contain <code>.pth</code> files, you should add that folder as a <em>site directory</em> (using [site.addsitedir]), rather than adding to [PYTHONPATH] or [sys.path] directly.</li>
+</ul>
+<h3 id="testing-a-python-package">Testing a Python package</h3>
+<p>The CPython source tree contains [a testbed project ] that is used to run the CPython test suite on the iOS simulator. This testbed can also be used as a testbed project for running your Python library&#39;s test suite on iOS.</p>
+<p>After building or obtaining an iOS XCFramework (see [Platforms/Apple/iOS/README.md] for details), create a clone of the Python iOS testbed project. If you used the <code>Platforms/Apple</code> build script to build the XCframework, you can run:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Terminal</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-bash">
+<span class="tk-prompt">$ </span><span class="tk-cmd">python</span> cross-build/iOS/testbed clone <span class="tk-flag">--app</span> &lt;path/to/module1&gt; <span class="tk-flag">--app</span> &lt;path/to/module2&gt; app-testbed</code></pre></div></figure>
+<p>Or, if you&#39;ve sourced your own XCframework, by running:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Terminal</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-bash">
+<span class="tk-prompt">$ </span><span class="tk-cmd">python</span> Platforms/Apple/testbed clone <span class="tk-flag">--platform</span> iOS <span class="tk-flag">--framework</span> &lt;path/to/Python.xcframework&gt; <span class="tk-flag">--app</span> &lt;path/to/module1&gt; <span class="tk-flag">--app</span> &lt;path/to/module2&gt; app-testbed</code></pre></div></figure>
+<p>Any folders specified with the <code>--app</code> flag will be copied into the cloned testbed project. The resulting testbed will be created in the <code>app-testbed</code> folder. In this example, the <code>module1</code> and <code>module2</code> would be importable modules at runtime. If your project has additional dependencies, they can be installed into the <code>app-testbed/Testbed/app_packages</code> folder (using <code>pip install --target app-testbed/Testbed/app_packages</code> or similar).</p>
+<p>You can then use the <code>app-testbed</code> folder to run the test suite for your app, For example, if <code>module1.tests</code> was the entry point to your test suite, you could run:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Terminal</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-bash">
+<span class="tk-prompt">$ </span><span class="tk-cmd">python</span> app-testbed run -- module1.tests</code></pre></div></figure>
+<p>This is the equivalent of running <code>python -m module1.tests</code> on a desktop Python build. Any arguments after the <code>--</code> will be passed to the testbed as if they were arguments to <code>python -m</code> on a desktop machine.</p>
+<p>You can also open the testbed project in Xcode by running:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Terminal</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-bash">
+<span class="tk-prompt">$ </span><span class="tk-cmd">open</span> app-testbed/iOSTestbed.xcodeproj</code></pre></div></figure>
+<p>This will allow you to use the full Xcode suite of tools for debugging.</p>
+<p>The arguments used to run the test suite are defined as part of the test plan. To modify the test plan, select the test plan node of the project tree (it should be the first child of the root node), and select the &quot;Configurations&quot; tab. Modify the &quot;Arguments Passed On Launch&quot; value to change the testing arguments.</p>
+<p>The test plan also disables parallel testing, and specifies the use of the <code>Testbed.lldbinit</code> file for providing configuration of the debugger. The default debugger configuration disables automatic breakpoints on the <code>SIGINT</code>, <code>SIGUSR1</code>, <code>SIGUSR2</code>, and <code>SIGXFSZ</code> signals.</p>
+<h2 id="app-store-compliance">App Store Compliance</h2>
+<p>The only mechanism for distributing apps to third-party iOS devices is to submit the app to the iOS App Store; apps submitted for distribution must pass Apple&#39;s app review process. This process includes a set of automated validation rules that inspect the submitted application bundle for problematic code. There are some steps that must be taken to ensure that your app will be able to pass these validation steps.</p>
+<h3 id="incompatible-code-in-the-standard-library">Incompatible code in the standard library</h3>
+<p>The Python standard library contains some code that is known to violate these automated rules. While these violations appear to be false positives, Apple&#39;s review rules cannot be challenged; so, it is necessary to modify the Python standard library for an app to pass App Store review.</p>
+<p>The Python source tree contains [a patch file ] that will remove all code that is known to cause issues with the App Store review process. This patch is applied automatically when building for iOS.</p>
+<h3 id="privacy-manifests">Privacy manifests</h3>
+<p>In April 2025, Apple introduced a requirement for <a target="_blank" rel="noopener" href="https://developer.apple.com/support/third-party-SDK-requirements">certain third-party libraries to provide a Privacy Manifest</a>. As a result, if you have a binary module that uses one of the affected libraries, you must provide an <code>.xcprivacy</code> file for that library. OpenSSL is one library affected by this requirement, but there are others.</p>
+<p>If you produce a binary module named <code>mymodule.so</code>, and use you the Xcode build script described in step 7 above, you can place a <code>mymodule.xcprivacy</code> file next to <code>mymodule.so</code>, and the privacy manifest will be installed into the required location when the binary module is converted into a framework.</p>

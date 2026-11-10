@@ -1,0 +1,108 @@
+<h2 id="example-word-ladders">Example: Word Ladders</h2>
+<p>A <a target="_blank" rel="noopener" href="https://en.wikipedia.org/wiki/Word_ladder">Word Ladder</a> is a word game invented by Lewis Carroll, in which players find paths between words by switching one letter at a time. For example, one can link &quot;ape&quot; and &quot;man&quot; in the following way:</p>
+<p>{rm ape to apt to ait to bit to big to bag to mag to man}</p>
+<p>Note that each step involves changing just one letter of the word. This is just one possible path from &quot;ape&quot; to &quot;man&quot;, but is it the shortest possible path? If we desire to find the shortest word-ladder path between two given words, the sparse graph submodule can help.</p>
+<p>First, we need a list of valid words. Many operating systems have such a list built in. For example, on linux, a word list can often be found at one of the following locations:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">/usr/share/dict
+/var/lib/dict</code></pre></div></figure>
+<p>Another easy source for words are the Scrabble word lists available at various sites around the internet (search with your favorite search engine). We&#39;ll first create this list. The system word lists consist of a file with one word per line. The following should be modified to use the particular word list you have available:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">&gt;&gt;&gt; with open(&#x27;/usr/share/dict/words&#x27;) as f:
+...    word_list = f.readlines()
+&gt;&gt;&gt; word_list = map(str.strip, word_list)</code></pre></div></figure>
+<p>We want to look at words of length 3, so let&#39;s select just those words of the correct length. We&#39;ll also eliminate words which start with upper-case (proper nouns) or contain non-alphanumeric characters, like apostrophes and hyphens. Finally, we&#39;ll make sure everything is lower-case for comparison later:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">&gt;&gt;&gt; word_list = [word for word in word_list if len(word) == 3]
+&gt;&gt;&gt; word_list = [word for word in word_list if word[0].islower()]
+&gt;&gt;&gt; word_list = [word for word in word_list if word.isalpha()]
+&gt;&gt;&gt; word_list = list(map(str.lower, word_list))
+&gt;&gt;&gt; len(word_list)
+586    # may vary</code></pre></div></figure>
+<p>Now we have a list of 586 valid three-letter words (the exact number may change depending on the particular list used). Each of these words will become a node in our graph, and we will create edges connecting the nodes associated with each pair of words which differs by only one letter.</p>
+<p>There are efficient ways to do this, and inefficient ways to do this. To do this as efficiently as possible, we&#39;re going to use some sophisticated numpy array manipulation:</p>
+<blockquote>
+<p>&gt;&gt;&gt; import numpy as np &gt;&gt;&gt; word_list = np.asarray(word_list) &gt;&gt;&gt; word_list.dtype # these are unicode characters in Python 3 dtype(&#39;&lt;U3&#39;) &gt;&gt;&gt; word_list.sort() # sort for quick searching later</p>
+</blockquote>
+<p>We have an array where each entry is three unicode characters long. We&#39;d like to find all pairs where exactly one character is different. We&#39;ll start by converting each word to a 3-D vector:</p>
+<blockquote>
+<p>&gt;&gt;&gt; word_bytes = np.ndarray((word_list.size, word_list.itemsize), ... dtype=&#39;uint8&#39;, ... buffer=word_list.data) &gt;&gt;&gt; # each unicode character is four bytes long. We only need first byte &gt;&gt;&gt; # we know that there are three characters in each word &gt;&gt;&gt; word_bytes = word_bytes[:, ::word_list.itemsize//3] &gt;&gt;&gt; word_bytes.shape (586, 3) # may vary</p>
+</blockquote>
+<p>Now, we&#39;ll use the <a target="_blank" rel="noopener" href="https://en.wikipedia.org/wiki/Hamming_distance">Hamming distance</a> between each point to determine which pairs of words are connected. The Hamming distance measures the fraction of entries between two vectors which differ: any two words with a Hamming distance equal to [1/N], where [N] is the number of letters, are connected in the word ladder:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">&gt;&gt;&gt; from scipy.spatial.distance import pdist, squareform
+&gt;&gt;&gt; from scipy.sparse import csr_array
+&gt;&gt;&gt; hamming_dist = pdist(word_bytes, metric=&#x27;hamming&#x27;)
+&gt;&gt;&gt; # there are three characters in each word
+&gt;&gt;&gt; graph = csr_array(squareform(hamming_dist &lt; 1.5 / 3))</code></pre></div></figure>
+<p>When comparing the distances, we don&#39;t use an equality because this can be unstable for floating point values. The inequality produces the desired result, as long as no two entries of the word list are identical. Now, that our graph is set up, we&#39;ll use a shortest path search to find the path between any two words in the graph:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">&gt;&gt;&gt; i1 = word_list.searchsorted(&#x27;ape&#x27;)
+&gt;&gt;&gt; i2 = word_list.searchsorted(&#x27;man&#x27;)
+&gt;&gt;&gt; word_list[i1]
+&#x27;ape&#x27;
+&gt;&gt;&gt; word_list[i2]
+&#x27;man&#x27;</code></pre></div></figure>
+<p>We need to check that these match, because if the words are not in the list, that will not be the case. Now, all we need is to find the shortest path between these two indices in the graph. We&#39;ll use <a target="_blank" rel="noopener" href="https://en.wikipedia.org/wiki/Dijkstra%27s_algorithm">Dijkstra&#39;s algorithm</a>, because it allows us to find the path for just one node:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">&gt;&gt;&gt; from scipy.sparse.csgraph import dijkstra
+&gt;&gt;&gt; distances, predecessors = dijkstra(graph, indices=i1,
+...                                    return_predecessors=True)
+&gt;&gt;&gt; print(distances[i2])
+5.0    # may vary</code></pre></div></figure>
+<p>So we see that the shortest path between &quot;ape&quot; and &quot;man&quot; contains only five steps. We can use the predecessors returned by the algorithm to reconstruct this path:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">&gt;&gt;&gt; path = []
+&gt;&gt;&gt; i = i2
+&gt;&gt;&gt; while i != i1:
+...     path.append(word_list[i])
+...     i = predecessors[i]
+&gt;&gt;&gt; path.append(word_list[i1])
+&gt;&gt;&gt; print(path[::-1])
+[&#x27;ape&#x27;, &#x27;apt&#x27;, &#x27;opt&#x27;, &#x27;oat&#x27;, &#x27;mat&#x27;, &#x27;man&#x27;]    # may vary</code></pre></div></figure>
+<p>This is three fewer links than our initial example: the path from &quot;ape&quot; to &quot;man&quot; is only five steps.</p>
+<p>Using other tools in the module, we can answer other questions. For example, are there three-letter words which are not linked in a word ladder? This is a question of connected components in the graph:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">&gt;&gt;&gt; from scipy.sparse.csgraph import connected_components
+&gt;&gt;&gt; N_components, component_list = connected_components(graph)
+&gt;&gt;&gt; print(N_components)
+15    # may vary</code></pre></div></figure>
+<p>In this particular sample of three-letter words, there are 15 connected components: that is, 15 distinct sets of words with no paths between the sets. How many words are there in each of these sets? We can learn this from the list of components:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">&gt;&gt;&gt; [np.sum(component_list == i) for i in range(N_components)]
+[571, 1, 1, 1, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]    # may vary</code></pre></div></figure>
+<p>There is one large connected set and 14 smaller ones. Let&#39;s look at the words in the smaller ones:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">&gt;&gt;&gt; [list(word_list[np.nonzero(component_list == i)]) for i in range(1, N_components)]
+[[&#x27;aha&#x27;],    # may vary
+ [&#x27;chi&#x27;],
+ [&#x27;ebb&#x27;],
+ [&#x27;ems&#x27;, &#x27;emu&#x27;],
+ [&#x27;gnu&#x27;],
+ [&#x27;ism&#x27;],
+ [&#x27;khz&#x27;],
+ [&#x27;nth&#x27;],
+ [&#x27;ova&#x27;],
+ [&#x27;qua&#x27;],
+ [&#x27;ugh&#x27;],
+ [&#x27;ups&#x27;],
+ [&#x27;urn&#x27;],
+ [&#x27;use&#x27;]]</code></pre></div></figure>
+<p>These are all the three-letter words which do not connect to others via a word ladder.</p>
+<p>We might also be curious about which words are maximally separated. Which two words take the most links to connect? We can determine this by computing the matrix of all shortest paths. Note that, by convention, the distance between two non-connected points is reported to be infinity, so we&#39;ll need to remove these before finding the maximum:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">&gt;&gt;&gt; distances, predecessors = dijkstra(graph, return_predecessors=True)
+&gt;&gt;&gt; max_distance = np.max(distances[~np.isinf(distances)])
+&gt;&gt;&gt; print(max_distance)
+13.0    # may vary</code></pre></div></figure>
+<p>So, there is at least one pair of words which takes 13 steps to get from one to the other! Let&#39;s determine which these are:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">&gt;&gt;&gt; i1, i2 = np.nonzero(distances == max_distance)
+&gt;&gt;&gt; list(zip(word_list[i1], word_list[i2]))
+[(&#x27;imp&#x27;, &#x27;ohm&#x27;),    # may vary
+ (&#x27;imp&#x27;, &#x27;ohs&#x27;),
+ (&#x27;ohm&#x27;, &#x27;imp&#x27;),
+ (&#x27;ohm&#x27;, &#x27;ump&#x27;),
+ (&#x27;ohs&#x27;, &#x27;imp&#x27;),
+ (&#x27;ohs&#x27;, &#x27;ump&#x27;),
+ (&#x27;ump&#x27;, &#x27;ohm&#x27;),
+ (&#x27;ump&#x27;, &#x27;ohs&#x27;)]</code></pre></div></figure>
+<p>We see that there are two pairs of words which are maximally separated from each other: &#39;imp&#39; and &#39;ump&#39; on the one hand, and &#39;ohm&#39; and &#39;ohs&#39; on the other. We can find the connecting list in the same way as above:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">&gt;&gt;&gt; path = []
+&gt;&gt;&gt; i = i2[0]
+&gt;&gt;&gt; while i != i1[0]:
+...     path.append(word_list[i])
+...     i = predecessors[i1[0], i]
+&gt;&gt;&gt; path.append(word_list[i1[0]])
+&gt;&gt;&gt; print(path[::-1])
+[&#x27;imp&#x27;, &#x27;amp&#x27;, &#x27;asp&#x27;, &#x27;ass&#x27;, &#x27;ads&#x27;, &#x27;add&#x27;, &#x27;aid&#x27;, &#x27;mid&#x27;, &#x27;mod&#x27;, &#x27;moo&#x27;, &#x27;too&#x27;, &#x27;tho&#x27;, &#x27;oho&#x27;, &#x27;ohm&#x27;]    # may vary</code></pre></div></figure>
+<p>This gives us the path we desired to see.</p>
+<p>Word ladders are just one potential application of scipy&#39;s fast graph algorithms for sparse matrices. Graph theory makes appearances in many areas of mathematics, data analysis, and machine learning. The sparse graph tools are flexible enough to handle many of these situations.</p>

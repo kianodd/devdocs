@@ -1,0 +1,118 @@
+<p>1D interpolation routines discussed in the previous section , work by constructing certain <em>piecewise polynomials</em>: the interpolation range is split into intervals by the so-called <em>breakpoints</em>, and there is a certain polynomial on each interval. These polynomial pieces then match at the breakpoints with a predefined smoothness: the second derivatives for cubic splines, the first derivatives for monotone interpolants and so on.</p>
+<p>A polynomial of degree [k] can be thought of as a linear combination of [k+1] monomial basis elements, [1, x, x^2, cdots, x^k]. In some applications, it is useful to consider alternative (if formally equivalent) bases. Two popular bases, implemented in [scipy.interpolate] are B-splines ([BSpline]) and Bernstein polynomials ([BPoly]). B-splines are often used, for example, in non-parametric regression problems, and Bernstein polynomials are used for constructing Bezier curves.</p>
+<p>[PPoly] objects represent piecewise polynomials in the &#39;usual&#39; power basis. This is the case for [CubicSpline] instances and monotone interpolants. In general, [PPoly] objects can represent polynomials of arbitrary orders, not only cubics. For the data array <code>x</code>, breakpoints are at the data points, and the array of coefficients, <code>c</code> , define polynomials of degree [k], such that <code>c[i, j]</code> is a coefficient for <code>(x - x[j])**(k-i)</code> on the segment between <code>x[j]</code> and <code>x[j+1]</code> .</p>
+<p>[BSpline] objects represent B-spline functions --- linear combinations of b-spline basis elements . These objects can be instantiated directly or constructed from data with the [make_interp_spline] factory function.</p>
+<p>Finally, Bernstein polynomials are represented as instances of the [BPoly] class.</p>
+<p>All these classes implement a (mostly) similar interface, [PPoly] being the most feature-complete. We next consider the main features of this interface and discuss some details of the alternative bases for piecewise polynomials.</p>
+<h2 id="manipulating-ppoly-objects">Manipulating [PPoly] objects</h2>
+<p>[PPoly] objects have convenient methods for constructing derivatives and antiderivatives, computing integrals and root-finding. For example, we tabulate the sine function and find the roots of its derivative.</p>
+<blockquote>
+<p>&gt;&gt;&gt; import numpy as np &gt;&gt;&gt; from scipy.interpolate import CubicSpline &gt;&gt;&gt; x = np.linspace(0, 10, 71) &gt;&gt;&gt; y = np.sin(x) &gt;&gt;&gt; spl = CubicSpline(x, y)</p>
+</blockquote>
+<p>Now, differentiate the spline:</p>
+<blockquote>
+<p>&gt;&gt;&gt; dspl = spl.derivative()</p>
+</blockquote>
+<p>Here <code>dspl</code> is a [PPoly] instance which represents a polynomial approximation to the derivative of the original object, <code>spl</code> . Evaluating <code>dspl</code> at a fixed argument is equivalent to evaluating the original spline with the <code>nu=1</code> argument:</p>
+<blockquote>
+<p>&gt;&gt;&gt; dspl(1.1), spl(1.1, nu=1) (0.45361436, 0.45361436)</p>
+</blockquote>
+<p>Note that the second form above evaluates the derivative in place, while with the <code>dspl</code> object, we can find the zeros of the derivative of <code>spl</code>:</p>
+<blockquote>
+<p>&gt;&gt;&gt; dspl.roots() / np.pi array([-0.45480801, 0.50000034, 1.50000099, 2.5000016 , 3.46249993])</p>
+</blockquote>
+<p>This agrees well with the roots [pi/2 + pi,n] of [cos(x) = sin&#39;(x)]. Note that by default it computes the roots <em>extrapolated</em> to the outside of the interpolation interval [0 leqslant x leqslant 10], and that the extrapolated results (the first and last values) are much less accurate. We can switch off the extrapolation and limit the root-finding to the interpolation interval:</p>
+<blockquote>
+<p>&gt;&gt;&gt; dspl.roots(extrapolate=False) / np.pi array([0.50000034, 1.50000099, 2.5000016])</p>
+</blockquote>
+<p>In fact, the <code>roots</code> method is a special case of a more general <code>solve</code> method which finds for a given constant [y] the solutions of the equation [f(x) = y] , where [f(x)] is the piecewise polynomial:</p>
+<blockquote>
+<p>&gt;&gt;&gt; dspl.solve(0.5, extrapolate=False) / np.pi array([0.33332755, 1.66667195, 2.3333271])</p>
+</blockquote>
+<p>which agrees well with the expected values of [pmarccos(1/2) + 2pi,n].</p>
+<p>Integrals of piecewise polynomials can be computed using the <code>.integrate</code> method which accepts the lower and the upper limits of integration. As an example, we compute an approximation to the complete elliptic integral `K(m) = int_0^{pi/2} [1 - msin^2 x]^{-1/2} dx`:</p>
+<blockquote>
+<p>&gt;&gt;&gt; from scipy.special import ellipk &gt;&gt;&gt; m = 0.5 &gt;&gt;&gt; ellipk(m) 1.8540746773013719</p>
+</blockquote>
+<p>To this end, we tabulate the integrand and interpolate it using the monotone PCHIP interpolant (we could as well have used a [CubicSpline]):</p>
+<blockquote>
+<p>&gt;&gt;&gt; from scipy.interpolate import PchipInterpolator &gt;&gt;&gt; x = np.linspace(0, np.pi/2, 70) &gt;&gt;&gt; y = (1 - m*np.sin(x)**2)**(-1/2) &gt;&gt;&gt; spl = PchipInterpolator(x, y)</p>
+</blockquote>
+<p>and integrate</p>
+<blockquote>
+<p>&gt;&gt;&gt; spl.integrate(0, np.pi/2) 1.854074674965991</p>
+</blockquote>
+<p>which is indeed close to the value computed by [scipy.special.ellipk].</p>
+<p>All piecewise polynomials can be constructed with N-dimensional <code>y</code> values. If <code>y.ndim &gt; 1</code>, it is interpreted as a stack of 1D <code>y</code> values, which are arranged along the interpolation axis (with the default value of 0). The latter is specified via the <code>axis</code> argument, and the invariant is that <code>len(x) == y.shape[axis]</code>. As an example, we extend the elliptic integral example above to compute the approximation for a range of <code>m</code> values, using the NumPy broadcasting:</p>
+<h2 id="b-splines-knots-and-coefficients">B-splines: knots and coefficients</h2>
+<p>A b-spline function --- for instance, constructed from data via a [make_interp_spline] call --- is defined by the so-called <em>knots</em> and coefficients.</p>
+<p>As an illustration, let us again construct the interpolation of a sine function. The knots are available as the <code>t</code> attribute of a [BSpline] instance:</p>
+<blockquote>
+<p>&gt;&gt;&gt; x = np.linspace(0, 3/2, 7) &gt;&gt;&gt; y = np.sin(np.pi*x) &gt;&gt;&gt; from scipy.interpolate import make_interp_spline &gt;&gt;&gt; bspl = make_interp_spline(x, y, k=3) &gt;&gt;&gt; print(bspl.t) [0. 0. 0. 0. 0.5 0.75 1. 1.5 1.5 1.5 1.5 ] &gt;&gt;&gt; print(x) [ 0. 0.25 0.5 0.75 1. 1.25 1.5 ]</p>
+</blockquote>
+<p>We see that the knot vector by default is constructed from the input array <code>x</code>: first, it is made [(k+1)] -regular (it has <code>k</code> repeated knots appended and prepended); then, the second and second-to-last points of the input array are removed---this is the so-called <em>not-a-knot</em> boundary condition.</p>
+<p>In general, an interpolating spline of degree <code>k</code> needs <code>len(t) - len(x) - k - 1</code> boundary conditions. For cubic splines with <code>(k+1)</code>-regular knot arrays this means two boundary conditions---or removing two values from the <code>x</code> array. Various boundary conditions can be requested using the optional <code>bc_type</code> argument of [make_interp_spline].</p>
+<p>The b-spline coefficients are accessed via the <code>c</code> attribute of a [BSpline] object:</p>
+<blockquote>
+<p>&gt;&gt;&gt; len(bspl.c) 7</p>
+</blockquote>
+<p>The convention is that for <code>len(t)</code> knots there are <code>len(t) - k - 1</code> coefficients. Some routines (see the Smoothing splines section ) zero-pad the <code>c</code> arrays so that <code>len(c) == len(t)</code>. These additional coefficients are ignored for evaluation.</p>
+<p>We stress that the coefficients are given in the b-spline basis , not the power basis of [1, x, cdots, x^k].</p>
+<h3 id="b-spline-basis-elements">B-spline basis elements</h3>
+<p>The b-spline basis is used in a variety of applications which include interpolation, regression and curve representation. B-splines are piecewise polynomials, represented as linear combinations of <em>b-spline basis elements</em> --- which themselves are certain linear combinations of usual monomials, [x^m] with [m=0, 1, dots, k].</p>
+<p>Formally, a spline function is defined as a linear combination of B-spline basis elements, [B_j(x)],</p>
+<p>f(x) = sum_j c_j B_j(x) .</p>
+<p>The properties of b-splines are well described in the literature (see, for example, <a href="#Floater">[Floater]</a>, <a href="#deBoor">[deBoor]</a>, <a href="#PBP">[PBP]</a>, <a href="#Dierckx">[Dierckx]</a>). For our purposes, it is enough to know that a b-spline function is uniquely defined by an array of coefficients and an array of the so-called <em>knots</em>, which may or may not coincide with the data points, <code>x</code>.</p>
+<p>Specifically, a b-spline basis element of degree <code>k</code> (e.g. <code>k=3</code> for cubics) is defined by [k+2] knots and is zero outside of these knots. To illustrate, plot a collection of non-zero basis elements on a certain interval:</p>
+<p>Here [BSpline.basis_element] is essentially a shorthand for constructing a spline with only a single non-zero coefficient. For instance, the <code>j=2</code> element in the above example is equivalent to</p>
+<blockquote>
+<p>&gt;&gt;&gt; c = np.zeros(t.size - k - 1) &gt;&gt;&gt; c[-2] = 1 &gt;&gt;&gt; b = BSpline(t, c, k) &gt;&gt;&gt; np.allclose(b(xx), bspl(xx)) True</p>
+</blockquote>
+<p>If desired, a b-spline can be converted into a [PPoly] object using [PPoly.from_spline] method which accepts a [BSpline] instance and returns a [PPoly] instance. The reverse conversion is performed by the [BSpline.from_power_basis] method. However, conversions between bases is best avoided because it accumulates rounding errors.</p>
+<h3 id="coefficients-and-control-points">Coefficients and control points</h3>
+<p>The B-Spline coefficients have a simple geometric interpretation: they determine the <em>control points</em> of the spline. The polyline connecting the control points --- the <em>control polygon</em> --- follows the shape of the spline, and the spline lies within the convex hull of its control points. How the coefficients determine the control points depends on whether the spline represents a function or a curve: for a curve, the coefficients <em>are</em> the control points; for a function, they are only the [y]-coordinates, and the [x]-coordinates come from the knots <a href="#Floater">[Floater]</a>, <a href="#deBoor">[deBoor]</a>.</p>
+<p><strong>Spline functions.</strong> For a function, [y = f(x)], the coefficients are scalars, and they only give the [y]-coordinates of the control points. The matching [x]-coordinates are the <em>knot averages</em> <a href="#Floater">[Floater]</a>, also known as <em>Greville abscissae</em> <a href="#PBP">[PBP]</a>, which are averages of <code>k</code> consecutive knots,</p>
+<p>xi_j = frac{[t](){j+1} + [t](){j+2} + dots + [t](){j+k}}{k} , qquad j = 0, 1, dots, n-1 ,</p>
+<p>where <code>n = len(t) - k - 1</code> is the number of coefficients. This is the definition of the control polygon of a spline function in <a href="#Floater">[Floater]</a>, Sec. 3.8.1, p. 42, where the points [xi_j] are denoted by [t_i^*] (the formula directly follows Eq. (3.20)). The reason for this choice is that the linear function, [f(x) = x], has the B-spline coefficients [c_j = xi_j], i.e. [x = sum_j c_j B_j(x)]; this is Eq. (4.7) in <a href="#Floater">[Floater]</a>, Sec. 4.2.1, p. 52, with [r = 1].</p>
+<p><strong>Parametric curves.</strong> For a curve in [d] dimensions, e.g. constructed by [make_splprep], each coefficient is itself a point: the coefficient array has shape <code>(n, d)</code>, and its rows are the control points <a href="#Floater">[Floater]</a>, Sec. 3.8.2.</p>
+<p>Note the transposes: <code>spl.c</code> has shape <code>(n, d)</code>, so <code>spl.c.T</code> unpacks into the <code>x</code> and <code>y</code> coordinates of the control points. <code>spl(uu)</code> already has shape <code>(d, len(uu))</code>, because [make_splprep] constructs the spline with <code>axis=1</code>, while <code>spl_moved</code>, constructed directly from the <code>(n, d)</code> coefficient array, evaluates to shape <code>(len(uu), d)</code>.</p>
+<p><strong>Spline surfaces.</strong> A tensor product spline surface, [z = f(x, y)], e.g. constructed by [RectBivariateSpline], is a linear combination of products of B-Spline basis elements in the two directions <a href="#Dierckx">[Dierckx]</a>,</p>
+<p>f(x, y) = sum_{i=0}^{n_x-1} sum_{j=0}^{n_y-1} [c](){ij} B_i(x) B_j(y) ,</p>
+<p>where [B_i(x)] and [B_j(y)] are the 1D B-Spline basis elements in the [x] and [y] directions. Just like in the 1D case, each direction has its own knot vector and degree, <code>tx, kx</code> and <code>ty, ky</code>, which define the basis elements: [B_i(x)] are the [n_x] = <code>len(tx) - kx - 1</code> basis elements of degree <code>kx</code> on the knots <code>tx</code>, and [B_j(y)] are the [n_y] = <code>len(ty) - ky - 1</code> basis elements of degree <code>ky</code> on the knots <code>ty</code>. The coefficients therefore form a 2D array, [c_{ij}], of shape `(n_x, n_y)`: there is one coefficient for each pair of basis elements.</p>
+<p>The surface is the graph of a function of two variables, so the geometric picture is a direct generalization of the 1D spline functions above. Each coefficient [c_{ij}] is a scalar, and it only gives the height, i.e. the [z]-coordinate, of a control point. The [x]- and [y]-coordinates are the Greville abscissae of the two knot vectors, computed separately in each direction,</p>
+<p>xi_i = frac{t^x_{i+1} + dots + t^x_{i+k_x}}{k_x} , qquad eta_j = frac{t^y_{j+1} + dots + t^y_{j+k_y}}{k_y} ,</p>
+<p>for [i = 0, dots, n_x - 1] and [j = 0, dots, n_y - 1]. The control points are thus</p>
+<p>[P](){ij} = (xi_i, eta_j, [c](){ij}) ,</p>
+<p>and they sit over a rectangular grid in the [(x, y)] plane, the tensor product of the 1D Greville grids. Connecting neighboring control points in each direction gives the <em>control net</em>, which is the 2D analog of the control polygon: it follows the shape of the surface, the surface lies in the convex hull of the control points, and changing [c_{ij}] only changes the surface locally, on the rectangle where [B_i(x) B_j(y)] is non-zero.</p>
+<h4 id="references">References</h4>
+<h3 id="design-matrices-in-the-b-spline-basis">Design matrices in the B-spline basis</h3>
+<p>One common application of b-splines is in non-parametric regression. The reason is that the localized nature of the b-spline basis elements makes linear algebra banded. This is because at most [k+1] basis elements are non-zero at a given evaluation point, thus a design matrix built on b-splines has at most [k+1] diagonals.</p>
+<p>As an illustration, we consider a toy example. Suppose our data are one-dimensional and are confined to an interval [[0, 6]]. We construct a 4-regular knot vector which corresponds to 7 data points and cubic, <code>k=3</code>, splines:</p>
+<p>&gt;&gt;&gt; t = [0., 0., 0., 0., 2., 3., 4., 6., 6., 6., 6.]</p>
+<p>Next, take &#39;observations&#39; to be</p>
+<p>&gt;&gt;&gt; xnew = [1, 2, 3]</p>
+<p>and construct the design matrix in the sparse CSR format</p>
+<p>&gt;&gt;&gt; from scipy.interpolate import BSpline &gt;&gt;&gt; mat = BSpline.design_matrix(xnew, t, k=3) &gt;&gt;&gt; mat \</p>
+<p>Here each row of the design matrix corresponds to a value in the <code>xnew</code> array, and a row has no more than <code>k+1 = 4</code> non-zero elements; row <code>j</code> contains basis elements evaluated at <code>xnew[j]</code>:</p>
+<p>&gt;&gt;&gt; with np.printoptions(precision=3): ... print(mat.toarray()) [[0.125 0.514 0.319 0.042 0. 0. 0. ] [0. 0.111 0.556 0.333 0. 0. 0. ] [0. 0. 0.125 0.75 0.125 0. 0. ]]</p>
+<h2 id="bernstein-polynomials-bpoly">Bernstein polynomials, <code>BPoly</code></h2>
+<p>For [t in [0, 1]], Bernstein basis polynomials of degree [k] are defined via</p>
+<p>b(t; k, a) = C_k^a t^a (1-t)^{k - a}</p>
+<p>where [C_k^a] is the binomial coefficient, and [a=0, 1, dots, k], so that there are [k+1] basis polynomials of degree [k].</p>
+<p>A <code>BPoly</code> object represents a <em>piecewise</em> Bernstein polynomial in terms of breakpoints, <code>x</code>, and coefficients, <code>c</code>: <code>c[a, j]</code> gives the coefficient for [b(t; k, a)] for <code>t</code> on the interval between <code>x[j]</code> and <code>x[j+1]</code>.</p>
+<p>The user interface of [BPoly] objects is very similar to that of [PPoly] objects: both can be evaluated, differentiated and integrated.</p>
+<p>One additional feature of [BPoly] objects is the alternative constructor, [BPoly.from_derivatives], which constructs a [BPoly] object from data values and derivatives. Specifically, <code>b = BPoly.from_derivatives(x, y)</code> returns a callable that interpolates the provided values, <code>b(x[i]) == y[i])</code>, and has the provided derivatives, <code>b(x[i], nu=j) == y[i][j]</code>.</p>
+<p>This operation is similar to [CubicHermiteSpline], but it is more flexible in that it can handle varying numbers of derivatives at different data points; i.e., the <code>y</code> argument can be a list of arrays of different lengths. See [BPoly.from_derivatives] for further discussion and examples.</p>
+<h2 id="conversion-between-bases">Conversion between bases</h2>
+<p>In principle, all three bases for piecewise polynomials (the power basis, the Bernstein basis, and b-splines) are equivalent, and a polynomial in one basis can be converted into a different basis. One reason for converting between bases is that not all bases implement all operations. For instance, root-finding is only implemented for [PPoly], and therefore to find roots of a [BSpline] object, you need to convert to [PPoly] first. See methods [PPoly.from_bernstein_basis], [PPoly.from_spline], [BPoly.from_power_basis], and [BSpline.from_power_basis] for details about conversion.</p>
+<p>In floating-point arithmetic, though, conversions always incur some precision loss. Whether this is significant is problem-dependent, so it is therefore recommended to exercise caution when converting between bases.</p>
+<p>::: </p>
+<p>[Dierckx]{#Dierckx .citation-label}</p>
+<p>:   P. Dierckx, Curve and surface fitting with splines, Monographs on Numerical Analysis, Oxford University Press, 1993.</p>
+<p>[Floater]{#Floater .citation-label}</p>
+<p>:   M. Floater, An introduction to spline theory, 2025, <a target="_blank" rel="noopener" href="https://www.uio.no/studier/emner/matnat/math/MAT4170/v25/undervisningsmateriale/spline_notes.pdf">https://www.uio.no/studier/emner/matnat/math/MAT4170/v25/undervisningsmateriale/spline_notes.pdf</a></p>
+<p>[PBP]{#PBP .citation-label}</p>
+<p>:   H. Prautzsch, W. Boehm, and M. Paluszny, Bézier and B-spline techniques, Springer, 2002.</p>
+<p>[deBoor]{#deBoor .citation-label}</p>
+<p>:   C.  de Boor, A practical guide to splines, Springer, 2001.
+:::</p>
