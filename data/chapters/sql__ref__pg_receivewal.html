@@ -1,0 +1,101 @@
+<p>pg_receivewal</p>
+<p>pg_receivewal</p>
+<p>1</p>
+<p>Application</p>
+<p>pg_receivewal</p>
+<p>stream write-ahead logs from a</p>
+<p>PostgreSQL</p>
+<p>server</p>
+<p>pg_receivewal</p>
+<p>option</p>
+<p>pg_receivewal is used to stream the write-ahead log from a running PostgreSQL cluster. The write-ahead log is streamed using the streaming replication protocol, and is written to a local directory of files. This directory can be used as the archive location for doing a restore using point-in-time recovery (see <a href="#continuous-archiving">???</a>).</p>
+<p>pg_receivewal streams the write-ahead log in real time as it&#39;s being generated on the server, and does not wait for segments to complete like <a href="#guc-archive-command">???</a> and <a href="#guc-archive-library">???</a> do. For this reason, it is not necessary to set <a href="#guc-archive-timeout">???</a> when using pg_receivewal.</p>
+<p>Unlike the WAL receiver of a PostgreSQL standby server, pg_receivewal by default flushes WAL data only when a WAL file is closed. The option <code>--synchronous</code> must be specified to flush WAL data in real time. Since pg_receivewal does not apply WAL, you should not allow it to become a synchronous standby when <a href="#guc-synchronous-commit">???</a> equals <code>remote_apply</code>. If it does, it will appear to be a standby that never catches up, and will cause transaction commits to block. To avoid this, you should either configure an appropriate value for <a href="#guc-synchronous-standby-names">???</a>, or specify <code>application_name</code> for pg_receivewal that does not match it, or change the value of <code>synchronous_commit</code> to something other than <code>remote_apply</code>.</p>
+<p>The write-ahead log is streamed over a regular PostgreSQL connection and uses the replication protocol. The connection must be made with a user having <code>REPLICATION</code> permissions (see <a href="#role-attributes">???</a>) or a superuser, and <code>pg_hba.conf</code> must permit the replication connection. The server must also be configured with <a href="#guc-max-wal-senders">???</a> set high enough to leave at least one session available for the stream.</p>
+<p>The starting point of the write-ahead log streaming is calculated when pg_receivewal starts:</p>
+<ol>
+<li><p>First, scan the directory where the WAL segment files are written and find the newest completed segment file, using as the starting point the beginning of the next WAL segment file.</p>
+</li>
+<li><p>If a starting point cannot be calculated with the previous method, and if a replication slot is used, an extra <code>READ_REPLICATION_SLOT</code> command is issued to retrieve the slot&#39;s <code>restart_lsn</code> to use as the starting point. This option is only available when streaming write-ahead logs from PostgreSQL 15 and up.</p>
+</li>
+<li><p>If a starting point cannot be calculated with the previous method, the latest WAL flush location is used as reported by the server from an <code>IDENTIFY_SYSTEM</code> command.</p>
+</li>
+</ol>
+<p>If the connection is lost, or if it cannot be initially established, with a non-fatal error, pg_receivewal will retry the connection indefinitely, and reestablish streaming as soon as possible. To avoid this behavior, use the <code>-n</code> parameter.</p>
+<p>In the absence of fatal errors, pg_receivewal will run until terminated by the <code>SIGINT</code> ([Control+C]{.keycombo}) or <code>SIGTERM</code> signal.</p>
+<h1>Options</h1>
+<p><code>-D directory</code>; <code>--directory=directory</code></p>
+<p>:   Directory to write the output to.</p>
+<pre><code>This parameter is required.
+</code></pre>
+<p><code>-E lsn</code>; <code>--endpos=lsn</code></p>
+<p>:   Automatically stop replication and exit with normal exit status 0 when receiving reaches the specified LSN.</p>
+<pre><code>If there is a record with LSN exactly equal to \&lt;lsn\&gt;, the record will be processed.
+</code></pre>
+<p><code>--if-not-exists</code></p>
+<p>:   Do not error out when <code>--create-slot</code> is specified and a slot with the specified name already exists.</p>
+<p><code>-n</code>; <code>--no-loop</code></p>
+<p>:   Don&#39;t loop on connection errors. Instead, exit right away with an error.</p>
+<p><code>--no-sync</code></p>
+<p>:   This option causes <code>pg_receivewal</code> to not force WAL data to be flushed to disk. This is faster, but means that a subsequent operating system crash can leave the WAL segments corrupt. Generally, this option is useful for testing but should not be used when doing WAL archiving on a production deployment.</p>
+<pre><code>This option is incompatible with `--synchronous`.
+</code></pre>
+<p><code>-s interval</code>; <code>--status-interval=interval</code></p>
+<p>:   Specifies the number of seconds between status packets sent back to the server. This allows for easier monitoring of the progress from server. A value of zero disables the periodic status updates completely, although an update will still be sent when requested by the server, to avoid timeout disconnect. The default value is 10 seconds.</p>
+<p><code>-S slotname</code>; <code>--slot=slotname</code></p>
+<p>:   Require pg_receivewal to use an existing replication slot (see <a href="#streaming-replication-slots">???</a>). When this option is used, pg_receivewal will report a flush position to the server, indicating when each segment has been synchronized to disk so that the server can remove that segment if it is not otherwise needed.</p>
+<pre><code>When the replication client of pg_receivewal is configured on the server as a synchronous standby, then using a replication slot will report the flush position to the server, but only when a WAL file is closed. Therefore, that configuration will cause transactions on the primary to wait for a long time and effectively not work satisfactorily. The option `--synchronous` (see below) must be specified in addition to make this work correctly.
+</code></pre>
+<p><code>--synchronous</code></p>
+<p>:   Flush the WAL data to disk immediately after it has been received. Also send a status packet back to the server immediately after flushing, regardless of <code>--status-interval</code>.</p>
+<pre><code>This option should be specified if the replication client of pg_receivewal is configured on the server as a synchronous standby, to ensure that timely feedback is sent to the server.
+</code></pre>
+<p><code>-v</code>; <code>--verbose</code></p>
+<p>:   Enables verbose mode.</p>
+<p><code>-Z level</code>; <code>-Z method[:detail]</code>; <code>--compress=level</code>; <code>--compress=method[:detail]</code></p>
+<p>:   Enables compression of write-ahead logs.</p>
+<pre><code>The compression method can be set to `gzip`, `lz4` (if PostgreSQL was compiled with `--with-lz4`) or `none` for no compression. A compression detail string can optionally be specified. If the detail string is an integer, it specifies the compression level. Otherwise, it should be a comma-separated list of items, each of the form \&lt;keyword\&gt; or \&lt;keyword=value\&gt;. Currently, the only supported keyword is `level`.
+
+If no compression level is specified, the default compression level will be used. If only a level is specified without mentioning an algorithm, `gzip` compression will be used if the level is greater than 0, and no compression will be used if the level is 0.
+
+The suffix `.gz` will automatically be added to all filenames when using `gzip`, and the suffix `.lz4` is added when using `lz4`.
+</code></pre>
+<p>The following command-line options control the database connection parameters.</p>
+<p><code>-d connstr</code>; <code>--dbname=connstr</code></p>
+<p>:   Specifies parameters used to connect to the server, as a <a href="#libpq-connstring">connection string</a>; these will override any conflicting command line options.</p>
+<pre><code>This option is called `--dbname` for consistency with other client applications, but because pg_receivewal doesn\&#39;t connect to any particular database in the cluster, any database name included in the connection string will be ignored by the server. However, a database name supplied that way overrides the default database name (`replication`) for purposes of looking up the replication connection\&#39;s password in `~/.pgpass`. Similarly, middleware or proxies used in connecting to PostgreSQL might utilize the name for purposes such as connection routing.
+</code></pre>
+<p><code>-h host</code>; <code>--host=host</code></p>
+<p>:   Specifies the host name of the machine on which the server is running. If the value begins with a slash, it is used as the directory for the Unix domain socket. The default is taken from the <code>PGHOST</code> environment variable, if set, else a Unix domain socket connection is attempted.</p>
+<p><code>-p port</code>; <code>--port=port</code></p>
+<p>:   Specifies the TCP port or local Unix domain socket file extension on which the server is listening for connections. Defaults to the <code>PGPORT</code> environment variable, if set, or a compiled-in default.</p>
+<p><code>-U username</code>; <code>--username=username</code></p>
+<p>:   User name to connect as.</p>
+<p><code>-w</code>; <code>--no-password</code></p>
+<p>:   Never issue a password prompt. If the server requires password authentication and a password is not available by other means such as a <code>.pgpass</code> file, the connection attempt will fail. This option can be useful in batch jobs and scripts where no user is present to enter a password.</p>
+<p><code>-W</code>; <code>--password</code></p>
+<p>:   Force pg_receivewal to prompt for a password before connecting to a database.</p>
+<pre><code>This option is never essential, since pg_receivewal will automatically prompt for a password if the server demands password authentication. However, pg_receivewal will waste a connection attempt finding out that the server wants a password. In some cases it is worth typing `-W` to avoid the extra connection attempt.
+</code></pre>
+<p>pg_receivewal can perform one of the two following actions in order to control physical replication slots:</p>
+<p><code>--create-slot</code></p>
+<p>:   Create a new physical replication slot with the name specified in <code>--slot</code>, then exit.</p>
+<p><code>--drop-slot</code></p>
+<p>:   Drop the replication slot with the name specified in <code>--slot</code>, then exit.</p>
+<p>Other options are also available:</p>
+<p><code>-V</code>; <code>--version</code></p>
+<p>:   Print the pg_receivewal version and exit.</p>
+<p><code>-?</code>; <code>--help</code></p>
+<p>:   Show help about pg_receivewal command line arguments, and exit.</p>
+<h1>Exit Status</h1>
+<p>pg_receivewal will exit with status 0 when terminated by the <code>SIGINT</code> or <code>SIGTERM</code> signal. (That is the normal way to end it. Hence it is not an error.) For fatal errors or other signals, the exit status will be nonzero.</p>
+<h1>Environment</h1>
+<p>This utility, like most other PostgreSQL utilities, uses the environment variables supported by libpq (see <a href="#libpq-envars">???</a>).</p>
+<p>The environment variable <code>PG_COLOR</code> specifies whether to use color in diagnostic messages. Possible values are <code>always</code>, <code>auto</code> and <code>never</code>.</p>
+<h1>Notes</h1>
+<p>When using pg_receivewal instead of <a href="#guc-archive-command">???</a> or <a href="#guc-archive-library">???</a> as the main WAL backup method, it is strongly recommended to use replication slots. Otherwise, the server is free to recycle or remove write-ahead log files before they are backed up, because it does not have any information, either from <a href="#guc-archive-command">???</a> or <a href="#guc-archive-library">???</a> or the replication slots, about how far the WAL stream has been archived. Note, however, that a replication slot will fill up the server&#39;s disk space if the receiver does not keep up with fetching the WAL data.</p>
+<p>pg_receivewal will preserve group permissions on the received WAL files if group permissions are enabled on the source cluster.</p>
+<h1>Examples</h1>
+<p>To stream the write-ahead log from the server at <code>mydbserver</code> and store it in the local directory <code>/usr/local/pgsql/archive</code>: </p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>SQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-sql"><span class="hljs-operator">&lt;</span>prompt<span class="hljs-operator">&gt;</span>$<span class="hljs-operator">&lt;</span><span class="hljs-operator">/</span>prompt<span class="hljs-operator">&gt;</span> <span class="hljs-operator">&lt;</span>userinput<span class="hljs-operator">&gt;</span>pg_receivewal <span class="hljs-operator">-</span>h mydbserver <span class="hljs-operator">-</span>D <span class="hljs-operator">/</span>usr<span class="hljs-operator">/</span><span class="hljs-keyword">local</span><span class="hljs-operator">/</span>pgsql<span class="hljs-operator">/</span>archive<span class="hljs-operator">&lt;</span><span class="hljs-operator">/</span>userinput<span class="hljs-operator">&gt;</span></code></pre></div></figure>
+<h1>See Also</h1>

@@ -1,0 +1,124 @@
+<p>WAIT</p>
+<p>WAIT</p>
+<p>7</p>
+<p>SQL - Language Statements</p>
+<p>WAIT</p>
+<p>wait for WAL to reach a target</p>
+<p>LSN</p>
+<p>WAIT FOR LSN &#39;</p>
+<p>lsn</p>
+<p>&#39; [ WITH (</p>
+<p>option</p>
+<p>[, ...] ) ]</p>
+<p>where</p>
+<p>option</p>
+<p>can be:</p>
+<p>MODE &#39;</p>
+<p>mode</p>
+<p>&#39; TIMEOUT &#39;</p>
+<p>timeout</p>
+<p>&#39; NO_THROW</p>
+<p>and</p>
+<p>mode</p>
+<p>can be:</p>
+<p>standby_replay | standby_write | standby_flush | primary_flush</p>
+<p>Waits until the specified <code>lsn</code> is reached according to the specified <code>mode</code>, which determines whether to wait for WAL to be written, flushed, or replayed. If no <code>timeout</code> is specified or it is set to zero, this command waits indefinitely for the <code>lsn</code>.</p>
+<p>On timeout, an error is emitted unless <code>NO_THROW</code> is specified in the WITH clause. For standby modes (<code>standby_replay</code>, <code>standby_write</code>, <code>standby_flush</code>), an error is also emitted if the server is promoted before the <code>lsn</code> is reached. If <code>NO_THROW</code> is specified, the command reports these outcomes as a status string instead of raising an error.</p>
+<p>The possible return values are <code>success</code>, <code>timeout</code>, and <code>not in recovery</code>.</p>
+<h1>Parameters</h1>
+<p>&lt;lsn&gt;</p>
+<p>:   Specifies the target LSN to wait for.</p>
+<p><code>WITH ( option [, ...] )</code></p>
+<p>:   This clause specifies optional parameters for the wait operation. The following parameters are supported:</p>
+<pre><code>`MODE` \&#39;\&lt;mode\&gt;\&#39;
+
+:   Specifies the type of LSN processing to wait for. If not specified, the default is `standby_replay`. The valid modes are:
+
+    - `standby_replay`: Wait for the LSN to be replayed (applied to the database) on a standby server. After successful completion, `pg_last_wal_replay_lsn()` will return a value greater than or equal to the target LSN. This mode can only be used during recovery.
+
+    - `standby_write`: Wait for the WAL containing the LSN to be written to disk on a standby server, but not yet necessarily flushed. This is faster than `standby_flush` but provides weaker durability guarantees since the data may still be in operating system buffers. This is satisfied by WAL already present on the standby from a base backup, archive restore, or prior streaming, as well as WAL newly received from the primary. This mode can only be used during recovery.
+
+    - `standby_flush`: Wait for the WAL containing the LSN to be flushed to disk on a standby server. This provides a durability guarantee without waiting for the WAL to be applied. This is satisfied by WAL already present on the standby from a base backup, archive restore, or prior streaming, as well as WAL newly received from the primary. This mode can only be used during recovery.
+
+    - `primary_flush`: Wait for the WAL containing the LSN to be flushed to disk on a primary server. After successful completion, `pg_current_wal_flush_lsn()` will return a value greater than or equal to the target LSN. This mode can only be used on a primary server (not during recovery).
+
+`TIMEOUT` \&#39;\&lt;timeout\&gt;\&#39;
+
+:   When specified and `timeout` is greater than zero, the command waits until `lsn` is reached or the specified `timeout` has elapsed. A value of zero (the default) means the command waits indefinitely.
+
+    The `timeout` is an amount of time in milliseconds. It may also be specified as a string containing the numerical value followed by a time unit (see [???](#config-setting-names-values)). The maximum value is `2147483647 ms`.
+
+    Fractional values are rounded to the nearest millisecond. Note that a `timeout` of half a millisecond or less therefore rounds down to zero, which means waiting indefinitely.
+
+`NO_THROW`
+
+:   Specify to not throw an error in the case of timeout or running on the primary. In this case the result status can be obtained from the return value.
+
+    Use this option when `timeout` or `not in recovery` is an expected result that the application intends to handle, for example by retrying the wait, reporting replication delay, or choosing another server for a subsequent operation. The command then returns the result as a status, which the application must check before assuming that the target LSN was reached. Omit the option when the application must not proceed unless the target LSN is reached, so that an unsuccessful wait stops normal execution with an error.
+
+    Returning a status also leaves an explicit transaction usable; without this option, the corresponding error requires rolling back the transaction, or rolling back to a savepoint, before further commands can be issued.
+
+    This option changes only how `timeout` and `not in recovery` are reported. Other errors are still raised. That covers invalid input, such as a malformed LSN or an unrecognized option value, and every condition that is checked before the wait begins, such as requesting `primary_flush` during recovery or holding a lock while waiting for a standby LSN. The option also does not limit the duration of the wait; specify `TIMEOUT` for that purpose.
+</code></pre>
+<h1>Outputs</h1>
+<p><code>success</code></p>
+<p>:   This return value denotes that we have successfully reached the target <code>lsn</code>.</p>
+<p><code>timeout</code></p>
+<p>:   This return value denotes that the timeout happened before reaching the target <code>lsn</code>.</p>
+<p><code>not in recovery</code></p>
+<p>:   This return value denotes that the database server is not in a recovery state. This might mean either the database server was not in recovery at the moment of receiving the command (i.e., executed on a primary), or it was promoted before reaching the target <code>lsn</code>. In the promotion case, this status indicates a timeline change occurred, and the application should re-evaluate whether the target LSN is still relevant.</p>
+<h1>Notes</h1>
+<p><code>WAIT</code> must be executed as a top-level command. It cannot be executed from a function, procedure, or <code>DO</code> block. It also cannot be executed while the current transaction holds a snapshot. <code>WAIT</code> itself acquires none, so it can run before the first snapshot-taking statement of a <code>REPEATABLE READ</code> or <code>SERIALIZABLE</code> transaction, but not after it, and not while a cursor or an exported snapshot holds one at any isolation level. A snapshot held here could delay replay, which <code>standby_replay</code> waits for and which other standby modes can end up waiting for too. That is also why <code>WAIT</code> is a command rather than a function or a procedure, which execute with one held.</p>
+<p>While recovery is in progress, a wait in <code>standby_replay</code> (the default), <code>standby_write</code>, or <code>standby_flush</code> mode is rejected when the session already holds a lock and the target <code>lsn</code> has not been reached yet. Such a lock can make the startup process wait for this session, either directly or through another session, while this session waits for the startup process to advance recovery. That cycle involves no lock wait on this side, so deadlock detection does not see it and nothing breaks it. A wait whose target has already been reached returns immediately and is therefore always allowed.</p>
+<p>Issue <code>WAIT FOR</code> outside a transaction block, or as the first statement of one, before running anything that takes locks. That is also the natural order for the read-your-writes pattern shown in the examples below: wait for the target <code>lsn</code> first, then run the queries that have to see it. Note that a lock taken by an earlier statement is still held at <code>READ COMMITTED</code>, even though its snapshot is gone, so a wait placed after such a statement is rejected even when the isolation level permits it.</p>
+<p>The restriction covers <code>standby_write</code> and <code>standby_flush</code> as well, even though streaming replication can advance those positions without the startup process. Both positions are at least the replay position, so without an active walreceiver replay can be their only source of progress. If a held lock blocks replay, the session waits for replay to advance while replay waits for the session to release the lock. Under streaming replication the positions advance independently only while WAL keeps arriving. If reception stops before the target is reached, a blocked startup process cannot restart the walreceiver. It also cannot replay newer checkpoint records needed to advance restartpoints and recycle WAL, so <code>pg_wal</code> can fill up and reception can stop before the target is reached. The restriction therefore also applies when streaming is active at the start of the wait.</p>
+<p><code>WAIT</code> waits until the specified <code>lsn</code> is reached according to the specified <code>mode</code>. The <code>standby_replay</code> mode waits for the LSN to be replayed (applied to the database), which is useful to achieve read-your-writes consistency while using an async replica for reads and the primary for writes, provided that the target LSN is at or after the end of the relevant write transaction&#39;s <code>COMMIT</code> record on the primary. The <code>standby_flush</code> mode waits for the WAL to be flushed to durable storage on the replica, or to have already been replayed from WAL present on the standby. The <code>standby_write</code> mode waits for the WAL to be written to the operating system, or to have already been replayed, which is faster than flush for newly received WAL but provides weaker durability guarantees. The <code>primary_flush</code> mode waits for WAL to be flushed on a primary server. In all cases, the LSN of the last modification should be stored on the client application side or the connection pooler side.</p>
+<p>The standby modes (<code>standby_replay</code>, <code>standby_write</code>, <code>standby_flush</code>) can only be used during recovery, and <code>primary_flush</code> can only be used on a primary server. Using the wrong mode for the current server state will result in an error. If a standby is promoted while waiting with a standby mode, the command will return <code>not in recovery</code> (or throw an error if <code>NO_THROW</code> is not specified). Promotion creates a new timeline, and the LSN being waited for may refer to WAL from the old timeline.</p>
+<p><code>WAIT</code> compares only the numeric LSN; it has no notion of which timeline a WAL record belongs to. This matters when a standby continues recovery across an upstream timeline switch for example, a cascading standby whose upstream gets promoted. In that case <code>WAIT</code> will return <code>success</code> as soon as the position used by the selected wait mode reaches or passes the numeric LSN, regardless of which timeline that LSN belongs to. Applications that need to confirm the target refers to the expected timeline must validate the timeline themselves.</p>
+<p>On a standby server, <code>WAIT</code> sessions may be interrupted by recovery conflicts. Some recovery conflicts are unavoidable: for example, replaying a tablespace drop resolves conflicts by terminating all backends, regardless of what they are doing. Applications using <code>WAIT</code> on a standby should be prepared to handle such interruptions, for example by retrying the command or falling back to an alternative mechanism.</p>
+<h1>Examples</h1>
+<p>You can use the <code>WAIT</code> command to wait for the <code>pg_lsn</code> value. For example, an application could update the <code>movie</code> table and get an lsn that is at or after the end of the relevant write transaction&#39;s <code>COMMIT</code> record. In the default autocommit mode shown here, the <code>UPDATE</code> commits before the subsequent <code>SELECT</code>. This example uses <code>pg_current_wal_insert_lsn</code> on primary server to get the lsn given that <code>synchronous_commit</code> could be set to <code>off</code>. </p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>SQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-sql">postgres<span class="hljs-operator">=</span># <span class="hljs-keyword">UPDATE</span> movie <span class="hljs-keyword">SET</span> genre <span class="hljs-operator">=</span> <span class="hljs-string">&#x27;Dramatic&#x27;</span> <span class="hljs-keyword">WHERE</span> genre <span class="hljs-operator">=</span> <span class="hljs-string">&#x27;Drama&#x27;</span>;
+<span class="hljs-keyword">UPDATE</span> <span class="hljs-number">100</span>
+postgres<span class="hljs-operator">=</span># <span class="hljs-keyword">SELECT</span> pg_current_wal_insert_lsn();
+ pg_current_wal_insert_lsn
+<span class="hljs-comment">---------------------------</span>
+ <span class="hljs-number">0</span><span class="hljs-operator">/</span><span class="hljs-number">0306</span>EE20
+(<span class="hljs-number">1</span> <span class="hljs-type">row</span>)</code></pre></div></figure>
+<p> Then an application could run <code>WAIT</code> with the <code>lsn</code> obtained from the primary after the commit. After that, the changes made on the primary should be guaranteed to be visible on the replica. </p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>SQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-sql">postgres<span class="hljs-operator">=</span># WAIT <span class="hljs-keyword">FOR</span> LSN <span class="hljs-string">&#x27;0/0306EE20&#x27;</span>;
+ status
+<span class="hljs-comment">---------</span>
+ success
+(<span class="hljs-number">1</span> <span class="hljs-type">row</span>)
+postgres<span class="hljs-operator">=</span># <span class="hljs-keyword">SELECT</span> <span class="hljs-operator">*</span> <span class="hljs-keyword">FROM</span> movie <span class="hljs-keyword">WHERE</span> genre <span class="hljs-operator">=</span> <span class="hljs-string">&#x27;Drama&#x27;</span>;
+ genre
+<span class="hljs-comment">-------</span>
+(<span class="hljs-number">0</span> <span class="hljs-keyword">rows</span>)</code></pre></div></figure>
+<p>Wait for flush (data durable on replica): </p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>SQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-sql">postgres<span class="hljs-operator">=</span># WAIT <span class="hljs-keyword">FOR</span> LSN <span class="hljs-string">&#x27;0/0306EE20&#x27;</span> <span class="hljs-keyword">WITH</span> (MODE <span class="hljs-string">&#x27;standby_flush&#x27;</span>);
+ status
+<span class="hljs-comment">---------</span>
+ success
+(<span class="hljs-number">1</span> <span class="hljs-type">row</span>)</code></pre></div></figure>
+<p>Wait for write with timeout: </p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>SQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-sql">postgres<span class="hljs-operator">=</span># WAIT <span class="hljs-keyword">FOR</span> LSN <span class="hljs-string">&#x27;0/0306EE20&#x27;</span> <span class="hljs-keyword">WITH</span> (MODE <span class="hljs-string">&#x27;standby_write&#x27;</span>, TIMEOUT <span class="hljs-string">&#x27;100ms&#x27;</span>, NO_THROW);
+ status
+<span class="hljs-comment">---------</span>
+ success
+(<span class="hljs-number">1</span> <span class="hljs-type">row</span>)</code></pre></div></figure>
+<p>Wait for flush on primary: </p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>SQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-sql">postgres<span class="hljs-operator">=</span># WAIT <span class="hljs-keyword">FOR</span> LSN <span class="hljs-string">&#x27;0/0306EE20&#x27;</span> <span class="hljs-keyword">WITH</span> (MODE <span class="hljs-string">&#x27;primary_flush&#x27;</span>);
+ status
+<span class="hljs-comment">---------</span>
+ success
+(<span class="hljs-number">1</span> <span class="hljs-type">row</span>)</code></pre></div></figure>
+<p>If the target LSN is not reached before the timeout, an error is thrown: </p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>SQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-sql">postgres<span class="hljs-operator">=</span># WAIT <span class="hljs-keyword">FOR</span> LSN <span class="hljs-string">&#x27;0/0306EE20&#x27;</span> <span class="hljs-keyword">WITH</span> (TIMEOUT <span class="hljs-string">&#x27;0.1s&#x27;</span>);
+ERROR:  timed <span class="hljs-keyword">out</span> while waiting <span class="hljs-keyword">for</span> target LSN <span class="hljs-number">0</span><span class="hljs-operator">/</span><span class="hljs-number">0306</span>EE20 <span class="hljs-keyword">to</span> be replayed; <span class="hljs-keyword">current</span> standby_replay LSN <span class="hljs-number">0</span><span class="hljs-operator">/</span><span class="hljs-number">0306</span>EA60</code></pre></div></figure>
+<p>The same example uses <code>WAIT</code> with the <code>NO_THROW</code> option: </p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>SQL</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-sql">postgres<span class="hljs-operator">=</span># WAIT <span class="hljs-keyword">FOR</span> LSN <span class="hljs-string">&#x27;0/0306EE20&#x27;</span> <span class="hljs-keyword">WITH</span> (TIMEOUT <span class="hljs-string">&#x27;100ms&#x27;</span>, NO_THROW);
+ status
+<span class="hljs-comment">---------</span>
+ timeout
+(<span class="hljs-number">1</span> <span class="hljs-type">row</span>)</code></pre></div></figure>

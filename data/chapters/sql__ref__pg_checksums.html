@@ -1,0 +1,66 @@
+<p>pg_checksums</p>
+<p>pg_checksums</p>
+<p>1</p>
+<p>Application</p>
+<p>pg_checksums</p>
+<p>enable, disable or check data checksums in a</p>
+<p>PostgreSQL</p>
+<p>database cluster</p>
+<p>pg_checksums</p>
+<p>option</p>
+<p>-D</p>
+<p>--pgdata</p>
+<p>datadir</p>
+<p>pg_checksums checks, enables or disables data checksums in a PostgreSQL cluster. The server must be shut down cleanly before running pg_checksums. Checksums can also be enabled while the cluster is running using <a href="#checksums-online-enable-disable">???</a> processing, see <a href="#checksums">???</a> for further details on the different approaches. When verifying checksums, the exit status is zero if there are no checksum errors, and nonzero if at least one checksum failure is detected. When enabling or disabling checksums, the exit status is nonzero if the operation failed.</p>
+<p>If checksums were in the process of being enabled or disabled using <a href="#checksums-online-enable-disable">???</a> when the cluster was shut down, the control file still records that interrupted state, and pg_checksums refuses to run in any mode. Start the cluster and shut it down cleanly to reset the state, then retry; on a standby, let replication complete the transition first.</p>
+<p>When verifying checksums, every file in the cluster is scanned. When enabling checksums, each relation file block with a changed checksum is rewritten in-place. Disabling checksums only updates the file <code>pg_control</code>.</p>
+<h1>Options</h1>
+<p>The following command-line options are available:</p>
+<p><code>-D datadir</code>; <code>--pgdata=datadir</code></p>
+<p>:   Specifies the directory where the database cluster is stored.</p>
+<p><code>-c</code>; <code>--check</code></p>
+<p>:   Checks checksums. This is the default mode if nothing else is specified.</p>
+<p><code>-d</code>; <code>--disable</code></p>
+<p>:   Disables checksums.</p>
+<p><code>-e</code>; <code>--enable</code></p>
+<p>:   Enables checksums.</p>
+<p><code>-f filenode</code>; <code>--filenode=filenode</code></p>
+<p>:   Only validate checksums in the relation with filenode &lt;filenode&gt;.</p>
+<p><code>-N</code>; <code>--no-sync</code></p>
+<p>:   By default, <code>pg_checksums</code> will wait for all files to be written safely to disk. This option causes <code>pg_checksums</code> to return without waiting, which is faster, but means that a subsequent operating system crash can leave the updated data directory corrupt. Generally, this option is useful for testing but should not be used on a production installation. This option has no effect when using <code>--check</code>.</p>
+<p><code>-P</code>; <code>--progress</code></p>
+<p>:   Enable progress reporting. Turning this on will deliver a progress report while checking or enabling checksums.</p>
+<p><code>--sync-method=method</code></p>
+<p>:   When set to <code>fsync</code>, which is the default, <code>pg_checksums</code> will recursively open and synchronize all files in the data directory. The search for files will follow symbolic links for the WAL directory and each configured tablespace.</p>
+<pre><code>On Linux, `syncfs` may be used instead to ask the operating system to synchronize the whole file systems that contain the data directory, the WAL files, and each tablespace. See [???](#guc-recovery-init-sync-method) for information about the caveats to be aware of when using `syncfs`.
+
+This option has no effect when `--no-sync` is used.
+</code></pre>
+<p><code>-v</code>; <code>--verbose</code></p>
+<p>:   Enable verbose output. Lists all checked files.</p>
+<p><code>-V</code>; <code>--version</code></p>
+<p>:   Print the pg_checksums version and exit.</p>
+<p><code>-?</code>; <code>--help</code></p>
+<p>:   Show help about pg_checksums command line arguments, and exit.</p>
+<h1>Environment</h1>
+<p><code>PGDATA</code></p>
+<p>:   Specifies the directory where the database cluster is stored; can be overridden using the <code>-D</code> option.</p>
+<p><code>PG_COLOR</code></p>
+<p>:   Specifies whether to use color in diagnostic messages. Possible values are <code>always</code>, <code>auto</code> and <code>never</code>.</p>
+<h1>Notes</h1>
+<p>Enabling checksums in a large cluster can potentially take a long time. During this operation, the cluster or other programs that write to the data directory must not be started or else data loss may occur.</p>
+<p>Enabling or disabling checksums with pg_checksums changes only the local data directory; the new state is not replicated to any other node. In a replication setup the same change must be applied to every node:</p>
+<ol>
+<li><p>All nodes participating in the replication must be stopped with a clean shutdown; pg_checksums refuses to run on a data directory left behind by an immediate shutdown. Before stopping a standby, make sure it has replayed all WAL of the primary: stop the primary first, read its &quot;Latest checkpoint location&quot; with <a href="#app-pgcontroldata">???</a>, and check that <code>pg_last_wal_replay_lsn()</code> on the standby has advanced past it. Comparing the replay position with <code>pg_last_wal_receive_lsn()</code> is not enough, as it only shows that the WAL the standby received has been replayed.</p>
+</li>
+<li><p>Run pg_checksums on the data directory of each node in the replication setup. Nodes can be processed in parallel while they are shut down. Processing must complete successfully on all nodes before continuing.</p>
+</li>
+<li><p>Start the nodes normally, verify that <a href="#guc-data-checksums">???</a> matches on all of them, and monitor the logs of the standbys for data checksum state mismatch warnings.</p>
+</li>
+</ol>
+<p>The replay requirement in <a href="#shut-down-nodes">step_title</a> exists because an offline change is recorded only in the control file and has no defined ordering against WAL the node has not replayed yet; see <a href="#checksums-offline-enable-disable">???</a>. A node stopped before replaying an online checksum state change applies that change when it is restarted, overriding the offline change, and the states of the nodes silently diverge until a later checkpoint record triggers the warning described below. Because of this it is best not to mix the two mechanisms: change the state of a replication setup either with the offline procedure above or with an online transition, and make sure the previous change has reached every node before starting the next one.</p>
+<p>If the change is applied inconsistently, each node keeps its own state, and a standby logs a warning when the state recorded in the replayed WAL differs from its own. The same warning can appear transiently while a standby catches up over WAL written before a consistent change; it stops once a checkpoint record carrying the new state has been replayed.</p>
+<p>A standby whose data directory was never checksummed must not have checksums enabled by catching up this way. Converge the cluster by running pg_checksums on it while stopped as outlined above, by enabling checksums online, or by recreating it from a base backup. Note that an online enable only starts from a primary whose checksums are off, so if they are already enabled there, disable them online first.</p>
+<p>If pg_checksums is aborted or killed while enabling or disabling checksums, the cluster&#39;s data checksum configuration remains unchanged, and pg_checksums can be re-run to perform the same operation.</p>
+<p>Tools that copy relation file blocks directly between nodes, such as <a href="#app-pgrewind">???</a>, require all nodes to be in the same data checksum state, else there is risk for data corruption.</p>
+<p>The target cluster must have the same major version as pg_checksums.</p>
