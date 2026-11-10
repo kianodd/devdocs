@@ -1,0 +1,261 @@
+<p>On this page</p>
+<p>backlinks : none</p>
+<p>depth : 1</p>
+<p>class : singlecol</p>
+<p>Index builds use an optimized build process that holds an exclusive lock on the collection briefly at the beginning and end of the index build. The rest of the build process yields to interleaving read and write operations. For a detailed description of index build process and locking behavior, see index-build-process.</p>
+<p>Index builds on a replica set or sharded cluster build simultaneously across all data-bearing replica set members. The primary requires a minimum number of data-bearing voting members (that is, commit quorum), including itself, that must complete the build before marking the index as ready for use. A &quot;voting&quot; member is any replica set member where [members[n].votes] is greater than <code>0</code>. See index-operations-replicated-build for more information.</p>
+<p>Starting in MongoDB 7.1, index builds are improved with faster error reporting and increased failure resilience. You can also set the minimum available disk space required for index builds using the new [indexBuildMinAvailableDiskSpaceMB] parameter, which stops index builds if disk space is too low.</p>
+<p>The following table compares the index build behavior starting in MongoDB 7.1 with earlier versions.</p>
+<p>widths : 50 50</p>
+<ul>
+<li><p>Behavior Starting in MongoDB 7.1</p>
+<ul>
+<li>Behavior in Earlier MongoDB Versions</li>
+</ul>
+</li>
+<li><p>Index errors found during the collection scan phase, except</p>
+<p>: duplicate key errors, are returned immediately and then the index build stops. Earlier MongoDB versions return errors in the commit phase, which occurs near the end of the index build. MongoDB 7.1 helps you to rapidly diagnose index errors. For example, if an incompatible index value format is found, the error is returned to you immediately.</p>
+<p>- Index build errors can take a long time to be returned compared to</p>
+<p>: MongoDB 7.1 because the errors are returned near the end of the index build in the commit phase.</p>
+</li>
+<li><p>Increased resilience for your deployment. If an index build error</p>
+<p>occurs, a secondary member can request that the primary member stop an index build and the secondary member does not crash. A request to stop an index build is not always possible : if a member has already voted to commit the index, then the secondary cannot request that the index build stop and the secondary crashes (similar to MongoDB 7.0 and earlier).</p>
+<ul>
+<li>An index build error can cause a secondary member to crash.</li>
+</ul>
+</li>
+<li><p>Improved disk space management for index builds. An index build</p>
+<p>: may be automatically stopped if the available disk space is below the minimum specified in the [indexBuildMinAvailableDiskSpaceMB] parameter. If a member has already voted to commit the index, then the index build is not stopped.</p>
+<p>- An index build is not stopped if there is insufficient available</p>
+<p>: disk space.</p>
+</li>
+</ul>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">For information about creating indexes in Atlas, refer to the \[index management\] page in the Atlas documentation. ::</p><h2 id="behavior">Behavior</h2>
+<h3 id="comparison-to-foreground-and-background-builds">Comparison to Foreground and Background Builds</h3>
+<p>Previous versions of MongoDB supported building indexes either in the foreground or background. Foreground index builds were fast and produced more efficient index data structures, but required blocking all read-write access to the parent database of the collection being indexed for the duration of the build. Background index builds were slower and produced less efficient results, but allowed read-write access to the database and its collections during the build.</p>
+<p>Index builds now obtain an exclusive lock on the collection being indexed only at the start and end of the build. The rest of the build process uses the yielding behavior of background index builds to maximize read-write access to the collection during the build. Index builds still produce efficient index data structures despite the more permissive locking behavior.</p>
+<p>The optimized index build performance is at least on par with background index builds. For workloads with few or no updates received during the build process, optimized index builds can be as fast as a foreground index build on that same data.</p>
+<p>Use [db.currentOp()] to monitor the progress of ongoing index builds.</p>
+<p>MongoDB ignores the <code>background</code> index build option if specified to [createIndexes] or its shell helpers [~db.collection.createIndex()] and [~db.collection.createIndexes()].</p>
+<h3 id="constraint-violations-during-index-build">Constraint Violations During Index Build</h3>
+<p>For indexes that enforce constraints on the collection, such as unique indexes, the [~bin.mongod] checks all pre-existing and concurrently-written documents for violations of those constraints <em>after</em> the index build completes. Documents that violate the index constraints can exist during the index build. If any documents violate the index constraints at the end of the build, the <code>mongod</code> terminates the build and throws an error.</p>
+<p>For example, consider a populated collection <code>inventory</code>. An administrator wants to create a unique index on the <code>product_sku</code> field. If any documents in the collection have duplicate values for <code>product_sku</code>, the index build can still start successfully. If any violations still exist at the end of the build, the <code>mongod</code> terminates the build and throws an error.</p>
+<p>Similarly, an application can successfully write documents to the <code>inventory</code> collection with duplicate values of <code>product_sku</code> while the index build is in progress.</p>
+<p>To mitigate the risk of index build failure due to constraint violations:</p>
+<ul>
+<li>Validate that no documents in the collection violate the index constraints.</li>
+<li>Stop all writes to the collection from applications that cannot guarantee violation-free write operations.</li>
+</ul>
+<h4 id="sharded-collections">Sharded Collections</h4>
+<p>For a sharded collection distributed across multiple shards, one or more shards may contain a chunk with duplicate documents. As such, the create index operation may succeed on some of the shards (that is, the ones without duplicates) but not on others (that is, the ones with duplicates). To avoid leaving inconsistent indexes across shards, you can issue the [db.collection.dropIndex()] from a [~bin.mongos] to drop the index from the collection.</p>
+<p>To mitigate the risk of this occurrence, before creating the index:</p>
+<ul>
+<li>Validate that no documents in the collection violate the index constraints.</li>
+<li>Stop all writes to the collection from applications that cannot guarantee violation-free write operations.</li>
+</ul>
+<p>:::note
+index-creation-index-consistency</p>
+</div></aside>
+<h3 id="maximum-concurrent-index-builds">Maximum Concurrent Index Builds</h3>
+<p>By default, the server allows up to three concurrent index builds. To change the number of allowed concurrent index builds, modify the [maxNumActiveUserIndexBuilds] parameter.</p>
+<p>If the number of concurrent index builds reaches the limit specified by <code>maxNumActiveUserIndexBuilds</code>, the server blocks additional index builds until the number of concurrent index builds drops below the limit.</p>
+<h2 id="index-build-impact-on-database-performance">Index Build Impact on Database Performance</h2>
+<h3 id="index-builds-during-write-heavy-workloads">Index Builds During Write-Heavy Workloads</h3>
+<p>Building indexes when the target collection is under heavy write load can result in reduced write performance and longer index builds.</p>
+<p>Consider designating a maintenance window during which applications stop or reduce write operations against the collection. Start the index build during this maintenance window.</p>
+<h3 id="insufficient-available-system-memory-ram">Insufficient Available System Memory (RAM)</h3>
+<p>[createIndexes] supports building one or more indexes on a collection. [createIndexes] uses a combination of memory and temporary files on disk to build indexes. In self-hosted MongoDB deployments, the default value of the [maxIndexBuildMemoryUsageMegabytes] parameter is 200 megabytes per [createIndexes] command. [createIndexes] shares the memory limit equally among all the indexes it builds. For example, if you build 10 indexes with one [createIndexes] command, MongoDB allocates each index 20 megabytes for the index build process. When you reach the memory limit, MongoDB creates temporary files in the [_tmp] subdirectory within [--dbpath ] to complete the build.</p>
+<p>When using the default [maxNumActiveUserIndexBuilds] of [3], the total memory usage for all concurrent index builds can reach up to three times the value of [maxIndexBuildMemoryUsageMegabytes].</p>
+<p>In self-hosted MongoDB deployments, you can change the memory limit for index builds by setting the [maxIndexBuildMemoryUsageMegabytes] parameter. Increasing this parameter is only necessary in rare cases. Such cases include running many simultaneous index builds with a single [createIndexes] command or indexing a data set larger than 500GB. You can also set [maxNumActiveUserIndexBuilds] to adjust how many index builds can run concurrently.</p>
+<p>On {+atlas+}, the default values of [maxIndexBuildMemoryUsageMegabytes] and [maxNumActiveUserIndexBuilds] vary by cluster tier. You cannot modify [maxIndexBuildMemoryUsageMegabytes] on {+atlas+}.</p>
+<p>If the host machine has limited available free RAM, you may need to schedule a maintenance period to increase the total system RAM before you can modify the <code>mongod</code> RAM usage.</p>
+<h2 id="index-builds-in-replicated-environments">Index Builds in Replicated Environments[]</h2>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">If a data-bearing voting node becomes unreachable and the commitQuorum is set to the default [votingMembers], index builds can hang until that node comes back online. ::</p><p>The build process is summarized as follows:</p>
+<ol>
+<li><p>The primary receives the [createIndexes] command and immediately creates a &quot;startIndexBuild&quot; oplog entry associated with the index build.</p>
+</li>
+<li><p>The secondaries start the index build after they replicate the &quot;startIndexBuild&quot; oplog entry.</p>
+</li>
+<li><p>Each member &quot;votes&quot; to commit the build once it finishes indexing data in the collection.</p>
+</li>
+<li><p>Secondary members continue to process any new write operations into the index while waiting for the primary to confirm a quorum of votes.</p>
+</li>
+<li><p>When the primary has a quorum of votes, it checks for any key constraint violations such as duplicate key errors.</p>
+<ul>
+<li>If there are no key constraint violations, the primary completes the index build, marks the index as ready for use, and creates an associated &quot;commitIndexBuild&quot; oplog entry.</li>
+<li>If there are any key constraint violations, the index build fails. The primary aborts the index build and creates an associated &quot;abortIndexBuild&quot; oplog entry.</li>
+</ul>
+</li>
+<li><p>The secondaries replicate the &quot;commitIndexBuild&quot; oplog entry and complete the index build.</p>
+<p>If the secondaries instead replicate an &quot;abortIndexBuild&quot; oplog entry, they abort the index build and discard the build job.</p>
+</li>
+</ol>
+<p>For sharded clusters, the index build occurs only on shards containing data for the collection being indexed.</p>
+<p>For a more detailed description of the index build process, see index-build-process.</p>
+<p>By default, index builds use a commit quorum of <code>&quot;votingMembers&quot;</code>, or all data-bearing voting members. To start an index build with a non-default commit quorum, specify the commitQuorum parameter to [createIndexes] or its shell helpers [db.collection.createIndex()] and [db.collection.createIndexes()].</p>
+<p>To modify the commit quorum required for an in-progress simultaneous index build, use the [setIndexCommitQuorum] command.</p>
+<p>:::warning Avoid performing rolling index and replicated index build processes concurrently as it might lead to unexpected issues, such as broken builds and crash loops. ::</p>
+<p>:::note
+Rolling index builds take at most one replica set member at a time, starting with the secondary members, and build the index on that member as a standalone. Rolling index builds require at least one replica set election. Use rolling index builds only if you meet the requirements listed on the rolling index pages , as the procedure lowers the resiliency of the cluster.</p>
+</div></aside>
+<h3 id="commit-quorum-contrasted-with-write-concern">Commit Quorum Contrasted with Write Concern</h3>
+<p>There are important differences between commit quorums</p>
+<p>: and write concerns</p>
+<p>:</p>
+<ul>
+<li>Index builds use commit quorums.</li>
+<li>Write operations use write concerns.</li>
+</ul>
+<p>Each data-bearing node in a cluster is a voting member.</p>
+<p>The commit quorum specifies how many data-bearing voting members, or which voting members, including the primary, must be prepared to commit a simultaneous index build before the primary will execute the commit.</p>
+<p>The write concern is the level of acknowledgment that the write has propagated to the specified number of instances.</p>
+<h2 id="build-failure-and-recovery">Build Failure and Recovery</h2>
+<p>Interrupted Index Builds on {+atlas-infinite-full+} ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~</p>
+<p>On {+atlas-infinite-full+} clusters, an interrupted [createIndexes] operation always resumes.</p>
+<p>This differs from interrupted index builds on {+atlas-core-full+} clusters and self-managed deployments, which are described in the following sections.</p>
+<h3 id="interrupted-index-builds-on-primary-and-secondary-mongod">Interrupted Index Builds on Primary and Secondary <code>mongod</code></h3>
+<p>If a primary or secondary <code>mongod</code> performs a clean [shutdown] with <code>&quot;force&quot; : true</code> or receives a <code>SIGTERM</code> signal during an index build, and the commitQuorum is set to the default <code>votingMembers</code>, the index build progress is saved to disk. The <code>mongod</code> automatically recovers the index build when restarted and continues from the saved checkpoint.</p>
+<p>If the <code>mongod</code> crashes instead of shutting down cleanly, the index build cannot resume regardless of the commit quorum setting. The index build restarts from the beginning when the <code>mongod</code> comes back online.</p>
+<p>An index build can resume from a saved checkpoint only once. If the <code>mongod</code> restarts again while that same index build is still in progress, the build restarts from the beginning instead of resuming from a checkpoint.</p>
+<p>The <code>mongod</code> can perform the startup process while recovering index builds.</p>
+<p>If you restart the <code>mongod</code> as a standalone (that is, removing or commenting out [replication.replSetName] or omitting [--replSetName ]), the <code>mongod</code> cannot restart the index build. The build remains in a paused state until it is manually [dropped ].</p>
+<h3 id="interrupted-index-builds-on-standalone-mongod">Interrupted Index Builds on Standalone <code>mongod</code></h3>
+<p>If the <code>mongod</code> shuts down during the index build, the index build job and all progress is lost. Restarting the <code>mongod</code> does not restart the index build. You must re-issue the [~db.collection.createIndex()] operation to restart the index build.</p>
+<h3 id="rollbacks-during-build-process">Rollbacks during Build Process</h3>
+<p>Starting in MongoDB 5.0, if a node is rolled back to a prior state during the index build, the index build progress is saved to disk. If there is still work to be done when the rollback concludes, the <code>mongod</code> automatically recovers the index build and continues from the saved checkpoint.</p>
+<p>MongoDB can pause an in-progress index build to perform a rollback .</p>
+<ul>
+<li>If the rollback does not revert the index build, MongoDB restarts the index build after completing the rollback.</li>
+<li>If the rollback reverts the index build, you must re-create the index or indexes after the rollback completes.</li>
+</ul>
+<h3 id="index-consistency-checks-for-sharded-collections">Index Consistency Checks for Sharded Collections</h3>
+<p>A sharded collection has an inconsistent index if the collection does not have the exact same indexes (including the index options) on each shard that contains chunks for the collection. Although inconsistent indexes should not occur during normal operations, they can occur in the following scenarios:</p>
+<ul>
+<li>When creating an index with a <code>unique</code> key constraint and one shard contains a chunk with duplicate documents. In such cases, the create index operation may succeed on the shards without duplicates but not on the shard with duplicates.</li>
+<li>When creating an index across the shards in a rolling manner (that is, manually building the index one by one across the shards) but either fails to build the index for an associated shard or incorrectly builds an index with different specification.</li>
+</ul>
+<p>The config server primary periodically checks for index inconsistencies across the shards for sharded collections. To configure these periodic checks, see [enableShardedIndexConsistencyCheck] and [shardedIndexConsistencyCheckIntervalMS].</p>
+<p>The command [serverStatus] returns the field [shardedIndexConsistency] to report on index inconsistencies when run on the config server primary.</p>
+<p>To check if a sharded collection has inconsistent indexes, see manage-indexes-find-inconsistent-indexes.</p>
+<h2 id="monitor-in-progress-index-builds">Monitor In Progress Index Builds</h2>
+<p>To see the status of an index build operation, you can use the [db.currentOp()] method in [~bin.mongosh]. To filter the current operations for index creation operations, see currentOp-index-creation for an example.</p>
+<p>The [~$currentOp.msg] field includes a percentage-complete measurement of the current stage in the index build process.</p>
+<h3 id="observe-stopped-and-resumed-index-builds-in-the-logs">Observe Stopped and Resumed Index Builds in the Logs</h3>
+<p>While an index is being built, progress is written to the MongoDB log. If an index build is stopped and resumed there will be log messages with fields like these:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Terminal</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-bash">
+<span class="tk-str">"msg"</span>:"Index build: wrote resumable state to disk",
+
+<span class="tk-str">"msg"</span>:"Found index from unfinished build",</code></pre></div></figure>
+<h2 id="terminate-in-progress-index-builds">Terminate In Progress Index Builds</h2>
+<p>Use the [dropIndexes] command or its shell helpers [~db.collection.dropIndex()] or [~db.collection.dropIndexes()] to terminate an in-progress index build. See dropIndexes-cmd-index-builds for more information.</p>
+<p>Do <em>not</em> use [killOp] to terminate an in-progress index builds in replica sets or sharded clusters.</p>
+<h2 id="index-build-process">Index Build Process</h2>
+<p>The following table describes each stage of the index build process:</p>
+<p>widths : 30 70</p>
+<ul>
+<li>Stage<ul>
+<li>Description</li>
+</ul>
+</li>
+<li>Lock<ul>
+<li>The [mongod] obtains an exclusive [X] lock on the the collection being indexed. This blocks all read and write operations on the collection, including the application of any replicated write operations or metadata commands that target the collection. The [mongod] does not yield this lock.</li>
+</ul>
+</li>
+<li>Initialization<ul>
+<li><p>The [mongod] creates three data structures at this initial state:</p>
+</li>
+<li><p>The initial index metadata entry.</p>
+</li>
+<li><p>A temporary table (&quot;side writes table&quot;) that stores keys</p>
+<p>: generated from writes to the collection being indexed during the build process.</p>
+</li>
+<li><p>A temporary table (&quot;constraint violation table&quot;) for all</p>
+<p>: documents that may cause a key generation error. Key generation errors occur when a document has invalid keys for the indexed fields. For example, a document with duplicate field values when building a unique index <em>or</em> malformed GeoJSON objects when building a 2dsphere index .</p>
+</li>
+</ul>
+</li>
+<li>Lock<ul>
+<li>The [mongod] downgrades the exclusive [X] collection lock to an intent exclusive [IX] lock. The [mongod] periodically yields this lock to interleaving read and write operations.</li>
+</ul>
+</li>
+<li>Scan Collection<ul>
+<li><p>For each document in the collection, the [mongod] generates a key for that document and dumps the key into an external sorter.</p>
+<p>If the [mongod] encounters a key generation error while generating a key during the collection scan, it stores that key in the constraint violation table for later processing.</p>
+<p>If the [mongod] encounters any other error while generating a key, the build fails with an error.</p>
+<p>Once the [mongod] completes the collection scan, it dumps the sorted keys into the index.</p>
+</li>
+</ul>
+</li>
+<li>Process Side Writes Table<ul>
+<li><p>The [mongod] drains the side write table using first-in-first-out priority.</p>
+<p>If the [mongod] encounters a key generation error while processing a key in the side write table, it stores that key in the constraint violation table for later processing.</p>
+<p>If the [mongod] encounters any other error while processing a key, the build fails with an error.</p>
+<p>For each document written to the collection during the build process, the [mongod] generates a key for that document and stores it in the side write table for later processing. The [mongod] uses a snapshot system to set a limit to the number of keys to process.</p>
+</li>
+</ul>
+</li>
+<li>Vote and Wait for Commit Quorum<ul>
+<li><p>A [mongod] that is <em>not</em> part of a replica set skips this stage.</p>
+<p>The [mongod] submits a &quot;vote&quot; to the primary to commit the index. Specifically, it writes the &quot;vote&quot; to an internal replicated collection on the primary.</p>
+<p>If the [mongod] is the primary, it waits until it has a commit quorum of votes (all voting data-bearing members by default) before continuing the index build process.</p>
+<p>If the [mongod] is a secondary, it waits until it replicates either a &quot;commitIndexBuild&quot; or &quot;abortIndexBuild&quot; oplog entry:</p>
+</li>
+<li><p>If the [mongod] replicates a &quot;commitIndexBuild&quot;</p>
+<p>: oplog entry, it finishes draining the side writes table and moves to the next stage in the index build process.</p>
+</li>
+<li><p>If the [mongod] replicates an &quot;abortIndexBuild&quot;</p>
+<p>: oplog entry, it aborts the index build and discards the build job.</p>
+<p>While waiting for commit quorum, the [mongod] adds any additional keys generated from write operations to the collection being indexed to the side writes table and periodically drains the table.</p>
+</li>
+</ul>
+</li>
+<li>Lock<ul>
+<li><p>The [mongod] upgrades the intent exclusive [IX] lock on the collection to a shared [S] lock. This blocks all write operations to the collection, including the application of any replicated write operations or metadata commands that target the collection.</p>
+<p>The [mongod] holds the [S] lock only while it drains the remaining records in the side writes table, and then releases it.</p>
+</li>
+</ul>
+</li>
+<li>Finish Processing Temporary Side Writes Table<ul>
+<li><p>The [mongod] continues draining remaining records in the side writes table. The [mongod] may pause replication during this stage.</p>
+<p>If the [mongod] encounters a key generation error while processing a key in the side write table, it stores that key in the constraint violation table for later processing.</p>
+<p>If the [mongod] encounters any other error while processing a key, the build fails with an error.</p>
+</li>
+</ul>
+</li>
+<li>Lock<ul>
+<li>After the [mongod] releases the [S] lock, it later acquires an exclusive [X] lock on the collection. This blocks all read and write operations on the collection, including the application of any replicated write operations or metadata commands that target the collection. The [mongod] does not yield this lock, but holds it only long enough to complete the final side writes drain, check constraint violations, and commit the index as ready.</li>
+</ul>
+</li>
+<li>Drop Side Write Table<ul>
+<li><p>The [mongod] applies any remaining operations in the side writes table before dropping it.</p>
+<p>If the [mongod] encounters a key generation error while processing a key in the side write table, it stores that key in the constraint violation table for later processing.</p>
+<p>If the [mongod] encounters any other error while processing a key, the build fails with an error.</p>
+<p>At this point, the index includes all data written to the collection.</p>
+</li>
+</ul>
+</li>
+<li>Process Constraint Violation Table<ul>
+<li><p>If the [mongod] is the primary, it drains the constraint violation table using first-in-first-out priority.</p>
+</li>
+<li><p>If no keys in the constraint violation table produce a key</p>
+<p>: generation error <em>or</em> if the table is empty, the [mongod] drops the table and creates a &quot;commitIndexBuild&quot; oplog entry. Secondaries can complete the associated index build after replicating the oplog entry.</p>
+</li>
+<li><p>If any key in the constraint violation table still produces a</p>
+<p>: key generation error, the [mongod] aborts the build and throws an error. The [mongod] creates an associated &quot;abortIndexBuild&quot; oplog entry to indicate that secondaries should abort and discard the index build job.</p>
+<p>If the [mongod] is a secondary, it drops the constraint violation table. Since the primary <em>must</em> successfully drain the constraint violation table prior to creating the &quot;commitOplogEntry&quot; oplog entry, the secondary can safely assume that no violations exist.</p>
+</li>
+</ul>
+</li>
+<li>Mark the Index as Ready<ul>
+<li>::: The [mongod] updates the index metadata to mark the index as ready for use. ::</li>
+</ul>
+</li>
+<li>Lock<ul>
+<li>The [mongod] releases the [X] lock on the collection.</li>
+</ul>
+</li>
+</ul>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>The <code>S</code> and <code>X</code> locks at the end of the index build are held only while the <code>mongod</code> drains the remaining side writes and finalizes the index, so they are typically brief. The duration depends on the number of writes remaining in the side writes table when each stage begins.</p>
+</div></aside>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>faq-concurrency</p>
+</div></aside>

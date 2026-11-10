@@ -1,0 +1,174 @@
+<p>On this page</p>
+<p>backlinks : none</p>
+<p>depth : 2</p>
+<p>class : singlecol</p>
+<p>The Crypto Shredding sample app demonstrates how you can make use of MongoDB&#39;s {+csfle+} ({+csfle-abbrev+}) to strengthen procedures for removing sensitive data.</p>
+<h2 id="about-the-sample-application">About the Sample Application</h2>
+<p>The right to erasure, also known as the right to be forgotten, is a right granted to individuals under laws and regulations such as GDPR. This means that companies storing an individual&#39;s personal data must be able to delete it on request. Because data can be spread across several systems, it can be technically challenging for these companies to identify and remove it from all places. Even when properly executed, there is the risk that deleted data can be restored from backups in the future, potentially creating legal and financial risks.</p>
+<aside class="callout callout-warning"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 4 2.8 20h18.4L12 4z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M12 10v4.4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="17" r="1.3" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Warning</p><p>MongoDB provides no guarantees that the solution and techniques described in this article fulfill all regulatory requirements around the right to erasure. Your organization must determine appropriate, sufficient measures to comply with regulatory requirements such as GDPR.</p>
+</div></aside>
+<p>The Crypto Shredding sample application demonstrates one way to implement a right to erasure. The demo application is a Python (Flask) Web application with a front end for adding users, logging in, and entering data. It also includes an &quot;Admin&quot; page to showcase crypto shredding functionality.</p>
+<p>You can install and run the application by following the instructions in the <a target="_blank" rel="noopener" href="https://github.com/mongodb-developer/mongodb-flask-cryptoshredding-example">GitHub repository</a>.</p>
+<h2 id="what-is-crypto-shredding">What is Crypto-Shredding?</h2>
+<p>Crypto-shredding, also called cryptographic erasure, is a data destruction technique where, instead of destroying encrypted data, you destroy the encryption keys necessary to decrypt it. This makes the data indecipherable.</p>
+<p>For example, imagine you are storing data for multiple users. You start by giving each user their own unique {+dek-long+} (DEK), and mapping it to that customer.</p>
+<p>In the diagram, &quot;User A&quot; and &quot;User B&quot; each have their own unique DEK in the key store. Each key is used to encrypt or decrypt data for its respective user:</p>
+<p>![](/images/devcenter_csfle_gdpr_deks.png)</p>
+<p>Let&#39;s assume that you want to remove all data for User B. If you remove User B&#39;s DEK, you can no longer decrypt their data. Everything in the datastore becomes indecipherable ciphertext. User A&#39;s data is unaffected, since their DEK still exists:</p>
+<p>![](/images/devcenter_csfle_gdpr_delete_user.png)</p>
+<h2 id="what-is-csfle-abbrev">What is {+csfle-abbrev+}?</h2>
+<p>With {+csfle-abbrev+} , applications can encrypt sensitive fields in documents prior to transmitting data to the server. Even when data is being used by the database in memory, it is never in plain text. The database stores and transmits encrypted data that is only deciphered by the client.</p>
+<p>{+csfle-abbrev+} uses envelope encryption, which is the practice of encrypting plaintext data with a data key, that is itself encrypted by a top level envelope key (also known as a &quot;{+cmk-long+}&quot;, or CMK).</p>
+<p>![](/images/devcenter_csfle_gdpr_dek_diagram.webp)</p>
+<h3 id="encryption-key-management">Encryption Key Management</h3>
+<p>CMKs are usually managed by a Key Management Service (KMS). {+csfle-abbrev+} supports multiple KMSs , including Amazon Web Services (AWS), Azure Key Vault, Google Cloud Platform (GCP), and keystores that support the KMIP standard, such as Hashicorp Keyvault. The sample app uses Amazon Web Services as the KMS.</p>
+<h3 id="automatic-and-manual-enc-title">Automatic and {+manual-enc-title+}</h3>
+<p>{+csfle-abbrev+} can be used in automatic</p>
+<p>:   or explicit mode, or a</p>
+<p>combination of both. The sample app uses {+manual-enc+}.</p>
+<ul>
+<li>With automatic encryption, you perform encrypted read and write operations based on a defined encryption schema , so you don&#39;t need application code to specify how to encrypt or decrypt fields.</li>
+<li>With {+manual-enc+}, you use the MongoDB driver&#39;s encryption library to manually encrypt or decrypt fields in your application.</li>
+</ul>
+<h2 id="sample-app-walkthrough">Sample App Walkthrough</h2>
+<p>The sample app uses {+csfle-abbrev+} with {+manual-enc+}, and Amazon Web Services as the KMS:</p>
+<p>![](/images/devcenter_csfle_gdpr_crypto_shredding_example.png)</p>
+<h3 id="adding-users">Adding Users</h3>
+<p>The app instantiates the <code>ClientEncryption</code> class by initializing an <code>app.mongodb_encryption_client</code> object. This encryption client is responsible for generating DEKs, and then encrypting them using a CMK from the AWS KMS.</p>
+<p>When a user signs up, the application generates a unique DEK for them using the <code>create_data_key</code> method, then returns the <code>data_key_id</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Python</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-python">
+<span class="hljs-comment"># flaskapp/db_queries.py</span>
+
+<span class="hljs-meta">@aws_credential_handler</span>
+<span class="hljs-keyword">def</span> <span class="hljs-title function_">create_key</span>(<span class="hljs-params">userId</span>):
+   data_key_id = \app.mongodb_encryption_client.create_data_key
+      (kms_provider, master_key, key_alt_names=[userId])
+   <span class="hljs-keyword">return</span> data_key_id</code></pre></div></figure>
+<p>The app then uses this method when saving user information:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Python</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-python">
+<span class="hljs-comment"># flaskapp/user.py</span>
+
+<span class="hljs-keyword">def</span> <span class="hljs-title function_">save</span>(<span class="hljs-params">self</span>):
+   dek_id = db_queries.create_key(<span class="hljs-variable language_">self</span>.username)
+   result = app.mongodb[db_name].user.insert_one(
+      {
+         <span class="hljs-string">&quot;username&quot;</span>: <span class="hljs-variable language_">self</span>.username,
+         <span class="hljs-string">&quot;password_hash&quot;</span>: <span class="hljs-variable language_">self</span>.password_hash,
+         <span class="hljs-string">&quot;dek_id&quot;</span>: dek_id,
+         <span class="hljs-string">&quot;createdAt&quot;</span>: datetime.now(),
+      }
+   )
+   <span class="hljs-keyword">if</span> result:
+      <span class="hljs-variable language_">self</span>.<span class="hljs-built_in">id</span> = result.inserted_id
+      <span class="hljs-keyword">return</span> <span class="hljs-literal">True</span>
+   <span class="hljs-keyword">else</span>:
+      <span class="hljs-keyword">return</span> <span class="hljs-literal">False</span></code></pre></div></figure>
+<h3 id="adding-and-encrypting-data">Adding and Encrypting Data</h3>
+<p>Once registered, a user can log in and enter data as key-value pairs via an input form:</p>
+<p>![](/images/devcenter_csfle_gdpr_data_input_form.png)</p>
+<p>The database stores this data in a MongoDB collection named &quot;data,&quot; where each document includes the username and the key-value pair:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>JSON</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-json">
+<span class="hljs-punctuation">{</span>
+   <span class="hljs-attr">&quot;name&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;shoe size&quot;</span><span class="hljs-punctuation">,</span>
+   <span class="hljs-attr">&quot;value&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;10&quot;</span><span class="hljs-punctuation">,</span>
+   <span class="hljs-attr">&quot;username&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;tom&quot;</span>
+<span class="hljs-punctuation">}</span></code></pre></div></figure>
+<p>The sample app encrypts the <code>value</code> and <code>username</code> fields, but not the <code>name</code>. The app encrypts fields with the user&#39;s DEK and a specified encryption algorithm:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Python</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-python">
+<span class="hljs-comment"># flaskapp/db_queries.py</span>
+
+<span class="hljs-comment"># Fields to encrypt, and the algorithm to encrypt them with</span>
+ENCRYPTED_FIELDS = {
+   <span class="hljs-comment"># Deterministic encryption for username, because we need to search on it</span>
+   <span class="hljs-string">&quot;username&quot;</span>: Algorithm.AEAD_AES_256_CBC_HMAC_SHA_512_Deterministic,
+   <span class="hljs-comment"># Random encryption for value, as we don&#x27;t need to search on it</span>
+   <span class="hljs-string">&quot;value&quot;</span>: Algorithm.AEAD_AES_256_CBC_HMAC_SHA_512_Random,
+}</code></pre></div></figure>
+<p>The <code>insert_data</code> function takes an unencrypted document and loops over the <code>ENCRYPTED_FIELDS</code> to encrypt them:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Python</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-python">
+<span class="hljs-comment"># flaskapp/db_queries.py</span>
+
+<span class="hljs-keyword">def</span> <span class="hljs-title function_">insert_data</span>(<span class="hljs-params">document</span>):
+   document[<span class="hljs-string">&quot;username&quot;</span>] = current_user.username
+   <span class="hljs-comment"># Loop over the field names (and associated algorithm) we want to encrypt</span>
+   <span class="hljs-keyword">for</span> field, algo <span class="hljs-keyword">in</span> ENCRYPTED_FIELDS.items():
+      <span class="hljs-comment"># if the field exists in the document, encrypt it</span>
+      <span class="hljs-keyword">if</span> document.get(field):
+         document[field] = encrypt_field(document[field], algo)
+   <span class="hljs-comment"># Insert document (now with encrypted fields) to the data collection</span>
+   app.data_collection.insert_one(document)</code></pre></div></figure>
+<p>If the specified field exists in the document, the function calls <code>encrypt_field</code> to encrypt it using the specified algorithm:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Python</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-python">
+<span class="hljs-comment"># flaskapp/db_queries.py</span>
+
+<span class="hljs-comment"># Encrypt a single field with the given algorithm</span>
+<span class="hljs-meta">@aws_credential_handler</span>
+<span class="hljs-keyword">def</span> <span class="hljs-title function_">encrypt_field</span>(<span class="hljs-params">field, algorithm</span>):
+   <span class="hljs-keyword">try</span>:
+      field = app.mongodb_encryption_client.encrypt(
+         field,
+         algorithm,
+         key_alt_name=current_user.username,
+      )
+      <span class="hljs-keyword">return</span> field
+   <span class="hljs-keyword">except</span> pymongo.errors.EncryptionError <span class="hljs-keyword">as</span> ex:
+      <span class="hljs-comment"># Catch this error in case the DEK doesn&#x27;t exist. Log a warning and </span>
+      <span class="hljs-comment"># re-raise the exception</span>
+      <span class="hljs-keyword">if</span> <span class="hljs-string">&quot;not all keys requested were satisfied&quot;</span> <span class="hljs-keyword">in</span> ex._message:
+         app.logger.warn(
+            <span class="hljs-string">f&quot;Encryption failed: could not find data encryption key for user: <span class="hljs-subst">{current_user.username}</span>&quot;</span>
+         )
+      <span class="hljs-keyword">raise</span> ex</code></pre></div></figure>
+<p>After adding data, you can see it in the Web app:</p>
+<p>![](/images/devcenter_csfle_gdpr_demo_data_entered.png)</p>
+<h3 id="deleting-an-encryption-key">Deleting an Encryption Key</h3>
+<p>Now let&#39;s see what happens when you delete the DEK. The sample app does this from an admin page, which should be restricted to only those individuals with authorization to manage keys:</p>
+<p>![](/images/devcenter_csfle_gdpr_demo_admin_page.png)</p>
+<p>The &quot;Delete data encryption key&quot; option removes the DEK, but leaves the user&#39;s encrypted data in place. After that, the application can no longer decrypt the data. Trying to retrieve the data for the logged in user throws an error:</p>
+<p>![](/images/devcenter_csfle_gdpr_demo_error_message.png)</p>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>After deleting the DEK, the application may still be able to decrypt and show data until its cache expires, up to 60 seconds later.</p>
+</div></aside>
+<p>But what is actually left in the database? You can review the information by returning to the Admin page and clicking Fetch data for all users. This view doesn&#39;t throw an exception if the application can&#39;t decrypt the data. Instead, it shows exactly what is stored in the database.</p>
+<p>Even though you haven&#39;t actually deleted the user&#39;s data, because the data encryption key no longer exists, the application can only show the ciphertext for the encrypted fields &quot;username&quot; and &quot;value&quot;.</p>
+<p>![](/images/devcenter_csfle_gdpr_raw_ciphertext.png)</p>
+<p>Here is the code used to fetch this data. It uses similar logic to the <code>encrypt</code> method shown earlier. The application runs a <code>find</code> operation without any filters to retrieve all data, then loops over the <code>ENCRYPTED_FIELDS</code> dictionary to decrypt fields:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Python</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-python">
+<span class="hljs-comment"># flaskapp/db_queries.py</span>
+
+<span class="hljs-keyword">def</span> <span class="hljs-title function_">fetch_all_data_unencrypted</span>(<span class="hljs-params">decrypt=<span class="hljs-literal">False</span></span>):
+   results = <span class="hljs-built_in">list</span>(app.data_collection.find())
+
+   <span class="hljs-keyword">if</span> decrypt:
+      <span class="hljs-keyword">for</span> field <span class="hljs-keyword">in</span> ENCRYPTED_FIELDS.keys():
+         <span class="hljs-keyword">for</span> result <span class="hljs-keyword">in</span> results:
+            <span class="hljs-keyword">if</span> result.get(field):
+               result[field], result[<span class="hljs-string">&quot;encryption_succeeded&quot;</span>] = decrypt_field(result[field])
+   <span class="hljs-keyword">return</span> results</code></pre></div></figure>
+<p>The <code>decrypt_field</code> function is called for each field to be decrypted, but in this case the application catches the error if it can&#39;t successfully decrypt it due to a missing DEK:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Python</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-python">
+<span class="hljs-comment"># flaskapp/db_queries.py</span>
+
+<span class="hljs-comment"># Try to decrypt a field, returning a tuple of (value, status). This will be</span>
+either (decrypted_value, <span class="hljs-literal">True</span>), <span class="hljs-keyword">or</span> (raw_cipher_text, <span class="hljs-literal">False</span>) <span class="hljs-keyword">if</span> we 
+couldn<span class="hljs-string">&#x27;t decrypt
+def decrypt_field(field):
+   try:
+      # We don&#x27;</span>t need to <span class="hljs-keyword">pass</span> the DEK <span class="hljs-keyword">or</span> algorithm to decrypt a field
+      field = app.mongodb_encryption_client.decrypt(field)
+      <span class="hljs-keyword">return</span> field, <span class="hljs-literal">True</span>
+   <span class="hljs-comment"># Catch this error in case the DEK doesn&#x27;t exist.</span>
+   <span class="hljs-keyword">except</span> pymongo.errors.EncryptionError <span class="hljs-keyword">as</span> ex:
+      <span class="hljs-keyword">if</span> <span class="hljs-string">&quot;not all keys requested were satisfied&quot;</span> <span class="hljs-keyword">in</span> ex._message:
+         app.logger.warn(
+            <span class="hljs-string">&quot;Decryption failed: could not find data encryption key to decrypt the record.&quot;</span>
+         )
+         <span class="hljs-comment"># If we can&#x27;t decrypt due to missing DEK, return the &quot;raw&quot; value.</span>
+         <span class="hljs-keyword">return</span> field, <span class="hljs-literal">False</span>
+      <span class="hljs-keyword">raise</span> ex</code></pre></div></figure>
+<p>You can also use the mongosh shell to check directly in the database, to prove that there&#39;s nothing readable:</p>
+<p>![](/images/devcenter_csfle_gdpr_mongosh.png)</p>
+<p>At this point, the user&#39;s encrypted data is still present. Someone could gain access to it by restoring their encryption key, such as from a database backup.</p>
+<p>To prevent this, the sample application uses two separate database clusters: one for storing data, and one for storing DEKs (the &quot;key vault&quot;). Using separate clusters decouples the restoration of backups for application data and the key vault. Restoring the data cluster from a backup doesn&#39;t restore any DEKs that were deleted from the key vault cluster.</p>
+<h2 id="conclusion">Conclusion</h2>
+<p>{+csfle+} can simplify the task of &quot;forgetting&quot; certain data. By deleting data keys, you can effectively forget data that exists across different databases, collections, backups, and logs.</p>
+<p>In a production application, you might also delete the encrypted data itself, on top of removing the encryption key. This &quot;defense in depth&quot; approach helps ensure that data is really gone. Implementing crypto shredding on top of data deletion minimizes the impact if a delete operation fails, or doesn&#39;t include data that should have been wiped.</p>
