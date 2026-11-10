@@ -1,0 +1,370 @@
+<p><em>September 2, 2014</em></p>
+<p>Welcome to Django 1.7!</p>
+<p>These release notes cover the new features , as well as some backwards incompatible changes you&#39;ll want to be aware of when upgrading from Django 1.6 or older versions. We&#39;ve begun the deprecation process for some features , and some features have reached the end of their deprecation process and have been removed .</p>
+<h2 id="python-compatibility">Python compatibility</h2>
+<p>Django 1.7 requires Python 2.7, 3.2, 3.3, or 3.4. We <strong>highly recommend</strong> and only officially support the latest release of each series.</p>
+<p>The Django 1.6 series is the last to support Python 2.6. Django 1.7 is the first release to support Python 3.4.</p>
+<p>This change should affect only a small number of Django users, as most operating-system vendors today are shipping Python 2.7 or newer as their default version. If you&#39;re still using Python 2.6, however, you&#39;ll need to stick to Django 1.6 until you can upgrade your Python version. Per [our support policy ](internals/release-process.rst), Django 1.6 will continue to receive security support until the release of Django 1.8.</p>
+<h2 id="what39s-new-in-django-17">What&#39;s new in Django 1.7</h2>
+<h3 id="schema-migrations">Schema migrations</h3>
+<p>Django now has built-in support for schema migrations. It allows models to be updated, changed, and deleted by creating migration files that represent the model changes and which can be run on any development, staging or production database.</p>
+<p>Migrations are covered in [their own documentation](topics/migrations.rst), but a few of the key features are:</p>
+<ul>
+<li><p><code>syncdb</code> has been deprecated and replaced by <code>migrate</code>. Don&#39;t worry -calls to <code>syncdb</code> will still work as before.</p>
+</li>
+<li><p>A new <code>makemigrations</code> command provides an easy way to autodetect changes to your models and make migrations for them.</p>
+<p><code>django.db.models.signals.pre_syncdb</code> and <code>django.db.models.signals.post_syncdb</code> have been deprecated, to be replaced by [~django.db.models.signals.pre_migrate] and [~django.db.models.signals.post_migrate] respectively. These new signals have slightly different arguments. Check the documentation for details.</p>
+</li>
+<li><p>The <code>allow_syncdb</code> method on database routers is now called <code>allow_migrate</code>, but still performs the same function. Routers with <code>allow_syncdb</code> methods will still work, but that method name is deprecated and you should change it as soon as possible (nothing more than renaming is required).</p>
+</li>
+<li><p><code>initial_data</code> fixtures are no longer loaded for apps with migrations; if you want to load initial data for an app, we suggest you create a migration for your application and define a [~django.db.migrations.operations.RunPython] or [~django.db.migrations.operations.RunSQL] operation in the <code>operations</code> section of the migration.</p>
+</li>
+<li><p>Test rollback behavior is different for apps with migrations; in particular, Django will no longer emulate rollbacks on non-transactional databases or inside <code>TransactionTestCase</code> unless specifically requested .</p>
+</li>
+<li><p>It is not advised to have apps without migrations depend on (have a [~django.db.models.ForeignKey] or [~django.db.models.ManyToManyField] to) apps with migrations.</p>
+</li>
+</ul>
+<h3 id="app-loading-refactor">App-loading refactor</h3>
+<p>Historically, Django applications were tightly linked to models. A singleton known as the &quot;app cache&quot; dealt with both installed applications and models. The models module was used as an identifier for applications in many APIs.</p>
+<p>As the concept of [Django applications ](ref/applications.rst) matured, this code showed some shortcomings. It has been refactored into an &quot;app registry&quot; where models modules no longer have a central role and where it&#39;s possible to attach configuration data to applications.</p>
+<p>Improvements thus far include:</p>
+<ul>
+<li>Applications can run code at startup, before Django does anything else, with the [~django.apps.AppConfig.ready] method of their configuration.</li>
+<li>Application labels are assigned correctly to models even when they&#39;re defined outside of <code>models.py</code>. You don&#39;t have to set [~django.db.models.Options.app_label] explicitly any more.</li>
+<li>It is possible to omit <code>models.py</code> entirely if an application doesn&#39;t have any models.</li>
+<li>Applications can be relabeled with the [~django.apps.AppConfig.label] attribute of application configurations, to work around label conflicts.</li>
+<li>The name of applications can be customized in the admin with the [~django.apps.AppConfig.verbose_name] of application configurations.</li>
+<li>The admin automatically calls [~django.contrib.admin.autodiscover] when Django starts. You can consequently remove this line from your URLconf.</li>
+<li>Django imports all application configurations and models as soon as it starts, through a deterministic and straightforward process. This should make it easier to diagnose import issues such as import loops.</li>
+</ul>
+<h3 id="new-method-on-field-subclasses">New method on Field subclasses</h3>
+<p>To help power both schema migrations and to enable easier addition of composite keys in future releases of Django, the [~django.db.models.Field] API now has a new required method: <code>deconstruct()</code>.</p>
+<p>This method takes no arguments, and returns a tuple of four items:</p>
+<ul>
+<li><code>name</code>: The field&#39;s attribute name on its parent model, or <code>None</code> if it is not part of a model</li>
+<li><code>path</code>: A dotted, Python path to the class of this field, including the class name.</li>
+<li><code>args</code>: Positional arguments, as a list</li>
+<li><code>kwargs</code>: Keyword arguments, as a dict</li>
+</ul>
+<p>These four values allow any field to be serialized into a file, as well as allowing the field to be copied safely, both essential parts of these new features.</p>
+<p>This change should not affect you unless you write custom Field subclasses; if you do, you may need to reimplement the <code>deconstruct()</code> method if your subclass changes the method signature of <code>__init__</code> in any way. If your field just inherits from a built-in Django field and doesn&#39;t override <code>__init__</code>, no changes are necessary.</p>
+<p>If you do need to override <code>deconstruct()</code>, a good place to start is the built-in Django fields (<code>django/db/models/fields/__init__.py</code>) as several fields, including <code>DecimalField</code> and <code>DateField</code>, override it and show how to call the method on the superclass and simply add or remove extra arguments.</p>
+<p>This also means that all arguments to fields must themselves be serializable; to see what we consider serializable, and to find out how to make your own classes serializable, read the migration serialization documentation .</p>
+<h3 id="calling-custom-queryset-methods-from-the-manager">Calling custom <code>QuerySet</code> methods from the <code>Manager</code></h3>
+<p>Historically, the recommended way to make reusable model queries was to create methods on a custom <code>Manager</code> class. The problem with this approach was that after the first method call, you&#39;d get back a <code>QuerySet</code> instance and couldn&#39;t call additional custom manager methods.</p>
+<p>Though not documented, it was common to work around this issue by creating a custom <code>QuerySet</code> so that custom methods could be chained; but the solution had a number of drawbacks:</p>
+<ul>
+<li>The custom <code>QuerySet</code> and its custom methods were lost after the first call to <code>values()</code> or <code>values_list()</code>.</li>
+<li>Writing a custom <code>Manager</code> was still necessary to return the custom <code>QuerySet</code> class and all methods that were desired on the <code>Manager</code> had to be proxied to the <code>QuerySet</code>. The whole process went against the DRY principle.</li>
+</ul>
+<p>The [QuerySet.as_manager() ] class method can now directly create Manager with QuerySet methods :</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">class FoodQuerySet(models.QuerySet):
+    def pizzas(self):
+        return self.filter(kind=&quot;pizza&quot;)
+
+    def vegetarian(self):
+        return self.filter(vegetarian=True)
+
+
+class Food(models.Model):
+    kind = models.CharField(max_length=50)
+    vegetarian = models.BooleanField(default=False)
+    objects = FoodQuerySet.as_manager()
+
+
+Food.objects.pizzas().vegetarian()</code></pre></div></figure>
+<h3 id="using-a-custom-manager-when-traversing-reverse-relations">Using a custom manager when traversing reverse relations</h3>
+<p>It is now possible to specify a custom manager</p>
+<p>:   when traversing a reverse relationship:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">class Blog(models.Model):
+    pass
+
+
+class Entry(models.Model):
+    blog = models.ForeignKey(Blog)
+
+    objects = models.Manager()  # Default Manager
+    entries = EntryManager()  # Custom Manager
+
+
+b = Blog.objects.get(id=1)
+b.entry_set(manager=&quot;entries&quot;).all()</code></pre></div></figure>
+<h3 id="new-system-check-framework">New system check framework</h3>
+<p>We&#39;ve added a new [System check framework ](ref/checks.rst) for detecting common problems (like invalid models) and providing hints for resolving those problems. The framework is extensible so you can add your own checks for your own apps and libraries.</p>
+<p>To perform system checks, you use the [check] management command. This command replaces the older <code>validate</code> management command.</p>
+<h3 id="new-prefetch-object-for-advanced-prefetchrelated-operations">New <code>Prefetch</code> object for advanced <code>prefetch_related</code> operations.</h3>
+<p>The new [~django.db.models.Prefetch] object allows customizing prefetch operations.</p>
+<p>You can specify the <code>QuerySet</code> used to traverse a given relation or customize the storage location of prefetch results.</p>
+<p>This enables things like filtering prefetched relations, calling [~django.db.models.query.QuerySet.select_related] from a prefetched relation, or prefetching the same relation multiple times with different querysets. See [~django.db.models.query.QuerySet.prefetch_related] for more details.</p>
+<h3 id="admin-shortcuts-support-time-zones">Admin shortcuts support time zones</h3>
+<p>The &quot;today&quot; and &quot;now&quot; shortcuts next to date and time input widgets in the admin are now operating in the current time zone . Previously, they used the browser time zone, which could result in saving the wrong value when it didn&#39;t match the current time zone on the server.</p>
+<p>In addition, the widgets now display a help message when the browser and server time zone are different, to clarify how the value inserted in the field will be interpreted.</p>
+<h3 id="using-database-cursors-as-context-managers">Using database cursors as context managers</h3>
+<p>Prior to Python 2.7, database cursors could be used as a context manager. The specific backend&#39;s cursor defined the behavior of the context manager. The behavior of magic method lookups was changed with Python 2.7 and cursors were no longer usable as context managers.</p>
+<p>Django 1.7 allows a cursor to be used as a context manager. That is, the following can be used:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">with connection.cursor() as c:
+    c.execute(...)</code></pre></div></figure>
+<p>instead of:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">c = connection.cursor()
+try:
+    c.execute(...)
+finally:
+    c.close()</code></pre></div></figure>
+<h3 id="custom-lookups">Custom lookups</h3>
+<p>It is now possible to write custom lookups and transforms for the ORM. Custom lookups work just like Django&#39;s built-in lookups (e.g. <code>lte</code>, <code>icontains</code>) while transforms are a new concept.</p>
+<p>The [django.db.models.Lookup] class provides a way to add lookup operators for model fields. As an example it is possible to add <code>day_lte</code> operator for <code>DateFields</code>.</p>
+<p>The [django.db.models.Transform] class allows transformations of database values prior to the final lookup. For example it is possible to write a <code>year</code> transform that extracts year from the field&#39;s value. Transforms allow for chaining. After the <code>year</code> transform has been added to <code>DateField</code> it is possible to filter on the transformed value, for example <code>qs.filter(author__birthdate__year__lte=1981)</code>.</p>
+<p>For more information about both custom lookups and transforms refer to the [custom lookups ](howto/custom-lookups.rst) documentation.</p>
+<h3 id="improvements-to-form-error-handling">Improvements to <code>Form</code> error handling</h3>
+<h4 id="formadderror"><code>Form.add_error()</code></h4>
+<p>Previously there were two main patterns for handling errors in forms:</p>
+<ul>
+<li>Raising a [~django.core.exceptions.ValidationError] from within certain functions (e.g. <code>Field.clean()</code>, <code>Form.clean_&lt;fieldname&gt;()</code>, or <code>Form.clean()</code> for non-field errors.)</li>
+<li>Fiddling with <code>Form._errors</code> when targeting a specific field in <code>Form.clean()</code> or adding errors from outside of a &quot;clean&quot; method (e.g. directly from a view).</li>
+</ul>
+<p>Using the former pattern was straightforward since the form can guess from the context (i.e. which method raised the exception) where the errors belong and automatically process them. This remains the canonical way of adding errors when possible. However the latter was fiddly and error-prone, since the burden of handling edge cases fell on the user.</p>
+<p>The new [~django.forms.Form.add_error] method allows adding errors to specific form fields from anywhere without having to worry about the details such as creating instances of <code>django.forms.utils.ErrorList</code> or dealing with <code>Form.cleaned_data</code>. This new API replaces manipulating <code>Form._errors</code> which now becomes a private API.</p>
+<p>See validating-fields-with-clean for an example using <code>Form.add_error()</code>.</p>
+<h4 id="error-metadata">Error metadata</h4>
+<p>The [~django.core.exceptions.ValidationError] constructor accepts metadata such as error <code>code</code> or <code>params</code> which are then available for interpolating into the error message (see raising-validation-error for more details); however, before Django 1.7 those metadata were discarded as soon as the errors were added to [Form.errors ].</p>
+<p>[Form.errors ] and <code>django.forms.utils.ErrorList</code> now store the <code>ValidationError</code> instances so these metadata can be retrieved at any time through the new [Form.errors.as_data ] method.</p>
+<p>The retrieved <code>ValidationError</code> instances can then be identified thanks to their error <code>code</code> which enables things like rewriting the error&#39;s message or writing custom logic in a view when a given error is present. It can also be used to serialize the errors in a custom format such as XML.</p>
+<p>The new [Form.errors.as_json() ] method is a convenience method which returns error messages along with error codes serialized as JSON. <code>as_json()</code> uses <code>as_data()</code> and gives an idea of how the new system could be extended.</p>
+<h4 id="error-containers-and-backward-compatibility">Error containers and backward compatibility</h4>
+<p>Heavy changes to the various error containers were necessary in order to support the features above, specifically [Form.errors ], <code>django.forms.utils.ErrorList</code>, and the internal storages of [~django.core.exceptions.ValidationError]. These containers which used to store error strings now store <code>ValidationError</code> instances and public APIs have been adapted to make this as transparent as possible, but if you&#39;ve been using private APIs, some of the changes are backwards incompatible; see validation-error-constructor-and-internal-storage for more details.</p>
+<h3 id="minor-features">Minor features</h3>
+<h4 id="djangocontribadmin">[django.contrib.admin]</h4>
+<ul>
+<li>You can now implement [~django.contrib.admin.AdminSite.site_header], [~django.contrib.admin.AdminSite.site_title], and [~django.contrib.admin.AdminSite.index_title] attributes on a custom [~django.contrib.admin.AdminSite] in order to easily change the admin site&#39;s page title and header text. No more needing to override templates!</li>
+<li>Buttons in [django.contrib.admin] now use the <code>border-radius</code> CSS property for rounded corners rather than GIF background images.</li>
+<li>Some admin templates now have <code>app-&lt;app_name&gt;</code> and <code>model-&lt;model_name&gt;</code> classes in their <code>&lt;body&gt;</code> tag to allow customizing the CSS per app or per model.</li>
+<li>The admin changelist cells now have a <code>field-&lt;field_name&gt;</code> class in the HTML to enable style customizations.</li>
+<li>The admin&#39;s search fields can now be customized per-request thanks to the new [django.contrib.admin.ModelAdmin.get_search_fields] method.</li>
+<li>The [ModelAdmin.get_fields() ] method may be overridden to customize the value of [ModelAdmin.fields ].</li>
+<li>In addition to the existing <code>admin.site.register</code> syntax, you can use the new [~django.contrib.admin.register] decorator to register a [~django.contrib.admin.ModelAdmin].</li>
+<li>You may specify [ModelAdmin.list_display_links ] <code>= None</code> to disable links on the change list page grid.</li>
+<li>You may now specify [ModelAdmin.view_on_site ] to control whether or not to display the &quot;View on site&quot; link.</li>
+<li>You can specify a descending ordering for a [ModelAdmin.list_display ] value by prefixing the <code>admin_order_field</code> value with a hyphen.</li>
+<li>The [ModelAdmin.get_changeform_initial_data() ] method may be overridden to define custom behavior for setting initial change form data.</li>
+</ul>
+<h4 id="djangocontribauth">[django.contrib.auth]</h4>
+<ul>
+<li>Any <code>**kwargs</code> passed to [~django.contrib.auth.models.User.email_user] are passed to the underlying [~django.core.mail.send_mail] call.</li>
+<li>The [~django.contrib.auth.decorators.permission_required] decorator can take a list of permissions as well as a single permission.</li>
+<li>You can override the new [AuthenticationForm.confirm_login_allowed() ] method to more easily customize the login policy.</li>
+<li><code>django.contrib.auth.views.password_reset()</code> takes an optional <code>html_email_template_name</code> parameter used to send a multipart HTML email for password resets.</li>
+<li>The [AbstractBaseUser.get_session_auth_hash() ] method was added and if your [AUTH_USER_MODEL] inherits from [~django.contrib.auth.models.AbstractBaseUser], changing a user&#39;s password now invalidates old sessions if the <code>django.contrib.auth.middleware.SessionAuthenticationMiddleware</code> is enabled. See session-invalidation-on-password-change for more details.</li>
+</ul>
+<h4 id="djangocontribformtools"><code>django.contrib.formtools</code></h4>
+<ul>
+<li>Calls to <code>WizardView.done()</code> now include a <code>form_dict</code> to allow easier access to forms by their step name.</li>
+</ul>
+<h4 id="djangocontribgis">[django.contrib.gis]</h4>
+<ul>
+<li>The default OpenLayers library version included in widgets has been updated from 2.11 to 2.13.</li>
+<li>Prepared geometries now also support the <code>crosses</code>, <code>disjoint</code>, <code>overlaps</code>, <code>touches</code> and <code>within</code> predicates, if GEOS 3.3 or later is installed.</li>
+</ul>
+<h4 id="djangocontribmessages">[django.contrib.messages]</h4>
+<ul>
+<li>The backends for [django.contrib.messages] that use cookies, will now follow the [SESSION_COOKIE_SECURE] and [SESSION_COOKIE_HTTPONLY] settings.</li>
+<li>The messages context processor now adds a dictionary of default levels under the name <code>DEFAULT_MESSAGE_LEVELS</code>.</li>
+<li>[~django.contrib.messages.Message] objects now have a <code>level_tag</code> attribute that contains the string representation of the message level.</li>
+</ul>
+<h4 id="djangocontribredirects">[django.contrib.redirects]</h4>
+<ul>
+<li>[~django.contrib.redirects.middleware.RedirectFallbackMiddleware] has two new attributes ([~django.contrib.redirects.middleware.RedirectFallbackMiddleware.response_gone_class] and [~django.contrib.redirects.middleware.RedirectFallbackMiddleware.response_redirect_class]) that specify the types of [~django.http.HttpResponse] instances the middleware returns.</li>
+</ul>
+<h4 id="djangocontribsessions">[django.contrib.sessions]</h4>
+<ul>
+<li>The <code>&quot;django.contrib.sessions.backends.cached_db&quot;</code> session backend now respects [SESSION_CACHE_ALIAS]. In previous versions, it always used the <code>default</code> cache.</li>
+</ul>
+<h4 id="djangocontribsitemaps">[django.contrib.sitemaps]</h4>
+<ul>
+<li>The [sitemap framework] now makes use of [~django.contrib.sitemaps.Sitemap.lastmod] to set a <code>Last-Modified</code> header in the response. This makes it possible for the [~django.middleware.http.ConditionalGetMiddleware] to handle conditional <code>GET</code> requests for sitemaps which set <code>lastmod</code>.</li>
+</ul>
+<h4 id="djangocontribsites">[django.contrib.sites]</h4>
+<ul>
+<li>The new [django.contrib.sites.middleware.CurrentSiteMiddleware] allows setting the current site on each request.</li>
+</ul>
+<h4 id="djangocontribstaticfiles">[django.contrib.staticfiles]</h4>
+<ul>
+<li><p>The static files storage classes may be subclassed to override the permissions that collected static files and directories receive by setting the [~django.core.files.storage.FileSystemStorage.file_permissions_mode] and [~django.core.files.storage.FileSystemStorage.directory_permissions_mode] parameters. See [collectstatic] for example usage.</p>
+</li>
+<li><p>The <code>CachedStaticFilesStorage</code> backend gets a sibling class called [~django.contrib.staticfiles.storage.ManifestStaticFilesStorage] that doesn&#39;t use the cache system at all but instead a JSON file called <code>staticfiles.json</code> for storing the mapping between the original file name (e.g. <code>css/styles.css</code>) and the hashed file name (e.g. <code>css/styles.55e7cbb9ba48.css</code>). The <code>staticfiles.json</code> file is created when running the [collectstatic] management command and should be a less expensive alternative for remote storages such as Amazon S3.</p>
+<p>See the [~django.contrib.staticfiles.storage.ManifestStaticFilesStorage] docs for more information.</p>
+</li>
+<li><p>[findstatic] now accepts verbosity flag level 2, meaning it will show the relative paths of the directories it searched. See [findstatic] for example output.</p>
+</li>
+</ul>
+<h4 id="djangocontribsyndication">[django.contrib.syndication]</h4>
+<ul>
+<li>The [~django.utils.feedgenerator.Atom1Feed] syndication feed&#39;s <code>updated</code> element now utilizes <code>updateddate</code> instead of <code>pubdate</code>, allowing the <code>published</code> element to be included in the feed (which relies on <code>pubdate</code>).</li>
+</ul>
+<h4 id="cache">Cache</h4>
+<ul>
+<li>Access to caches configured in [CACHES] is now available via [django.core.cache.caches]. This dict-like object provides a different instance per thread. It supersedes <code>django.core.cache.get_cache()</code> which is now deprecated.</li>
+<li>If you instantiate cache backends directly, be aware that they aren&#39;t thread-safe any more, as [django.core.cache.caches] now yields different instances per thread.</li>
+<li>Defining the [TIMEOUT ] argument of the [CACHES] setting as <code>None</code> will set the cache keys as &quot;non-expiring&quot; by default. Previously, it was only possible to pass <code>timeout=None</code> to the cache backend&#39;s <code>set()</code> method.</li>
+</ul>
+<h4 id="cross-site-request-forgery">Cross Site Request Forgery</h4>
+<ul>
+<li>The [CSRF_COOKIE_AGE] setting facilitates the use of session-based CSRF cookies.</li>
+</ul>
+<h4 id="email">Email</h4>
+<ul>
+<li>[~django.core.mail.send_mail] now accepts an <code>html_message</code> parameter for sending a multipart [text/plain] and [text/html] email.</li>
+<li>The SMTP EmailBackend now accepts a <code>timeout</code> parameter.</li>
+</ul>
+<h4 id="file-storage">File Storage</h4>
+<ul>
+<li>File locking on Windows previously depended on the PyWin32 package; if it wasn&#39;t installed, file locking failed silently. That dependency has been removed, and file locking is now implemented natively on both Windows and Unix.</li>
+</ul>
+<h4 id="file-uploads">File Uploads</h4>
+<ul>
+<li>The new [UploadedFile.content_type_extra ] attribute contains extra parameters passed to the <code>content-type</code> header on a file upload.</li>
+<li>The new [FILE_UPLOAD_DIRECTORY_PERMISSIONS] setting controls the file system permissions of directories created during file upload, like [FILE_UPLOAD_PERMISSIONS] does for the files themselves.</li>
+<li>The [FileField.upload_to ] attribute is now optional. If it is omitted or given <code>None</code> or an empty string, a subdirectory won&#39;t be used for storing the uploaded files.</li>
+<li>Uploaded files are now explicitly closed before the response is delivered to the client. Partially uploaded files are also closed as long as they are named <code>file</code> in the upload handler.</li>
+<li>[Storage.get_available_name() ] now appends an underscore plus a random 7 character alphanumeric string (e.g. <code>&quot;_x3a1gho&quot;</code>), rather than iterating through an underscore followed by a number (e.g. <code>&quot;_1&quot;</code>, <code>&quot;_2&quot;</code>, etc.) to prevent a denial-of-service attack. This change was also made in the 1.6.6, 1.5.9, and 1.4.14 security releases.</li>
+</ul>
+<h4 id="forms">Forms</h4>
+<ul>
+<li>The <code>&lt;label&gt;</code> and <code>&lt;input&gt;</code> tags rendered by [~django.forms.RadioSelect] and [~django.forms.CheckboxSelectMultiple] when looping over the radio buttons or checkboxes now include <code>for</code> and <code>id</code> attributes, respectively. Each radio button or checkbox includes an <code>id_for_label</code> attribute to output the element&#39;s ID.</li>
+<li>The <code>&lt;textarea&gt;</code> tags rendered by [~django.forms.Textarea] now include a <code>maxlength</code> attribute if the [~django.db.models.TextField] model field has a <code>max_length</code>.</li>
+<li>[Field.choices] now allows you to customize the &quot;empty choice&quot; label by including a tuple with an empty string or <code>None</code> for the key and the custom label as the value. The default blank option <code>&quot;----------&quot;</code> will be omitted in this case.</li>
+<li>[~django.forms.MultiValueField] allows optional subfields by setting the <code>require_all_fields</code> argument to <code>False</code>. The <code>required</code> attribute for each individual field will be respected, and a new <code>incomplete</code> validation error will be raised when any required fields are empty.</li>
+<li>The [~django.forms.Form.clean] method on a form no longer needs to return <code>self.cleaned_data</code>. If it does return a changed dictionary then that will still be used.</li>
+<li>After a temporary regression in Django 1.6, it&#39;s now possible again to make [~django.forms.TypedChoiceField] <code>coerce</code> method return an arbitrary value.</li>
+<li>[SelectDateWidget.months ] can be used to customize the wording of the months displayed in the select widget.</li>
+<li>The <code>min_num</code> and <code>validate_min</code> parameters were added to [~django.forms.formsets.formset_factory] to allow validating a minimum number of submitted forms.</li>
+<li>The metaclasses used by <code>Form</code> and <code>ModelForm</code> have been reworked to support more inheritance scenarios. The previous limitation that prevented inheriting from both <code>Form</code> and <code>ModelForm</code> simultaneously have been removed as long as <code>ModelForm</code> appears first in the MRO.</li>
+<li>It&#39;s now possible to remove a field from a <code>Form</code> when subclassing by setting the name to <code>None</code>.</li>
+<li>It&#39;s now possible to customize the error messages for <code>ModelForm</code>&#39;s <code>unique</code>, <code>unique_for_date</code>, and <code>unique_together</code> constraints. In order to support <code>unique_together</code> or any other <code>NON_FIELD_ERROR</code>, <code>ModelForm</code> now looks for the <code>NON_FIELD_ERROR</code> key in the <code>error_messages</code> dictionary of the <code>ModelForm</code>&#39;s inner <code>Meta</code> class. See considerations regarding model&#39;s error_messages for more details.</li>
+</ul>
+<h4 id="internationalization">Internationalization</h4>
+<ul>
+<li>The [django.middleware.locale.LocaleMiddleware.response_redirect_class] attribute allows you to customize the redirects issued by the middleware.</li>
+<li>The [~django.middleware.locale.LocaleMiddleware] now stores the user&#39;s selected language with the session key <code>_language</code>. This should only be accessed using the <code>LANGUAGE_SESSION_KEY</code> constant. Previously it was stored with the key <code>django_language</code> and the <code>LANGUAGE_SESSION_KEY</code> constant did not exist, but keys reserved for Django should start with an underscore. For backwards compatibility <code>django_language</code> is still read from in 1.7. Sessions will be migrated to the new key as they are written.</li>
+<li>The [blocktrans] tag now supports a <code>trimmed</code> option. This option will remove newline characters from the beginning and the end of the content of the <code>{% blocktrans %}</code> tag, replace any whitespace at the beginning and end of a line and merge all lines into one using a space character to separate them. This is quite useful for indenting the content of a <code>{% blocktrans %}</code> tag without having the indentation characters end up in the corresponding entry in the <code>.po</code> file, which makes the translation process easier.</li>
+<li>When you run [makemessages] from the root directory of your project, any extracted strings will now be automatically distributed to the proper app or project message file. See how-to-create-language-files for details.</li>
+<li>The [makemessages] command now always adds the <code>--previous</code> command line flag to the <code>msgmerge</code> command, keeping previously translated strings in <code>.po</code> files for fuzzy strings.</li>
+<li>The following settings to adjust the language cookie options were introduced: [LANGUAGE_COOKIE_AGE], [LANGUAGE_COOKIE_DOMAIN] and [LANGUAGE_COOKIE_PATH].</li>
+<li>Added [/topics/i18n/formatting](topics/i18n/formatting.rst) for Esperanto.</li>
+</ul>
+<h4 id="management-commands">Management Commands</h4>
+<ul>
+<li><p>The new [--no-color] option for <code>django-admin</code> disables the colorization of management command output.</p>
+</li>
+<li><p>The new [dumpdata --natural-foreign] and [dumpdata --natural-primary] options, and the new <code>use_natural_foreign_keys</code> and <code>use_natural_primary_keys</code> arguments for <code>serializers.serialize()</code>, allow the use of natural primary keys when serializing.</p>
+</li>
+<li><p>It is no longer necessary to provide the cache table name or the <code>--database</code> option for the [createcachetable] command. Django takes this information from your settings file. If you have configured multiple caches or multiple databases, all cache tables are created.</p>
+</li>
+<li><p>The [runserver] command received several improvements:</p>
+<ul>
+<li>On Linux systems, if [pyinotify] is installed, the development server will reload immediately when a file is changed. Previously, it polled the filesystem for changes every second. That caused a small delay before reloads and reduced battery life on laptops.</li>
+<li>In addition, the development server automatically reloads when a translation file is updated, i.e. after running [compilemessages].</li>
+<li>All HTTP requests are logged to the console, including requests for static files or <code>favicon.ico</code> that used to be filtered out.</li>
+</ul>
+</li>
+<li><p>Management commands can now produce syntax colored output under Windows if the ANSICON third-party tool is installed and active.</p>
+</li>
+<li><p>[collectstatic] command with symlink option is now supported on Windows NT 6 (Windows Vista and newer).</p>
+</li>
+<li><p>Initial SQL data now works better if the [sqlparse] Python library is installed.</p>
+<p>Note that it&#39;s deprecated in favor of the [~django.db.migrations.operations.RunSQL] operation of migrations, which benefits from the improved behavior.</p>
+</li>
+</ul>
+<h4 id="models">Models</h4>
+<ul>
+<li>The [QuerySet.update_or_create() ] method was added.</li>
+<li>The new [~django.db.models.Options.default_permissions] model <code>Meta</code> option allows you to customize (or disable) creation of the default add, change, and delete permissions.</li>
+<li>Explicit [~django.db.models.OneToOneField] for multi-table-inheritance are now discovered in abstract classes.</li>
+<li>It is now possible to avoid creating a backward relation for [~django.db.models.OneToOneField] by setting its [~django.db.models.ForeignKey.related_name] to <code>&#39;+&#39;</code> or ending it with <code>&#39;+&#39;</code>.</li>
+<li>[F expressions ] support the power operator (<code>**</code>).</li>
+<li>The <code>remove()</code> and <code>clear()</code> methods of the related managers created by <code>ForeignKey</code> and <code>GenericForeignKey</code> now accept the <code>bulk</code> keyword argument to control whether or not to perform operations in bulk (i.e. using <code>QuerySet.update()</code>). Defaults to <code>True</code>.</li>
+<li>It is now possible to use <code>None</code> as a query value for the [iexact] lookup.</li>
+<li>It is now possible to pass a callable as value for the attribute [~django.db.models.ForeignKey.limit_choices_to] when defining a <code>ForeignKey</code> or <code>ManyToManyField</code>.</li>
+<li>Calling [only() ] and [defer() ] on the result of [QuerySet.values() ] now raises an error (before that, it would either result in a database error or incorrect data).</li>
+<li>You can use a single list for <code>index_together</code> (rather than a list of lists) when specifying a single set of fields.</li>
+<li>Custom intermediate models having more than one foreign key to any of the models participating in a many-to-many relationship are now permitted, provided you explicitly specify which foreign keys should be used by setting the new [ManyToManyField.through_fields ] argument.</li>
+<li>Assigning a model instance to a non-relation field will now throw an error. Previously this used to work if the field accepted integers as input as it took the primary key.</li>
+<li>Integer fields are now validated against database backend specific min and max values based on their [internal_type ]. Previously model field validation didn&#39;t prevent values out of their associated column data type range from being saved resulting in an integrity error.</li>
+<li>It is now possible to explicitly [~django.db.models.query.QuerySet.order_by] a relation <code>_id</code> field by using its attribute name.</li>
+</ul>
+<h4 id="signals">Signals</h4>
+<ul>
+<li>The <code>enter</code> argument was added to the [~django.test.signals.setting_changed] signal.</li>
+<li>The model signals can be now be connected to using a <code>str</code> of the <code>&#39;app_label.ModelName&#39;</code> form -- just like related fields -- to lazily reference their senders.</li>
+</ul>
+<h4 id="templates">Templates</h4>
+<ul>
+<li>The [Context.push() ] method now returns a context manager which automatically calls [pop() ] upon exiting the <code>with</code> statement. Additionally, [push() ] now accepts parameters that are passed to the <code>dict</code> constructor used to build the new context level.</li>
+<li>The new [Context.flatten() ] method returns a <code>Context</code>&#39;s stack as one flat dictionary.</li>
+<li><code>Context</code> objects can now be compared for equality (internally, this uses [Context.flatten() ] so the internal structure of each <code>Context</code>&#39;s stack doesn&#39;t matter as long as their flattened version is identical).</li>
+<li>The [widthratio] template tag now accepts an <code>&quot;as&quot;</code> parameter to capture the result in a variable.</li>
+<li>The [include] template tag will now also accept anything with a <code>render()</code> method (such as a <code>Template</code>) as an argument. String arguments will be looked up using [~django.template.loader.get_template] as always.</li>
+<li>It is now possible to [include] templates recursively.</li>
+<li>Template objects now have an origin attribute set when <code>TEMPLATE_DEBUG</code> is <code>True</code>. This allows template origins to be inspected and logged outside of the <code>django.template</code> infrastructure.</li>
+<li><code>TypeError</code> exceptions are no longer silenced when raised during the rendering of a template.</li>
+<li>The following functions now accept a <code>dirs</code> parameter which is a list or tuple to override <code>TEMPLATE_DIRS</code>:<ul>
+<li>[django.template.loader.get_template]</li>
+<li>[django.template.loader.select_template]</li>
+<li>[django.shortcuts.render]</li>
+<li><code>django.shortcuts.render_to_response()</code></li>
+</ul>
+</li>
+<li>The [time] filter now accepts timezone-related format specifiers <code>&#39;e&#39;</code>, <code>&#39;O&#39;</code> , <code>&#39;T&#39;</code> and <code>&#39;Z&#39;</code> and is able to digest time-zone-aware <code>datetime</code> instances performing the expected rendering.</li>
+<li>The [cache] tag will now try to use the cache called &quot;template_fragments&quot; if it exists and fall back to using the default cache otherwise. It also now accepts an optional <code>using</code> keyword argument to control which cache it uses.</li>
+<li>The new [truncatechars_html] filter truncates a string to be no longer than the specified number of characters, taking HTML into account.</li>
+</ul>
+<h4 id="requests-and-responses">Requests and Responses</h4>
+<ul>
+<li>The new [HttpRequest.scheme ] attribute specifies the scheme of the request (<code>http</code> or <code>https</code> normally).</li>
+<li>The shortcut [redirect() ] now supports relative URLs.</li>
+<li>The new [~django.http.JsonResponse] subclass of [~django.http.HttpResponse] helps easily create JSON-encoded responses.</li>
+</ul>
+<h4 id="tests">Tests</h4>
+<ul>
+<li>[~django.test.runner.DiscoverRunner] has two new attributes, [~django.test.runner.DiscoverRunner.test_suite] and [~django.test.runner.DiscoverRunner.test_runner], which facilitate overriding the way tests are collected and run.</li>
+<li>The <code>fetch_redirect_response</code> argument was added to [~django.test.SimpleTestCase.assertRedirects]. Since the test client can&#39;t fetch externals URLs, this allows you to use <code>assertRedirects</code> with redirects that aren&#39;t part of your Django app.</li>
+<li>Correct handling of scheme when making comparisons in [~django.test.SimpleTestCase.assertRedirects].</li>
+<li>The <code>secure</code> argument was added to all the request methods of [~django.test.Client]. If <code>True</code>, the request will be made through HTTPS.</li>
+<li>[~django.test.TransactionTestCase.assertNumQueries] now prints out the list of executed queries if the assertion fails.</li>
+<li>The <code>WSGIRequest</code> instance generated by the test handler is now attached to the [django.test.Response.wsgi_request] attribute.</li>
+<li>The database settings for testing have been collected into a dictionary named [TEST ].</li>
+</ul>
+<h4 id="utilities">Utilities</h4>
+<ul>
+<li>Improved [~django.utils.html.strip_tags] accuracy (but it still cannot guarantee an HTML-safe result, as stated in the documentation).</li>
+</ul>
+<h4 id="validators">Validators</h4>
+<ul>
+<li>[~django.core.validators.RegexValidator] now accepts the optional [~django.core.validators.RegexValidator.flags] and Boolean [~django.core.validators.RegexValidator.inverse_match] arguments. The [~django.core.validators.RegexValidator.inverse_match] attribute determines if the [~django.core.exceptions.ValidationError] should be raised when the regular expression pattern matches (<code>True</code>) or does not match (<code>False</code>, by default) the provided <code>value</code>. The [~django.core.validators.RegexValidator.flags] attribute sets the flags used when compiling a regular expression string.</li>
+<li>[~django.core.validators.URLValidator] now accepts an optional <code>schemes</code> argument which allows customization of the accepted URI schemes (instead of the defaults <code>http(s)</code> and <code>ftp(s)</code>).</li>
+<li>[~django.core.validators.validate_email] now accepts addresses with IPv6 literals, like <code>example@[2001:db8::1]</code>, as specified in RFC 5321.</li>
+</ul>
+<h2 id="backwards-incompatible-changes-in-17">Backwards incompatible changes in 1.7</h2>
+<aside class="callout callout-warning"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 4 2.8 20h18.4L12 4z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M12 10v4.4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="17" r="1.3" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Warning</p><p>In addition to the changes outlined in this section, be sure to review the deprecation plan for any features that have been removed. If you haven&#39;t updated your code within the deprecation timeline for a given feature, its removal may appear as a backwards incompatible change.</p>
+</div></aside>
+<h3 id="allowsyncdb-allowmigrate"><code>allow_syncdb</code> / <code>allow_migrate</code></h3>
+<p>While Django will still look at <code>allow_syncdb</code> methods even though they should be renamed to <code>allow_migrate</code>, there is a subtle difference in which models get passed to these methods.</p>
+<p>For apps with migrations, <code>allow_migrate</code> will now get passed historical models , which are special versioned models without custom attributes, methods or managers. Make sure your <code>allow_migrate</code> methods are only referring to fields or other items in <code>model._meta</code>.</p>
+<h3 id="initialdata">initial_data</h3>
+<p>Apps with migrations will not load <code>initial_data</code> fixtures when they have finished migrating. Apps without migrations will continue to load these fixtures during the phase of <code>migrate</code> which emulates the old <code>syncdb</code> behavior, but any new apps will not have this support.</p>
+<p>Instead, you are encouraged to load initial data in migrations if you need it (using the <code>RunPython</code> operation and your model classes); this has the added advantage that your initial data will not need updating every time you change the schema.</p>
+<p>Additionally, like the rest of Django&#39;s old <code>syncdb</code> code, <code>initial_data</code> has been started down the deprecation path and will be removed in Django 1.9.</p>
+<h3 id="deconstruct-and-serializability"><code>deconstruct()</code> and serializability</h3>
+<p>Django now requires all Field classes and all of their constructor arguments to be serializable. If you modify the constructor signature in your custom Field in any way, you&#39;ll need to implement a <code>deconstruct()</code> method; we&#39;ve expanded the custom field documentation with instructions on implementing this method .</p>
+<p>The requirement for all field arguments to be serializable means that any custom class instances being passed into Field constructors - things like custom Storage subclasses, for instance - need to have a deconstruct method defined on them as well , though Django provides a handy class decorator that will work for most applications.</p>
+<h3 id="app-loading-changes">App-loading changes</h3>
+<h4 id="start-up-sequence">Start-up sequence</h4>
+<p>Django 1.7 loads application configurations and models as soon as it starts. While this behavior is more straightforward and is believed to be more robust, regressions cannot be ruled out. See applications-troubleshooting for solutions to some problems you may encounter.</p>
+<h4 id="standalone-scripts">Standalone scripts</h4>
+<p>If you&#39;re using Django in a plain Python script --- rather than a management command --- and you rely on the [DJANGO_SETTINGS_MODULE] environment variable, you must now explicitly initialize Django at the beginning of your script with:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Python</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-python">
+<span class="hljs-meta">&gt;&gt;&gt; </span><span class="hljs-keyword">import</span> django
+<span class="hljs-meta">&gt;&gt;&gt; </span>django.setup()</code></pre></div></figure>
+<p>Otherwise, you will hit an <code>AppRegistryNotReady</code> exception.</p>
+<h4 id="wsgi-scripts">WSGI scripts</h4>
+<p>Until Django 1.3, the recommended way to create a WSGI application was:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext"></code></pre></div></figure>
