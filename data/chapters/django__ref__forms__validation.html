@@ -1,0 +1,210 @@
+<p>Form validation happens when the data is cleaned. If you want to customize this process, there are various places to make changes, each one serving a different purpose. Three types of cleaning methods are run during form processing. These are normally executed when you call the <code>is_valid()</code> method on a form. There are other things that can also trigger cleaning and validation (accessing the <code>errors</code> attribute or calling <code>full_clean()</code> directly), but normally they won&#39;t be needed.</p>
+<p>In general, any cleaning method can raise <code>ValidationError</code> if there is a problem with the data it is processing, passing the relevant information to the <code>ValidationError</code> constructor. See below for the best practice in raising <code>ValidationError</code>. If no <code>ValidationError</code> is raised, the method should return the cleaned (normalized) data as a Python object.</p>
+<p>Most validation can be done using <a href="#validators">validators</a> - helpers that can be reused. Validators are functions (or callables) that take a single argument and raise <code>ValidationError</code> on invalid input. Validators are run after the field&#39;s <code>to_python</code> and <code>validate</code> methods have been called.</p>
+<p>Validation of a form is split into several steps, which can be customized or overridden:</p>
+<ul>
+<li><p>The <code>to_python()</code> method on a <code>Field</code> is the first step in every validation. It coerces the value to a correct datatype and raises <code>ValidationError</code> if that is not possible. This method accepts the raw value from the widget and returns the converted value. For example, a <code>FloatField</code> will turn the data into a Python <code>float</code> or raise a <code>ValidationError</code>.</p>
+</li>
+<li><p>The <code>validate()</code> method on a <code>Field</code> handles field-specific validation that is not suitable for a validator. It takes a value that has been coerced to a correct datatype and raises <code>ValidationError</code> on any error. This method does not return anything and shouldn&#39;t alter the value. You should override it to handle validation logic that you can&#39;t or don&#39;t want to put in a validator.</p>
+</li>
+<li><p>The <code>run_validators()</code> method on a <code>Field</code> runs all of the field&#39;s validators and aggregates all the errors into a single <code>ValidationError</code>. You shouldn&#39;t need to override this method.</p>
+</li>
+<li><p>The <code>clean()</code> method on a <code>Field</code> subclass is responsible for running <code>to_python()</code>, <code>validate()</code>, and <code>run_validators()</code> in the correct order and propagating their errors. If, at any time, any of the methods raise <code>ValidationError</code>, the validation stops and that error is raised. This method returns the clean data, which is then inserted into the <code>cleaned_data</code> dictionary of the form.</p>
+</li>
+<li><p>The <code>clean_&lt;fieldname&gt;()</code> method is called on a form subclass -- where <code>&lt;fieldname&gt;</code> is replaced with the name of the form field attribute. This method does any cleaning that is specific to that particular attribute, unrelated to the type of field that it is. This method is not passed any parameters. You will need to look up the value of the field in <code>self.cleaned_data</code> and remember that it will be a Python object at this point, not the original string submitted in the form (it will be in <code>cleaned_data</code> because the general field <code>clean()</code> method, above, has already cleaned the data once).</p>
+<p>For example, if you wanted to validate that the contents of a <code>CharField</code> called <code>serialnumber</code> was unique, <code>clean_serialnumber()</code> would be the right place to do this. You don&#39;t need a specific field (it&#39;s a <code>CharField</code>), but you want a formfield-specific piece of validation and, possibly, cleaning/normalizing the data.</p>
+<p>The return value of this method replaces the existing value in <code>cleaned_data</code>, so it must be the field&#39;s value from <code>cleaned_data</code> (even if this method didn&#39;t change it) or a new cleaned value.</p>
+</li>
+<li><p>The form subclass&#39;s <code>clean()</code> method can perform validation that requires access to multiple form fields. This is where you might put in checks such as &quot;if field <code>A</code> is supplied, field <code>B</code> must contain a valid email address&quot;. This method can return a completely different dictionary if it wishes, which will be used as the <code>cleaned_data</code>.</p>
+<p>Since the field validation methods have been run by the time <code>clean()</code> is called, you also have access to the form&#39;s <code>errors</code> attribute which contains all the errors raised by cleaning of individual fields.</p>
+<p>Note that any errors raised by your [Form.clean] override will not be associated with any field in particular. They go into a special &quot;field&quot; (called <code>__all__</code>), which you can access via the [~django.forms.Form.non_field_errors] method if you need to. If you want to attach errors to a specific field in the form, you need to call [~django.forms.Form.add_error].</p>
+<p>Also note that there are special considerations when overriding the <code>clean()</code> method of a <code>ModelForm</code> subclass. (see the ModelForm documentation for more information)</p>
+</li>
+</ul>
+<p>These methods are run in the order given above, one field at a time. That is, for each field in the form (in the order they are declared in the form definition), the <code>Field.clean()</code> method (or its override) is run, then <code>clean_&lt;fieldname&gt;()</code>. Finally, once those two methods are run for every field, the [Form.clean] method, or its override, is executed whether or not the previous methods have raised errors.</p>
+<p>Examples of each of these methods are provided below.</p>
+<p>As mentioned, any of these methods can raise a <code>ValidationError</code>. For any field, if the <code>Field.clean()</code> method raises a <code>ValidationError</code>, any field-specific cleaning method is not called. However, the cleaning methods for all remaining fields are still executed.</p>
+<h2 id="raising-validationerror">Raising <code>ValidationError</code></h2>
+<p>In order to make error messages flexible and easy to override, consider the following guidelines:</p>
+<ul>
+<li>Provide a descriptive error <code>code</code> to the constructor, to allow programmatic use (e.g. in tests) that will not vary with translations:</li>
+</ul>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext"># Good
+ValidationError(_(&quot;Invalid value&quot;), code=&quot;invalid&quot;)
+
+# Bad
+ValidationError(_(&quot;Invalid value&quot;))</code></pre></div></figure>
+<ul>
+<li>Don&#39;t coerce variables into the message; use placeholders and the <code>params</code> argument of the constructor:</li>
+</ul>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext"># Good
+ValidationError(
+    _(&quot;Invalid value: %(value)s&quot;),
+    params={&quot;value&quot;: &quot;42&quot;},
+)
+
+# Bad
+ValidationError(_(&quot;Invalid value: %s&quot;) % value)</code></pre></div></figure>
+<ul>
+<li>Use mapping keys instead of positional formatting. This enables putting the variables in any order or omitting them altogether when rewriting the message:</li>
+</ul>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext"># Good
+ValidationError(
+    _(&quot;Invalid value: %(value)s&quot;),
+    params={&quot;value&quot;: &quot;42&quot;},
+)
+
+# Bad
+ValidationError(
+    _(&quot;Invalid value: %s&quot;),
+    params=(&quot;42&quot;,),
+)</code></pre></div></figure>
+<ul>
+<li>Wrap the message with <code>gettext</code> to enable translation:</li>
+</ul>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext"># Good
+ValidationError(_(&quot;Invalid value&quot;))
+
+# Bad
+ValidationError(&quot;Invalid value&quot;)</code></pre></div></figure>
+<p>Putting it all together:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">raise ValidationError(
+    _(&quot;Invalid value: %(value)s&quot;),
+    code=&quot;invalid&quot;,
+    params={&quot;value&quot;: &quot;42&quot;},
+)</code></pre></div></figure>
+<p>Following these guidelines is particularly necessary if you write reusable forms, form fields, and model fields.</p>
+<p>While not recommended, if you are at the end of the validation chain (i.e. your form <code>clean()</code> method) and you know you will <em>never</em> need to override your error message you can still opt for the less verbose:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">ValidationError(_(&quot;Invalid value: %s&quot;) % value)</code></pre></div></figure>
+<p>The [Form.errors.as_data() ] and [Form.errors.as_json() ] methods greatly benefit from fully featured <code>ValidationError</code>s (with a <code>code</code> name and a <code>params</code> dictionary).</p>
+<h3 id="raising-multiple-errors">Raising multiple errors</h3>
+<p>If you detect multiple errors during a cleaning method and wish to signal all of them to the form submitter, it is possible to pass a list of errors to the <code>ValidationError</code> constructor.</p>
+<p>As above, it is recommended to pass a list of <code>ValidationError</code> instances with <code>code</code>s and <code>params</code> but a list of strings will also work:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext"># Good
+raise ValidationError(
+    [
+        ValidationError(_(&quot;Error 1&quot;), code=&quot;error1&quot;),
+        ValidationError(_(&quot;Error 2&quot;), code=&quot;error2&quot;),
+    ]
+)
+
+# Bad
+raise ValidationError(
+    [
+        _(&quot;Error 1&quot;),
+        _(&quot;Error 2&quot;),
+    ]
+)</code></pre></div></figure>
+<h2 id="using-validation-in-practice">Using validation in practice</h2>
+<p>The previous sections explained how validation works in general for forms. Since it can sometimes be easier to put things into place by seeing each feature in use, here are a series of small examples that use each of the previous features.</p>
+<h3 id="using-validators">Using validators</h3>
+<p>Django&#39;s form (and model) fields support use of utility functions and classes known as validators. A validator is a callable object or function that takes a value and returns nothing if the value is valid or raises a [~django.core.exceptions.ValidationError] if not. These can be passed to a field&#39;s constructor, via the field&#39;s <code>validators</code> argument, or defined on the [~django.forms.Field] class itself with the <code>default_validators</code> attribute.</p>
+<p>Validators can be used to validate values inside the field, let&#39;s have a look at Django&#39;s <code>SlugField</code>:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">from django.core import validators
+from django.forms import CharField
+
+
+class SlugField(CharField):
+    default_validators = [validators.validate_slug]</code></pre></div></figure>
+<p>As you can see, <code>SlugField</code> is a <code>CharField</code> with a customized validator that validates that submitted text obeys to some character rules. This can also be done on field definition so:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">slug = forms.SlugField()</code></pre></div></figure>
+<p>is equivalent to:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">slug = forms.CharField(validators=[validators.validate_slug])</code></pre></div></figure>
+<p>Common cases such as validating against an email or a regular expression can be handled using existing validator classes available in Django. For example, <code>validators.validate_slug</code> is an instance of a [~django.core.validators.RegexValidator] constructed with the first argument being the pattern: <code>^[-a-zA-Z0-9_]+\Z</code>. See the section on [writing validators ](ref/validators.rst) to see a list of what is already available and for an example of how to write a validator.</p>
+<h3 id="form-field-default-cleaning">Form field default cleaning</h3>
+<p>Let&#39;s first create a custom form field that validates its input is a string containing comma-separated email addresses. The full class looks like this:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">from django import forms
+from django.core.validators import validate_email
+
+
+class MultiEmailField(forms.Field):
+    def to_python(self, value):
+        &quot;&quot;&quot;Normalize data to a list of strings.&quot;&quot;&quot;
+        # Return an empty list if no input was given.
+        if not value:
+            return []
+        return value.split(&quot;,&quot;)
+
+    def validate(self, value):
+        &quot;&quot;&quot;Check if value consists only of valid emails.&quot;&quot;&quot;
+        # Use the parent&#x27;s handling of required fields, etc.
+        super().validate(value)
+        for email in value:
+            validate_email(email)</code></pre></div></figure>
+<p>Every form that uses this field will have these methods run before anything else can be done with the field&#39;s data. This is cleaning that is specific to this type of field, regardless of how it is subsequently used.</p>
+<p>Let&#39;s create a <code>ContactForm</code> to demonstrate how you&#39;d use this field:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">class ContactForm(forms.Form):
+    subject = forms.CharField(max_length=100)
+    message = forms.CharField()
+    contact_email = forms.EmailField()
+    recipients = MultiEmailField()
+    urgent = forms.BooleanField(required=False)</code></pre></div></figure>
+<p>Use <code>MultiEmailField</code> like any other form field. When the <code>is_valid()</code> method is called on the form, the <code>MultiEmailField.clean()</code> method will be run as part of the cleaning process and it will, in turn, call the custom <code>to_python()</code> and <code>validate()</code> methods.</p>
+<h3 id="cleaning-a-specific-field-attribute">Cleaning a specific field attribute</h3>
+<p>Continuing on from the previous example, suppose that in our <code>ContactForm</code>, we want to make sure that the <code>recipients</code> field only contains addresses that are <code>@example.com</code>. This is validation that is specific to our form, so we don&#39;t want to put it into the general <code>MultiEmailField</code> class. Instead, we write a cleaning method that operates on the <code>recipients</code> field, like so:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">from django import forms
+from django.core.exceptions import ValidationError
+
+
+class ContactForm(forms.Form):
+    # Everything as before.
+    ...
+
+    def clean_recipients(self):
+        data = self.cleaned_data[&quot;recipients&quot;]
+        if not all(email.endswith(&quot;@example.com&quot;) for email in data):
+            raise ValidationError(&quot;All recipients must be @example.com.&quot;)
+
+        # Always return a value to use as the new cleaned data, even if
+        # this method didn&#x27;t change it.
+        return data</code></pre></div></figure>
+<h3 id="cleaning-and-validating-fields-that-depend-on-each-other">Cleaning and validating fields that depend on each other</h3>
+<p>Suppose we add another requirement to our contact form: if the <code>urgent</code> field is <code>True</code>, the <code>subject</code> must contain <code>&quot;help&quot;</code>. We are performing validation on more than one field at a time, so the form&#39;s [~Form.clean] method is a good spot to do this. Notice that we are talking about the <code>clean()</code> method on the form here, whereas earlier we were writing a <code>clean()</code> method on a field. It&#39;s important to keep the field and form difference clear when working out where to validate things. Fields are single data points, forms are a collection of fields.</p>
+<p>By the time the form&#39;s <code>clean()</code> method is called, all the individual field clean methods will have been run (the previous two sections), so <code>self.cleaned_data</code> will be populated with any data that has survived so far. So you also need to remember to allow for the fact that the fields you are wanting to validate might not have survived the initial individual field checks.</p>
+<p>There are two ways to report any errors from this step. Probably the most common method is to display the error at the top of the form. To create such an error, you can raise a <code>ValidationError</code> from the <code>clean()</code> method. For example:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">from django import forms
+from django.core.exceptions import ValidationError
+
+
+class ContactForm(forms.Form):
+    # Everything as before.
+    ...
+
+    def clean(self):
+        cleaned_data = super().clean()
+        urgent = cleaned_data.get(&quot;urgent&quot;)
+        subject = cleaned_data.get(&quot;subject&quot;)
+
+        if urgent and subject:
+            # Only do something if both fields are valid so far.
+            if &quot;help&quot; not in subject:
+                raise ValidationError(
+                    &quot;Must put &#x27;help&#x27; in the subject for urgent requests.&quot;
+                )</code></pre></div></figure>
+<p>In this code, if the validation error is raised, the form will display an error message at the top of the form (normally) describing the problem. Such errors are non-field errors, which are displayed in the template with <code>{{ form.non_field_errors }}</code>.</p>
+<p>The call to <code>super().clean()</code> in the example code ensures that any validation logic in parent classes is maintained. If your form inherits another that doesn&#39;t return a <code>cleaned_data</code> dictionary in its <code>clean()</code> method (doing so is optional), then don&#39;t assign <code>cleaned_data</code> to the result of the <code>super()</code> call and use <code>self.cleaned_data</code> instead:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">def clean(self):
+    super().clean()
+    urgent = self.cleaned_data.get(&quot;urgent&quot;)
+    ...</code></pre></div></figure>
+<p>The second approach for reporting validation errors might involve assigning the error message to one of the fields. In this case, let&#39;s assign an error message to both the &quot;subject&quot; and &quot;urgent&quot; rows in the form display. Be careful when doing this in practice, since it can lead to confusing form output. We&#39;re showing what is possible here and leaving it up to you and your designers to work out what works effectively in your particular situation. Our new code (replacing the previous sample) looks like this:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">from django import forms
+
+
+class ContactForm(forms.Form):
+    # Everything as before.
+    ...
+
+    def clean(self):
+        cleaned_data = super().clean()
+        urgent = cleaned_data.get(&quot;urgent&quot;)
+        subject = cleaned_data.get(&quot;subject&quot;)
+
+        if urgent and subject and &quot;help&quot; not in subject:
+            self.add_error(
+                &quot;subject&quot;, &quot;Must put &#x27;help&#x27; in the subject for urgent requests.&quot;
+            )
+            self.add_error(
+                &quot;urgent&quot;, &quot;Must not mark urgent unless &#x27;help&#x27; is in the subject.&quot;
+            )</code></pre></div></figure>
+<p>The second argument of <code>add_error()</code> can be a string, or preferably an instance of <code>ValidationError</code>. See raising-validation-error for more details. Note that <code>add_error()</code> automatically removes the field from <code>cleaned_data</code>.</p>

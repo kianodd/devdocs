@@ -1,0 +1,935 @@
+<p>Django comes with a high-level syndication-feed-generating framework for creating <a target="_blank" rel="noopener" href="https://developer.mozilla.org/en-US/docs/Glossary/RSS">RSS</a> and [Atom ] feeds.</p>
+<p>To create any syndication feed, all you have to do is write a short Python class. You can create as many feeds as you want.</p>
+<p>Django also comes with a lower-level feed-generating API. Use this if you want to generate feeds outside of a web context, or in some other lower-level way.</p>
+<h2 id="the-high-level-framework">The high-level framework</h2>
+<h3 id="overview">Overview</h3>
+<p>The high-level feed-generating framework is supplied by the [~django.contrib.syndication.views.Feed] class. To create a feed, write a [~django.contrib.syndication.views.Feed] class and point to an instance of it in your [URLconf ](topics/http/urls.rst).</p>
+<h3 id="feed-classes"><code>Feed</code> classes</h3>
+<p>A [~django.contrib.syndication.views.Feed] class is a Python class that represents a syndication feed. A feed can be simple (e.g., a &quot;site news&quot; feed, or a basic feed displaying the latest entries of a blog) or more complex (e.g., a feed displaying all the blog entries in a particular category, where the category is variable).</p>
+<p>Feed classes subclass [django.contrib.syndication.views.Feed]. They can live anywhere in your codebase.</p>
+<p>Instances of [~django.contrib.syndication.views.Feed] classes are views which can be used in your [URLconf ](topics/http/urls.rst).</p>
+<h3 id="a-simple-example">A simple example</h3>
+<p>This simple example, taken from a hypothetical police beat news site describes a feed of the latest five news items:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">from django.contrib.syndication.views import Feed
+from django.urls import reverse
+from policebeat.models import NewsItem
+
+
+class LatestEntriesFeed(Feed):
+    title = &quot;Police beat site news&quot;
+    link = &quot;/sitenews/&quot;
+    description = &quot;Updates on changes and additions to police beat central.&quot;
+
+    def items(self):
+        return NewsItem.objects.order_by(&quot;-pub_date&quot;)[:5]
+
+    def item_title(self, item):
+        return item.title
+
+    def item_description(self, item):
+        return item.description
+
+    # item_link is only needed if NewsItem has no get_absolute_url method.
+    def item_link(self, item):
+        return reverse(&quot;news-item&quot;, args=[item.pk])</code></pre></div></figure>
+<p>To connect a URL to this feed, put an instance of the Feed object in your [URLconf ](topics/http/urls.rst). For example:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">from django.urls import path
+from myproject.feeds import LatestEntriesFeed
+
+urlpatterns = [
+    # ...
+    path(&quot;latest/feed/&quot;, LatestEntriesFeed()),
+    # ...
+]</code></pre></div></figure>
+<p>Note:</p>
+<ul>
+<li>The Feed class subclasses [django.contrib.syndication.views.Feed].</li>
+<li><code>title</code>, <code>link</code> and <code>description</code> correspond to the standard RSS <code>&lt;title&gt;</code>, <code>&lt;link&gt;</code> and <code>&lt;description&gt;</code> elements, respectively.</li>
+<li><code>items()</code> is, a method that returns a list of objects that should be included in the feed as <code>&lt;item&gt;</code> elements. Although this example returns <code>NewsItem</code> objects using Django&#39;s [object-relational mapper ](ref/models/querysets.rst), <code>items()</code> doesn&#39;t have to return model instances. Although you get a few bits of functionality &quot;for free&quot; by using Django models, <code>items()</code> can return any type of object you want.</li>
+<li>If you&#39;re creating an Atom feed, rather than an RSS feed, set the <code>subtitle</code> attribute instead of the <code>description</code> attribute. See <a href="#publishing-atom-and-rss-feeds-in-tandem">Publishing Atom and RSS feeds in tandem</a>, later, for an example.</li>
+</ul>
+<p>One thing is left to do. In an RSS feed, each <code>&lt;item&gt;</code> has a <code>&lt;title&gt;</code>, <code>&lt;link&gt;</code> and <code>&lt;description&gt;</code>. We need to tell the framework what data to put into those elements.</p>
+<ul>
+<li><p>For the contents of <code>&lt;title&gt;</code> and <code>&lt;description&gt;</code>, Django tries calling the methods <code>item_title()</code> and <code>item_description()</code> on the [~django.contrib.syndication.views.Feed] class. They are passed a single parameter, <code>item</code>, which is the object itself. These are optional; by default, the string representation of the object is used for both.</p>
+<p>If you want to do any special formatting for either the title or description, [Django templates ](ref/templates/language.rst) can be used instead. Their paths can be specified with the <code>title_template</code> and <code>description_template</code> attributes on the [~django.contrib.syndication.views.Feed] class. The templates are rendered for each item and are passed two template context variables:</p>
+<ul>
+<li><code>{{ obj }}</code> -- The current object (one of whichever objects you returned in <code>items()</code>).</li>
+<li><code>{{ site }}</code> -- A [django.contrib.sites.models.Site] object representing the current site. This is useful for <code>{{ site.domain }}</code> or <code>{{ site.name }}</code>. If you do <em>not</em> have the Django sites framework installed, this will be set to a [~django.contrib.sites.requests.RequestSite] object. See the RequestSite section of the sites framework documentation for more.</li>
+</ul>
+<p>See <a href="#a-complex-example">a complex example</a> below that uses a description template.</p>
+<p>::: method
+Feed.get_context_data(**kwargs)</p>
+<p>There is also a way to pass additional information to title and description templates, if you need to supply more than the two variables mentioned before. You can provide your implementation of <code>get_context_data</code> method in your <code>Feed</code> subclass. For example:
+:::</p>
+</li>
+</ul>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">      from mysite.models import Article
+      from django.contrib.syndication.views import Feed
+
+
+      class ArticlesFeed(Feed):
+          title = &quot;My articles&quot;
+          description_template = &quot;feeds/articles.html&quot;
+
+          def items(self):
+              return Article.objects.order_by(&quot;-pub_date&quot;)[:5]
+
+          def get_context_data(self, **kwargs):
+              context = super().get_context_data(**kwargs)
+              context[&quot;foo&quot;] = &quot;bar&quot;
+              return context
+
+And the template:
+
+.. code-block:: html+django
+
+  Something about {{ foo }}: {{ obj.description }}
+
+This method will be called once per each item in the list returned by
+``items()`` with the following keyword arguments:
+
+* ``item``: the current item. For backward compatibility reasons, the name
+  of this context variable is ``{{ obj }}``.
+
+* ``obj``: the object returned by ``get_object()``. By default this is not
+  exposed to the templates to avoid confusion with ``{{ obj }}`` (see above),
+  but you can use it in your implementation of ``get_context_data()``.
+
+* ``site``: current site as described above.
+
+* ``request``: current request.
+
+The behavior of ``get_context_data()`` mimics that of
+:ref:`generic views &lt;adding-extra-context&gt;` - you&#x27;re supposed to call
+``super()`` to retrieve context data from parent class, add your data
+and return the modified dictionary.</code></pre></div></figure>
+<ul>
+<li>To specify the contents of <code>&lt;link&gt;</code>, you have two options. For each item in <code>items()</code>, Django first tries calling the <code>item_link()</code> method on the [~django.contrib.syndication.views.Feed] class. In a similar way to the title and description, it is passed a single parameter, <code>item</code>. If that method doesn&#39;t exist, Django tries executing a <code>get_absolute_url()</code> method on that object. Both <code>get_absolute_url()</code> and <code>item_link()</code> should return the item&#39;s URL as a normal Python string. As with <code>get_absolute_url()</code>, the result of <code>item_link()</code> will be included directly in the URL, so you are responsible for doing all necessary URL quoting and conversion to ASCII inside the method itself.</li>
+</ul>
+<h3 id="a-complex-example">A complex example</h3>
+<p>The framework also supports more complex feeds, via arguments.</p>
+<p>For example, a website could offer an RSS feed of recent crimes for every police beat in a city. It&#39;d be silly to create a separate [~django.contrib.syndication.views.Feed] class for each police beat; that would violate the DRY principle and would couple data to programming logic. Instead, the syndication framework lets you access the arguments passed from your [URLconf ](topics/http/urls.rst) so feeds can output items based on information in the feed&#39;s URL.</p>
+<p>The police beat feeds could be accessible via URLs like this:</p>
+<ul>
+<li><code>/beats/613/rss/</code> -- Returns recent crimes for beat 613.</li>
+<li><code>/beats/1424/rss/</code> -- Returns recent crimes for beat 1424.</li>
+</ul>
+<p>These can be matched with a [URLconf ](topics/http/urls.rst) line such as:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">path(&quot;beats/&lt;int:beat_id&gt;/rss/&quot;, BeatFeed()),</code></pre></div></figure>
+<p>Like a view, the arguments in the URL are passed to the <code>get_object()</code> method along with the request object.</p>
+<p>Here&#39;s the code for these beat-specific feeds:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">from django.contrib.syndication.views import Feed
+
+
+class BeatFeed(Feed):
+    description_template = &quot;feeds/beat_description.html&quot;
+
+    def get_object(self, request, beat_id):
+        return Beat.objects.get(pk=beat_id)
+
+    def title(self, obj):
+        return &quot;Police beat central: Crimes for beat %s&quot; % obj.beat
+
+    def link(self, obj):
+        return obj.get_absolute_url()
+
+    def description(self, obj):
+        return &quot;Crimes recently reported in police beat %s&quot; % obj.beat
+
+    def items(self, obj):
+        return Crime.objects.filter(beat=obj).order_by(&quot;-crime_date&quot;)[:30]</code></pre></div></figure>
+<p>To generate the feed&#39;s <code>&lt;title&gt;</code>, <code>&lt;link&gt;</code> and <code>&lt;description&gt;</code>, Django uses the <code>title()</code>, <code>link()</code> and <code>description()</code> methods. In the previous example, they were string class attributes, but this example illustrates that they can be either strings <em>or</em> methods. For each of <code>title</code>, <code>link</code> and <code>description</code>, Django follows this algorithm:</p>
+<ul>
+<li>First, it tries to call a method, passing the <code>obj</code> argument, where <code>obj</code> is the object returned by <code>get_object()</code>.</li>
+<li>Failing that, it tries to call a method with no arguments.</li>
+<li>Failing that, it uses the class attribute.</li>
+</ul>
+<p>Also note that <code>items()</code> also follows the same algorithm -- first, it tries <code>items(obj)</code>, then <code>items()</code>, then finally an <code>items</code> class attribute (which should be a list).</p>
+<p>We are using a template for the item descriptions. It can be as minimal as this:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Code</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">
+{{ obj.description }}</code></pre></div></figure>
+<p>However, you are free to add formatting as desired.</p>
+<p>The <code>ExampleFeed</code> class below gives full documentation on methods and attributes of [~django.contrib.syndication.views.Feed] classes.</p>
+<h3 id="specifying-the-type-of-feed">Specifying the type of feed</h3>
+<p>By default, feeds produced in this framework use RSS 2.0.</p>
+<p>To change that, add a <code>feed_type</code> attribute to your [~django.contrib.syndication.views.Feed] class, like so:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">from django.utils.feedgenerator import Atom1Feed
+
+
+class MyFeed(Feed):
+    feed_type = Atom1Feed</code></pre></div></figure>
+<p>Note that you set <code>feed_type</code> to a class object, not an instance.</p>
+<p>Currently available feed types are:</p>
+<ul>
+<li>[django.utils.feedgenerator.Rss201rev2Feed] (RSS 2.01. Default.)</li>
+<li>[django.utils.feedgenerator.RssUserland091Feed] (RSS 0.91.)</li>
+<li>[django.utils.feedgenerator.Atom1Feed] (Atom 1.0.)</li>
+</ul>
+<h3 id="enclosures">Enclosures</h3>
+<p>To specify enclosures, such as those used in creating podcast feeds, use the <code>item_enclosures</code> hook or, alternatively and if you only have a single enclosure per item, the <code>item_enclosure_url</code>, <code>item_enclosure_length</code>, and <code>item_enclosure_mime_type</code> hooks. See the <code>ExampleFeed</code> class below for usage examples.</p>
+<h3 id="language">Language</h3>
+<p>Feeds created by the syndication framework automatically include the appropriate <code>&lt;language&gt;</code> tag (RSS 2.0) or <code>xml:lang</code> attribute (Atom). By default, this is [django.utils.translation.get_language]. You can change it by setting the <code>language</code> class attribute.</p>
+<h3 id="urls">URLs</h3>
+<p>The <code>link</code> method/attribute can return either an absolute path (e.g. <code>&quot;/blog/&quot;</code>) or a URL with the fully-qualified domain and protocol (e.g. <code>&quot;https://www.example.com/blog/&quot;</code>). If <code>link</code> doesn&#39;t return the domain, the syndication framework will insert the domain of the current site, according to your [SITE_ID setting ].</p>
+<p>Atom feeds require a <code>&lt;link rel=&quot;self&quot;&gt;</code> that defines the feed&#39;s current location. The syndication framework populates this automatically, using the domain of the current site according to the [SITE_ID] setting.</p>
+<h3 id="publishing-atom-and-rss-feeds-in-tandem">Publishing Atom and RSS feeds in tandem</h3>
+<p>Some developers like to make available both Atom <em>and</em> RSS versions of their feeds. To do that, you can create a subclass of your [~django.contrib.syndication.views.Feed] class and set the <code>feed_type</code> to something different. Then update your URLconf to add the extra versions.</p>
+<p>Here&#39;s a full example:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">from django.contrib.syndication.views import Feed
+from policebeat.models import NewsItem
+from django.utils.feedgenerator import Atom1Feed
+
+
+class RssSiteNewsFeed(Feed):
+    title = &quot;Police beat site news&quot;
+    link = &quot;/sitenews/&quot;
+    description = &quot;Updates on changes and additions to police beat central.&quot;
+
+    def items(self):
+        return NewsItem.objects.order_by(&quot;-pub_date&quot;)[:5]
+
+
+class AtomSiteNewsFeed(RssSiteNewsFeed):
+    feed_type = Atom1Feed
+    subtitle = RssSiteNewsFeed.description</code></pre></div></figure>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>In this example, the RSS feed uses a <code>description</code> while the Atom feed uses a <code>subtitle</code>. That&#39;s because Atom feeds don&#39;t provide for a feed-level &quot;description,&quot; but they <em>do</em> provide for a &quot;subtitle.&quot;</p>
+<p>If you provide a <code>description</code> in your [~django.contrib.syndication.views.Feed] class, Django will <em>not</em> automatically put that into the <code>subtitle</code> element, because a subtitle and description are not necessarily the same thing. Instead, you should define a <code>subtitle</code> attribute.</p>
+<p>In the above example, we set the Atom feed&#39;s <code>subtitle</code> to the RSS feed&#39;s <code>description</code>, because it&#39;s quite short already.</p>
+</div></aside>
+<p>And the accompanying URLconf:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">from django.urls import path
+from myproject.feeds import AtomSiteNewsFeed, RssSiteNewsFeed
+
+urlpatterns = [
+    # ...
+    path(&quot;sitenews/rss/&quot;, RssSiteNewsFeed()),
+    path(&quot;sitenews/atom/&quot;, AtomSiteNewsFeed()),
+    # ...
+]</code></pre></div></figure>
+<h3 id="feed-class-reference"><code>Feed</code> class reference</h3>
+<p><strong><code>views.Feed</code></strong></p>
+<p>This example illustrates all possible attributes and methods for a [~django.contrib.syndication.views.Feed] class:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">from django.contrib.syndication.views import Feed
+from django.utils import feedgenerator
+
+
+class ExampleFeed(Feed):
+    # FEED TYPE -- Optional. This should be a class that subclasses
+    # django.utils.feedgenerator.SyndicationFeed. This designates
+    # which type of feed this should be: RSS 2.0, Atom 1.0, etc. If
+    # you don&#x27;t specify feed_type, your feed will be RSS 2.0. This
+    # should be a class, not an instance of the class.
+
+    feed_type = feedgenerator.Rss201rev2Feed
+
+    # TEMPLATE NAMES -- Optional. These should be strings
+    # representing names of Django templates that the system should
+    # use in rendering the title and description of your feed items.
+    # Both are optional. If a template is not specified, the
+    # item_title() or item_description() methods are used instead.
+
+    title_template = None
+    description_template = None
+
+    # LANGUAGE -- Optional. This should be a string specifying a language
+    # code. Defaults to django.utils.translation.get_language().
+    language = &quot;de&quot;
+
+    # TITLE -- One of the following three is required. The framework
+    # looks for them in this order.
+
+    def title(self, obj):
+        &quot;&quot;&quot;
+        Takes the object returned by get_object() and returns the
+        feed&#x27;s title as a normal Python string.
+        &quot;&quot;&quot;
+
+    def title(self):
+        &quot;&quot;&quot;
+        Returns the feed&#x27;s title as a normal Python string.
+        &quot;&quot;&quot;
+
+    title = &quot;foo&quot;  # Hard-coded title.
+
+    # LINK -- One of the following three is required. The framework
+    # looks for them in this order.
+
+    def link(self, obj):
+        &quot;&quot;&quot;
+        # Takes the object returned by get_object() and returns the URL
+        # of the HTML version of the feed as a normal Python string.
+        &quot;&quot;&quot;
+
+    def link(self):
+        &quot;&quot;&quot;
+        Returns the URL of the HTML version of the feed as a normal Python
+        string.
+        &quot;&quot;&quot;
+
+    link = &quot;/blog/&quot;  # Hard-coded URL.
+
+    # FEED_URL -- One of the following three is optional. The framework
+    # looks for them in this order.
+
+    def feed_url(self, obj):
+        &quot;&quot;&quot;
+        # Takes the object returned by get_object() and returns the feed&#x27;s
+        # own URL as a normal Python string.
+        &quot;&quot;&quot;
+
+    def feed_url(self):
+        &quot;&quot;&quot;
+        Returns the feed&#x27;s own URL as a normal Python string.
+        &quot;&quot;&quot;
+
+    feed_url = &quot;/blog/rss/&quot;  # Hard-coded URL.
+
+    # GUID -- One of the following three is optional. The framework looks
+    # for them in this order. This property is only used for Atom feeds
+    # (where it is the feed-level ID element). If not provided, the feed
+    # link is used as the ID.
+
+    def feed_guid(self, obj):
+        &quot;&quot;&quot;
+        Takes the object returned by get_object() and returns the globally
+        unique ID for the feed as a normal Python string.
+        &quot;&quot;&quot;
+
+    def feed_guid(self):
+        &quot;&quot;&quot;
+        Returns the feed&#x27;s globally unique ID as a normal Python string.
+        &quot;&quot;&quot;
+
+    feed_guid = &quot;/foo/bar/1234&quot;  # Hard-coded guid.
+
+    # DESCRIPTION -- One of the following three is required. The framework
+    # looks for them in this order.
+
+    def description(self, obj):
+        &quot;&quot;&quot;
+        Takes the object returned by get_object() and returns the feed&#x27;s
+        description as a normal Python string.
+        &quot;&quot;&quot;
+
+    def description(self):
+        &quot;&quot;&quot;
+        Returns the feed&#x27;s description as a normal Python string.
+        &quot;&quot;&quot;
+
+    description = &quot;Foo bar baz.&quot;  # Hard-coded description.
+
+    # AUTHOR NAME --One of the following three is optional. The framework
+    # looks for them in this order.
+
+    def author_name(self, obj):
+        &quot;&quot;&quot;
+        Takes the object returned by get_object() and returns the feed&#x27;s
+        author&#x27;s name as a normal Python string.
+        &quot;&quot;&quot;
+
+    def author_name(self):
+        &quot;&quot;&quot;
+        Returns the feed&#x27;s author&#x27;s name as a normal Python string.
+        &quot;&quot;&quot;
+
+    author_name = &quot;Sally Smith&quot;  # Hard-coded author name.
+
+    # AUTHOR EMAIL --One of the following three is optional. The framework
+    # looks for them in this order.
+
+    def author_email(self, obj):
+        &quot;&quot;&quot;
+        Takes the object returned by get_object() and returns the feed&#x27;s
+        author&#x27;s email as a normal Python string.
+        &quot;&quot;&quot;
+
+    def author_email(self):
+        &quot;&quot;&quot;
+        Returns the feed&#x27;s author&#x27;s email as a normal Python string.
+        &quot;&quot;&quot;
+
+    author_email = &quot;test@example.com&quot;  # Hard-coded author email.
+
+    # AUTHOR LINK --One of the following three is optional. The framework
+    # looks for them in this order. In each case, the URL should include
+    # the scheme (such as &quot;https://&quot;) and domain name.
+
+    def author_link(self, obj):
+        &quot;&quot;&quot;
+        Takes the object returned by get_object() and returns the feed&#x27;s
+        author&#x27;s URL as a normal Python string.
+        &quot;&quot;&quot;
+
+    def author_link(self):
+        &quot;&quot;&quot;
+        Returns the feed&#x27;s author&#x27;s URL as a normal Python string.
+        &quot;&quot;&quot;
+
+    author_link = &quot;https://www.example.com/&quot;  # Hard-coded author URL.
+
+    # CATEGORIES -- One of the following three is optional. The framework
+    # looks for them in this order. In each case, the method/attribute
+    # should return an iterable object that returns strings.
+
+    def categories(self, obj):
+        &quot;&quot;&quot;
+        Takes the object returned by get_object() and returns the feed&#x27;s
+        categories as iterable over strings.
+        &quot;&quot;&quot;
+
+    def categories(self):
+        &quot;&quot;&quot;
+        Returns the feed&#x27;s categories as iterable over strings.
+        &quot;&quot;&quot;
+
+    categories = [&quot;python&quot;, &quot;django&quot;]  # Hard-coded list of categories.
+
+    # COPYRIGHT NOTICE -- One of the following three is optional. The
+    # framework looks for them in this order.
+
+    def feed_copyright(self, obj):
+        &quot;&quot;&quot;
+        Takes the object returned by get_object() and returns the feed&#x27;s
+        copyright notice as a normal Python string.
+        &quot;&quot;&quot;
+
+    def feed_copyright(self):
+        &quot;&quot;&quot;
+        Returns the feed&#x27;s copyright notice as a normal Python string.
+        &quot;&quot;&quot;
+
+    feed_copyright = &quot;Copyright (c) 2007, Sally Smith&quot;  # Hard-coded copyright notice.
+
+    # TTL -- One of the following three is optional. The framework looks
+    # for them in this order. Ignored for Atom feeds.
+
+    def ttl(self, obj):
+        &quot;&quot;&quot;
+        Takes the object returned by get_object() and returns the feed&#x27;s
+        TTL (Time To Live) as a normal Python string.
+        &quot;&quot;&quot;
+
+    def ttl(self):
+        &quot;&quot;&quot;
+        Returns the feed&#x27;s TTL as a normal Python string.
+        &quot;&quot;&quot;
+
+    ttl = 600  # Hard-coded Time To Live.
+
+    # STYLESHEETS -- Optional. To set, provide one of the following three.
+    # The framework looks for them in this order.
+
+    def stylesheets(self, obj):
+        &quot;&quot;&quot;
+        Takes the object returned by get_object() and returns the feed&#x27;s
+        stylesheets (as URL strings or as Stylesheet instances).
+        &quot;&quot;&quot;
+
+    def stylesheets(self):
+        &quot;&quot;&quot;
+        Returns the feed&#x27;s stylesheets (as URL strings or Stylesheet
+        instances).
+        &quot;&quot;&quot;
+
+    # Hardcoded stylesheets.
+    stylesheets = [&quot;/stylesheet1.xsl&quot;, &quot;stylesheet2.xsl&quot;]
+
+    # ITEMS -- One of the following three is required. The framework looks
+    # for them in this order.
+
+    def items(self, obj):
+        &quot;&quot;&quot;
+        Takes the object returned by get_object() and returns a list of
+        items to publish in this feed.
+        &quot;&quot;&quot;
+
+    def items(self):
+        &quot;&quot;&quot;
+        Returns a list of items to publish in this feed.
+        &quot;&quot;&quot;
+
+    items = [&quot;Item 1&quot;, &quot;Item 2&quot;]  # Hard-coded items.
+
+    # GET_OBJECT -- This is required for feeds that publish different data
+    # for different URL parameters. (See &quot;A complex example&quot; above.)
+
+    def get_object(self, request, *args, **kwargs):
+        &quot;&quot;&quot;
+        Takes the current request and the arguments from the URL, and
+        returns an object represented by this feed. Raises
+        django.core.exceptions.ObjectDoesNotExist on error.
+        &quot;&quot;&quot;
+
+    # ITEM TITLE AND DESCRIPTION -- If title_template or
+    # description_template are not defined, these are used instead. Both are
+    # optional, by default they will use the string representation of the
+    # item.
+
+    def item_title(self, item):
+        &quot;&quot;&quot;
+        Takes an item, as returned by items(), and returns the item&#x27;s
+        title as a normal Python string.
+        &quot;&quot;&quot;
+
+    def item_title(self):
+        &quot;&quot;&quot;
+        Returns the title for every item in the feed.
+        &quot;&quot;&quot;
+
+    item_title = &quot;Breaking News: Nothing Happening&quot;  # Hard-coded title.
+
+    def item_description(self, item):
+        &quot;&quot;&quot;
+        Takes an item, as returned by items(), and returns the item&#x27;s
+        description as a normal Python string.
+        &quot;&quot;&quot;
+
+    def item_description(self):
+        &quot;&quot;&quot;
+        Returns the description for every item in the feed.
+        &quot;&quot;&quot;
+
+    item_description = &quot;A description of the item.&quot;  # Hard-coded description.
+
+    def get_context_data(self, **kwargs):
+        &quot;&quot;&quot;
+        Returns a dictionary to use as extra context if either
+        description_template or item_template are used.
+
+        Default implementation preserves the old behavior
+        of using {&#x27;obj&#x27;: item, &#x27;site&#x27;: current_site} as the context.
+        &quot;&quot;&quot;
+
+    # ITEM LINK -- One of these three is required. The framework looks for
+    # them in this order.
+
+    # First, the framework tries the two methods below, in
+    # order. Failing that, it falls back to the get_absolute_url()
+    # method on each item returned by items().
+
+    def item_link(self, item):
+        &quot;&quot;&quot;
+        Takes an item, as returned by items(), and returns the item&#x27;s URL.
+        &quot;&quot;&quot;
+
+    def item_link(self):
+        &quot;&quot;&quot;
+        Returns the URL for every item in the feed.
+        &quot;&quot;&quot;
+
+    # ITEM_GUID -- The following method is optional. If not provided, the
+    # item&#x27;s link is used by default.
+
+    def item_guid(self, obj):
+        &quot;&quot;&quot;
+        Takes an item, as return by items(), and returns the item&#x27;s ID.
+        &quot;&quot;&quot;
+
+    # ITEM_GUID_IS_PERMALINK -- The following method is optional. If
+    # provided, it sets the &#x27;isPermaLink&#x27; attribute of an item&#x27;s
+    # GUID element. This method is used only when &#x27;item_guid&#x27; is
+    # specified.
+
+    def item_guid_is_permalink(self, obj):
+        &quot;&quot;&quot;
+        Takes an item, as returned by items(), and returns a boolean.
+        &quot;&quot;&quot;
+
+    item_guid_is_permalink = False  # Hardcoded value
+
+    # ITEM AUTHOR NAME -- One of the following three is optional. The
+    # framework looks for them in this order.
+
+    def item_author_name(self, item):
+        &quot;&quot;&quot;
+        Takes an item, as returned by items(), and returns the item&#x27;s
+        author&#x27;s name as a normal Python string.
+        &quot;&quot;&quot;
+
+    def item_author_name(self):
+        &quot;&quot;&quot;
+        Returns the author name for every item in the feed.
+        &quot;&quot;&quot;
+
+    item_author_name = &quot;Sally Smith&quot;  # Hard-coded author name.
+
+    # ITEM AUTHOR EMAIL --One of the following three is optional. The
+    # framework looks for them in this order.
+    #
+    # If you specify this, you must specify item_author_name.
+
+    def item_author_email(self, obj):
+        &quot;&quot;&quot;
+        Takes an item, as returned by items(), and returns the item&#x27;s
+        author&#x27;s email as a normal Python string.
+        &quot;&quot;&quot;
+
+    def item_author_email(self):
+        &quot;&quot;&quot;
+        Returns the author email for every item in the feed.
+        &quot;&quot;&quot;
+
+    item_author_email = &quot;test@example.com&quot;  # Hard-coded author email.
+
+    # ITEM AUTHOR LINK -- One of the following three is optional. The
+    # framework looks for them in this order. In each case, the URL should
+    # include the scheme (such as &quot;https://&quot;) and domain name.
+    #
+    # If you specify this, you must specify item_author_name.
+
+    def item_author_link(self, obj):
+        &quot;&quot;&quot;
+        Takes an item, as returned by items(), and returns the item&#x27;s
+        author&#x27;s URL as a normal Python string.
+        &quot;&quot;&quot;
+
+    def item_author_link(self):
+        &quot;&quot;&quot;
+        Returns the author URL for every item in the feed.
+        &quot;&quot;&quot;
+
+    item_author_link = &quot;https://www.example.com/&quot;  # Hard-coded author URL.
+
+    # ITEM ENCLOSURES -- One of the following three is optional. The
+    # framework looks for them in this order. If one of them is defined,
+    # ``item_enclosure_url``, ``item_enclosure_length``, and
+    # ``item_enclosure_mime_type`` will have no effect.
+
+    def item_enclosures(self, item):
+        &quot;&quot;&quot;
+        Takes an item, as returned by items(), and returns a list of
+        ``django.utils.feedgenerator.Enclosure`` objects.
+        &quot;&quot;&quot;
+
+    def item_enclosures(self):
+        &quot;&quot;&quot;
+        Returns the ``django.utils.feedgenerator.Enclosure`` list for every
+        item in the feed.
+        &quot;&quot;&quot;
+
+    item_enclosures = []  # Hard-coded enclosure list
+
+    # ITEM ENCLOSURE URL -- One of these three is required if you&#x27;re
+    # publishing enclosures and you&#x27;re not using ``item_enclosures``. The
+    # framework looks for them in this order.
+
+    def item_enclosure_url(self, item):
+        &quot;&quot;&quot;
+        Takes an item, as returned by items(), and returns the item&#x27;s
+        enclosure URL.
+        &quot;&quot;&quot;
+
+    def item_enclosure_url(self):
+        &quot;&quot;&quot;
+        Returns the enclosure URL for every item in the feed.
+        &quot;&quot;&quot;
+
+    item_enclosure_url = &quot;/foo/bar.mp3&quot;  # Hard-coded enclosure link.
+
+    # ITEM ENCLOSURE LENGTH -- One of these three is required if you&#x27;re
+    # publishing enclosures and you&#x27;re not using ``item_enclosures``. The
+    # framework looks for them in this order. In each case, the returned
+    # value should be either an integer, or a string representation of the
+    # integer, in bytes.
+
+    def item_enclosure_length(self, item):
+        &quot;&quot;&quot;
+        Takes an item, as returned by items(), and returns the item&#x27;s
+        enclosure length.
+        &quot;&quot;&quot;
+
+    def item_enclosure_length(self):
+        &quot;&quot;&quot;
+        Returns the enclosure length for every item in the feed.
+        &quot;&quot;&quot;
+
+    item_enclosure_length = 32000  # Hard-coded enclosure length.
+
+    # ITEM ENCLOSURE MIME TYPE -- One of these three is required if you&#x27;re
+    # publishing enclosures and you&#x27;re not using ``item_enclosures``. The
+    # framework looks for them in this order.
+
+    def item_enclosure_mime_type(self, item):
+        &quot;&quot;&quot;
+        Takes an item, as returned by items(), and returns the item&#x27;s
+        enclosure MIME type.
+        &quot;&quot;&quot;
+
+    def item_enclosure_mime_type(self):
+        &quot;&quot;&quot;
+        Returns the enclosure MIME type for every item in the feed.
+        &quot;&quot;&quot;
+
+    item_enclosure_mime_type = &quot;audio/mpeg&quot;  # Hard-coded enclosure MIME type.
+
+    # ITEM PUBDATE -- It&#x27;s optional to use one of these three. This is a
+    # hook that specifies how to get the pubdate for a given item.
+    # In each case, the method/attribute should return a Python
+    # datetime.datetime object.
+
+    def item_pubdate(self, item):
+        &quot;&quot;&quot;
+        Takes an item, as returned by items(), and returns the item&#x27;s
+        pubdate.
+        &quot;&quot;&quot;
+
+    def item_pubdate(self):
+        &quot;&quot;&quot;
+        Returns the pubdate for every item in the feed.
+        &quot;&quot;&quot;
+
+    item_pubdate = datetime.datetime(2005, 5, 3)  # Hard-coded pubdate.
+
+    # ITEM UPDATED -- It&#x27;s optional to use one of these three. This is a
+    # hook that specifies how to get the updateddate for a given item.
+    # In each case, the method/attribute should return a Python
+    # datetime.datetime object.
+
+    def item_updateddate(self, item):
+        &quot;&quot;&quot;
+        Takes an item, as returned by items(), and returns the item&#x27;s
+        updateddate.
+        &quot;&quot;&quot;
+
+    def item_updateddate(self):
+        &quot;&quot;&quot;
+        Returns the updateddate for every item in the feed.
+        &quot;&quot;&quot;
+
+    item_updateddate = datetime.datetime(2005, 5, 3)  # Hard-coded updateddate.
+
+    # ITEM CATEGORIES -- It&#x27;s optional to use one of these three. This is
+    # a hook that specifies how to get the list of categories for a given
+    # item. In each case, the method/attribute should return an iterable
+    # object that returns strings.
+
+    def item_categories(self, item):
+        &quot;&quot;&quot;
+        Takes an item, as returned by items(), and returns the item&#x27;s
+        categories.
+        &quot;&quot;&quot;
+
+    def item_categories(self):
+        &quot;&quot;&quot;
+        Returns the categories for every item in the feed.
+        &quot;&quot;&quot;
+
+    item_categories = [&quot;python&quot;, &quot;django&quot;]  # Hard-coded categories.
+
+    # ITEM COPYRIGHT NOTICE (only applicable to Atom feeds) -- One of the
+    # following three is optional. The framework looks for them in this
+    # order.
+
+    def item_copyright(self, obj):
+        &quot;&quot;&quot;
+        Takes an item, as returned by items(), and returns the item&#x27;s
+        copyright notice as a normal Python string.
+        &quot;&quot;&quot;
+
+    def item_copyright(self):
+        &quot;&quot;&quot;
+        Returns the copyright notice for every item in the feed.
+        &quot;&quot;&quot;
+
+    item_copyright = &quot;Copyright (c) 2007, Sally Smith&quot;  # Hard-coded copyright notice.
+
+    # ITEM COMMENTS URL -- It&#x27;s optional to use one of these three. This is
+    # a hook that specifies how to get the URL of a page for comments for a
+    # given item.
+
+    def item_comments(self, obj):
+        &quot;&quot;&quot;
+        Takes an item, as returned by items(), and returns the item&#x27;s
+        comments URL as a normal Python string.
+        &quot;&quot;&quot;
+
+    def item_comments(self):
+        &quot;&quot;&quot;
+        Returns the comments URL for every item in the feed.
+        &quot;&quot;&quot;
+
+    item_comments = &quot;https://www.example.com/comments&quot;  # Hard-coded comments URL</code></pre></div></figure>
+<h2 id="the-low-level-framework">The low-level framework</h2>
+<p>Behind the scenes, the high-level RSS framework uses a lower-level framework for generating feeds&#39; XML. This framework lives in a single module: [django/utils/feedgenerator.py].</p>
+<p>You use this framework on your own, for lower-level feed generation. You can also create custom feed generator subclasses for use with the <code>feed_type</code> <code>Feed</code> option.</p>
+<h3 id="syndicationfeed-classes"><code>SyndicationFeed</code> classes</h3>
+<p>The [~django.utils.feedgenerator] module contains a base class:</p>
+<ul>
+<li>[django.utils.feedgenerator.SyndicationFeed]</li>
+</ul>
+<p>and several subclasses:</p>
+<ul>
+<li>[django.utils.feedgenerator.RssUserland091Feed]</li>
+<li>[django.utils.feedgenerator.Rss201rev2Feed]</li>
+<li>[django.utils.feedgenerator.Atom1Feed]</li>
+</ul>
+<p>Each of these three classes knows how to render a certain type of feed as XML. They share this interface:</p>
+<p>[.SyndicationFeed.__init__]</p>
+<p>:   Initialize the feed with the given dictionary of metadata, which applies to the entire feed. Required keyword arguments are:</p>
+<pre><code>- `title`
+- `link`
+- `description`
+
+There\&#39;s also a bunch of other optional keywords:
+
+- `language`
+- `author_email`
+- `author_name`
+- `author_link`
+- `subtitle`
+- `categories`
+- `feed_url`
+- `feed_copyright`
+- `feed_guid`
+- `ttl`
+- `stylesheets`
+
+Any extra keyword arguments you pass to `__init__` will be stored in `self.feed` for use with [custom feed generators](#custom-feed-generators).
+
+All parameters should be strings, except for two:
+
+- `categories` should be a sequence of strings.
+- `stylesheets` should be a sequence of either strings or [\~django.utils.feedgenerator.Stylesheet] instances.
+
+Beware that some control characters are [not allowed](https://www.w3.org/International/questions/qa-controls) in XML documents. If your content has some of them, you might encounter a [ValueError] when producing the feed.
+</code></pre>
+<p>[.SyndicationFeed.add_item]</p>
+<p>:   Add an item to the feed with the given parameters.</p>
+<pre><code>Required keyword arguments are:
+
+- `title`
+- `link`
+- `description`
+
+Optional keyword arguments are:
+
+- `author_email`
+- `author_name`
+- `author_link`
+- `pubdate`
+- `comments`
+- `unique_id`
+- `enclosures`
+- `categories`
+- `item_copyright`
+- `ttl`
+- `updateddate`
+
+Extra keyword arguments will be stored for [custom feed generators](#custom-feed-generators).
+
+All parameters, if given, should be strings, except:
+
+- `pubdate` should be a Python [\~datetime.datetime] object.
+- `updateddate` should be a Python [\~datetime.datetime] object.
+- `enclosures` should be a list of [django.utils.feedgenerator.Enclosure] instances.
+- `categories` should be a sequence of strings.
+</code></pre>
+<p>[.SyndicationFeed.write]</p>
+<p>:   Outputs the feed in the given encoding to outfile, which is a file-like object.</p>
+<p>[.SyndicationFeed.writeString]</p>
+<p>:   Returns the feed as a string in the given encoding.</p>
+<p>For example, to create an Atom 1.0 feed and print it to standard output:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Python</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-python">
+<span class="hljs-meta">&gt;&gt;&gt; </span><span class="hljs-keyword">from</span> django.utils <span class="hljs-keyword">import</span> feedgenerator
+<span class="hljs-meta">&gt;&gt;&gt; </span><span class="hljs-keyword">from</span> datetime <span class="hljs-keyword">import</span> datetime
+<span class="hljs-meta">&gt;&gt;&gt; </span>f = feedgenerator.Atom1Feed(
+<span class="hljs-meta">... </span>    title=<span class="hljs-string">&quot;My Blog&quot;</span>,
+<span class="hljs-meta">... </span>    link=<span class="hljs-string">&quot;https://www.example.com/&quot;</span>,
+<span class="hljs-meta">... </span>    description=<span class="hljs-string">&quot;In which I write about what I ate today.&quot;</span>,
+<span class="hljs-meta">... </span>    language=<span class="hljs-string">&quot;en&quot;</span>,
+<span class="hljs-meta">... </span>    author_name=<span class="hljs-string">&quot;Myself&quot;</span>,
+<span class="hljs-meta">... </span>    feed_url=<span class="hljs-string">&quot;https://example.com/atom.xml&quot;</span>,
+<span class="hljs-meta">... </span>)
+<span class="hljs-meta">&gt;&gt;&gt; </span>f.add_item(
+<span class="hljs-meta">... </span>    title=<span class="hljs-string">&quot;Hot dog today&quot;</span>,
+<span class="hljs-meta">... </span>    link=<span class="hljs-string">&quot;https://www.example.com/entries/1/&quot;</span>,
+<span class="hljs-meta">... </span>    pubdate=datetime.now(),
+<span class="hljs-meta">... </span>    description=<span class="hljs-string">&quot;&lt;p&gt;Today I had a Vienna Beef hot dog. It was pink, plump and perfect.&lt;/p&gt;&quot;</span>,
+<span class="hljs-meta">... </span>)
+<span class="hljs-meta">&gt;&gt;&gt; </span><span class="hljs-built_in">print</span>(f.writeString(<span class="hljs-string">&quot;UTF-8&quot;</span>))
+&lt;?xml version=<span class="hljs-string">&quot;1.0&quot;</span> encoding=<span class="hljs-string">&quot;UTF-8&quot;</span>?&gt;
+&lt;feed xmlns=<span class="hljs-string">&quot;http://www.w3.org/2005/Atom&quot;</span> xml:lang=<span class="hljs-string">&quot;en&quot;</span>&gt;
+...
+&lt;/feed&gt;</code></pre></div></figure>
+<h3 id="custom-feed-generators">Custom feed generators</h3>
+<p>If you need to produce a custom feed format, you&#39;ve got a couple of options.</p>
+<p>If the feed format is totally custom, you&#39;ll want to subclass <code>SyndicationFeed</code> and completely replace the <code>write()</code> and <code>writeString()</code> methods.</p>
+<p>However, if the feed format is a spin-off of RSS or Atom (i.e. <a target="_blank" rel="noopener" href="https://georss.org">GeoRSS</a>, Apple&#39;s <a target="_blank" rel="noopener" href="https://help.apple.com/itc/podcasts_connect/#/itcb54353390">iTunes podcast format</a>, etc.), you&#39;ve got a better choice. These types of feeds typically add extra elements and/or attributes to the underlying format, and there are a set of methods that <code>SyndicationFeed</code> calls to get these extra attributes. Thus, you can subclass the appropriate feed generator class (<code>Atom1Feed</code> or <code>Rss201rev2Feed</code>) and extend these callbacks. They are:</p>
+<p><code>SyndicationFeed.root_attributes(self)</code></p>
+<p>:   Return a <code>dict</code> of attributes to add to the root feed element (<code>feed</code>/<code>channel</code>).</p>
+<p><code>SyndicationFeed.add_root_elements(self, handler)</code></p>
+<p>:   Callback to add elements inside the root feed element (<code>feed</code>/<code>channel</code>). <code>handler</code> is an [~xml.sax.saxutils.XMLGenerator] from Python&#39;s built-in SAX library; you&#39;ll call methods on it to add to the XML document in process.</p>
+<p><code>SyndicationFeed.item_attributes(self, item)</code></p>
+<p>:   Return a <code>dict</code> of attributes to add to each item (<code>item</code>/<code>entry</code>) element. The argument, <code>item</code>, is a dictionary of all the data passed to <code>SyndicationFeed.add_item()</code>.</p>
+<p><code>SyndicationFeed.add_item_elements(self, handler, item)</code></p>
+<p>:   Callback to add elements to each item (<code>item</code>/<code>entry</code>) element. <code>handler</code> and <code>item</code> are as above.</p>
+<aside class="callout callout-warning"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 4 2.8 20h18.4L12 4z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M12 10v4.4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="17" r="1.3" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Warning</p><p>If you override any of these methods, be sure to call the superclass methods since they add the required elements for each feed format.</p>
+</div></aside>
+<p>For example, you might start implementing an iTunes RSS feed generator like so:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">class iTunesFeed(Rss201rev2Feed):
+    def root_attributes(self):
+        attrs = super().root_attributes()
+        attrs[&quot;xmlns:itunes&quot;] = &quot;http://www.itunes.com/dtds/podcast-1.0.dtd&quot;
+        return attrs
+
+    def add_root_elements(self, handler):
+        super().add_root_elements(handler)
+        handler.addQuickElement(&quot;itunes:explicit&quot;, &quot;clean&quot;)</code></pre></div></figure>
+<p>There&#39;s a lot more work to be done for a complete custom feed class, but the above example should demonstrate the basic idea.</p>
+<h3 id="feed-stylesheets">Feed stylesheets</h3>
+<p>If you wish to have your RSS feed render nicely in a browser, you will need to provide styling information for the XML file, typically in <a target="_blank" rel="noopener" href="https://developer.mozilla.org/en-US/docs/Web/XSLT/Transforming_XML_with_XSLT">XSLT</a> or CSS formats.</p>
+<p>You can add this to your RSS feed by setting the <code>stylesheets</code> attribute on the feed class.</p>
+<p>This can be a hardcoded URL:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">from django.contrib.syndication.views import Feed
+
+
+class FeedWithHardcodedStylesheet(Feed):
+    stylesheets = [
+        &quot;https://example.com/rss_stylesheet.xslt&quot;,
+    ]</code></pre></div></figure>
+<p>You can also use Django&#39;s static files system:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">from django.contrib.syndication.views import Feed
+from django.templatetags.static import static
+
+
+class FeedWithStaticFileStylesheet(Feed):
+    stylesheets = [
+        static(&quot;rss_styles.xslt&quot;),
+    ]</code></pre></div></figure>
+<p>Another option is to have a view in your project that renders the XSLT document. You can then link it like so:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">from django.contrib.syndication.views import Feed
+from django.urls import reverse_lazy
+
+
+class FeedWithStylesheetView(Feed):
+    stylesheets = [
+        reverse_lazy(&quot;your-custom-view-name&quot;),
+    ]</code></pre></div></figure>
+<p>Django will normally try to guess the MIME type of the given URL based on its extension, but if that fails you can specify it using the [~django.utils.feedgenerator.Stylesheet] class:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">from django.contrib.syndication.views import Feed
+from django.utils.feedgenerator import Stylesheet
+
+
+class FeedWithHardcodedStylesheet(Feed):
+    stylesheets = [
+        Stylesheet(&quot;https://example.com/rss_stylesheet&quot;, mimetype=&quot;text/xsl&quot;),
+    ]</code></pre></div></figure>
+<p>Similarly, if you&#39;d like to use a different <code>media</code> attribute than <code>screen</code> (Django&#39;s default), you can use the [~django.utils.feedgenerator.Stylesheet] class again:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">from django.contrib.syndication.views import Feed
+from django.utils.feedgenerator import Stylesheet
+
+
+class FeedWithHardcodedStylesheet(Feed):
+    stylesheets = [
+        Stylesheet(&quot;https://example.com/rss_stylesheet.xslt&quot;, media=&quot;print&quot;),
+    ]</code></pre></div></figure>
+<p>Any of these options can be combined when using multiple stylesheets:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">from django.contrib.syndication.views import Feed
+from django.utils.feedgenerator import Stylesheet
+
+
+class MultiStylesheetFeed(Feed):
+    stylesheets = [
+        &quot;/stylesheet1.xsl&quot;,
+        Stylesheet(&quot;/stylesheet2.xsl&quot;),
+    ]</code></pre></div></figure>

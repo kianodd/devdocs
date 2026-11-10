@@ -3,7 +3,7 @@
    Courses are built at build time (data/catalog.json). Progress, downloads,
    settings live locally in the browser. */
 
-const APP_VERSION = '2.9.1';
+const APP_VERSION = '2.10.0';
 const $ = (s, el) => (el || document).querySelector(s);
 const $$ = (s, el) => [...(el || document).querySelectorAll(s)];
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -1212,6 +1212,7 @@ async function importDownloadsZip(file) {
 
 /* ---------------- changelog ---------------- */
 const CHANGELOG = [
+  { v: '2.10.0', fa: ['۹ دوره جدید از مستندات رسمی (بچ ۳): Python از مستندات CPython، PHP، Django، NumPy، pandas، SciPy، MongoDB، SQL (از مستندات PostgreSQL) و PostgreSQL', 'در مجموع ۳۹ دوره؛ فصل‌های جدید این بچ حدود ۲٬۷۰۰ فصل است'], en: ['9 new courses from official docs (batch 3): Python (CPython docs), PHP, Django, NumPy, pandas, SciPy, MongoDB, SQL (from the PostgreSQL docs) and PostgreSQL', '39 courses in total; about 2,700 new chapters in this batch'] },
   { v: '2.9.1', fa: ['اجرای زنده کد: روی کارت‌های JavaScript دکمه «اجرا» اضافه شد — کد داخل مرورگر اجرا می‌شود و خروجی کنسول و خطاها زیر همان کارت نمایش داده می‌شوند', 'کدهای HTML پیش‌نمایش زنده و کدهای SVG رندر زنده می‌گیرند؛ زیرساخت اجرای Python (با مفسر داخل مرورگر) هم آماده است و با دوره پایتون فعال می‌شود'], en: ['Live code runner: JavaScript code cards get a Run button — code executes in a sandboxed frame and console output and errors appear right under the card', 'HTML blocks get a live preview and SVG blocks render live; the in-browser Python runtime is wired up too and activates with the Python course'] },
   { v: '2.9.0', fa: ['شش دوره جدید از مستندات رسمی: C#‎ با ۱٬۰۰۰ فصل و ASP.NET Core با ۸۷۶ فصل از Microsoft Learn (با نمونه‌کدهای واقعی داخل متن)، Vue با ۱۰۵ فصل، Bootstrap با ۱۰۶ فصل، Go با ۹۱ فصل (از جمله Effective Go) و Node.js با ۷۰ فصل مرجع API', 'در مجموع ۳۰ دوره و ۹٬۴۵۰ فصل'], en: ['Six new courses from official docs: C# (1,000 chapters) and ASP.NET Core (876) from Microsoft Learn with real code samples inlined, Vue (105), Bootstrap (106), Go (91, including Effective Go) and the Node.js API reference (70)', '30 courses and 9,450 chapters in total'] },
   { v: '2.8.0', fa: ['شش دوره جدید از مستندات رسمی MDN اضافه شد: HTML با ۲۵۸ فصل، CSS با ۱٬۲۸۸ فصل، JavaScript با ۱٬۳۴۶ فصل، SVG با ۳۰۷ فصل، XML با ۱۱۷ فصل و Canvas API با ۱۵ فصل — هرکدام با بخش‌های راهنما (Guide) و مرجع (Reference) و به ترتیب خود MDN', 'لینک‌های داخلی MDN بین فصل‌ها و دوره‌ها داخل اپ باز می‌شوند و عکس‌های فصل‌ها هم داخل پکیج آفلاین هر دوره قرار می‌گیرند', 'در مجموع ۲۴ دوره و ۷٬۲۰۲ فصل'], en: ['Six new courses from the official MDN docs: HTML (258 chapters), CSS (1,288), JavaScript (1,346), SVG (307), XML (117) and Canvas API (15) — each with Guide and Reference sections in MDN\u2019s own order', 'MDN internal links between chapters and courses open in-app, and chapter images are included in each course\u2019s offline download', '24 courses and 7,202 chapters in total'] },
