@@ -1,0 +1,149 @@
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>ufuncs</p>
+</div></aside>
+<p>There is a general need for looping over not only functions on scalars but also over functions on vectors (or arrays). This concept is realized in NumPy by generalizing the universal functions (ufuncs). In regular ufuncs, the elementary function is limited to element-by-element operations, whereas the generalized version (gufuncs) supports &quot;sub-array&quot; by &quot;sub-array&quot; operations. The Perl vector library PDL provides a similar functionality and its terms are re-used in the following.</p>
+<p>Each generalized ufunc has information associated with it that states what the &quot;core&quot; dimensionality of the inputs is, as well as the corresponding dimensionality of the outputs (the element-wise ufuncs have zero core dimensions). The list of the core dimensions for all arguments is called the &quot;signature&quot; of a ufunc. For example, the ufunc <code>numpy.add</code> has signature <code>(),()-&gt;()</code> defining two scalar inputs and one scalar output.</p>
+<p>Another example is the function <code>inner1d(a, b)</code> with a signature of <code>(i),(i)-&gt;()</code>. This applies the inner product along the last axis of each input, but keeps the remaining indices intact. For example, where <code>a</code> is of shape <code>(3, 5, N)</code> and <code>b</code> is of shape <code>(5, N)</code>, this will return an output of shape <code>(3,5)</code>. The underlying elementary function is called <code>3 * 5</code> times. In the signature, we specify one core dimension <code>(i)</code> for each input and zero core dimensions <code>()</code> for the output, since it takes two 1-d arrays and returns a scalar. By using the same name <code>i</code>, we specify that the two corresponding dimensions should be of the same size.</p>
+<p>The dimensions beyond the core dimensions are called &quot;loop&quot; dimensions. In the above example, this corresponds to <code>(3, 5)</code>.</p>
+<p>The signature determines how the dimensions of each input/output array are split into core and loop dimensions:</p>
+<ol>
+<li>Each dimension in the signature is matched to a dimension of the corresponding passed-in array, starting from the end of the shape tuple. These are the core dimensions, and they must be present in the arrays, or an error will be raised.</li>
+<li>Core dimensions assigned to the same label in the signature (e.g. the <code>i</code> in <code>inner1d</code>&#39;s <code>(i),(i)-&gt;()</code>) must have exactly matching sizes, no broadcasting is performed.</li>
+<li>The core dimensions are removed from all inputs and the remaining dimensions are broadcast together, defining the loop dimensions.</li>
+<li>The shape of each output is determined from the loop dimensions plus the output&#39;s core dimensions</li>
+</ol>
+<p>Typically, the size of all core dimensions in an output will be determined by the size of a core dimension with the same label in an input array. This is not a requirement, and it is possible to define a signature where a label comes up for the first time in an output, although some precautions must be taken when calling such a function. An example would be the function <code>euclidean_pdist(a)</code>, with signature <code>(n,d)-&gt;(p)</code>, that given an array of <code>n</code> <code>d</code>-dimensional vectors, computes all unique pairwise Euclidean distances among them. The output dimension <code>p</code> must therefore be equal to <code>n * (n - 1) / 2</code>, but by default, it is the caller&#39;s responsibility to pass in an output array of the right size. If the size of a core dimension of an output cannot be determined from a passed in input or output array, an error will be raised. This can be changed by defining a <code>PyUFunc_ProcessCoreDimsFunc</code> function and assigning it to the <code>process_core_dims_func</code> field of the <code>PyUFuncObject</code> structure. See below for more details.</p>
+<p>Note: Prior to NumPy 1.10.0, less strict checks were in place: missing core dimensions were created by prepending 1&#39;s to the shape as necessary, core dimensions with the same label were broadcast together, and undetermined dimensions were created with size 1.</p>
+<h2 id="definitions">Definitions</h2>
+<p>Elementary Function</p>
+<p>:   Each ufunc consists of an elementary function that performs the most basic operation on the smallest portion of array arguments (e.g. adding two numbers is the most basic operation in adding two arrays). The ufunc applies the elementary function multiple times on different parts of the arrays. The input/output of elementary functions can be vectors; e.g., the elementary function of <code>inner1d</code> takes two vectors as input.</p>
+<p>Signature</p>
+<p>:   A signature is a string describing the input/output dimensions of the elementary function of a ufunc. See section below for more details.</p>
+<p>Core Dimension</p>
+<p>:   The dimensionality of each input/output of an elementary function is defined by its core dimensions (zero core dimensions correspond to a scalar input/output). The core dimensions are mapped to the last dimensions of the input/output arrays.</p>
+<p>Dimension Name</p>
+<p>:   A dimension name represents a core dimension in the signature. Different dimensions may share a name, indicating that they are of the same size.</p>
+<p>Dimension Index</p>
+<p>:   A dimension index is an integer representing a dimension name. It enumerates the dimension names according to the order of the first occurrence of each name in the signature.</p>
+<h2 id="details-of-signature">Details of signature</h2>
+<p>The signature defines &quot;core&quot; dimensionality of input and output variables, and thereby also defines the contraction of the dimensions. The signature is represented by a string of the following format:</p>
+<ul>
+<li>Core dimensions of each input or output array are represented by a list of dimension names in parentheses, <code>(i_1,...,i_N)</code>; a scalar input/output is denoted by <code>()</code>. Instead of <code>i_1</code>, <code>i_2</code>, etc, one can use any valid Python variable name.</li>
+<li>Dimension lists for different arguments are separated by <code>&quot;,&quot;</code>. Input/output arguments are separated by <code>&quot;-&gt;&quot;</code>.</li>
+<li>If one uses the same dimension name in multiple locations, this enforces the same size of the corresponding dimensions.</li>
+</ul>
+<p>The formal syntax of signatures is as follows:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">            ::=  &quot;-&gt;&quot; 
+      ::= 
+     ::= 
+        ::= nil |  |  &quot;,&quot; 
+             ::= &quot;(&quot;  &quot;)&quot;
+  ::= nil |  |
+                            &quot;,&quot; 
+       ::=  
+       ::= valid Python variable name | valid integer
+   ::= nil | &quot;?&quot;</code></pre></div></figure>
+<p>Notes:</p>
+<ol>
+<li>All quotes are for clarity.</li>
+<li>Unmodified core dimensions that share the same name must have the same size. Each dimension name typically corresponds to one level of looping in the elementary function&#39;s implementation.</li>
+<li>White spaces are ignored.</li>
+<li>An integer as a dimension name freezes that dimension to the value.</li>
+<li>If the name is suffixed with the &quot;?&quot; modifier, the dimension is a core dimension only if it exists on all inputs and outputs that share it; otherwise it is ignored (and replaced by a dimension of size 1 for the elementary function).</li>
+</ol>
+<p>Here are some examples of signatures:</p>
+<p>+-------------+--------------------------+-------------------------------------------------------------------------------------------------+
+| name        | signature                | common usage                                                                                    |
++=============+==========================+=================================================================================================+
+| add         | <code>(),()-&gt;()</code>              | binary ufunc                                                                                    |
++-------------+--------------------------+-------------------------------------------------------------------------------------------------+
+| sum1d       | <code>(i)-&gt;()</code>                | reduction                                                                                       |
++-------------+--------------------------+-------------------------------------------------------------------------------------------------+
+| inner1d     | <code>(i),(i)-&gt;()</code>            | vector-vector multiplication                                                                    |
++-------------+--------------------------+-------------------------------------------------------------------------------------------------+
+| matmat      | <code>(m,n),(n,p)-&gt;(m,p)</code>     | matrix multiplication                                                                           |
++-------------+--------------------------+-------------------------------------------------------------------------------------------------+
+| vecmat      | <code>(n),(n,p)-&gt;(p)</code>         | vector-matrix multiplication                                                                    |
++-------------+--------------------------+-------------------------------------------------------------------------------------------------+
+| matvec      | <code>(m,n),(n)-&gt;(m)</code>         | matrix-vector multiplication                                                                    |
++-------------+--------------------------+-------------------------------------------------------------------------------------------------+
+| matmul      | <code>(m?,n),(n,p?)-&gt;(m?,p?)</code> | combination of the four above                                                                   |
++-------------+--------------------------+-------------------------------------------------------------------------------------------------+
+| outer_inner | <code>(i,t),(j,t)-&gt;(i,j)</code>     | inner over the last dimension, outer over the second to last, and loop/broadcast over the rest. |
++-------------+--------------------------+-------------------------------------------------------------------------------------------------+
+| &gt; cross1d   | <code>(3),(3)-&gt;(3)</code>           | cross product where the last dimension is frozen and must be 3                                  |
++-------------+--------------------------+-------------------------------------------------------------------------------------------------+</p>
+<p>::: 
+The last is an instance of freezing a core dimension and can be used to improve ufunc performance
+:::</p>
+<h2 id="c-api-for-implementing-elementary-functions">C-API for implementing elementary functions</h2>
+<p>The current interface remains unchanged, and <code>PyUFunc_FromFuncAndData</code> can still be used to implement (specialized) ufuncs, consisting of scalar elementary functions.</p>
+<p>One can use <code>PyUFunc_FromFuncAndDataAndSignature</code> to declare a more general ufunc. The argument list is the same as <code>PyUFunc_FromFuncAndData</code>, with an additional argument specifying the signature as C string.</p>
+<p>Furthermore, the callback function is of the same type as before, <code>void (*foo)(char **args, intp *dimensions, intp *steps, void *func)</code>. When invoked, <code>args</code> is a list of length <code>nargs</code> containing the data of all input/output arguments. For a scalar elementary function, <code>steps</code> is also of length <code>nargs</code>, denoting the strides used for the arguments. <code>dimensions</code> is a pointer to a single integer defining the size of the axis to be looped over.</p>
+<p>For a non-trivial signature, <code>dimensions</code> will also contain the sizes of the core dimensions as well, starting at the second entry. Only one size is provided for each unique dimension name and the sizes are given according to the first occurrence of a dimension name in the signature.</p>
+<p>The first <code>nargs</code> elements of <code>steps</code> remain the same as for scalar ufuncs. The following elements contain the strides of all core dimensions for all arguments in order.</p>
+<p>For example, consider a ufunc with signature <code>(i,j),(i)-&gt;()</code>. In this case, <code>args</code> will contain three pointers to the data of the input/output arrays <code>a</code>, <code>b</code>, <code>c</code>. Furthermore, <code>dimensions</code> will be <code>[N, I, J]</code> to define the size of <code>N</code> of the loop and the sizes <code>I</code> and <code>J</code> for the core dimensions <code>i</code> and <code>j</code>. Finally, <code>steps</code> will be <code>[a_N, b_N, c_N, a_i, a_j, b_i]</code>, containing all necessary strides.</p>
+<h2 id="customizing-core-dimension-size-processing">Customizing core dimension size processing</h2>
+<p>The optional function of type <code>PyUFunc_ProcessCoreDimsFunc</code>, stored on the <code>process_core_dims_func</code> attribute of the ufunc, provides the author of the ufunc a &quot;hook&quot; into the processing of the core dimensions of the arrays that were passed to the ufunc. The two primary uses of this &quot;hook&quot; are:</p>
+<ul>
+<li>Check that constraints on the core dimensions required by the ufunc are satisfied (and set an exception if they are not).</li>
+<li>Compute output shapes for any output core dimensions that were not determined by the input arrays.</li>
+</ul>
+<p>As an example of the first use, consider the generalized ufunc <code>minmax</code> with signature <code>(n)-&gt;(2)</code> that simultaneously computes the minimum and maximum of a sequence. It should require that <code>n &gt; 0</code>, because the minimum and maximum of a sequence with length 0 is not meaningful. In this case, the ufunc author might define the function like this:</p>
+<blockquote>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>C</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-c"><span class="hljs-type">int</span> <span class="hljs-title function_">minmax_process_core_dims</span><span class="hljs-params">(PyUFuncObject *ufunc,
+                             npy_intp *core_dim_sizes)</span>
+{
+    npy_intp n = core_dim_sizes[<span class="hljs-number">0</span>];
+    <span class="hljs-keyword">if</span> (n == <span class="hljs-number">0</span>) {
+        PyErr_SetString(PyExc_ValueError,
+                        <span class="hljs-string">&quot;minmax requires the core dimension to &quot;</span>
+                        <span class="hljs-string">&quot;be at least 1.&quot;</span>);
+        <span class="hljs-keyword">return</span> <span class="hljs-number">-1</span>;
+    }
+    <span class="hljs-keyword">return</span> <span class="hljs-number">0</span>;
+}</code></pre></div></figure>
+</blockquote>
+<p>In this case, the length of the array <code>core_dim_sizes</code> will be 2. The second value in the array will always be 2, so there is no need for the function to inspect it. The core dimension <code>n</code> is stored in the first element. The function sets an exception and returns -1 if it finds that <code>n</code> is 0.</p>
+<p>The second use for the &quot;hook&quot; is to compute the size of output arrays when the output arrays are not provided by the caller and one or more core dimension of the output is not also an input core dimension. If the ufunc does not have a function defined on the <code>process_core_dims_func</code> attribute, an unspecified output core dimension size will result in an exception being raised. With the &quot;hook&quot; provided by <code>process_core_dims_func</code>, the author of the ufunc can set the output size to whatever is appropriate for the ufunc.</p>
+<p>In the array passed to the &quot;hook&quot; function, core dimensions that were not determined by the input are indicated by having the value -1 in the <code>core_dim_sizes</code> array. The function can replace the -1 with whatever value is appropriate for the ufunc, based on the core dimensions that occurred in the input arrays.</p>
+<aside class="callout callout-warning"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 4 2.8 20h18.4L12 4z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M12 10v4.4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="17" r="1.3" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Warning</p><p>The function must never change a value in <code>core_dim_sizes</code> that is not -1 on input. Changing a value that was not -1 will generally result in incorrect output from the ufunc, and could result in the Python interpreter crashing.</p>
+</div></aside>
+<p>For example, consider the generalized ufunc <code>conv1d</code> for which the elementary function computes the &quot;full&quot; convolution of two one-dimensional arrays <code>x</code> and <code>y</code> with lengths <code>m</code> and <code>n</code>, respectively. The output of this convolution has length <code>m + n - 1</code>. To implement this as a generalized ufunc, the signature is set to <code>(m),(n)-&gt;(p)</code>, and in the &quot;hook&quot; function, if the core dimension <code>p</code> is found to be -1, it is replaced with <code>m + n - 1</code>. If <code>p</code> is <em>not</em> -1, it must be verified that the given value equals <code>m + n - 1</code>. If it does not, the function must set an exception and return -1. For a meaningful result, the operation also requires that <code>m + n</code> is at least 1, i.e. both inputs can&#39;t have length 0.</p>
+<p>Here&#39;s how that might look in code:</p>
+<blockquote>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>C</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-c"><span class="hljs-type">int</span> <span class="hljs-title function_">conv1d_process_core_dims</span><span class="hljs-params">(PyUFuncObject *ufunc,
+                             npy_intp *core_dim_sizes)</span>
+{
+    <span class="hljs-comment">// core_dim_sizes will hold the core dimensions [m, n, p].</span>
+    <span class="hljs-comment">// p will be -1 if the caller did not provide the out argument.</span>
+    npy_intp m = core_dim_sizes[<span class="hljs-number">0</span>];
+    npy_intp n = core_dim_sizes[<span class="hljs-number">1</span>];
+    npy_intp p = core_dim_sizes[<span class="hljs-number">2</span>];
+    npy_intp required_p = m + n - <span class="hljs-number">1</span>;
+
+    <span class="hljs-keyword">if</span> (m == <span class="hljs-number">0</span> &amp;&amp; n == <span class="hljs-number">0</span>) {
+        <span class="hljs-comment">// Disallow both inputs having length 0.</span>
+        PyErr_SetString(PyExc_ValueError,
+            <span class="hljs-string">&quot;conv1d: both inputs have core dimension 0; the function &quot;</span>
+            <span class="hljs-string">&quot;requires that at least one input has size greater than 0.&quot;</span>);
+        <span class="hljs-keyword">return</span> <span class="hljs-number">-1</span>;
+    }
+    <span class="hljs-keyword">if</span> (p == <span class="hljs-number">-1</span>) {
+        <span class="hljs-comment">// Output array was not given in the call of the ufunc.</span>
+        <span class="hljs-comment">// Set the correct output size here.</span>
+        core_dim_sizes[<span class="hljs-number">2</span>] = required_p;
+        <span class="hljs-keyword">return</span> <span class="hljs-number">0</span>;
+    }
+    <span class="hljs-comment">// An output array *was* given.  Validate its core dimension.</span>
+    <span class="hljs-keyword">if</span> (p != required_p) {
+        PyErr_Format(PyExc_ValueError,
+                <span class="hljs-string">&quot;conv1d: the core dimension p of the out parameter &quot;</span>
+                <span class="hljs-string">&quot;does not equal m + n - 1, where m and n are the &quot;</span>
+                <span class="hljs-string">&quot;core dimensions of the inputs x and y; got m=%zd &quot;</span>
+                <span class="hljs-string">&quot;and n=%zd so p must be %zd, but got p=%zd.&quot;</span>,
+                m, n, required_p, p);
+        <span class="hljs-keyword">return</span> <span class="hljs-number">-1</span>;
+    }
+    <span class="hljs-keyword">return</span> <span class="hljs-number">0</span>;
+}</code></pre></div></figure>
+</blockquote>

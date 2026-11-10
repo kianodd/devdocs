@@ -1,0 +1,881 @@
+<p>Several new types are defined in the C-code. Most of these are accessible from Python, but a few are not exposed due to their limited use. Every new Python type has an associated :c`PyObject *` with an internal structure that includes a pointer to a &quot;method table&quot; that defines how the new object behaves in Python. When you receive a Python object into C code, you always get a pointer to a :c`PyObject` structure. Because a :c`PyObject` structure is very generic and defines only :c`PyObject_HEAD`, by itself it is not very interesting. However, different objects contain more details after the :c`PyObject_HEAD` (but you have to cast to the correct type to access them --- or use accessor functions or macros).</p>
+<h2 id="new-python-types-defined">New Python types defined</h2>
+<p>Python types are the functional equivalent in C of classes in Python. By constructing a new Python type you make available a new object for Python. The ndarray object is an example of a new type defined in C. New types are defined in C by two basic steps:</p>
+<ol>
+<li>creating a C-structure (usually named <code>Py{Name}Object</code>) that is binary- compatible with the :c`PyObject` structure itself but holds the additional information needed for that particular object;</li>
+<li>populating the :c`PyTypeObject` table (pointed to by the ob_type member of the :c`PyObject` structure) with pointers to functions that implement the desired behavior for the type.</li>
+</ol>
+<p>Instead of special method names which define behavior for Python classes, there are &quot;function tables&quot; which point to functions that implement the desired results. The PyTypeObject itself is dynamic which allows C types that can be &quot;sub-typed&quot; from other C-types in C, and sub-classed in Python. The children types inherit the attributes and methods from their parent(s).</p>
+<p>There are two major new types: the ndarray ( :c`PyArray_Type` ) and the ufunc ( :c`PyUFunc_Type` ). Additional types play a supportive role: the :c`PyArrayIter_Type`, the :c`PyArrayMultiIter_Type`, and the :c`PyArrayDescr_Type` . The :c`PyArrayIter_Type` is the type for a flat iterator for an ndarray (the object that is returned when getting the flat attribute). The :c`PyArrayMultiIter_Type` is the type of the object returned when calling <code>broadcast</code>. It handles iteration and broadcasting over a collection of nested sequences. Also, the :c`PyArrayDescr_Type` is the data-type-descriptor type whose instances describe the data and :c`PyArray_DTypeMeta` is the metaclass for data-type descriptors. There are also new scalar-array types which are new Python scalars corresponding to each of the fundamental data types available for arrays. Additional types are placeholders that allow the array scalars to fit into a hierarchy of actual Python types. Finally, the :c`PyArray_DTypeMeta` instances corresponding to the NumPy built-in data types are also publicly visible.</p>
+<h3 id="pyarraytype-and-pyarrayobject">PyArray_Type and PyArrayObject</h3>
+<blockquote>
+<p>The Python type of the ndarray is :c`PyArray_Type`. In C, every ndarray is a pointer to a :c`PyArrayObject` structure. The ob_type member of this structure contains a pointer to the :c`PyArray_Type` typeobject.</p>
+</blockquote>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">Further members are considered private and version dependent. If the size
+of the struct is important for your code, special care must be taken.
+A possible use-case when this is relevant is subclassing in C.
+If your code relies on ``sizeof(PyArrayObject)`` to be constant,
+you must add the following check at import time:
+
+.. code-block:: c
+
+   if (sizeof(PyArrayObject) &lt; PyArray_Type.tp_basicsize) {
+       PyErr_SetString(PyExc_ImportError,
+          &quot;Binary incompatibility with NumPy, must recompile/update X.&quot;);
+       return NULL;
+   }
+
+To ensure that your code does not have to be compiled for a specific
+NumPy version, you may add a constant, leaving room for changes in NumPy.
+A solution guaranteed to be compatible with any future NumPy version
+requires the use of a runtime calculate offset and allocation size.</code></pre></div></figure>
+<p>The :c`PyArray_Type` typeobject implements many of the features of :c`Python objects [ including the :c`tp_as_number ], :c`tp_as_sequence [, :c`tp_as_mapping ], and :c`tp_as_buffer [ interfaces. The :c`rich comparison ]) is also used along with new-style attribute lookup for member (:c`tp_members [) and properties (:c`tp_getset ]). The :c`PyArray_Type` can also be sub-typed.</p>
+<aside class="callout callout-tip"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M9.5 18h5M10.5 21h3M12 3a6 6 0 0 0-3.6 10.8c.7.6 1.1 1.3 1.3 2.2h4.6c.2-.9.6-1.6 1.3-2.2A6 6 0 0 0 12 3Z" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round"/></svg></span><div class="callout-body"><p class="callout-title">Tip</p><p>The :c`tp_as_number [ methods use a generic approach to call whatever function has been registered for handling the operation. When the ][_multiarray_umath][ module is imported, it sets the numeric operations for all arrays to the corresponding ufuncs. This choice can be changed with :c`PyUFunc_ReplaceLoopBySignature].</p>
+</div></aside>
+<h3 id="pygenericarrtypetype">PyGenericArrType_Type</h3>
+<blockquote>
+<p>The :c`PyGenericArrType_Type` is the PyTypeObject definition which create the [numpy.generic] python type.</p>
+</blockquote>
+<h3 id="pyarraydescrtype-and-pyarraydescr">PyArrayDescr_Type and PyArray_Descr</h3>
+<blockquote>
+<p>The :c`PyArrayDescr_Type` is the built-in type of the data-type-descriptor objects used to describe how the bytes comprising the array are to be interpreted. There are 21 statically-defined :c`PyArray_Descr` objects for the built-in data-types. While these participate in reference counting, their reference count should never reach zero. There is also a dynamic table of user-defined :c`PyArray_Descr` objects that is also maintained. Once a data-type-descriptor object is &quot;registered&quot; it should never be deallocated either. The function :c`PyArray_DescrFromType` (...) can be used to retrieve a :c`PyArray_Descr` object from an enumerated type-number (either built-in or user- defined).</p>
+</blockquote>
+<blockquote>
+<p>Identical structure to :c`PyArray_Descr`. This struct is used for static definition of a prototype for registering a new legacy DType by :c`PyArray_RegisterDataType`.</p>
+<p>See the note in :c`PyArray_RegisterDataType` for details.</p>
+</blockquote>
+<blockquote>
+<p>The :c`PyArray_Descr` structure lies at the heart of the :c`PyArrayDescr_Type`. While it is described here for completeness, it should be considered internal to NumPy and manipulated via <code>PyArrayDescr_*</code> or <code>PyDataType*</code> functions and macros. The size of this structure is subject to change across versions of NumPy. To ensure compatibility:</p>
+<ul>
+<li>Never declare a non-pointer instance of the struct</li>
+<li>Never perform pointer arithmetic</li>
+<li>Never use <code>sizeof(PyArray_Descr)</code></li>
+</ul>
+<p>It has the following structure:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>C</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-c"><span class="hljs-keyword">typedef</span> <span class="hljs-class"><span class="hljs-keyword">struct</span> {</span>
+    PyObject_HEAD
+    PyTypeObject *typeobj;
+    <span class="hljs-type">char</span> kind;
+    <span class="hljs-type">char</span> type;
+    <span class="hljs-type">char</span> byteorder;
+    <span class="hljs-type">char</span> _former_flags;  <span class="hljs-comment">// unused field</span>
+    <span class="hljs-type">int</span> type_num;
+    <span class="hljs-comment">/*
+     * Definitions after this one must be accessed through accessor
+     * functions (see below) when compiling with NumPy 1.x support.
+     */</span>
+    npy_uint64 flags;
+    npy_intp elsize;
+    npy_intp alignment;
+    NpyAuxData *c_metadata;
+    <span class="hljs-type">npy_hash_t</span> hash;
+    <span class="hljs-type">void</span> *reserved_null[<span class="hljs-number">2</span>];  <span class="hljs-comment">// unused field, must be NULLed.</span>
+} PyArray_Descr;</code></pre></div></figure>
+<p>Some dtypes have additional members which are accessible through [PyDataType_NAMES], [PyDataType_FIELDS], [PyDataType_SUBARRAY], and in some cases (times) [PyDataType_C_METADATA].</p>
+<blockquote>
+<p>Pointer to a typeobject that is the corresponding Python type for the elements of this array. For the builtin types, this points to the corresponding array scalar. For user-defined types, this should point to a user-defined typeobject. This typeobject can either inherit from array scalars or not. If it does not inherit from array scalars, then the :c`NPY_USE_GETITEM` and :c`NPY_USE_SETITEM` flags should be set in the <code>flags</code> member.</p>
+</blockquote>
+<blockquote>
+<p>A character code indicating the kind of array (using the array interface typestring notation). A &#39;b&#39; represents Boolean, a &#39;i&#39; represents signed integer, a &#39;u&#39; represents unsigned integer, &#39;f&#39; represents floating point, &#39;c&#39; represents complex floating point, &#39;S&#39; represents 8-bit null-padded bytes, &#39;U&#39; represents 32-bit/character unicode string, and &#39;V&#39; represents arbitrary.</p>
+</blockquote>
+<blockquote>
+<p>A traditional character code indicating the data type.</p>
+</blockquote>
+<blockquote>
+<p>A character indicating the byte-order: &#39;&gt;&#39; (big-endian), &#39;&lt;&#39; (little-endian), &#39;=&#39; (native), &#39;|&#39; (irrelevant, ignore). All builtin data-types have byteorder &#39;=&#39;.</p>
+</blockquote>
+<blockquote>
+<p>A data-type bit-flag that determines if the data-type exhibits object-array like behavior. Each bit in this member is a flag which are named as:</p>
+<ul>
+<li>:c`NPY_ITEM_REFCOUNT`</li>
+<li>:c`NPY_ITEM_HASOBJECT`</li>
+<li>:c`NPY_LIST_PICKLE`</li>
+<li>:c`NPY_ITEM_IS_POINTER`</li>
+<li>:c`NPY_NEEDS_INIT`</li>
+<li>:c`NPY_NEEDS_PYAPI`</li>
+<li>:c`NPY_USE_GETITEM`</li>
+<li>:c`NPY_USE_SETITEM`</li>
+<li>:c`NPY_FROM_FIELDS`</li>
+<li>:c`NPY_OBJECT_DTYPE_FLAGS`</li>
+</ul>
+</blockquote>
+<blockquote>
+<p>A number that uniquely identifies the data type. For new data-types, this number is assigned when the data-type is registered.</p>
+</blockquote>
+<blockquote>
+<p>For data types that are always the same size (such as long), this holds the size of the data type. For flexible data types where different arrays can have a different elementsize, this should be 0.</p>
+<p>See [PyDataType_ELSIZE] and [PyDataType_SET_ELSIZE] for a way to access this field in a NumPy 1.x compatible way.</p>
+</blockquote>
+<blockquote>
+<p>A number providing alignment information for this data type. Specifically, it shows how far from the start of a 2-element structure (whose first element is a <code>char</code> ), the compiler places an item of this type: <code>offsetof(struct {char c; type v;}, v)</code></p>
+<p>See :c`PyDataType_ALIGNMENT` for a way to access this field in a NumPy 1.x compatible way.</p>
+</blockquote>
+<blockquote>
+<p>Metadata about this dtype.</p>
+</blockquote>
+<blockquote>
+<p>Metadata specific to the C implementation of the particular dtype. Added for NumPy 1.7.0.</p>
+</blockquote>
+<blockquote>
+<p>Used for caching hash values.</p>
+</blockquote>
+</blockquote>
+<blockquote>
+<p>Indicates that items of this data-type must be reference counted (using :c`Py_INCREF` and :c`Py_DECREF` ).</p>
+</blockquote>
+<blockquote>
+<p>Same as :c`NPY_ITEM_REFCOUNT`.</p>
+</blockquote>
+<blockquote>
+<p>Indicates arrays of this data-type must be converted to a list before pickling.</p>
+</blockquote>
+<blockquote>
+<p>Indicates the item is a pointer to some other data-type</p>
+</blockquote>
+<blockquote>
+<p>Indicates memory for this data-type must be initialized (set to 0) on creation.</p>
+</blockquote>
+<blockquote>
+<p>Indicates this data-type requires the Python C-API during access (so don&#39;t give up the GIL if array access is going to be needed).</p>
+</blockquote>
+<blockquote>
+<p>On array access use the <code>f-&gt;getitem</code> function pointer instead of the standard conversion to an array scalar. Must use if you don&#39;t define an array scalar to go along with the data-type.</p>
+</blockquote>
+<blockquote>
+<p>When creating a 0-d array from an array scalar use <code>f-&gt;setitem</code> instead of the standard copy from an array scalar. Must use if you don&#39;t define an array scalar to go along with the data-type.</p>
+</blockquote>
+<blockquote>
+<p>The bits that are inherited for the parent data-type if these bits are set in any field of the data-type. Currently ( :c`NPY_NEEDS_INIT` | :c`NPY_LIST_PICKLE` | :c`NPY_ITEM_REFCOUNT` | :c`NPY_NEEDS_PYAPI` ).</p>
+</blockquote>
+<blockquote>
+<p>Bits set for the object data-type: ( :c`NPY_LIST_PICKLE` | :c`NPY_USE_GETITEM` | :c`NPY_ITEM_IS_POINTER` | :c`NPY_ITEM_REFCOUNT` | :c`NPY_NEEDS_INIT` | :c`NPY_NEEDS_PYAPI`).</p>
+</blockquote>
+<blockquote>
+<p>Return true if all the given flags are set for the data-type object.</p>
+</blockquote>
+<blockquote>
+<p>Equivalent to :c`PyDataType_FLAGCHK` (<em>dtype</em>, :c`NPY_ITEM_REFCOUNT`).</p>
+</blockquote>
+<h3 id="pyarrayarrfuncs">PyArray_ArrFuncs</h3>
+<blockquote>
+<p>Fetch the legacy [PyArray_ArrFuncs] of the datatype (cannot fail).</p>
+<p>::: versionadded
+NumPy 2.0 This function was added in a backwards compatible and backportable way in NumPy 2.0 (see <code>npy_2_compat.h</code>). Any code that previously accessed the <code>-&gt;f</code> slot of the <code>PyArray_Descr</code>, must now use this function and backport it to compile with 1.x. (The <code>npy_2_compat.h</code> header can be vendored for this purpose.)
+:::</p>
+</blockquote>
+<blockquote>
+<p>Functions implementing internal features. Not all of these function pointers must be defined for a given type. The required members are <code>nonzero</code>, <code>copyswap</code>, <code>copyswapn</code>, <code>setitem</code>, <code>getitem</code>, and <code>cast</code>. These are assumed to be non- <code>NULL</code> and <code>NULL</code> entries will cause a program crash. The other functions may be <code>NULL</code> which will just mean reduced functionality for that data-type. (Also, the nonzero function will be filled in with a default function if it is <code>NULL</code> when you register a user-defined data-type).</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>C</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-c"><span class="hljs-keyword">typedef</span> <span class="hljs-class"><span class="hljs-keyword">struct</span> {</span>
+    PyArray_VectorUnaryFunc *cast[NPY_NTYPES_LEGACY];
+    PyArray_GetItemFunc *getitem;
+    PyArray_SetItemFunc *setitem;
+    PyArray_CopySwapNFunc *copyswapn;
+    PyArray_CopySwapFunc *copyswap;
+    PyArray_CompareFunc *compare;
+    PyArray_ArgFunc *argmax;
+    PyArray_DotFunc *dotfunc;
+    PyArray_ScanFunc *scanfunc;
+    PyArray_FromStrFunc *fromstr;
+    PyArray_NonzeroFunc *nonzero;
+    PyArray_FillFunc *fill;
+    PyArray_FillWithScalarFunc *fillwithscalar;
+    PyArray_SortFunc *sort[NPY_NSORTS];
+    PyArray_ArgSortFunc *argsort[NPY_NSORTS];
+    PyObject *castdict;
+    PyArray_ScalarKindFunc *scalarkind;
+    <span class="hljs-type">int</span> **cancastscalarkindto;
+    <span class="hljs-type">int</span> *cancastto;
+    <span class="hljs-type">void</span> *_unused1;
+    <span class="hljs-type">void</span> *_unused2;
+    <span class="hljs-type">void</span> *_unused3;
+    PyArray_ArgFunc *argmin;
+} PyArray_ArrFuncs;</code></pre></div></figure>
+<p>The concept of a behaved segment is used in the description of the function pointers. A behaved segment is one that is aligned and in native machine byte-order for the data-type. The <code>nonzero</code>, <code>copyswap</code>, <code>copyswapn</code>, <code>getitem</code>, and <code>setitem</code> functions can (and must) deal with mis-behaved arrays. The other functions require behaved memory segments.</p>
+</blockquote>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">    The functions are largely legacy API, however, some are still used.
+    As of NumPy 2.x they are only available via `PyDataType_GetArrFuncs`
+    (see the function for more details).
+    Before using any function defined in the struct you should check
+    whether it is ``NULL``.  In general, the functions ``getitem``,
+    ``setitem``, ``copyswap``, and ``copyswapn`` can be expected to be
+    defined, but all functions are expected to be replaced with newer API.
+    For example, ``PyArray_Pack`` is a more powerful version of ``setitem``
+    that for example correctly deals with casts.
+
+.. c:member:: void cast( \
+        void *from, void *to, npy_intp n, void *fromarr, void *toarr)
+
+    An array of function pointers to cast from the current type to
+    all of the other builtin types. Each function casts a
+    contiguous, aligned, and notswapped buffer pointed at by
+    *from* to a contiguous, aligned, and notswapped buffer pointed
+    at by *to* The number of items to cast is given by *n*, and
+    the arguments *fromarr* and *toarr* are interpreted as
+    PyArrayObjects for flexible arrays to get itemsize
+    information.
+
+.. c:member:: PyObject *getitem(void *data, void *arr)
+
+    A pointer to a function that returns a standard Python object
+    from a single element of the array object *arr* pointed to by
+    *data*. This function must be able to deal with &quot;misbehaved
+    &quot;(misaligned and/or swapped) arrays correctly.
+
+.. c:member:: int setitem(PyObject *item, void *data, void *arr)
+
+    A pointer to a function that sets the Python object *item*
+    into the array, *arr*, at the position pointed to by *data*
+    . This function deals with &quot;misbehaved&quot; arrays. If successful,
+    a zero is returned, otherwise, a negative one is returned (and
+    a Python error set).
+
+.. c:member:: void copyswapn( \
+        void *dest, npy_intp dstride, void *src, npy_intp sstride, \
+        npy_intp n, int swap, void *arr)
+
+.. c:member:: void copyswap(void *dest, void *src, int swap, void *arr)
+
+    These members are both pointers to functions to copy data from
+    *src* to *dest* and *swap* if indicated. The value of arr is
+    only used for flexible ( :c:enumerator:`~NPY_TYPES.NPY_STRING`, :c:enumerator:`~NPY_TYPES.NPY_UNICODE`,
+    and :c:enumerator:`~NPY_TYPES.NPY_VOID` ) arrays (and is obtained from
+    ``arr-&gt;descr-&gt;elsize`` ). The second function copies a single
+    value, while the first loops over n values with the provided
+    strides. These functions can deal with misbehaved *src*
+    data. If *src* is NULL then no copy is performed. If *swap* is
+    0, then no byteswapping occurs. It is assumed that *dest* and
+    *src* do not overlap. If they overlap, then use ``memmove``
+    (...) first followed by ``copyswap(n)`` with NULL valued
+    ``src``.
+
+.. c:member:: int compare(const void* d1, const void* d2, void* arr)
+
+    A pointer to a function that compares two elements of the
+    array, ``arr``, pointed to by ``d1`` and ``d2``. This
+    function requires behaved (aligned and not swapped) arrays.
+    The return value is 1 if * ``d1`` &gt; * ``d2``, 0 if * ``d1`` == *
+    ``d2``, and -1 if * ``d1`` &lt; * ``d2``. The array object ``arr`` is
+    used to retrieve itemsize and field information for flexible arrays.
+
+.. c:member:: int argmax( \
+        void* data, npy_intp n, npy_intp* max_ind, void* arr)
+
+    A pointer to a function that retrieves the index of the
+    largest of ``n`` elements in ``arr`` beginning at the element
+    pointed to by ``data``. This function requires that the
+    memory segment be contiguous and behaved. The return value is
+    always 0. The index of the largest element is returned in
+    ``max_ind``.
+
+.. c:member:: void dotfunc( \
+        void* ip1, npy_intp is1, void* ip2, npy_intp is2, void* op, \
+        npy_intp n, void* arr)
+
+    A pointer to a function that multiplies two ``n`` -length
+    sequences together, adds them, and places the result in
+    element pointed to by ``op`` of ``arr``. The start of the two
+    sequences are pointed to by ``ip1`` and ``ip2``. To get to
+    the next element in each sequence requires a jump of ``is1``
+    and ``is2`` *bytes*, respectively. This function requires
+    behaved (though not necessarily contiguous) memory.
+
+.. c:member:: int scanfunc(FILE* fd, void* ip, void* arr)
+
+    A pointer to a function that scans (scanf style) one element
+    of the corresponding type from the file descriptor ``fd`` into
+    the array memory pointed to by ``ip``. The array is assumed
+    to be behaved.
+    The last argument ``arr`` is the array to be scanned into.
+    Returns number of receiving arguments successfully assigned (which
+    may be zero in case a matching failure occurred before the first
+    receiving argument was assigned), or EOF if input failure occurs
+    before the first receiving argument was assigned.
+    This function should be called without holding the Python GIL, and
+    has to grab it for error reporting.
+
+.. c:member:: int fromstr(char* str, void* ip, char** endptr, void* arr)
+
+    A pointer to a function that converts the string pointed to by
+    ``str`` to one element of the corresponding type and places it
+    in the memory location pointed to by ``ip``. After the
+    conversion is completed, ``*endptr`` points to the rest of the
+    string. The last argument ``arr`` is the array into which ip
+    points (needed for variable-size data- types). Returns 0 on
+    success or -1 on failure. Requires a behaved array.
+    This function should be called without holding the Python GIL, and
+    has to grab it for error reporting.
+
+.. c:member:: npy_bool nonzero(void* data, void* arr)
+
+    A pointer to a function that returns TRUE if the item of
+    ``arr`` pointed to by ``data`` is nonzero. This function can
+    deal with misbehaved arrays.
+
+.. c:member:: void fill(void* data, npy_intp length, void* arr)
+
+    A pointer to a function that fills a contiguous array of given
+    length with data. The first two elements of the array must
+    already be filled- in. From these two values, a delta will be
+    computed and the values from item 3 to the end will be
+    computed by repeatedly adding this computed delta. The data
+    buffer must be well-behaved.
+
+.. c:member:: void fillwithscalar( \
+        void* buffer, npy_intp length, void* value, void* arr)
+
+    A pointer to a function that fills a contiguous ``buffer`` of
+    the given ``length`` with a single scalar ``value`` whose
+    address is given. The final argument is the array which is
+    needed to get the itemsize for variable-length arrays.
+
+.. c:member:: int sort(void* start, npy_intp length, void* arr)
+
+    An array of function pointers to a particular sorting
+    algorithms. A particular sorting algorithm is obtained using a
+    key (so far :c:enumerator:`~NPY_SORTKIND.NPY_QUICKSORT`, :c:enumerator:`~NPY_SORTKIND.NPY_HEAPSORT`,
+    and :c:enumerator:`~NPY_SORTKIND.NPY_MERGESORT` are defined). These sorts are done
+    in-place assuming contiguous and aligned data.
+
+.. c:member:: int argsort( \
+        void* start, npy_intp* result, npy_intp length, void *arr)
+
+    An array of function pointers to sorting algorithms for this
+    data type. The same sorting algorithms as for sort are
+    available. The indices producing the sort are returned in
+    ``result`` (which must be initialized with indices 0 to
+    ``length-1`` inclusive).
+
+.. c:member:: PyObject *castdict
+
+    Either ``NULL`` or a dictionary containing low-level casting
+    functions for user- defined data-types. Each function is
+    wrapped in a :c:expr:`PyCapsule *` and keyed by
+    the data-type number.
+
+.. c:member:: NPY_SCALARKIND scalarkind(PyArrayObject* arr)
+
+    A function to determine how scalars of this type should be
+    interpreted. The argument is ``NULL`` or a 0-dimensional array
+    containing the data (if that is needed to determine the kind
+    of scalar). The return value must be of type
+    :c:type:`NPY_SCALARKIND`.
+
+.. c:member:: int **cancastscalarkindto
+
+    Either ``NULL`` or an array of :c:enumerator:`~NPY_SCALARKIND.NPY_NSCALARKINDS`
+    pointers. These pointers should each be either ``NULL`` or a
+    pointer to an array of integers (terminated by
+    :c:data:`NPY_NOTYPE`) indicating data-types that a scalar of
+    this data-type of the specified kind can be cast to safely
+    (this usually means without losing precision).
+
+.. c:member:: int *cancastto
+
+    Either ``NULL`` or an array of integers (terminated by
+    :c:data:`NPY_NOTYPE` ) indicated data-types that this data-type
+    can be cast to safely (this usually means without losing
+    precision).
+
+.. c:member:: int argmin( \
+        void* data, npy_intp n, npy_intp* min_ind, void* arr)
+
+    A pointer to a function that retrieves the index of the
+    smallest of ``n`` elements in ``arr`` beginning at the element
+    pointed to by ``data``. This function requires that the
+    memory segment be contiguous and behaved. The return value is
+    always 0. The index of the smallest element is returned in
+    ``min_ind``.</code></pre></div></figure>
+<h3 id="pyarraymethodcontext-and-pyarraymethodspec">PyArrayMethod_Context and PyArrayMethod_Spec</h3>
+<blockquote>
+<p>An opaque struct used to represent the method &quot;self&quot; in ArrayMethod loops.</p>
+</blockquote>
+<blockquote>
+<p>A struct that is passed in to ArrayMethod loops to provide context for the runtime usage of the loop.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>C</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-c"><span class="hljs-keyword">typedef</span> <span class="hljs-class"><span class="hljs-keyword">struct</span> {</span>
+    PyObject *caller;
+    <span class="hljs-class"><span class="hljs-keyword">struct</span> <span class="hljs-title">PyArrayMethodObject_tag</span> *<span class="hljs-title">method</span>;</span>
+    PyArray_Descr *<span class="hljs-type">const</span> *descriptors;
+    <span class="hljs-type">void</span> *parameters;
+} PyArrayMethod_Context</code></pre></div></figure>
+<blockquote>
+<p>The caller, which is typically the ufunc that called the loop. May be <code>NULL</code> when a call is not from a ufunc (e.g. casts).</p>
+</blockquote>
+<blockquote>
+<p>The method &quot;self&quot;. Currently this object is an opaque pointer.</p>
+</blockquote>
+<blockquote>
+<p>An array of descriptors for the ufunc loop, filled in by <code>resolve_descriptors</code>. The length of the array is <code>nin</code> + <code>nout</code>.</p>
+</blockquote>
+<blockquote>
+<p>A pointer to a structure containing any runtime parameters needed by the loop. This is <code>NULL</code> if no parameters are needed. The type of the struct is specific to the registered function.</p>
+<p>::: versionchanged
+NumPy 2.4 The [parameters] member was added in NumPy 2.4.
+:::</p>
+</blockquote>
+</blockquote>
+<blockquote>
+<p>A struct used to register an ArrayMethod with NumPy. We use the slots mechanism used by the Python limited API. See below for the slot definitions.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>C</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-c"><span class="hljs-keyword">typedef</span> <span class="hljs-class"><span class="hljs-keyword">struct</span> {</span>
+   <span class="hljs-type">const</span> <span class="hljs-type">char</span> *name;
+   <span class="hljs-type">int</span> nin, nout;
+   NPY_CASTING casting;
+   NPY_ARRAYMETHOD_FLAGS flags;
+   PyArray_DTypeMeta **dtypes;
+   PyType_Slot *slots;
+} PyArrayMethod_Spec;</code></pre></div></figure>
+<blockquote>
+<p>The name of the loop.</p>
+</blockquote>
+<blockquote>
+<p>The number of input operands</p>
+</blockquote>
+<blockquote>
+<p>The number of output operands.</p>
+</blockquote>
+<blockquote>
+<p>Used to indicate how minimally permissive a casting operation should be. For example, if a cast operation might in some circumstances be safe, but in others unsafe, then <code>NPY_UNSAFE_CASTING</code> should be set. Not used for ufunc loops but must still be set.</p>
+</blockquote>
+<blockquote>
+<p>The flags set for the method.</p>
+</blockquote>
+<blockquote>
+<p>The DTypes for the loop. Must be <code>nin</code> + <code>nout</code> in length.</p>
+</blockquote>
+<blockquote>
+<p>An array of slots for the method. Slot IDs must be one of the values below.</p>
+</blockquote>
+</blockquote>
+<h3 id="pyarraydtypemeta-and-pyarraydtypemetaspec">PyArray_DTypeMeta and PyArrayDTypeMeta_Spec</h3>
+<blockquote>
+<p>The python type object corresponding to :c`PyArray_DTypeMeta`.</p>
+</blockquote>
+<blockquote>
+<p>A largely opaque struct representing DType classes. Each instance defines a metaclass for a single NumPy data type. Data types can either be non-parametric or parametric. For non-parametric types, the DType class has a one-to-one correspondence with the descriptor instance created from the DType class. Parametric types can correspond to many different dtype instances depending on the chosen parameters. This type is available in the public <code>numpy/dtype_api.h</code> header. Currently use of this struct is not supported in the limited CPython API, so if <code>Py_LIMITED_API</code> is set, this type is a typedef for <code>PyTypeObject</code>.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>C</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-c"><span class="hljs-keyword">typedef</span> <span class="hljs-class"><span class="hljs-keyword">struct</span> {</span>
+     PyHeapTypeObject super;
+     PyArray_Descr *singleton;
+     <span class="hljs-type">int</span> type_num;
+     PyTypeObject *scalar_type;
+     npy_uint64 flags;
+     <span class="hljs-type">void</span> *dt_slots;
+     <span class="hljs-type">void</span> *reserved[<span class="hljs-number">3</span>];
+} PyArray_DTypeMeta</code></pre></div></figure>
+<blockquote>
+<p>The superclass, providing hooks into the python object API. Set members of this struct to fill in the functions implementing the <code>PyTypeObject</code> API (e.g. <code>tp_new</code>).</p>
+</blockquote>
+<blockquote>
+<p>A descriptor instance suitable for use as a singleton descriptor for the data type. This is useful for non-parametric types representing simple plain old data type where there is only one logical descriptor instance for all data of the type. Can be NULL if a singleton instance is not appropriate.</p>
+</blockquote>
+<blockquote>
+<p>Corresponds to the type number for legacy data types. Data types defined outside of NumPy and possibly future data types shipped with NumPy will have <code>type_num</code> set to -1, so this should not be relied on to discriminate between data types.</p>
+</blockquote>
+<blockquote>
+<p>The type of scalar instances for this data type.</p>
+</blockquote>
+<blockquote>
+<p>Flags can be set to indicate to NumPy that this data type has optional behavior. See dtype-flags for a listing of allowed flag values.</p>
+</blockquote>
+<blockquote>
+<p>An opaque pointer to a private struct containing implementations of functions in the DType API. This is filled in from the <code>slots</code> member of the <code>PyArrayDTypeMeta_Spec</code> instance used to initialize the DType.</p>
+</blockquote>
+</blockquote>
+<blockquote>
+<p>A struct used to initialize a new DType with the <code>PyArrayInitDTypeMeta_FromSpec</code> function.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>C</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-c"><span class="hljs-keyword">typedef</span> <span class="hljs-class"><span class="hljs-keyword">struct</span> {</span>
+    PyTypeObject *typeobj;
+    <span class="hljs-type">int</span> flags;
+    PyArrayMethod_Spec **casts;
+    PyType_Slot *slots;
+    PyTypeObject *baseclass;
+}</code></pre></div></figure>
+<blockquote>
+<p>Either <code>NULL</code> or the type of the python scalar associated with the DType. Scalar indexing into an array returns an item with this type.</p>
+</blockquote>
+<blockquote>
+<p>Static flags for the DType class, indicating whether the DType is parametric, abstract, or represents numeric data. The latter is optional but is useful to set to indicate to downstream code if the DType represents data that are numbers (ints, floats, or other numeric data type) or something else (e.g. a string, unit, or date).</p>
+</blockquote>
+<blockquote>
+<p>A <code>NULL</code>-terminated array of ArrayMethod specifications for casts defined by the DType.</p>
+</blockquote>
+<blockquote>
+<p>A <code>NULL</code>-terminated array of slot specifications for implementations of functions in the DType API. Slot IDs must be one of the DType slot IDs enumerated in dtype-slots.</p>
+</blockquote>
+</blockquote>
+<h3 id="exposed-dtypes-classes-pyarraydtypemeta-objects">Exposed DTypes classes (<code>PyArray_DTypeMeta</code> objects)</h3>
+<p>For use with promoters, NumPy exposes a number of Dtypes following the pattern <code>PyArray_DType</code> corresponding to those found in [np.dtypes].</p>
+<p>Additionally, the three DTypes, <code>PyArray_PyLongDType</code>, <code>PyArray_PyFloatDType</code>, <code>PyArray_PyComplexDType</code> correspond to the Python scalar values. These cannot be used in all places, but do allow for example the common dtype operation and implementing promotion with them may be necessary.</p>
+<p>Further, the following abstract DTypes are defined which cover both the builtin NumPy ones and the python ones, and users can subclass from them (this does not inherit any DType specific functionality):</p>
+<ul>
+<li><code>PyArray_NumberAbstractDType</code></li>
+<li><code>PyArray_IntAbstractDType</code> (<code>IntegerAbstractDType</code> in Python)</li>
+<li><code>PyArray_SignedIntegerAbstractDType</code></li>
+<li><code>PyArray_UnsignedIntegerAbstractDType</code></li>
+<li><code>PyArray_InexactAbstractDType</code></li>
+<li><code>PyArray_FloatAbstractDType</code> (<code>FloatingAbstractDType</code> in Python)</li>
+<li><code>PyArray_ComplexAbstractDType</code> (<code>ComplexFloatingAbstractDType</code> in Python)</li>
+</ul>
+<p>The abstract DTypes can be used for promoter registration to for example match &quot;any integer&quot; broadly.</p>
+<p>A DType that sets the <code>NPY_DT_NUMERIC</code> flag without subclassing also passes the <code>PyArray_NumberAbstractDType</code> check, but subclassing is preferred and the flag is set automatically when you do.</p>
+<h3 id="pyufunctype-and-pyufuncobject">PyUFunc_Type and PyUFuncObject</h3>
+<blockquote>
+<p>The ufunc object is implemented by creation of the :c`PyUFunc_Type`. It is a very simple type that implements only basic getattribute behavior, printing behavior, and has call behavior which allows these objects to act like functions. The basic idea behind the ufunc is to hold a reference to fast 1-dimensional (vector) loops for each data type that supports the operation. These one-dimensional loops all have the same signature and are the key to creating a new ufunc. They are called by the generic looping code as appropriate to implement the N-dimensional function. There are also some generic 1-d loops defined for floating and complexfloating arrays that allow you to define a ufunc using a single scalar function (<em>e.g.</em> atanh).</p>
+</blockquote>
+<blockquote>
+<p>The core of the ufunc is the :c`PyUFuncObject` which contains all the information needed to call the underlying C-code loops that perform the actual work. While it is described here for completeness, it should be considered internal to NumPy and manipulated via <code>PyUFunc_*</code> functions. The size of this structure is subject to change across versions of NumPy. To ensure compatibility:</p>
+<ul>
+<li>Never declare a non-pointer instance of the struct</li>
+<li>Never perform pointer arithmetic</li>
+<li>Never use <code>sizeof(PyUFuncObject)</code></li>
+</ul>
+<p>It has the following structure:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>C</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-c"><span class="hljs-keyword">typedef</span> <span class="hljs-class"><span class="hljs-keyword">struct</span> {</span>
+    PyObject_HEAD
+    <span class="hljs-type">int</span> nin;
+    <span class="hljs-type">int</span> nout;
+    <span class="hljs-type">int</span> nargs;
+    <span class="hljs-type">int</span> identity;
+    PyUFuncGenericFunction *functions;
+    <span class="hljs-type">void</span> **data;
+    <span class="hljs-type">int</span> ntypes;
+    <span class="hljs-type">int</span> _ufunc_flags;
+    <span class="hljs-type">const</span> <span class="hljs-type">char</span> *name;
+    <span class="hljs-type">char</span> *types;
+    <span class="hljs-type">const</span> <span class="hljs-type">char</span> *doc;
+    <span class="hljs-type">void</span> *ptr;
+    PyObject *obj;
+    PyObject *userloops;
+    <span class="hljs-type">int</span> core_enabled;
+    <span class="hljs-type">int</span> core_num_dim_ix;
+    <span class="hljs-type">int</span> *core_num_dims;
+    <span class="hljs-type">int</span> *core_dim_ixs;
+    <span class="hljs-type">int</span> *core_offsets;
+    <span class="hljs-type">char</span> *core_signature;
+    PyUFunc_TypeResolutionFunc *type_resolver;
+    <span class="hljs-type">void</span> *reserved2;
+    <span class="hljs-type">void</span> *reserved3;
+    npy_uint32 *op_flags;
+    npy_uint32 *iter_flags;
+    <span class="hljs-comment">/* new in API version 0x0000000D */</span>
+    npy_intp *core_dim_sizes;
+    npy_uint32 *core_dim_flags;
+    PyObject *identity_value;
+    <span class="hljs-comment">/* Further private slots (size depends on the NumPy version) */</span>
+} PyUFuncObject;</code></pre></div></figure>
+<blockquote>
+<p>required for all Python objects.</p>
+</blockquote>
+<blockquote>
+<p>The number of input arguments.</p>
+</blockquote>
+<blockquote>
+<p>The number of output arguments.</p>
+</blockquote>
+<blockquote>
+<p>The total number of arguments (<em>nin</em> + <em>nout</em>). This must be less than :c`NPY_MAXARGS`.</p>
+</blockquote>
+<blockquote>
+<p>Either :c`PyUFunc_One`, :c`PyUFunc_Zero`, :c`PyUFunc_MinusOne`, :c`PyUFunc_None`, :c`PyUFunc_ReorderableNone`, or :c`PyUFunc_IdentityValue` to indicate the identity for this operation. It is only used for a reduce-like call on an empty array.</p>
+</blockquote>
+<blockquote>
+<p>Extra data to be passed to the 1-d vector loops or <code>NULL</code> if no extra-data is needed. This C-array must be the same size ( <em>i.e.</em> ntypes) as the functions array. <code>NULL</code> is used if extra_data is not needed. Several C-API calls for UFuncs are just 1-d vector loops that make use of this extra data to receive a pointer to the actual function to call.</p>
+</blockquote>
+<blockquote>
+<p>The number of supported data types for the ufunc. This number specifies how many different 1-d loops (of the builtin data types) are available.</p>
+</blockquote>
+<blockquote>
+<p>A string name for the ufunc. This is used dynamically to build the __doc__ attribute of ufuncs.</p>
+</blockquote>
+<blockquote>
+<p>An array of [nargs times ntypes] 8-bit type_numbers which contains the type signature for the function for each of the supported (builtin) data types. For each of the <em>ntypes</em> functions, the corresponding set of type numbers in this array shows how the <em>args</em> argument should be interpreted in the 1-d vector loop. These type numbers do not have to be the same type and mixed-type ufuncs are supported.</p>
+</blockquote>
+<blockquote>
+<p>Documentation for the ufunc. Should not contain the function signature as this is generated dynamically when __doc__ is retrieved.</p>
+</blockquote>
+<blockquote>
+<p>Any dynamically allocated memory. Currently, this is used for dynamic ufuncs created from a python function to store room for the types, data, and name members.</p>
+</blockquote>
+<blockquote>
+<p>For ufuncs dynamically created from python functions, this member holds a reference to the underlying Python function.</p>
+</blockquote>
+<blockquote>
+<p>A dictionary of user-defined 1-d vector loops (stored as CObject ptrs) for user-defined types. A loop may be registered by the user for any user-defined type. It is retrieved by type number. User defined type numbers are always larger than :c`NPY_USERDEF`.</p>
+</blockquote>
+<blockquote>
+<p>0 for scalar ufuncs; 1 for generalized ufuncs</p>
+</blockquote>
+<blockquote>
+<p>Number of distinct core dimension names in the signature</p>
+</blockquote>
+<blockquote>
+<p>Number of core dimensions of each argument</p>
+</blockquote>
+<blockquote>
+<p>Dimension indices in a flattened form; indices of argument <code>k</code> are stored in <code>core_dim_ixs[core_offsets[k] : core_offsets[k] + core_numdims[k]]</code></p>
+</blockquote>
+<blockquote>
+<p>Position of 1st core dimension of each argument in <code>core_dim_ixs</code>, equivalent to cumsum(<code>core_num_dims</code>)</p>
+</blockquote>
+<blockquote>
+<p>Core signature string</p>
+</blockquote>
+<blockquote>
+<p>A function which resolves the types and fills an array with the dtypes for the inputs and outputs</p>
+<blockquote>
+<p>The function pointer type for :c`type_resolver`</p>
+</blockquote>
+</blockquote>
+<blockquote>
+<p>Override the default operand flags for each ufunc operand.</p>
+</blockquote>
+<blockquote>
+<p>Override the default nditer flags for the ufunc.</p>
+</blockquote>
+<p>Added in API version 0x0000000D</p>
+<blockquote>
+<p>For each distinct core dimension, the possible frozen size if :c`UFUNC_CORE_DIM_SIZE_INFERRED` is <code>0</code></p>
+</blockquote>
+<blockquote>
+<p>For each distinct core dimension, a set of flags ( :c`UFUNC_CORE_DIM_CAN_IGNORE` and :c`UFUNC_CORE_DIM_SIZE_INFERRED`)</p>
+</blockquote>
+<blockquote>
+<p>Identity for reduction, when :c`PyUFuncObject.identity` is equal to :c`PyUFunc_IdentityValue`.</p>
+</blockquote>
+</blockquote>
+<blockquote>
+<p>if the dim name ends in <code>?</code></p>
+</blockquote>
+<blockquote>
+<p>if the dim size will be determined from the operands and not from a frozen signature</p>
+</blockquote>
+<h3 id="pyarrayitertype-and-pyarrayiterobject">PyArrayIter_Type and PyArrayIterObject</h3>
+<blockquote>
+<p>This is an iterator object that makes it easy to loop over an N-dimensional array. It is the object returned from the flat attribute of an ndarray. It is also used extensively throughout the implementation internals to loop over an N-dimensional array. The tp_as_mapping interface is implemented so that the iterator object can be indexed (using 1-d indexing), and a few methods are implemented through the tp_methods table. This object implements the next method and can be used anywhere an iterator can be used in Python.</p>
+</blockquote>
+<blockquote>
+<p>The C-structure corresponding to an object of :c`PyArrayIter_Type` is the :c`PyArrayIterObject`. The :c`PyArrayIterObject` is used to keep track of a pointer into an N-dimensional array. It contains associated information used to quickly march through the array. The pointer can be adjusted in three basic ways: 1) advance to the &quot;next&quot; position in the array in a C-style contiguous fashion, 2) advance to an arbitrary N-dimensional coordinate in the array, and 3) advance to an arbitrary one-dimensional index into the array. The members of the :c`PyArrayIterObject` structure are used in these calculations. Iterator objects keep their own dimension and strides information about an array. This can be adjusted as needed for &quot;broadcasting,&quot; or to loop over only specific dimensions.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>C</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-c"><span class="hljs-keyword">typedef</span> <span class="hljs-class"><span class="hljs-keyword">struct</span> {</span>
+    PyObject_HEAD
+    <span class="hljs-type">int</span>   nd_m1;
+    npy_intp  index;
+    npy_intp  size;
+    npy_intp  coordinates[NPY_MAXDIMS_LEGACY_ITERS];
+    npy_intp  dims_m1[NPY_MAXDIMS_LEGACY_ITERS];
+    npy_intp  strides[NPY_MAXDIMS_LEGACY_ITERS];
+    npy_intp  backstrides[NPY_MAXDIMS_LEGACY_ITERS];
+    npy_intp  factors[NPY_MAXDIMS_LEGACY_ITERS];
+    PyArrayObject *ao;
+    <span class="hljs-type">char</span>  *dataptr;
+    npy_bool  contiguous;
+} PyArrayIterObject;</code></pre></div></figure>
+<blockquote>
+<p>[N-1] where [N] is the number of dimensions in the underlying array.</p>
+</blockquote>
+<blockquote>
+<p>The current 1-d index into the array.</p>
+</blockquote>
+<blockquote>
+<p>The total size of the underlying array.</p>
+</blockquote>
+<blockquote>
+<p>An [N] -dimensional index into the array.</p>
+</blockquote>
+<blockquote>
+<p>The size of the array minus 1 in each dimension.</p>
+</blockquote>
+<blockquote>
+<p>The strides of the array. How many bytes needed to jump to the next element in each dimension.</p>
+</blockquote>
+<blockquote>
+<p>How many bytes needed to jump from the end of a dimension back to its beginning. Note that <code>backstrides[k] == strides[k] * dims_m1[k]</code>, but it is stored here as an optimization.</p>
+</blockquote>
+<blockquote>
+<p>This array is used in computing an N-d index from a 1-d index. It contains needed products of the dimensions.</p>
+</blockquote>
+<blockquote>
+<p>A pointer to the underlying ndarray this iterator was created to represent.</p>
+</blockquote>
+<blockquote>
+<p>This member points to an element in the ndarray indicated by the index.</p>
+</blockquote>
+<blockquote>
+<p>This flag is true if the underlying array is :c`NPY_ARRAY_C_CONTIGUOUS`. It is used to simplify calculations when possible.</p>
+</blockquote>
+</blockquote>
+<p>How to use an array iterator on a C-level is explained more fully in later sections. Typically, you do not need to concern yourself with the internal structure of the iterator object, and merely interact with it through the use of the macros :c`PyArray_ITER_NEXT` (it), :c`PyArray_ITER_GOTO` (it, dest), or :c`PyArray_ITER_GOTO1D` (it, index). All of these macros require the argument <em>it</em> to be a :c`PyArrayIterObject *`.</p>
+<h3 id="pyarraymultiitertype-and-pyarraymultiiterobject">PyArrayMultiIter_Type and PyArrayMultiIterObject</h3>
+<blockquote>
+<p>This type provides an iterator that encapsulates the concept of broadcasting. It allows [N] arrays to be broadcast together so that the loop progresses in C-style contiguous fashion over the broadcasted array. The corresponding C-structure is the :c`PyArrayMultiIterObject` whose memory layout must begin any object, <em>obj</em>, passed in to the :c`PyArray_Broadcast` (obj) function. Broadcasting is performed by adjusting array iterators so that each iterator represents the broadcasted shape and size, but has its strides adjusted so that the correct element from the array is used at each iteration.</p>
+</blockquote>
+<blockquote>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>C</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-c"><span class="hljs-keyword">typedef</span> <span class="hljs-class"><span class="hljs-keyword">struct</span> {</span>
+    PyObject_HEAD
+    <span class="hljs-type">int</span> numiter;
+    npy_intp size;
+    npy_intp index;
+    <span class="hljs-type">int</span> nd;
+    npy_intp dimensions[NPY_MAXDIMS_LEGACY_ITERS];
+    PyArrayIterObject *iters[];
+} PyArrayMultiIterObject;</code></pre></div></figure>
+<blockquote>
+<p>Needed at the start of every Python object (holds reference count and type identification).</p>
+</blockquote>
+<blockquote>
+<p>The number of arrays that need to be broadcast to the same shape.</p>
+</blockquote>
+<blockquote>
+<p>The total broadcasted size.</p>
+</blockquote>
+<blockquote>
+<p>The current (1-d) index into the broadcasted result.</p>
+</blockquote>
+<blockquote>
+<p>The number of dimensions in the broadcasted result.</p>
+</blockquote>
+<blockquote>
+<p>The shape of the broadcasted result (only <code>nd</code> slots are used).</p>
+</blockquote>
+<blockquote>
+<p>An array of iterator objects that holds the iterators for the arrays to be broadcast together. On return, the iterators are adjusted for broadcasting.</p>
+</blockquote>
+</blockquote>
+<h3 id="pyarrayneighborhooditertype-and-pyarrayneighborhooditerobject">PyArrayNeighborhoodIter_Type and PyArrayNeighborhoodIterObject</h3>
+<blockquote>
+<p>This is an iterator object that makes it easy to loop over an N-dimensional neighborhood.</p>
+</blockquote>
+<blockquote>
+<p>The C-structure corresponding to an object of :c`PyArrayNeighborhoodIter_Type` is the :c`PyArrayNeighborhoodIterObject`.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>C</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-c"><span class="hljs-keyword">typedef</span> <span class="hljs-class"><span class="hljs-keyword">struct</span> {</span>
+    PyObject_HEAD
+    <span class="hljs-type">int</span> nd_m1;
+    npy_intp index, size;
+    npy_intp coordinates[NPY_MAXDIMS_LEGACY_ITERS]
+    npy_intp dims_m1[NPY_MAXDIMS_LEGACY_ITERS];
+    npy_intp strides[NPY_MAXDIMS_LEGACY_ITERS];
+    npy_intp backstrides[NPY_MAXDIMS_LEGACY_ITERS];
+    npy_intp factors[NPY_MAXDIMS_LEGACY_ITERS];
+    PyArrayObject *ao;
+    <span class="hljs-type">char</span> *dataptr;
+    npy_bool contiguous;
+    npy_intp bounds[NPY_MAXDIMS_LEGACY_ITERS][<span class="hljs-number">2</span>];
+    npy_intp limits[NPY_MAXDIMS_LEGACY_ITERS][<span class="hljs-number">2</span>];
+    npy_intp limits_sizes[NPY_MAXDIMS_LEGACY_ITERS];
+    <span class="hljs-type">npy_iter_get_dataptr_t</span> translate;
+    npy_intp nd;
+    npy_intp dimensions[NPY_MAXDIMS_LEGACY_ITERS];
+    PyArrayIterObject* _internal_iter;
+    <span class="hljs-type">char</span>* constant;
+    <span class="hljs-type">int</span> mode;
+} PyArrayNeighborhoodIterObject;</code></pre></div></figure>
+</blockquote>
+<h3 id="scalararraytypes">ScalarArrayTypes</h3>
+<p>There is a Python type for each of the different built-in data types that can be present in the array. Most of these are simple wrappers around the corresponding data type in C. The C-names for these types are <code>Py{TYPE}ArrType_Type</code> where <code>{TYPE}</code> can be</p>
+<blockquote>
+<p><strong>Bool</strong>, <strong>Byte</strong>, <strong>Short</strong>, <strong>Int</strong>, <strong>Long</strong>, <strong>LongLong</strong>, <strong>UByte</strong>, <strong>UShort</strong>, <strong>UInt</strong>, <strong>ULong</strong>, <strong>ULongLong</strong>, <strong>Half</strong>, <strong>Float</strong>, <strong>Double</strong>, <strong>LongDouble</strong>, <strong>CFloat</strong>, <strong>CDouble</strong>, <strong>CLongDouble</strong>, <strong>String</strong>, <strong>Unicode</strong>, <strong>Void</strong>, <strong>Datetime</strong>, <strong>Timedelta</strong>, and <strong>Object</strong>.</p>
+</blockquote>
+<p>These type names are part of the C-API and can therefore be created in extension C-code. There is also a <code>PyIntpArrType_Type</code> and a <code>PyUIntpArrType_Type</code> that are simple substitutes for one of the integer types that can hold a pointer on the platform. The structure of these scalar objects is not exposed to C-code. The function :c`PyArray_ScalarAsCtype` (..) can be used to extract the C-type value from the array scalar and the function :c`PyArray_Scalar` (...) can be used to construct an array scalar from a C-value.</p>
+<h2 id="other-c-structures">Other C-structures</h2>
+<p>A few new C-structures were found to be useful in the development of NumPy. These C-structures are used in at least one C-API call and are therefore documented here. The main reason these structures were defined is to make it easy to use the Python ParseTuple C-API to convert from Python objects to a useful C-Object.</p>
+<h3 id="pyarraydims">PyArray_Dims</h3>
+<blockquote>
+<p>This structure is very useful when shape and/or strides information is supposed to be interpreted. The structure is:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>C</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-c"><span class="hljs-keyword">typedef</span> <span class="hljs-class"><span class="hljs-keyword">struct</span> {</span>
+    npy_intp *ptr;
+    <span class="hljs-type">int</span> len;
+} PyArray_Dims;</code></pre></div></figure>
+<p>The members of this structure are</p>
+<blockquote>
+<p>A pointer to a list of (:c`npy_intp`) integers which usually represent array shape or array strides.</p>
+</blockquote>
+<blockquote>
+<p>The length of the list of integers. It is assumed safe to access <em>ptr</em> [0] to <em>ptr</em> [len-1].</p>
+</blockquote>
+</blockquote>
+<h3 id="pyarraychunk">PyArray_Chunk</h3>
+<blockquote>
+<p>This is equivalent to the buffer object structure in Python up to the ptr member. On 32-bit platforms (<em>i.e.</em> if :c`NPY_SIZEOF_INT` == :c`NPY_SIZEOF_INTP`), the len member also matches an equivalent member of the buffer object. It is useful to represent a generic single-segment chunk of memory.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>C</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-c"><span class="hljs-keyword">typedef</span> <span class="hljs-class"><span class="hljs-keyword">struct</span> {</span>
+    PyObject_HEAD
+    PyObject *base;
+    <span class="hljs-type">void</span> *ptr;
+    npy_intp len;
+    <span class="hljs-type">int</span> flags;
+} PyArray_Chunk;</code></pre></div></figure>
+<p>The members are</p>
+<blockquote>
+<p>Necessary for all Python objects. Included here so that the :c`PyArray_Chunk` structure matches that of the buffer object (at least to the len member).</p>
+</blockquote>
+<blockquote>
+<p>The Python object this chunk of memory comes from. Needed so that memory can be accounted for properly.</p>
+</blockquote>
+<blockquote>
+<p>A pointer to the start of the single-segment chunk of memory.</p>
+</blockquote>
+<blockquote>
+<p>The length of the segment in bytes.</p>
+</blockquote>
+<blockquote>
+<p>Any data flags (<em>e.g.</em> :c`NPY_ARRAY_WRITEABLE` ) that should be used to interpret the memory.</p>
+</blockquote>
+</blockquote>
+<h3 id="pyarrayinterface">PyArrayInterface</h3>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>arrays.interface</p>
+</div></aside>
+<blockquote>
+<p>The :c`PyArrayInterface` structure is defined so that NumPy and other extension modules can use the rapid array interface protocol. The [~object.__array_struct__] method of an object that supports the rapid array interface protocol should return a :c`PyCapsule` that contains a pointer to a :c`PyArrayInterface` structure with the relevant details of the array. After the new array is created, the attribute should be <code>DECREF</code>&#39;d which will free the :c`PyArrayInterface` structure. Remember to <code>INCREF</code> the object (whose [~object.__array_struct__] attribute was retrieved) and point the base member of the new :c`PyArrayObject` to this same object. In this way the memory for the array will be managed correctly.</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>C</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-c"><span class="hljs-keyword">typedef</span> <span class="hljs-class"><span class="hljs-keyword">struct</span> {</span>
+    <span class="hljs-type">int</span> two;
+    <span class="hljs-type">int</span> nd;
+    <span class="hljs-type">char</span> typekind;
+    <span class="hljs-type">int</span> itemsize;
+    <span class="hljs-type">int</span> flags;
+    npy_intp *shape;
+    npy_intp *strides;
+    <span class="hljs-type">void</span> *data;
+    PyObject *descr;
+} PyArrayInterface;</code></pre></div></figure>
+<blockquote>
+<p>the integer 2 as a sanity check.</p>
+</blockquote>
+<blockquote>
+<p>the number of dimensions in the array.</p>
+</blockquote>
+<blockquote>
+<p>A character indicating what kind of array is present according to the typestring convention with &#39;t&#39; -&gt; bitfield, &#39;b&#39; -&gt; Boolean, &#39;i&#39; -&gt; signed integer, &#39;u&#39; -&gt; unsigned integer, &#39;f&#39; -&gt; floating point, &#39;c&#39; -&gt; complex floating point, &#39;O&#39; -&gt; object, &#39;S&#39; -&gt; (byte-)string, &#39;U&#39; -&gt; unicode, &#39;V&#39; -&gt; void.</p>
+</blockquote>
+<blockquote>
+<p>The number of bytes each item in the array requires.</p>
+</blockquote>
+<blockquote>
+<p>Any of the bits :c`NPY_ARRAY_C_CONTIGUOUS` (1), :c`NPY_ARRAY_F_CONTIGUOUS` (2), :c`NPY_ARRAY_ALIGNED` (0x100), :c`NPY_ARRAY_NOTSWAPPED` (0x200), or :c`NPY_ARRAY_WRITEABLE` (0x400) to indicate something about the data. The :c`NPY_ARRAY_ALIGNED`, :c`NPY_ARRAY_C_CONTIGUOUS`, and :c`NPY_ARRAY_F_CONTIGUOUS` flags can actually be determined from the other parameters. The flag :c`NPY_ARR_HAS_DESCR` (0x800) can also be set to indicate to objects consuming the version 3 array interface that the descr member of the structure is present (it will be ignored by objects consuming version 2 of the array interface).</p>
+</blockquote>
+<blockquote>
+<p>An array containing the size of the array in each dimension.</p>
+</blockquote>
+<blockquote>
+<p>An array containing the number of bytes to jump to get to the next element in each dimension.</p>
+</blockquote>
+<blockquote>
+<p>A pointer <em>to</em> the first element of the array.</p>
+</blockquote>
+<blockquote>
+<p>A Python object describing the data-type in more detail (same as the <em>descr</em> key in [~object.__array_interface__]). This can be <code>NULL</code> if <em>typekind</em> and <em>itemsize</em> provide enough information. This field is also ignored unless :c`NPY_ARR_HAS_DESCR` flag is on in <em>flags</em>.</p>
+</blockquote>
+</blockquote>
+<h3 id="internally-used-structures">Internally used structures</h3>
+<p>Internally, the code uses some additional Python objects primarily for memory management. These types are not accessible directly from Python, and are not exposed to the C-API. They are included here only for completeness and assistance in understanding the code.</p>
+<blockquote>
+<p>A simple linked-list of C-structures containing the information needed to define a 1-d loop for a ufunc for every defined signature of a user-defined data-type.</p>
+</blockquote>
+<blockquote>
+<p>Advanced indexing is handled with this Python type. It is simply a loose wrapper around the C-structure containing the variables needed for advanced array indexing.</p>
+</blockquote>
+<blockquote>
+<p>The C-structure associated with :c`PyArrayMapIter_Type`. This structure is useful if you are trying to understand the advanced-index mapping code. It is defined in the <code>multiarray/mapping.h</code> header. This type is not exposed to Python and could be replaced with a C-structure. As a Python type it takes advantage of reference- counted memory management.</p>
+</blockquote>
+<h2 id="numpy-c-api-and-c-complex">NumPy C-API and C complex</h2>
+<p>When you use the NumPy C-API, you will have access to complex real declarations <code>npy_cdouble</code> and <code>npy_cfloat</code>, which are declared in terms of the C standard types from <code>complex.h</code>. Unfortunately, <code>complex.h</code> contains <code>#define I ...</code> (where the actual definition depends on the compiler), which means that any downstream user that does <code>#include &lt;numpy/arrayobject.h&gt;</code> could get <code>I</code> defined, and using something like declaring <code>double I;</code> in their code will result in an obscure compiler error like</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>C</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-c">error: expected ‘)’ before ‘__extension__’
+                <span class="hljs-type">double</span> I,</code></pre></div></figure>
+<p>This error can be avoided by adding:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">#undef I</code></pre></div></figure>
+<p>to your code.</p>

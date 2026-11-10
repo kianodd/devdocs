@@ -1,0 +1,188 @@
+<p>NumPy&#39;s ndarray objects provide both a high-level API for operations on array-structured data and a concrete implementation of the API based on strided in-RAM storage . While this API is powerful and fairly general, its concrete implementation has limitations. As datasets grow and NumPy becomes used in a variety of new environments and architectures, there are cases where the strided in-RAM storage strategy is inappropriate, which has caused different libraries to reimplement this API for their own uses. This includes GPU arrays (<a target="_blank" rel="noopener" href="https://cupy.dev/">CuPy</a>), Sparse arrays ([scipy.sparse], <a target="_blank" rel="noopener" href="https://sparse.pydata.org/">PyData/Sparse</a>) and parallel arrays (<a target="_blank" rel="noopener" href="https://docs.dask.org/">Dask</a> arrays) as well as various NumPy-like implementations in deep learning frameworks, like <a target="_blank" rel="noopener" href="https://www.tensorflow.org/">TensorFlow</a> and <a target="_blank" rel="noopener" href="https://pytorch.org/">PyTorch</a>. Similarly, there are many projects that build on top of the NumPy API for labeled and indexed arrays (<a target="_blank" rel="noopener" href="https://xarray.dev/">XArray</a>), automatic differentiation (<a target="_blank" rel="noopener" href="https://jax.readthedocs.io/">JAX</a>), masked arrays ([numpy.ma]), physical units (<a target="_blank" rel="noopener" href="https://docs.astropy.org/en/stable/units/">astropy.units</a>, <a target="_blank" rel="noopener" href="https://pint.readthedocs.io/">pint</a>, <a target="_blank" rel="noopener" href="https://unyt.readthedocs.io/">unyt</a>), among others that add additional functionality on top of the NumPy API.</p>
+<p>Yet, users still want to work with these arrays using the familiar NumPy API and reuse existing code with minimal (ideally zero) porting overhead. With this goal in mind, various protocols are defined for implementations of multi-dimensional arrays with high-level APIs matching NumPy.</p>
+<p>Broadly speaking, there are three groups of features used for interoperability with NumPy:</p>
+<ol>
+<li>Methods of turning a foreign object into an ndarray;</li>
+<li>Methods of deferring execution from a NumPy function to another array library;</li>
+<li>Methods that use NumPy functions and return an instance of a foreign object.</li>
+</ol>
+<p>We describe these features below.</p>
+<h2 id="1-using-arbitrary-objects-in-numpy">1. Using arbitrary objects in NumPy</h2>
+<p>The first set of interoperability features from the NumPy API allows foreign objects to be treated as NumPy arrays whenever possible. When NumPy functions encounter a foreign object, they will try (in order):</p>
+<ol>
+<li>The buffer protocol, described :py[in the Python C-API documentation ](python:c-api/buffer.rst).</li>
+<li>The <code>__array_interface__</code> protocol, described in this page . A precursor to Python&#39;s buffer protocol, it defines a way to access the contents of a NumPy array from other C extensions.</li>
+<li>The <code>__array__()</code> method, which asks an arbitrary object to convert itself into an array.</li>
+</ol>
+<p>For both the buffer and the <code>__array_interface__</code> protocols, the object describes its memory layout and NumPy does everything else (zero-copy if possible). If that&#39;s not possible, the object itself is responsible for returning a <code>ndarray</code> from <code>__array__()</code>.</p>
+<p>[DLPack ](dlpack:index.rst) is yet another protocol to convert foreign objects to NumPy arrays in a language and device agnostic manner. NumPy doesn&#39;t implicitly convert objects to ndarrays using DLPack. It provides the function [numpy.from_dlpack] that accepts any object implementing the <code>__dlpack__</code> method and outputs a NumPy ndarray (which is generally a view of the input object&#39;s data buffer). The dlpack:python-spec page explains the <code>__dlpack__</code> protocol in detail.</p>
+<h3 id="dtype-interoperability"><code>dtype</code> interoperability</h3>
+<p>Similar to <code>__array__()</code> for array objects, defining <code>__numpy_dtype__</code> allows a custom dtype object to be interoperable with NumPy. The <code>__numpy_dtype__</code> must return a NumPy dtype instance (note that <code>np.float64</code> is not a dtype instance, <code>np.dtype(np.float64)</code> is).</p>
+<h3 id="the-array-interface-protocol">The array interface protocol</h3>
+<p>The array interface protocol defines a way for array-like objects to reuse each other&#39;s data buffers. Its implementation relies on the existence of the following attributes or methods:</p>
+<ul>
+<li><code>__array_interface__</code>: a Python dictionary containing the shape, the element type, and optionally, the data buffer address and the strides of an array-like object;</li>
+<li><code>__array__()</code>: a method returning the NumPy ndarray copy or a view of an array-like object;</li>
+</ul>
+<p>The <code>__array_interface__</code> attribute can be inspected directly:</p>
+<blockquote>
+<p>&gt;&gt;&gt; import numpy as np &gt;&gt;&gt; x = np.array([1, 2, 5.0, 8]) &gt;&gt;&gt; x.__array_interface__ {&#39;data&#39;: (94708397920832, False), &#39;strides&#39;: None, &#39;descr&#39;: [(&#39;&#39;, &#39;&lt;f8&#39;)], &#39;typestr&#39;: &#39;&lt;f8&#39;, &#39;shape&#39;: (4,), &#39;version&#39;: 3}</p>
+</blockquote>
+<p>The <code>__array_interface__</code> attribute can also be used to manipulate the object data in place:</p>
+<blockquote>
+<p>&gt;&gt;&gt; class wrapper(): ... pass ... &gt;&gt;&gt; arr = np.array([1, 2, 3, 4]) &gt;&gt;&gt; buf = arr.__array_interface__ &gt;&gt;&gt; buf {&#39;data&#39;: (140497590272032, False), &#39;strides&#39;: None, &#39;descr&#39;: [(&#39;&#39;, &#39;&lt;i8&#39;)], &#39;typestr&#39;: &#39;&lt;i8&#39;, &#39;shape&#39;: (4,), &#39;version&#39;: 3} &gt;&gt;&gt; buf[&#39;shape&#39;] = (2, 2) &gt;&gt;&gt; w = wrapper() &gt;&gt;&gt; w.__array_interface__ = buf &gt;&gt;&gt; new_arr = np.array(w, copy=False) &gt;&gt;&gt; new_arr array([[1, 2], [3, 4]])</p>
+</blockquote>
+<p>We can check that <code>arr</code> and <code>new_arr</code> share the same data buffer:</p>
+<blockquote>
+<p>&gt;&gt;&gt; new_arr[0, 0] = 1000 &gt;&gt;&gt; new_arr array([[1000, 2], [ 3, 4]]) &gt;&gt;&gt; arr array([1000, 2, 3, 4])</p>
+</blockquote>
+<h3 id="the-array-method">The <code>__array__()</code> method</h3>
+<p>The <a href="">__array__()</a> method ensures that any NumPy-like object (an array, any object exposing the array interface, an object whose <code>__array__()</code> method returns an array or any nested sequence) that implements it can be used as a NumPy array. If possible, this will mean using <code>__array__()</code> to create a NumPy ndarray view of the array-like object. Otherwise, this copies the data into a new ndarray object. This is not optimal, as coercing arrays into ndarrays may cause performance problems or create the need for copies and loss of metadata, as the original object and any attributes/behavior it may have had, is lost.</p>
+<p>The signature of the method should be <code>__array__(self, dtype=None, *, copy=None)</code>. If a passed <code>dtype</code> isn&#39;t <code>None</code> and different than the object&#39;s data type, a casting should happen to a specified type. If <code>copy</code> is <code>None</code>, a copy should be made only if <code>dtype</code> argument enforces it. For <code>copy=True</code>, a copy should always be made, where <code>copy=False</code> should raise an exception if a copy is needed.</p>
+<p>If a class implements the old signature <code>__array__(self)</code>, for <code>np.array(a)</code> a warning will be raised saying that <code>dtype</code> and <code>copy</code> arguments are missing.</p>
+<h3 id="the-dlpack-protocol">The DLPack Protocol</h3>
+<p>The [DLPack ](dlpack:index.rst) protocol defines a memory-layout of strided n-dimensional array objects. It offers the following syntax for data exchange:</p>
+<ol>
+<li>A [numpy.from_dlpack] function, which accepts (array) objects with a <code>__dlpack__</code> method and uses that method to construct a new array containing the data from <code>x</code>.</li>
+<li><code>__dlpack__(self, stream=None)</code> and <code>__dlpack_device__</code> methods on the array object, which will be called from within <code>from_dlpack</code>, to query what device the array is on (may be needed to pass in the correct stream, e.g. in the case of multiple GPUs) and to access the data.</li>
+</ol>
+<p>Unlike the buffer protocol, DLPack allows exchanging arrays containing data on devices other than the CPU (e.g. Vulkan or GPU). Since NumPy only supports CPU, it can only convert objects whose data exists on the CPU. But other libraries, like <a target="_blank" rel="noopener" href="https://pytorch.org/">PyTorch</a> and <a target="_blank" rel="noopener" href="https://cupy.dev/">CuPy</a>, may exchange data on GPU using this protocol.</p>
+<h2 id="2-operating-on-foreign-objects-without-converting">2. Operating on foreign objects without converting</h2>
+<p>A second set of methods defined by the NumPy API allows us to defer the execution from a NumPy function to another array library.</p>
+<p>Consider the following function.</p>
+<blockquote>
+<p>&gt;&gt;&gt; import numpy as np &gt;&gt;&gt; def f(x): ... return np.mean(np.exp(x))</p>
+</blockquote>
+<p>Note that [np.exp &lt;numpy.exp&gt;] is a ufunc , which means that it operates on ndarrays in an element-by-element fashion. On the other hand, [np.mean &lt;numpy.mean&gt;] operates along one of the array&#39;s axes.</p>
+<p>We can apply <code>f</code> to a NumPy ndarray object directly:</p>
+<blockquote>
+<p>&gt;&gt;&gt; x = np.array([1, 2, 3, 4]) &gt;&gt;&gt; f(x) 21.1977562209304</p>
+</blockquote>
+<p>We would like this function to work equally well with any NumPy-like array object.</p>
+<p>NumPy allows a class to indicate that it would like to handle computations in a custom-defined way through the following interfaces:</p>
+<ul>
+<li><code>__array_ufunc__</code>: allows third-party objects to support and override ufuncs .</li>
+<li><code>__array_function__</code>: a catch-all for NumPy functionality that is not covered by the <code>__array_ufunc__</code> protocol for universal functions.</li>
+</ul>
+<p>As long as foreign objects implement the <code>__array_ufunc__</code> or <code>__array_function__</code> protocols, it is possible to operate on them without the need for explicit conversion.</p>
+<h3 id="the-arrayufunc-protocol">The <code>__array_ufunc__</code> protocol</h3>
+<p>A universal function (or ufunc for short) is a &quot;vectorized&quot; wrapper for a function that takes a fixed number of specific inputs and produces a fixed number of specific outputs. The output of the ufunc (and its methods) is not necessarily an ndarray, if not all input arguments are ndarrays. Indeed, if any input defines an <code>__array_ufunc__</code> method, control will be passed completely to that function, i.e., the ufunc is overridden. The <code>__array_ufunc__</code> method defined on that (non-ndarray) object has access to the NumPy ufunc. Because ufuncs have a well-defined structure, the foreign <code>__array_ufunc__</code> method may rely on ufunc attributes like <code>.at()</code>, <code>.reduce()</code>, and others.</p>
+<p>A subclass can override what happens when executing NumPy ufuncs on it by overriding the default <code>ndarray.__array_ufunc__</code> method. This method is executed instead of the ufunc and should return either the result of the operation, or <code>NotImplemented</code> if the operation requested is not implemented.</p>
+<h3 id="the-arrayfunction-protocol">The <code>__array_function__</code> protocol</h3>
+<p>To achieve enough coverage of the NumPy API to support downstream projects, there is a need to go beyond <code>__array_ufunc__</code> and implement a protocol that allows arguments of a NumPy function to take control and divert execution to another function (for example, a GPU or parallel implementation) in a way that is safe and consistent across projects.</p>
+<p>The semantics of <code>__array_function__</code> are very similar to <code>__array_ufunc__</code>, except the operation is specified by an arbitrary callable object rather than a ufunc instance and method. For more details, see NEP18.</p>
+<h2 id="3-returning-foreign-objects">3. Returning foreign objects</h2>
+<p>A third type of feature set is meant to use the NumPy function implementation and then convert the return value back into an instance of the foreign object. The <code>__array_finalize__</code> and <code>__array_wrap__</code> methods act behind the scenes to ensure that the return type of a NumPy function can be specified as needed.</p>
+<p>The <code>__array_finalize__</code> method is the mechanism that NumPy provides to allow subclasses to handle the various ways that new instances get created. This method is called whenever the system internally allocates a new array from an object which is a subclass (subtype) of the ndarray. It can be used to change attributes after construction, or to update meta-information from the &quot;parent.&quot;</p>
+<p>The <code>__array_wrap__</code> method &quot;wraps up the action&quot; in the sense of allowing any object (such as user-defined functions) to set the type of its return value and update attributes and metadata. This can be seen as the opposite of the <code>__array__</code> method. At the end of every object that implements <code>__array_wrap__</code>, this method is called on the input object with the highest <em>array priority</em>, or the output object if one was specified. The <code>__array_priority__</code> attribute is used to determine what type of object to return in situations where there is more than one possibility for the Python type of the returned object. For example, subclasses may opt to use this method to transform the output array into an instance of the subclass and update metadata before returning the array to the user.</p>
+<p>For more information on these methods, see basics.subclassing and specific-array-subtyping.</p>
+<h2 id="interoperability-examples">Interoperability examples</h2>
+<h3 id="example-pandas-series-objects">Example: Pandas <code>Series</code> objects</h3>
+<p>Consider the following:</p>
+<blockquote>
+<p>&gt;&gt;&gt; import pandas as pd &gt;&gt;&gt; ser = pd.Series([1, 2, 3, 4]) &gt;&gt;&gt; type(ser) pandas.core.series.Series</p>
+</blockquote>
+<p>Now, <code>ser</code> is <strong>not</strong> an ndarray, but because it <a target="_blank" rel="noopener" href="https://pandas.pydata.org/docs/user_guide/dsintro.html#dataframe-interoperability-with-numpy-functions">implements the __array_ufunc__ protocol</a>, we can apply ufuncs to it as if it were an ndarray:</p>
+<blockquote>
+<p>&gt;&gt;&gt; np.exp(ser)</p>
+<p>:   0 2.718282 1 7.389056 2 20.085537 3 54.598150 dtype: float64</p>
+<p>&gt;&gt;&gt; np.sin(ser)</p>
+<p>:   0 0.841471 1 0.909297 2 0.141120 3 -0.756802 dtype: float64</p>
+</blockquote>
+<p>We can even do operations with other ndarrays:</p>
+<blockquote>
+<p>&gt;&gt;&gt; np.add(ser, np.array([5, 6, 7, 8]))</p>
+<p>:   0 6 1 8 2 10 3 12 dtype: int64</p>
+<p>&gt;&gt;&gt; f(ser) 21.1977562209304 &gt;&gt;&gt; result = ser.__array__() &gt;&gt;&gt; type(result) numpy.ndarray</p>
+</blockquote>
+<h3 id="example-pytorch-tensors">Example: PyTorch tensors</h3>
+<p><a target="_blank" rel="noopener" href="https://pytorch.org/">PyTorch</a> is an optimized tensor library for deep learning using GPUs and CPUs. PyTorch arrays are commonly called <em>tensors</em>. Tensors are similar to NumPy&#39;s ndarrays, except that tensors can run on GPUs or other hardware accelerators. In fact, tensors and NumPy arrays can often share the same underlying memory, eliminating the need to copy data.</p>
+<blockquote>
+<p>&gt;&gt;&gt; import torch &gt;&gt;&gt; data = [[1, 2],[3, 4]] &gt;&gt;&gt; x_np = np.array(data) &gt;&gt;&gt; x_tensor = torch.tensor(data)</p>
+</blockquote>
+<p>Note that <code>x_np</code> and <code>x_tensor</code> are different kinds of objects:</p>
+<blockquote>
+<p>&gt;&gt;&gt; x_np array([[1, 2], [3, 4]]) &gt;&gt;&gt; x_tensor tensor([[1, 2], [3, 4]])</p>
+</blockquote>
+<p>However, we can treat PyTorch tensors as NumPy arrays without the need for explicit conversion:</p>
+<blockquote>
+<p>&gt;&gt;&gt; np.exp(x_tensor) tensor([[ 2.7183, 7.3891], [20.0855, 54.5982]], dtype=torch.float64)</p>
+</blockquote>
+<p>Also, note that the return type of this function is compatible with the initial data type.</p>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>PyTorch does not implement <code>__array_function__</code> or <code>__array_ufunc__</code>. Under the hood, the <code>Tensor.__array__()</code> method returns a NumPy ndarray as a view of the tensor data buffer. See <a target="_blank" rel="noopener" href="https://github.com/pytorch/pytorch/issues/24015">this issue</a> and the <a target="_blank" rel="noopener" href="https://github.com/pytorch/pytorch/blob/master/torch/overrides.py">__torch_function__ implementation</a> for details.</p>
+</div></aside>
+<p>Note also that we can see <code>__array_wrap__</code> in action here, even though <code>torch.Tensor</code> is not a subclass of ndarray:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">&gt;&gt;&gt; import torch
+&gt;&gt;&gt; t = torch.arange(4)
+&gt;&gt;&gt; np.abs(t)
+tensor([0, 1, 2, 3])</code></pre></div></figure>
+<p>PyTorch implements <code>__array_wrap__</code> to be able to get tensors back from NumPy functions, and we can modify it directly to control which type of objects are returned from these functions.</p>
+<h3 id="example-cupy-arrays">Example: CuPy arrays</h3>
+<p>CuPy is a NumPy/SciPy-compatible array library for GPU-accelerated computing with Python. CuPy implements a subset of the NumPy interface by implementing <code>cupy.ndarray</code>, <a target="_blank" rel="noopener" href="https://docs.cupy.dev/en/stable/reference/ndarray.html">a counterpart to NumPy ndarrays</a>.</p>
+<blockquote>
+<p>&gt;&gt;&gt; import cupy as cp &gt;&gt;&gt; x_gpu = cp.array([1, 2, 3, 4])</p>
+</blockquote>
+<p>The <code>cupy.ndarray</code> object implements the <code>__array_ufunc__</code> interface. This enables NumPy ufuncs to be applied to CuPy arrays (this will defer operation to the matching CuPy CUDA/ROCm implementation of the ufunc):</p>
+<blockquote>
+<p>&gt;&gt;&gt; np.mean(np.exp(x_gpu)) array(21.19775622)</p>
+</blockquote>
+<p>Note that the return type of these operations is still consistent with the initial type:</p>
+<blockquote>
+<p>&gt;&gt;&gt; arr = cp.random.randn(1, 2, 3, 4).astype(cp.float32) &gt;&gt;&gt; result = np.sum(arr) &gt;&gt;&gt; print(type(result)) &lt;class &#39;cupy._core.core.ndarray&#39;&gt;</p>
+</blockquote>
+<p>See <a target="_blank" rel="noopener" href="https://docs.cupy.dev/en/stable/reference/ufunc.html">this page in the CuPy documentation for details</a>.</p>
+<p><code>cupy.ndarray</code> also implements the <code>__array_function__</code> interface, meaning it is possible to do operations such as</p>
+<blockquote>
+<p>&gt;&gt;&gt; a = np.random.randn(100, 100) &gt;&gt;&gt; a_gpu = cp.asarray(a) &gt;&gt;&gt; qr_gpu = np.linalg.qr(a_gpu)</p>
+</blockquote>
+<p>CuPy implements many NumPy functions on <code>cupy.ndarray</code> objects, but not all. See <a target="_blank" rel="noopener" href="https://docs.cupy.dev/en/stable/user_guide/difference.html">the CuPy documentation</a> for details.</p>
+<h3 id="example-dask-arrays">Example: Dask arrays</h3>
+<p>Dask is a flexible library for parallel computing in Python. Dask Array implements a subset of the NumPy ndarray interface using blocked algorithms, cutting up the large array into many small arrays. This allows computations on larger-than-memory arrays using multiple cores.</p>
+<p>Dask supports <code>__array__()</code> and <code>__array_ufunc__</code>.</p>
+<blockquote>
+<p>&gt;&gt;&gt; import dask.array as da &gt;&gt;&gt; x = da.random.normal(1, 0.1, size=(20, 20), chunks=(10, 10)) &gt;&gt;&gt; np.mean(np.exp(x)) dask.array&lt;mean_agg-aggregate, shape=(), dtype=float64, chunksize=(), chunktype=numpy.ndarray&gt; &gt;&gt;&gt; np.mean(np.exp(x)).compute() 5.090097550553843</p>
+</blockquote>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>Dask is lazily evaluated, and the result from a computation isn&#39;t computed until you ask for it by invoking <code>compute()</code>.</p>
+</div></aside>
+<p>See <a target="_blank" rel="noopener" href="https://docs.dask.org/en/stable/array.html">the Dask array documentation</a> and the <a target="_blank" rel="noopener" href="https://docs.dask.org/en/stable/array.html#scope">scope of Dask arrays interoperability with NumPy arrays</a> for details.</p>
+<h3 id="example-dlpack">Example: DLPack</h3>
+<p>Several Python data science libraries implement the <code>__dlpack__</code> protocol. Among them are <a target="_blank" rel="noopener" href="https://pytorch.org/">PyTorch</a> and <a target="_blank" rel="noopener" href="https://cupy.dev/">CuPy</a>. A full list of libraries that implement this protocol can be found on [this page of DLPack documentation ](dlpack:index.rst).</p>
+<p>Convert a PyTorch CPU tensor to NumPy array:</p>
+<blockquote>
+<p>&gt;&gt;&gt; import torch &gt;&gt;&gt; x_torch = torch.arange(5) &gt;&gt;&gt; x_torch tensor([0, 1, 2, 3, 4]) &gt;&gt;&gt; x_np = np.from_dlpack(x_torch) &gt;&gt;&gt; x_np array([0, 1, 2, 3, 4]) &gt;&gt;&gt; # note that x_np is a view of x_torch &gt;&gt;&gt; x_torch[1] = 100 &gt;&gt;&gt; x_torch tensor([ 0, 100, 2, 3, 4]) &gt;&gt;&gt; x_np array([ 0, 100, 2, 3, 4])</p>
+</blockquote>
+<p>The imported arrays are read-only so writing or operating in-place will fail:</p>
+<blockquote>
+<p>&gt;&gt;&gt; x_np.flags.writeable False &gt;&gt;&gt; x_np[1] = 1 Traceback (most recent call last): File &quot;&lt;stdin&gt;&quot;, line 1, in &lt;module&gt; ValueError: assignment destination is read-only</p>
+</blockquote>
+<p>A copy must be created in order to operate on the imported arrays in-place, but will mean duplicating the memory. Do not do this for very large arrays:</p>
+<blockquote>
+<p>&gt;&gt;&gt; x_np_copy = x_np.copy() &gt;&gt;&gt; x_np_copy.sort() # works</p>
+</blockquote>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><p>GPU tensors cannot be directly zero-copy converted to NumPy arrays since NumPy does not support GPU devices. However, since DLPack v1, cross-device copy is supported via the <code>device</code> parameter:</p>
+<blockquote>
+<p>&gt;&gt;&gt; x_torch = torch.arange(5, device=&#39;cuda&#39;) &gt;&gt;&gt; np.from_dlpack(x_torch) # fails: implicit device=None means same device Traceback (most recent call last): File &quot;&lt;stdin&gt;&quot;, line 1, in &lt;module&gt; RuntimeError: Unsupported device in DLTensor. &gt;&gt;&gt; np.from_dlpack(x_torch, device=&#39;cpu&#39;) # works: explicit copy to CPU array([0, 1, 2, 3, 4])</p>
+</blockquote>
+<p>If both libraries support the device the data buffer is on, it is possible to use the <code>__dlpack__</code> protocol (e.g. <a href="">PyTorch</a> and <a href="">CuPy</a>):</p>
+<blockquote>
+<p>&gt;&gt;&gt; x_torch = torch.arange(5, device=&#39;cuda&#39;) &gt;&gt;&gt; x_cupy = cupy.from_dlpack(x_torch)</p>
+</blockquote>
+</div></aside>
+<p>Similarly, a NumPy array can be converted to a PyTorch tensor:</p>
+<blockquote>
+<p>&gt;&gt;&gt; x_np = np.arange(5) &gt;&gt;&gt; x_torch = torch.from_dlpack(x_np)</p>
+</blockquote>
+<p>Read-only arrays cannot be exported:</p>
+<blockquote>
+<p>&gt;&gt;&gt; x_np = np.arange(5) &gt;&gt;&gt; x_np.flags.writeable = False &gt;&gt;&gt; torch.from_dlpack(x_np) # doctest: +ELLIPSIS Traceback (most recent call last): File &quot;&lt;stdin&gt;&quot;, line 1, in &lt;module&gt; File &quot;.../site-packages/torch/utils/dlpack.py&quot;, line 63, in from_dlpack dlpack = ext_tensor.__dlpack__() TypeError: NumPy currently only supports dlpack for writeable arrays</p>
+</blockquote>
+<h2 id="further-reading">Further reading</h2>
+<ul>
+<li>arrays.interface</li>
+<li>basics.dispatch</li>
+<li>special-attributes-and-methods (details on the <code>__array_ufunc__</code> and <code>__array_function__</code> protocols)</li>
+<li>basics.subclassing (details on the <code>__array_wrap__</code> and <code>__array_finalize__</code> methods)</li>
+<li>specific-array-subtyping (more details on the implementation of <code>__array_finalize__</code>, <code>__array_wrap__</code> and <code>__array_priority__</code>)</li>
+<li>[NumPy roadmap: interoperability ](neps:roadmap.rst)</li>
+<li><a target="_blank" rel="noopener" href="https://pytorch.org/tutorials/beginner/blitz/tensor_tutorial.html#bridge-to-np-label">PyTorch documentation on the Bridge with NumPy</a></li>
+</ul>

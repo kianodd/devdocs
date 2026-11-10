@@ -1,0 +1,280 @@
+<p>This tutorial assumes you are already familiar with writing a basic ufunc, as described in [c-info.ufunc-tutorial](c-info.ufunc-tutorial.rst).</p>
+<h2 id="background">Background</h2>
+<p>[~numpy.ufunc.reduce] historically only worked for ufuncs with exactly one output. This covers the <code>.sum()</code>/<code>.prod()</code>/... methods built on top of it for functions like [numpy.add] and [numpy.multiply].</p>
+<p>What makes those work is that the ordinary two-input/one-output elementwise loop can double as the reduction loop. NumPy points the loop&#39;s output and its first input at the same piece of memory. It also gives that pointer a stride of zero, so the pointer never advances. The loop then reads the running result and writes the updated result back to that same location as it walks over the array.</p>
+<p>That trick does not generalize to ufuncs with more than one output, such as [numpy.divmod]. Their forward loop has a two-in/<code>nout</code>-out signature. There is no natural way to pair each output up with an input that could hold its running result.</p>
+<p>To support <code>reduce</code>, <code>reduceat</code>, and <code>accumulate</code> for such ufuncs, an <code>ArrayMethod</code> can register a <em>dedicated</em> reduction loop through the <code>NPY_METH_get_reduction_loop</code> slot. That loop has an <code>(nout + 1)</code>-in/<code>nout</code>-out signature. It takes the current per-output accumulators plus one streamed input element, and writes the updated accumulators. We use this signature because it collapses down to the usual two-input/one-output case when <code>nout</code> is 1. See :c`NPY_METH_get_reduction_loop` in the [ArrayMethod API reference ](reference/c-api/array.rst) for the exact data/stride layout.</p>
+<p>Only the restriction on the number of <em>outputs</em> is lifted. The number of inputs is unchanged: <code>reduce</code> still requires exactly two, as do <code>accumulate</code> and <code>reduceat</code>. Reducing repeatedly combines an accumulated result with one new element, which only makes sense for a ufunc taking two inputs.</p>
+<p>The three cases look like this:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">&gt;&gt;&gt; import numpy as np
+&gt;&gt;&gt; np.add.reduce([1.0, 2.0, 3.0])  # 2 inputs, 1 output
+np.float64(6.0)
+&gt;&gt;&gt; np.modf.reduce([1.0, 2.0, 3.0])  # 1 input, 2 outputs
+Traceback (most recent call last):
+    ...
+ValueError: reduce only supported for binary functions
+&gt;&gt;&gt; np.divmod.reduce([1.0, 2.0, 3.0])  # 2 inputs, 2 outputs
+Traceback (most recent call last):
+    ...
+TypeError: divmod.reduce is not supported: the resolved loop does not register a reduction loop</code></pre></div></figure>
+<p>The first two behaviours are unchanged by this feature. [numpy.modf] takes a single input, so it can never be reduced. Only the third case is new: [numpy.divmod] has the right number of inputs, and fails purely because no reduction loop is registered for it. The rest of this tutorial shows how to write and register such a loop.</p>
+<h2 id="example-a-two-output-minimummaximum-ufunc">Example: a two-output <code>minimummaximum</code> ufunc</h2>
+<p>The example below defines a <code>minimummaximum</code> ufunc for the <code>&#39;f8&#39;</code> (<code>double</code>) dtype only. It computes the running minimum and maximum in a single pass, so <code>minimummaximum.reduce(a)</code> returns the pair <code>(a.min(), a.max())</code> using one loop over <code>a</code> rather than two.</p>
+<p><code>NPY_METH_get_reduction_loop</code> is an <code>ArrayMethod</code> slot. The ufunc&#39;s loop must therefore be registered through the <code>PyArrayMethod_Spec</code> API (:c`PyUFunc_AddLoopFromSpec`), not the legacy <code>PyUFunc_FromFuncAndData</code> loop table used in the previous tutorial. The ufunc itself is still created with :c`PyUFunc_FromFuncAndData`, just without any loops attached yet. The loop is added separately, via its <code>ArrayMethod</code> spec.</p>
+<p>The forward (elementwise) loop is 2-in/2-out:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">(a, b) -&gt; (min(a, b), max(a, b))</code></pre></div></figure>
+<p>and the reduction loop is 3-in/2-out (<code>nout = 2</code> outputs, so <code>nout + 1 = 3</code> inputs):</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">(acc_min, acc_max, x) -&gt; (min(acc_min, x), max(acc_max, x))</code></pre></div></figure>
+<p>The place in the code corresponding to the actual computations is marked with <code>/* BEGIN main computation */</code> and <code>/* END main computation */</code>.</p>
+<blockquote>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>C</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-c"><span class="hljs-meta">#<span class="hljs-keyword">define</span> PY_SSIZE_T_CLEAN</span>
+<span class="hljs-meta">#<span class="hljs-keyword">define</span> NPY_TARGET_VERSION NPY_2_6_API_VERSION</span>
+<span class="hljs-meta">#<span class="hljs-keyword">define</span> NPY_NO_DEPRECATED_API NPY_API_VERSION</span>
+<span class="hljs-meta">#<span class="hljs-keyword">include</span> <span class="hljs-string">&lt;Python.h&gt;</span></span>
+<span class="hljs-meta">#<span class="hljs-keyword">include</span> <span class="hljs-string">&quot;numpy/ndarraytypes.h&quot;</span></span>
+<span class="hljs-meta">#<span class="hljs-keyword">include</span> <span class="hljs-string">&quot;numpy/ufuncobject.h&quot;</span></span>
+<span class="hljs-meta">#<span class="hljs-keyword">include</span> <span class="hljs-string">&quot;numpy/dtype_api.h&quot;</span></span>
+
+<span class="hljs-comment">/*
+ * minmax.c
+ * A minimal ufunc for a single dtype (&#x27;f8&#x27;) that computes the
+ * running minimum and maximum in one pass, and registers a
+ * reduction loop for it so that `minimummaximum.reduce(a)` computes
+ * the actual minmax (`reduceat` and `accumulate` use the same loop).
+ */</span>
+
+<span class="hljs-type">static</span> <span class="hljs-type">int</span>
+<span class="hljs-title function_">double_minimummaximum_loop</span><span class="hljs-params">(PyArrayMethod_Context *NPY_UNUSED(context),
+        <span class="hljs-type">char</span> *<span class="hljs-type">const</span> data[], npy_intp <span class="hljs-type">const</span> dimensions[],
+        npy_intp <span class="hljs-type">const</span> strides[], NpyAuxData *NPY_UNUSED(auxdata))</span>
+{
+    npy_intp n = dimensions[<span class="hljs-number">0</span>];
+    <span class="hljs-type">char</span> *in1 = data[<span class="hljs-number">0</span>], *in2 = data[<span class="hljs-number">1</span>];
+    <span class="hljs-type">char</span> *out1 = data[<span class="hljs-number">2</span>], *out2 = data[<span class="hljs-number">3</span>];
+    npy_intp is1 = strides[<span class="hljs-number">0</span>], is2 = strides[<span class="hljs-number">1</span>];
+    npy_intp os1 = strides[<span class="hljs-number">2</span>], os2 = strides[<span class="hljs-number">3</span>];
+
+    <span class="hljs-keyword">for</span> (npy_intp i = <span class="hljs-number">0</span>; i &lt; n; i++) {
+        <span class="hljs-comment">/* BEGIN main computation */</span>
+        <span class="hljs-type">double</span> a = *(<span class="hljs-type">double</span> *)in1;
+        <span class="hljs-type">double</span> b = *(<span class="hljs-type">double</span> *)in2;
+        *(<span class="hljs-type">double</span> *)out1 = a &lt; b ? a : b;
+        *(<span class="hljs-type">double</span> *)out2 = a &lt; b ? b : a;
+        <span class="hljs-comment">/* END main computation */</span>
+        in1 += is1; in2 += is2; out1 += os1; out2 += os2;
+    }
+    <span class="hljs-keyword">return</span> <span class="hljs-number">0</span>;
+}
+
+<span class="hljs-comment">/*
+ * Reads the running accumulators acc_i and writes the new ones to
+ * out_i. For reduce and reduceat these are the same memory, for
+ * accumulate out_i is the next element of the output.
+ */</span>
+<span class="hljs-type">static</span> <span class="hljs-type">int</span>
+<span class="hljs-title function_">double_minimummaximum_reduce_loop</span><span class="hljs-params">(PyArrayMethod_Context *NPY_UNUSED(context),
+        <span class="hljs-type">char</span> *<span class="hljs-type">const</span> data[], npy_intp <span class="hljs-type">const</span> dimensions[],
+        npy_intp <span class="hljs-type">const</span> strides[], NpyAuxData *NPY_UNUSED(auxdata))</span>
+{
+    npy_intp n = dimensions[<span class="hljs-number">0</span>];
+    <span class="hljs-type">char</span> *acc_min = data[<span class="hljs-number">0</span>], *acc_max = data[<span class="hljs-number">1</span>], *x = data[<span class="hljs-number">2</span>];
+    <span class="hljs-type">char</span> *out_min = data[<span class="hljs-number">3</span>], *out_max = data[<span class="hljs-number">4</span>];
+    npy_intp s_amin = strides[<span class="hljs-number">0</span>], s_amax = strides[<span class="hljs-number">1</span>], s_x = strides[<span class="hljs-number">2</span>];
+    npy_intp s_omin = strides[<span class="hljs-number">3</span>], s_omax = strides[<span class="hljs-number">4</span>];
+
+    <span class="hljs-keyword">for</span> (npy_intp i = <span class="hljs-number">0</span>; i &lt; n; i++) {
+        <span class="hljs-comment">/* BEGIN main computation */</span>
+        <span class="hljs-type">double</span> cur_min = *(<span class="hljs-type">double</span> *)acc_min;
+        <span class="hljs-type">double</span> cur_max = *(<span class="hljs-type">double</span> *)acc_max;
+        <span class="hljs-type">double</span> val = *(<span class="hljs-type">double</span> *)x;
+        *(<span class="hljs-type">double</span> *)out_min = val &lt; cur_min ? val : cur_min;
+        *(<span class="hljs-type">double</span> *)out_max = val &gt; cur_max ? val : cur_max;
+        <span class="hljs-comment">/* END main computation */</span>
+        acc_min += s_amin; acc_max += s_amax; x += s_x;
+        out_min += s_omin; out_max += s_omax;
+    }
+    <span class="hljs-keyword">return</span> <span class="hljs-number">0</span>;
+}
+
+<span class="hljs-comment">/*
+ * get_reduction_loop is called by the reduce machinery in place of
+ * get_strided_loop.  It hands back the (nout+1)-&gt;nout loop above
+ * instead of the forward elementwise one.
+ */</span>
+<span class="hljs-type">static</span> <span class="hljs-type">int</span>
+<span class="hljs-title function_">minimummaximum_get_reduction_loop</span><span class="hljs-params">(PyArrayMethod_Context *NPY_UNUSED(context),
+        <span class="hljs-type">int</span> NPY_UNUSED(aligned), <span class="hljs-type">int</span> NPY_UNUSED(move_references),
+        <span class="hljs-type">const</span> npy_intp *NPY_UNUSED(strides),
+        PyArrayMethod_StridedLoop **out_loop,
+        NpyAuxData **out_transferdata,
+        NPY_ARRAYMETHOD_FLAGS *flags)</span>
+{
+    *out_loop = &amp;double_minimummaximum_reduce_loop;
+    *out_transferdata = <span class="hljs-literal">NULL</span>;
+    *flags = NPY_METH_NO_FLOATINGPOINT_ERRORS;
+    <span class="hljs-keyword">return</span> <span class="hljs-number">0</span>;
+}
+
+<span class="hljs-comment">/*
+ * Only one loop is registered (&#x27;f8&#x27;), so the promoter always
+ * requests float64 for every input/output that isn&#x27;t already
+ * pinned by `signature` (e.g. via `dtype=`). This is what lets
+ * plain Python floats/ints, or other numeric dtypes, be used
+ * directly. Without it, only exact `np.float64` inputs would
+ * match the loop registered below. A ufunc that registers loops
+ * for several dtypes would instead pick the common dtype of its
+ * inputs here (see `PyArray_PromoteDTypeSequence`). This one only
+ * ever has a single dtype to offer.
+ */</span>
+<span class="hljs-type">static</span> <span class="hljs-type">int</span>
+<span class="hljs-title function_">minimummaximum_promoter</span><span class="hljs-params">(PyObject *NPY_UNUSED(ufunc),
+        PyArray_DTypeMeta *<span class="hljs-type">const</span> NPY_UNUSED(op_dtypes[]),
+        PyArray_DTypeMeta *<span class="hljs-type">const</span> signature[],
+        PyArray_DTypeMeta *new_op_dtypes[])</span>
+{
+    PyArray_Descr *double_descr = PyArray_DescrFromType(NPY_DOUBLE);
+    <span class="hljs-keyword">if</span> (double_descr == <span class="hljs-literal">NULL</span>) {
+        <span class="hljs-keyword">return</span> <span class="hljs-number">-1</span>;
+    }
+    PyArray_DTypeMeta *double_dt = NPY_DTYPE(double_descr);
+
+    <span class="hljs-keyword">for</span> (<span class="hljs-type">int</span> i = <span class="hljs-number">0</span>; i &lt; <span class="hljs-number">4</span>; i++) {
+        PyArray_DTypeMeta *dt = signature[i] != <span class="hljs-literal">NULL</span> ? signature[i] : double_dt;
+        Py_INCREF(dt);
+        new_op_dtypes[i] = dt;
+    }
+    Py_DECREF(double_descr);
+    <span class="hljs-keyword">return</span> <span class="hljs-number">0</span>;
+}
+
+<span class="hljs-type">static</span> <span class="hljs-type">int</span>
+<span class="hljs-title function_">register_minimummaximum_promoter</span><span class="hljs-params">(PyObject *minimummaximum)</span>
+{
+    <span class="hljs-comment">/* All-None tuple -&gt; catch-all fallback (a concrete loop always wins). */</span>
+    PyObject *none_tuple = PyTuple_Pack(
+            <span class="hljs-number">4</span>, Py_None, Py_None, Py_None, Py_None);
+    <span class="hljs-keyword">if</span> (none_tuple == <span class="hljs-literal">NULL</span>) {
+        <span class="hljs-keyword">return</span> <span class="hljs-number">-1</span>;
+    }
+    PyObject *promoter = PyCapsule_New(
+            (<span class="hljs-type">void</span> *)&amp;minimummaximum_promoter,
+            <span class="hljs-string">&quot;numpy._ufunc_promoter&quot;</span>, <span class="hljs-literal">NULL</span>);
+    <span class="hljs-keyword">if</span> (promoter == <span class="hljs-literal">NULL</span>) {
+        Py_DECREF(none_tuple);
+        <span class="hljs-keyword">return</span> <span class="hljs-number">-1</span>;
+    }
+    <span class="hljs-type">int</span> res = PyUFunc_AddPromoter(minimummaximum, none_tuple, promoter);
+    Py_DECREF(none_tuple);
+    Py_DECREF(promoter);
+    <span class="hljs-keyword">return</span> res;
+}
+
+<span class="hljs-type">static</span> PyMethodDef MinMaxMethods[] = {
+    {<span class="hljs-literal">NULL</span>, <span class="hljs-literal">NULL</span>, <span class="hljs-number">0</span>, <span class="hljs-literal">NULL</span>}
+};
+
+<span class="hljs-type">static</span> <span class="hljs-class"><span class="hljs-keyword">struct</span> <span class="hljs-title">PyModuleDef</span> <span class="hljs-title">moduledef</span> =</span> {
+    PyModuleDef_HEAD_INIT, <span class="hljs-string">&quot;minmax&quot;</span>, <span class="hljs-literal">NULL</span>, <span class="hljs-number">-1</span>, MinMaxMethods,
+    <span class="hljs-literal">NULL</span>, <span class="hljs-literal">NULL</span>, <span class="hljs-literal">NULL</span>, <span class="hljs-literal">NULL</span>
+};
+
+PyMODINIT_FUNC <span class="hljs-title function_">PyInit_minmax</span><span class="hljs-params">(<span class="hljs-type">void</span>)</span>
+{
+    import_array();
+    import_umath();
+
+    PyObject *m = PyModule_Create(&amp;moduledef);
+    <span class="hljs-keyword">if</span> (m == <span class="hljs-literal">NULL</span>) {
+        <span class="hljs-keyword">return</span> <span class="hljs-literal">NULL</span>;
+    }
+
+    <span class="hljs-comment">/* A 2-in/2-out ufunc. Its loops are registered separately below. */</span>
+    PyObject *minimummaximum = PyUFunc_FromFuncAndData(
+            <span class="hljs-literal">NULL</span>, <span class="hljs-literal">NULL</span>, <span class="hljs-literal">NULL</span>, <span class="hljs-number">0</span>, <span class="hljs-number">2</span>, <span class="hljs-number">2</span>, PyUFunc_None,
+            <span class="hljs-string">&quot;minimummaximum&quot;</span>, <span class="hljs-string">&quot;minimummaximum_docstring&quot;</span>, <span class="hljs-number">0</span>);
+    <span class="hljs-keyword">if</span> (minimummaximum == <span class="hljs-literal">NULL</span>) {
+        Py_DECREF(m);
+        <span class="hljs-keyword">return</span> <span class="hljs-literal">NULL</span>;
+    }
+
+    PyArray_Descr *double_descr = PyArray_DescrFromType(NPY_DOUBLE);
+    PyArray_DTypeMeta *dt = NPY_DTYPE(double_descr);
+    PyArray_DTypeMeta *dtypes[<span class="hljs-number">4</span>] = {dt, dt, dt, dt};
+
+    PyType_Slot slots[] = {
+        {NPY_METH_strided_loop, (<span class="hljs-type">void</span> *)&amp;double_minimummaximum_loop},
+        {NPY_METH_get_reduction_loop,
+         (<span class="hljs-type">void</span> *)&amp;minimummaximum_get_reduction_loop},
+        {<span class="hljs-number">0</span>, <span class="hljs-literal">NULL</span>},
+    };
+
+    PyArrayMethod_Spec spec = {
+        .name = <span class="hljs-string">&quot;double_minimummaximum&quot;</span>,
+        .nin = <span class="hljs-number">2</span>,
+        .nout = <span class="hljs-number">2</span>,
+        .casting = NPY_NO_CASTING,
+        <span class="hljs-comment">/* Needed for axis=None / multi-axis reductions. */</span>
+        .flags = NPY_METH_IS_REORDERABLE,
+        .dtypes = dtypes,
+        .slots = slots,
+    };
+
+    <span class="hljs-type">int</span> res = PyUFunc_AddLoopFromSpec(minimummaximum, &amp;spec);
+    Py_DECREF(double_descr);
+    <span class="hljs-keyword">if</span> (res &lt; <span class="hljs-number">0</span> || register_minimummaximum_promoter(minimummaximum) &lt; <span class="hljs-number">0</span>
+            || PyModule_AddObject(m, <span class="hljs-string">&quot;minimummaximum&quot;</span>, minimummaximum) &lt; <span class="hljs-number">0</span>) {
+        Py_XDECREF(minimummaximum);
+        Py_DECREF(m);
+        <span class="hljs-keyword">return</span> <span class="hljs-literal">NULL</span>;
+    }
+    <span class="hljs-keyword">return</span> m;
+}</code></pre></div></figure>
+</blockquote>
+<p>As with the ufuncs in the previous tutorial, the module needs to declare a dependency on NumPy to build:</p>
+<p>After the above has been installed, it can be imported and used as follows. Plain Python floats and ints work directly, thanks to the promoter. No explicit <code>np.float64(...)</code> wrapping is needed:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">&gt;&gt;&gt; import numpy as np
+&gt;&gt;&gt; import minmax
+&gt;&gt;&gt; minmax.minimummaximum(3.0, 5.0)
+(np.float64(3.0), np.float64(5.0))
+&gt;&gt;&gt; minmax.minimummaximum(3, 5)
+(np.float64(3.0), np.float64(5.0))
+&gt;&gt;&gt; a = [3.0, 1.0, 4.0, 1.0, 5.0, 9.0, 2.0, 6.0]
+&gt;&gt;&gt; minmax.minimummaximum.reduce(a)
+(np.float64(1.0), np.float64(9.0))
+&gt;&gt;&gt; b = np.array(a).reshape(2, 4)
+&gt;&gt;&gt; minmax.minimummaximum.reduce(b, axis=None)
+(np.float64(1.0), np.float64(9.0))
+&gt;&gt;&gt; minmax.minimummaximum.reduce(b, axis=1)
+(array([1., 2.]), array([4., 9.]))
+&gt;&gt;&gt; minmax.minimummaximum.reduceat(a, [0, 4])
+(array([1., 2.]), array([4., 9.]))
+&gt;&gt;&gt; minmax.minimummaximum.accumulate(a)
+(array([3., 1., 1., 1., 1., 1., 1., 1.]), array([3., 3., 4., 4., 5., 9., 9., 9.]))</code></pre></div></figure>
+<p>Note that <code>minimummaximum.reduce</code> returns a tuple with one array per output, rather than a single array, so it is usually unpacked as <code>lo, hi = minimummaximum.reduce(a)</code>. The <code>initial</code> argument of a multi-output <code>reduce</code> accepts either a single scalar, which seeds every output, or a tuple with one value per output. The entries of such a tuple cannot be <code>None</code>; a plain <code>initial=None</code> still unsets the initial value for the whole reduction.</p>
+<h2 id="limitations">Limitations</h2>
+<p>This example is intentionally minimal and leaves out several things a real-world implementation, like the built-in [numpy.add] or a fuller <code>minimummaximum</code>, would normally have:</p>
+<ul>
+<li>The promoter always resolves to <code>&#39;f8&#39;</code>, regardless of the input dtypes. Integer input arrays are therefore silently cast to <code>float64</code> instead of keeping their own dtype. A multi-dtype ufunc would register a loop per dtype and pick the common one, as the built-in [numpy.minimum]/`numpy.maximum` do.</li>
+<li>It registers no reduction identity. Reducing an empty array therefore raises a [ValueError], the same as <code>numpy.maximum.reduce</code>. A multi-output ufunc can provide per-output identities with the :c`NPY_METH_get_multi_reduction_initials` slot, the multi-output version of :c`NPY_METH_get_reduction_initial`. Its function fills one initial value per output, for example <code>+inf</code> for the running minimum and <code>-inf</code> for the running maximum. Reducing an empty array, or reducing with a <code>where=</code> mask, then returns those identities instead of raising:</li>
+</ul>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Text</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-plaintext">    static int
+    minimummaximum_get_multi_reduction_initials(
+            PyArrayMethod_Context *NPY_UNUSED(context),
+            npy_bool NPY_UNUSED(reduction_is_empty), void **initials)
+    {
+        *(double *)initials[0] = NPY_INFINITY;   /* min identity */
+        *(double *)initials[1] = -NPY_INFINITY;  /* max identity */
+        return 1;
+    }
+
+It is registered alongside the reduction loop, by adding this entry to the
+``slots`` array above:
+``{NPY_METH_get_multi_reduction_initials, (void *)&amp;minimummaximum_get_multi_reduction_initials}``.</code></pre></div></figure>
+<ul>
+<li>[~numpy.ufunc.at] is not supported for multi-output ufuncs yet. [~numpy.ufunc.reduce], [~numpy.ufunc.reduceat], and [~numpy.ufunc.accumulate] all work for them once a reduction loop is registered.</li>
+</ul>
+<aside class="callout callout-info"><span class="callout-ic"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="8" r="1.4" fill="currentColor"/></svg></span><div class="callout-body"><p class="callout-title">Note</p><ul>
+<li>[ArrayMethod API reference ](reference/c-api/array.rst) for the full :c`NPY_METH_get_reduction_loop` reference documentation.</li>
+<li>ufuncs-basics for the Python-level behavior of [~numpy.ufunc.reduce], [~numpy.ufunc.reduceat], and [~numpy.ufunc.accumulate] on multi-output ufuncs.</li>
+</ul>
+</div></aside>

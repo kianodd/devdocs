@@ -1,0 +1,50 @@
+<p>NumPy supports use in a multithreaded context via the [threading] module in the standard library. Many NumPy operations release the python:GIL, so unlike many situations in Python, it is possible to improve parallel performance by exploiting multithreaded parallelism in Python.</p>
+<p>The easiest performance gains happen when each worker thread owns its own array or set of array objects, with no data directly shared between threads. Because NumPy releases the GIL for many low-level operations, threads that spend most of the time in low-level code will run in parallel.</p>
+<p>It is possible to share NumPy arrays between threads, but extreme care must be taken to avoid creating thread safety issues when mutating arrays that are shared between multiple threads. If two threads simultaneously read from and write to the same array, they will at best produce inconsistent, racey results that are not reproducible, let alone correct. It is also possible to crash the Python interpreter by, for example, resizing an array while another thread is reading from it to compute a ufunc operation.</p>
+<p>In the future, we may add locking to [~numpy.ndarray] to make writing multithreaded algorithms using NumPy arrays safer, but for now we suggest focusing on read-only access of arrays that are shared between threads, or adding your own locking if you need to mutation and multithreading.</p>
+<p>Note that operations that <em>do not</em> release the GIL will see no performance gains from use of the [threading] module, and instead might be better served with [multiprocessing]. In particular, operations on arrays with <code>dtype=np.object_</code> do not release the GIL.</p>
+<h2 id="context-local-state">Context Local State</h2>
+<p>NumPy stores user-adjustable configuration options in :py`context variables `. Context variables allow <em>context-local state</em>, which means each thread in a multithreaded program or task in an asyncio program has its own independent configuration. This includes the following state:</p>
+<ul>
+<li>The [numpy.errstate], which storesl floating-point error handling configuration options and the ufunc buffer size settable via [numpy.setbufsize]. See [/reference/routines.err](reference/routines.err.rst) and use-of-internal-buffers for more details.</li>
+<li>The [numpy.printoptions] and all text-formatting configuration options. See text_formatting_options for more details.</li>
+<li>The memory allocator, see data_memory and NEP 49 for more details.</li>
+</ul>
+<p>State stored in a context variable is set syntactically using the <code>with</code> statement. For example, you can update the numpy printing options state like so:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Python</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-python">
+<span class="hljs-meta">&gt;&gt;&gt; </span><span class="hljs-keyword">with</span> np.printoptions(precision=<span class="hljs-number">2</span>):
+<span class="hljs-meta">... </span>   np.array([<span class="hljs-number">2.0</span>]) / <span class="hljs-number">3</span>
+array([<span class="hljs-number">0.67</span>])
+<span class="hljs-meta">&gt;&gt;&gt; </span>np.array([<span class="hljs-number">2.0</span>]) / <span class="hljs-number">3</span>
+array([<span class="hljs-number">0.66666667</span>])</code></pre></div></figure>
+<p>This property applies to all context-local state, not just [numpy.printoptions].</p>
+<h3 id="interaction-with-the-threading-module">Interaction with the [threading] module</h3>
+<p>Before Python 3.14, new threads always start with newly initialized context state. For example:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Python</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-python">
+$ python3<span class="hljs-number">.12</span>
+<span class="hljs-meta">&gt;&gt;&gt; </span><span class="hljs-keyword">import</span> numpy, threading
+<span class="hljs-meta">&gt;&gt;&gt; </span><span class="hljs-keyword">def</span> <span class="hljs-title function_">print_printoptions</span>():
+<span class="hljs-meta">... </span>    <span class="hljs-built_in">print</span>(numpy.get_printoptions()[<span class="hljs-string">&#x27;precision&#x27;</span>])
+<span class="hljs-meta">&gt;&gt;&gt; </span><span class="hljs-keyword">with</span> numpy.printoptions(precision=<span class="hljs-number">2</span>):
+<span class="hljs-meta">... </span>    threading.Thread(target=print_printoptions).start()
+<span class="hljs-number">8</span></code></pre></div></figure>
+<p>Starting in Python 3.14 a new <code>thread_inherit_context</code> startup configuration option for Python allows opting into a new behavior where context state for spawned threads behaves syntactically as one would expect the above code to behave:</p>
+<figure class="code-card"><figcaption class="code-head"><span class="code-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Python</span></span><span class="code-head-r"><button type="button" class="copy-btn" data-copy aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/></svg></button></span></figcaption><div class="code-pane" data-pane="0"><pre><code class="hljs language-python">
+$ python3<span class="hljs-number">.14</span> -Xthread_inherit_context=<span class="hljs-number">1</span>
+<span class="hljs-meta">&gt;&gt;&gt; </span><span class="hljs-keyword">import</span> numpy, threading
+<span class="hljs-meta">&gt;&gt;&gt; </span><span class="hljs-keyword">def</span> <span class="hljs-title function_">print_printoptions</span>():
+<span class="hljs-meta">... </span>    <span class="hljs-built_in">print</span>(numpy.get_printoptions()[<span class="hljs-string">&#x27;precision&#x27;</span>])
+<span class="hljs-meta">&gt;&gt;&gt; </span><span class="hljs-keyword">with</span> numpy.printoptions(precision=<span class="hljs-number">2</span>):
+<span class="hljs-meta">... </span>    threading.Thread(target=print_printoptions).start()
+<span class="hljs-number">2</span></code></pre></div></figure>
+<p>See <a target="_blank" rel="noopener" href="https://docs.python.org/3/using/cmdline.html#envvar-PYTHON_THREAD_INHERIT_CONTEXT">the CPython documentation</a> for more details.</p>
+<h2 id="free-threaded-python">Free-threaded Python</h2>
+<p>Starting with NumPy 2.1 and CPython 3.13, NumPy also has experimental support for python runtimes with the GIL disabled. See <a target="_blank" rel="noopener" href="https://py-free-threading.github.io">https://py-free-threading.github.io</a> for more information about installing and using :pyfree-threaded Python, as well as information about supporting it in libraries that depend on NumPy.</p>
+<p>Because free-threaded Python does not have a global interpreter lock to serialize access to Python objects, there are more opportunities for threads to mutate shared state and create thread safety issues. In addition to the limitations about locking of the [~numpy.ndarray] object noted above, this also means that arrays with <code>dtype=np.object_</code> are not protected by the GIL, creating data races for python objects that are not possible outside free-threaded python.</p>
+<p>Free-threaded Python has <code>thread_inherit_context</code> turned on by default starting in Python 3.14. See context_local for more information.</p>
+<h2 id="c-api-threading-support">C-API Threading Support</h2>
+<p>For developers writing C extensions that interact with NumPy, several parts of the [C-API array documentation ](reference/c-api/array.rst) provide detailed information about multithreading considerations.</p>
+<h2 id="see-also">See Also</h2>
+<ul>
+<li>[/reference/random/multithreading](reference/random/multithreading.rst) - Practical example of using NumPy&#39;s random number generators in a multithreaded context with [concurrent.futures].</li>
+</ul>
